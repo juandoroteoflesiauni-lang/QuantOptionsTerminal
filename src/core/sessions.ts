@@ -244,14 +244,17 @@ export function getMarketParts(time: number, market: Market): MarketParts {
  * 12:00 ET devuelve true: la ausencia de sesión es un dato del calendario de
  * mercado que esta función deliberadamente no conoce.
  */
-export function isRth(time: number): boolean {
-  const parts = getMarketParts(time, 'EQUITY');
+export function isRthFromParts(parts: MarketParts): boolean {
   return (
     parts.weekday >= 1 &&
     parts.weekday <= 5 &&
     parts.minutesOfDay >= RTH_START_MINUTES &&
     parts.minutesOfDay < RTH_END_MINUTES
   );
+}
+
+export function isRth(time: number): boolean {
+  return isRthFromParts(getMarketParts(time, 'EQUITY'));
 }
 
 /**

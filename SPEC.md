@@ -7,3 +7,4 @@
 5. AVWAP anclado: Welford sobre HLC3. Anclas: SESSION, WEEK (primera barra de la semana), MONTH, YTD, HIGH_VOLUME_BAR y FULL_HISTORY (estas dos solo sobre el tramo visible, para no depender del calentamiento). Ancla inválida (índice <0, >= largo o no entero) devuelve []. Bandas ±1, ±2 y ±2.5 sigma con el mismo sigma, sin recalcular.
 6. Proveedores: Massive para acciones, BingX para cripto. BingX no entrega vw; pero quoteVolume/volume podría serlo. Verificar con muestra real que queda entre low y high antes de usarlo.
 7. Fuera de alcance por ahora: Squeeze, cinemática, Z-score, playbooks, órdenes, interfaz.
+8. bar.time es el instante de APERTURA de la barra. El VWAP de sesión en acciones solo se admite con barSeconds que divida 1800 (1m, 5m, 15m, 30m), para que 09:30 y 16:00 coincidan con límites de barra; con 1h, 4h o 1D se lanza error. Una sesión que empieza a mitad del buffer da un VWAP parcial (límite documentado; lo resuelve la capa de datos).
