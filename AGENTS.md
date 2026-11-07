@@ -1,0 +1,8 @@
+- Toda la matemática en TypeScript, funciones puras, sin red, sin interfaz, sin mutar argumentos.
+- Formato único de barra: { time: segundos UTC, open, high, low, close, volume, vw? }. Los adaptadores convierten a este formato en la entrada. Prohibido mezclar milisegundos.
+- Prohibidos los valores de respaldo que oculten un NaN (|| precio, ?? 50). Un valor no calculable es NaN y la interfaz muestra "—".
+- Prohibidos los datos simulados o de demostración en código de producción.
+- Cada función nueva lleva tests contra una referencia INDEPENDIENTE: un script de Python en tools/ con implementación explícita (sin copiar la lógica del código TypeScript), que genera un fixture en fixtures/. Tolerancia 1e-9 salvo que se indique otra.
+- Nunca modifiques ni debilites un test existente para que pase. Si un test falla por un cambio intencional, lístalo con el antes y el después y espera mi aprobación.
+- Un commit por pieza, con su test. Al cerrar cada pieza ejecuta "npm run verify" y pega la salida literal, no un resumen.
+- No avances a otra pieza sin mi confirmación. No inventes requisitos: si algo no está en SPEC.md, pregúntame.
