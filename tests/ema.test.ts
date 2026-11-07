@@ -276,13 +276,13 @@ describe('EMA (SPEC punto 2)', () => {
   });
 
   describe('emaWarmupWeight', () => {
-    it('emaWarmupWeight(200, 1000) es aproximadamente 4.4e-5', () => {
-      // Cálculo: (1 - 2/201)^1000 = (199/201)^1000 ≈ 4.5396e-5 ≈ 4.4e-5.
+    it('emaWarmupWeight(200, 1000) es aproximadamente 4.54e-5', () => {
+      // Cálculo: (1 - 2/201)^1000 = (199/201)^1000 ≈ 4.5396e-5 ≈ 4.54e-5.
       const weight = emaWarmupWeight(200, 1000);
       console.log(
         `[emaWarmupWeight] (199/201)^1000 = ${weight.toExponential(6)}`,
       );
-      expect(Math.abs(weight / 4.4e-5 - 1)).toBeLessThan(0.05);
+      expect(Math.abs(weight / 4.54e-5 - 1)).toBeLessThan(1e-3);
     });
 
     it('en la semilla el peso es 1 y decae según (1-alpha)^barras', () => {
