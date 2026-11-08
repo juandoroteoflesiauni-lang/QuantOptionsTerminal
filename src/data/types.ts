@@ -172,3 +172,27 @@ export interface LoadBarsResult {
   readonly visibleStart: number;
   readonly report: LoadBarsReport;
 }
+
+/**
+ * Opciones del cargador (Paso D).
+ *
+ * `fetchFn` se inyecta para que los tests no toquen la red. `apiKey` solo se
+ * usa con Massive y nunca se escribe en el reporte.
+ */
+export interface LoadBarsOptions {
+  readonly provider: DataProvider;
+  readonly symbol: string;
+  readonly timeframe: Timeframe;
+  readonly visibleBars: number;
+  /** Por defecto 1000, como exige el calentamiento del SPEC punto 2. */
+  readonly warmupBars?: number;
+  readonly fetchFn: FetchFn;
+  /** Segundos UTC enteros. Si falta, se usa el reloj del sistema. */
+  readonly now?: number;
+  /** Máximo de peticiones HTTP. Por defecto 10. */
+  readonly maxPages?: number;
+  /** Obligatoria para Massive. BingX spot es público. */
+  readonly apiKey?: string;
+  /** Origen alternativo (proxy o host distinto). */
+  readonly baseUrl?: string;
+}

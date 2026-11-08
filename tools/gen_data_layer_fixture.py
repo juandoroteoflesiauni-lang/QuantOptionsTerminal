@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
-from datetime import datetime, timezone
+import urllib.parse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -898,6 +900,1235 @@ def build_bingx_cases() -> dict[str, dict[str, Any]]:
     return cases
 
 
+# ---------------------------------------------------------------------------
+# Referencia del cargador (Paso D)
+# ---------------------------------------------------------------------------
+
+MASSIVE_LOAD_BASE = "https://api.polygon.io"
+BINGX_LOAD_BASE = "https://open-api.bingx.com"
+MASSIVE_LOAD_LIMIT = 50_000
+BINGX_LOAD_LIMIT = 1_000
+DEFAULT_LOAD_MAX_PAGES = 10
+FIXTURE_API_KEY = "fixture-api-key"
+AUTH_PARAM_NAMES = {"apikey", "api_key", "api-key"}
+AUTH_PARAM_PATTERN = re.compile(
+    r"([?&](?:" + "|".join(sorted(AUTH_PARAM_NAMES)) + r")=)[^&\s]+",
+    re.IGNORECASE,
+)
+SECONDS_PER_DAY = 86_400
+
+TIMEFRAME_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3_600,
+    "4h": 14_400,
+    "1D": 86_400,
+}
+
+MASSIVE_LOAD_TIMEFRAMES = {
+    "1m": (1, "minute"),
+    "5m": (5, "minute"),
+    "15m": (15, "minute"),
+    "1h": (1, "hour"),
+    "4h": (4, "hour"),
+    "1D": (1, "day"),
+}
+
+MASSIVE_BARS_PER_DAY = {
+    "1m": 960,
+    "5m": 192,
+    "15m": 64,
+    "1h": 16,
+    "4h": 4,
+    "1D": 1,
+}
+
+BINGX_LOAD_INTERVALS = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "1h": "1h",
+    "4h": "4h",
+    "1D": "1d",
+}
+
+BINGX_MAX_RANGE_DAYS = {
+    "1m": 2,
+    "5m": 8,
+    "15m": 22,
+    "1h": 90,
+    "4h": 350,
+    "1D": 380,
+}
+
+
+def massive_align_down(time: int, timeframe: str) -> int:
+    if timeframe == "1D":
+        parts = datetime.fromtimestamp(time, tz=NEW_YORK)
+        return et_seconds(parts.year, parts.month, parts.day, 0, 0)
+    if timeframe == "4h":
+        parts = datetime.fromtimestamp(time, tz=NEW_YORK)
+        aligned_minutes = (parts.hour * 60 + parts.minute) // 240 * 240
+        return et_seconds(
+            parts.year,
+            parts.month,
+            parts.day,
+            aligned_minutes // 60,
+            aligned_minutes % 60,
+        )
+    return time - (time % TIMEFRAME_SECONDS[timeframe])
+
+
+def massive_lookback_days(requested_bars: int, timeframe: str) -> int:
+    return (
+        math.ceil(
+            (requested_bars / MASSIVE_BARS_PER_DAY[timeframe]) * (7 / 5)
+        )
+        + 10
+    )
+
+
+def shift_date_key(date_key: str, delta_days: int) -> str:
+    day = datetime.fromisoformat(date_key).date() + timedelta(days=delta_days)
+    return day.isoformat()
+
+
+def massive_load_window(
+    now: int, timeframe: str, requested_bars: int
+) -> dict[str, Any]:
+    lookback_days = massive_lookback_days(requested_bars, timeframe)
+    if timeframe == "1D":
+        to_date = et_date_key(now)
+        return {
+            "from": shift_date_key(to_date, -lookback_days),
+            "to": to_date,
+        }
+    from_time = massive_align_down(
+        now - lookback_days * SECONDS_PER_DAY, timeframe
+    )
+    return {"from": from_time * 1000, "to": now * 1000}
+
+
+def massive_load_url(
+    base_url: str,
+    symbol: str,
+    timeframe: str,
+    window: dict[str, Any],
+) -> str:
+    multiplier, timespan = MASSIVE_LOAD_TIMEFRAMES[timeframe]
+    path = (
+        f"/v2/aggs/ticker/{urllib.parse.quote(symbol, safe='')}/range/"
+        f"{multiplier}/{timespan}/{window['from']}/{window['to']}"
+    )
+    query = urllib.parse.urlencode(
+        [
+            ("adjusted", "true"),
+            ("sort", "desc"),
+            ("limit", str(MASSIVE_LOAD_LIMIT)),
+        ]
+    )
+    return f"{base_url}{path}?{query}"
+
+
+def bingx_load_window(now: int, timeframe: str) -> tuple[int, int]:
+    end_time = now * 1000
+    start_time = (
+        end_time - BINGX_MAX_RANGE_DAYS[timeframe] * SECONDS_PER_DAY * 1000
+    )
+    return start_time, end_time
+
+
+def bingx_load_url(
+    base_url: str,
+    symbol: str,
+    timeframe: str,
+    start_time: int,
+    end_time: int,
+) -> str:
+    query = urllib.parse.urlencode(
+        [
+            ("symbol", symbol),
+            ("interval", BINGX_LOAD_INTERVALS[timeframe]),
+            ("limit", str(BINGX_LOAD_LIMIT)),
+            ("startTime", str(start_time)),
+            ("endTime", str(end_time)),
+        ]
+    )
+    return f"{base_url}/openApi/spot/v2/market/kline?{query}"
+
+
+def sanitize_load_url(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    pairs = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(
+            parts.query, keep_blank_values=True
+        )
+        if key.lower() not in AUTH_PARAM_NAMES
+    ]
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urllib.parse.urlencode(pairs),
+            parts.fragment,
+        )
+    )
+
+
+def auth_param_for_url(url: str) -> str:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return "apikey" if host == "api.massive.com" else "apiKey"
+
+
+def with_api_key(url: str, api_key: str, base_url: str) -> str:
+    absolute = urllib.parse.urljoin(base_url, url)
+    parts = urllib.parse.urlsplit(absolute)
+    pairs = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(
+            parts.query, keep_blank_values=True
+        )
+        if key.lower() not in AUTH_PARAM_NAMES
+    ]
+    pairs.append((auth_param_for_url(absolute), api_key))
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urllib.parse.urlencode(pairs),
+            parts.fragment,
+        )
+    )
+
+
+def expected_load_request(
+    url: str, provider: str, api_key: str
+) -> dict[str, Any]:
+    if provider == "massive":
+        return {
+            "url": sanitize_load_url(url),
+            "authParam": auth_param_for_url(url),
+            "authValue": api_key,
+        }
+    return {
+        "url": sanitize_load_url(url),
+        "authParam": None,
+        "authValue": None,
+    }
+
+
+def redact_load_secret(text: str, secret: str) -> str:
+    out = text
+    if secret:
+        out = out.replace(secret, "<redacted>")
+        encoded = urllib.parse.quote(secret, safe="")
+        if encoded and encoded != secret:
+            out = out.replace(encoded, "<redacted>")
+    return AUTH_PARAM_PATTERN.sub(r"\1<redacted>", out)
+
+
+def parse_json_text(text: str) -> tuple[Any, bool]:
+    try:
+        return json.loads(text), True
+    except json.JSONDecodeError:
+        return None, False
+
+
+def http_error_message(
+    text: str, status: int, secret: str
+) -> dict[str, Any]:
+    message = f"HTTP {status}"
+    body, parsed = parse_json_text(text)
+    if parsed and isinstance(body, dict):
+        candidate = (
+            body.get("error") or body.get("message") or body.get("msg")
+        )
+        if isinstance(candidate, str) and candidate:
+            message = candidate
+    return {
+        "code": status,
+        "message": redact_load_secret(message, secret),
+    }
+
+
+def oldest_open_time(rows: list[Any]) -> int | None:
+    values: list[int] = []
+    for row in rows:
+        if not isinstance(row, list) or not row:
+            continue
+        value = row[0]
+        if (
+            is_finite_number(value)
+            and float(value).is_integer()
+            and int(value) > 0
+        ):
+            values.append(int(value))
+    return min(values) if values else None
+
+
+def closed_bars(
+    bars: list[dict[str, Any]], forming: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    if forming is None:
+        return list(bars)
+    return [bar for bar in bars if bar["time"] != forming["time"]]
+
+
+def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
+    options = case["options"]
+    provider = options["provider"]
+    symbol = options["symbol"]
+    timeframe = options["timeframe"]
+    visible_bars = options["visibleBars"]
+    warmup_bars = options.get("warmupBars", 1000)
+    requested_bars = visible_bars + warmup_bars
+    now = options["now"]
+    max_pages = options.get("maxPages", DEFAULT_LOAD_MAX_PAGES)
+    api_key = options.get("apiKey", "")
+    base_url = options.get("baseUrl")
+    if base_url is None:
+        base_url = (
+            MASSIVE_LOAD_BASE
+            if provider == "massive"
+            else BINGX_LOAD_BASE
+        )
+    base_url = base_url.rstrip("/")
+    bar_seconds = TIMEFRAME_SECONDS[timeframe]
+
+    responses = case["responses"]
+    requests: list[dict[str, Any]] = []
+    rows: list[Any] = []
+    pages = 0
+    page_error: dict[str, Any] | None = None
+    malformed = False
+    stopped: str | None = None
+    probe: tuple[list[dict[str, Any]], dict[str, Any]] | None = None
+    start_time: int | None = None
+    end_time: int | None = None
+
+    if provider == "massive":
+        window = massive_load_window(now, timeframe, requested_bars)
+        url = massive_load_url(base_url, symbol, timeframe, window)
+        url = with_api_key(url, api_key, base_url)
+    else:
+        start_time, end_time = bingx_load_window(now, timeframe)
+        url = bingx_load_url(
+            base_url, symbol, timeframe, start_time, end_time
+        )
+
+    while pages < max_pages:
+        if pages >= len(responses):
+            raise RuntimeError(
+                "fixture has fewer responses than requests"
+            )
+        response = responses[pages]
+        pages += 1
+        requests.append(expected_load_request(url, provider, api_key))
+
+        if "throws" in response:
+            thrown = response["throws"]
+            if not isinstance(thrown, str):
+                thrown = ""
+            page_error = {
+                "code": 0,
+                "message": redact_load_secret(thrown, api_key),
+            }
+            stopped = "providerError"
+            break
+
+        status = int(response.get("status", 0))
+        ok = bool(response.get("ok", True))
+        text = response.get("text", "")
+        if not isinstance(text, str):
+            text = ""
+
+        if not ok or status < 200 or status >= 300:
+            page_error = http_error_message(text, status, api_key)
+            stopped = "providerError"
+            break
+
+        body, parsed = parse_json_text(text)
+        if not parsed:
+            malformed = True
+            stopped = "malformedResponse"
+            break
+
+        if provider == "massive":
+            if not isinstance(body, dict):
+                malformed = True
+                stopped = "malformedResponse"
+                break
+            response_status = body.get("status")
+            if (
+                isinstance(response_status, str)
+                and response_status.upper() != "OK"
+            ):
+                message = (
+                    body.get("error")
+                    or body.get("message")
+                    or response_status
+                )
+                if not isinstance(message, str):
+                    message = response_status
+                page_error = {
+                    "code": 0,
+                    "message": redact_load_secret(message, api_key),
+                }
+                stopped = "providerError"
+                break
+
+            results = body.get("results")
+            if results is None:
+                page_rows: list[Any] = []
+            elif isinstance(results, list):
+                page_rows = results
+            else:
+                malformed = True
+                stopped = "malformedResponse"
+                break
+
+            rows.extend(page_rows)
+            bars, report = normalize_massive(
+                {"status": "OK", "results": rows}, bar_seconds, now
+            )
+            probe = (bars, report)
+            closed = closed_bars(bars, report["formingBar"])
+            if len(closed) >= requested_bars:
+                stopped = "targetReached"
+                break
+            if not page_rows:
+                stopped = "noMorePages"
+                break
+
+            next_url = body.get("next_url")
+            if not isinstance(next_url, str) or not next_url:
+                stopped = "noMorePages"
+                break
+            if pages >= max_pages:
+                stopped = "maxPages"
+                break
+            try:
+                url = with_api_key(next_url, api_key, base_url)
+            except ValueError:
+                malformed = True
+                stopped = "malformedResponse"
+                break
+        else:
+            if not isinstance(body, dict):
+                malformed = True
+                stopped = "malformedResponse"
+                break
+            code = body.get("code")
+            if is_finite_number(code) and code != 0:
+                message = body.get("msg") or body.get("message") or ""
+                if not isinstance(message, str):
+                    message = ""
+                page_error = {
+                    "code": int(code),
+                    "message": redact_load_secret(message, api_key),
+                }
+                stopped = "providerError"
+                break
+
+            data = body.get("data")
+            if data is None:
+                page_rows = []
+            elif isinstance(data, list):
+                page_rows = data
+            else:
+                malformed = True
+                stopped = "malformedResponse"
+                break
+
+            rows.extend(page_rows)
+            bars, report = normalize_bingx(
+                {"code": 0, "data": rows}, bar_seconds, now
+            )
+            probe = (bars, report)
+            closed = closed_bars(bars, report["formingBar"])
+            if len(closed) >= requested_bars:
+                stopped = "targetReached"
+                break
+            if not page_rows:
+                stopped = "noMorePages"
+                break
+
+            oldest = oldest_open_time(page_rows)
+            if (
+                oldest is None
+                or start_time is None
+                or oldest <= start_time
+            ):
+                stopped = "noMorePages"
+                break
+            if pages >= max_pages:
+                stopped = "maxPages"
+                break
+            end_time = oldest - 1
+            url = bingx_load_url(
+                base_url, symbol, timeframe, start_time, end_time
+            )
+
+    if stopped is None:
+        stopped = "maxPages" if pages >= max_pages else "noMorePages"
+
+    if probe is None:
+        if provider == "massive":
+            probe = normalize_massive(
+                {"status": "OK", "results": rows}, bar_seconds, now
+            )
+        else:
+            probe = normalize_bingx(
+                {"code": 0, "data": rows}, bar_seconds, now
+            )
+
+    bars, report = probe
+    forming = report["formingBar"]
+    closed = closed_bars(bars, forming)
+    normalized_bars = len(closed)
+    trimmed = closed[-requested_bars:] if requested_bars > 0 else []
+    trimmed_bars = normalized_bars - len(trimmed)
+    visible_start = max(0, len(trimmed) - visible_bars)
+    gaps, gap_detection = detect_gaps(closed, bar_seconds, provider)
+
+    report = dict(report)
+    report["gaps"] = gaps
+    report["gapDetection"] = gap_detection
+    report["malformedResponse"] = bool(
+        malformed or report["malformedResponse"]
+    )
+    if page_error is not None:
+        report["providerError"] = page_error
+    report.update(
+        {
+            "requestedBars": requested_bars,
+            "visibleBars": visible_bars,
+            "warmupBars": warmup_bars,
+            "normalizedBars": normalized_bars,
+            "trimmedBars": trimmed_bars,
+            "formingExcluded": (
+                forming is not None and len(closed) < len(bars)
+            ),
+            "pages": pages,
+            "firstTime": trimmed[0]["time"] if trimmed else None,
+            "lastTime": trimmed[-1]["time"] if trimmed else None,
+            "stoppedReason": stopped,
+        }
+    )
+
+    return {
+        "bars": trimmed,
+        "visibleStart": visible_start,
+        "report": report,
+        "requests": requests,
+    }
+
+
+def json_response(
+    body: Any, status: int = 200, ok: bool = True
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "ok": ok,
+        "text": json.dumps(
+            body, ensure_ascii=False, separators=(",", ":")
+        ),
+    }
+
+
+def text_response(
+    text: str, status: int = 200, ok: bool = True
+) -> dict[str, Any]:
+    return {"status": status, "ok": ok, "text": text}
+
+
+def loader_case(
+    description: str,
+    options: dict[str, Any],
+    responses: list[dict[str, Any]],
+) -> dict[str, Any]:
+    case = {
+        "description": description,
+        "options": options,
+        "responses": responses,
+    }
+    case["expected"] = simulate_loader(case)
+    return case
+
+
+def validate_load_options(options: dict[str, Any]) -> str | None:
+    provider = options.get("provider")
+    if provider not in ("massive", "bingx"):
+        return f"Unsupported provider: {provider}"
+    timeframe = options.get("timeframe")
+    if timeframe not in TIMEFRAME_SECONDS:
+        return f"Unsupported timeframe: {timeframe}"
+    symbol = options.get("symbol")
+    if not isinstance(symbol, str) or symbol.strip() == "":
+        return "symbol must be a non-empty string"
+    visible_bars = options.get("visibleBars")
+    if (
+        not isinstance(visible_bars, int)
+        or isinstance(visible_bars, bool)
+        or visible_bars < 0
+    ):
+        return (
+            "visibleBars must be a non-negative integer "
+            f"(got {visible_bars})"
+        )
+    warmup_bars = options.get("warmupBars", 1000)
+    if (
+        not isinstance(warmup_bars, int)
+        or isinstance(warmup_bars, bool)
+        or warmup_bars < 0
+    ):
+        return (
+            "warmupBars must be a non-negative integer "
+            f"(got {warmup_bars})"
+        )
+    requested_bars = visible_bars + warmup_bars
+    if requested_bars <= 0:
+        return "visibleBars + warmupBars must be greater than 0"
+    now = options.get("now")
+    if now is not None and (
+        not isinstance(now, (int, float))
+        or isinstance(now, bool)
+        or not math.isfinite(now)
+        or not float(now).is_integer()
+    ):
+        return f"now must be finite integer seconds (got {now})"
+    max_pages = options.get("maxPages", DEFAULT_LOAD_MAX_PAGES)
+    if (
+        not isinstance(max_pages, int)
+        or isinstance(max_pages, bool)
+        or max_pages < 1
+    ):
+        return f"maxPages must be a positive integer (got {max_pages})"
+    api_key = options.get("apiKey")
+    if provider == "massive" and (
+        not isinstance(api_key, str) or api_key == ""
+    ):
+        return "apiKey is required for Massive"
+    base_url = options.get("baseUrl")
+    default_base = (
+        MASSIVE_LOAD_BASE
+        if provider == "massive"
+        else BINGX_LOAD_BASE
+    )
+    resolved_base = (
+        base_url if base_url is not None else default_base
+    ).rstrip("/")
+    if resolved_base == "":
+        return "baseUrl must be a non-empty URL"
+    return None
+
+
+def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
+    cases: dict[str, dict[str, Any]] = {}
+    base = et_seconds(2026, 11, 6, 4, 0)
+    after = et_seconds(2026, 11, 7, 20, 0)
+
+    def options(**overrides: Any) -> dict[str, Any]:
+        values: dict[str, Any] = {
+            "provider": "massive",
+            "symbol": "SPY",
+            "timeframe": "1m",
+            "visibleBars": 2,
+            "warmupBars": 2,
+            "now": after,
+            "maxPages": 5,
+            "apiKey": FIXTURE_API_KEY,
+        }
+        values.update(overrides)
+        return values
+
+    next_url = (
+        "https://api.polygon.io/v2/aggs/ticker/SPY/range/1/minute/"
+        "1793955600000/1794048000000"
+        "?adjusted=true&sort=desc&limit=50000&cursor=abc123"
+        "&api_key=old-key"
+    )
+    cases["lm1_pagination_target"] = loader_case(
+        "Massive pagina con next_url, elimina el parámetro de "
+        "autenticación antiguo y alcanza el objetivo",
+        options(),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                            102.0,
+                        ),
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                    ],
+                    "next_url": next_url,
+                }
+            ),
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm2_forming_trim_discards"] = loader_case(
+        "Massive excluye la barra en formación, recorta el buffer y "
+        "reporta descartes",
+        options(now=base + 330),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                        massive_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                            102.0,
+                        ),
+                        massive_row(
+                            base + 240, 103.0, 104.0, 102.0, 103.0, 1.0,
+                            103.0,
+                        ),
+                        massive_row(
+                            base + 300, 104.0, 105.0, 103.0, 104.0, 1.0,
+                            104.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                        "not-a-row",
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm3_daily_forming"] = loader_case(
+        "Massive 1D usa fechas ET y excluye la barra diaria en formación",
+        options(
+            timeframe="1D",
+            visibleBars=1,
+            warmupBars=1,
+            now=et_seconds(2026, 11, 6, 12, 0),
+        ),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            et_seconds(2026, 11, 4, 0, 0),
+                            99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            et_seconds(2026, 11, 5, 0, 0),
+                            100.0, 101.0, 99.0, 100.0, 1.0, 100.0,
+                        ),
+                        massive_row(
+                            et_seconds(2026, 11, 6, 0, 0),
+                            101.0, 102.0, 100.0, 101.0, 1.0, 101.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm4_4h_alignment"] = loader_case(
+        "Massive 4h alinea el from a la rejilla ET de 4 horas",
+        options(
+            timeframe="4h",
+            visibleBars=1,
+            warmupBars=2,
+            now=et_seconds(2026, 11, 7, 19, 30),
+        ),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            et_seconds(2026, 11, 6, 4, 0),
+                            99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            et_seconds(2026, 11, 6, 8, 0),
+                            100.0, 101.0, 99.0, 100.0, 1.0, 100.0,
+                        ),
+                        massive_row(
+                            et_seconds(2026, 11, 6, 12, 0),
+                            101.0, 102.0, 100.0, 101.0, 1.0, 101.0,
+                        ),
+                        massive_row(
+                            et_seconds(2026, 11, 6, 16, 0),
+                            102.0, 103.0, 101.0, 102.0, 1.0, 102.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm5_provider_error_http"] = loader_case(
+        "Massive HTTP 403: el mensaje del proveedor se redacta",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {"error": "bad key fixture-api-key"},
+                status=403,
+                ok=False,
+            ),
+        ],
+    )
+
+    cases["lm6_provider_error_throws"] = loader_case(
+        "Massive error de red lanzado: se captura y se redacta",
+        options(visibleBars=1, warmupBars=1),
+        [{"throws": "network failed for fixture-api-key"}],
+    )
+
+    cases["lm7_malformed_json"] = loader_case(
+        "Massive cuerpo que no es JSON: malformedResponse=true",
+        options(visibleBars=1, warmupBars=1),
+        [text_response("not json")],
+    )
+
+    cases["lm8_results_not_array"] = loader_case(
+        "Massive results no es un array: malformedResponse=true",
+        options(visibleBars=1, warmupBars=1),
+        [json_response({"status": "OK", "results": "nope"})],
+    )
+
+    cases["lm9_empty"] = loader_case(
+        "Massive sin resultados: noMorePages y cero barras",
+        options(visibleBars=1, warmupBars=1),
+        [json_response({"status": "OK", "results": []})],
+    )
+
+    cases["lm10_max_pages"] = loader_case(
+        "Massive agota maxPages antes de alcanzar el objetivo",
+        options(visibleBars=5, warmupBars=5, maxPages=2),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                    ],
+                    "next_url": next_url,
+                }
+            ),
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                        massive_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                            102.0,
+                        ),
+                    ],
+                    "next_url": next_url,
+                }
+            ),
+        ],
+    )
+
+    cases["lm11_massive_host_auth"] = loader_case(
+        "Massive con host api.massive.com usa el parámetro apikey",
+        options(
+            baseUrl="https://api.massive.com",
+            visibleBars=1,
+            warmupBars=1,
+        ),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm12_no_more_pages"] = loader_case(
+        "Massive con datos pero sin next_url: noMorePages",
+        options(visibleBars=3, warmupBars=2),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    default_warmup = options(visibleBars=1)
+    default_warmup.pop("warmupBars")
+    cases["lm13_default_warmup"] = loader_case(
+        "Massive usa warmupBars=1000 por defecto",
+        default_warmup,
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    return cases
+
+
+def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
+    cases: dict[str, dict[str, Any]] = {}
+    base = utc_seconds(2026, 11, 7, 12, 0)
+    later = utc_seconds(2026, 11, 7, 20, 0)
+
+    def options(**overrides: Any) -> dict[str, Any]:
+        values: dict[str, Any] = {
+            "provider": "bingx",
+            "symbol": "BTC-USDT",
+            "timeframe": "1m",
+            "visibleBars": 2,
+            "warmupBars": 2,
+            "now": later,
+            "maxPages": 5,
+        }
+        values.update(overrides)
+        return values
+
+    cases["lb1_pagination_target"] = loader_case(
+        "BingX pagina con endTime decreciente y alcanza el objetivo",
+        options(),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": later * 1000,
+                    "data": [
+                        bingx_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                        ),
+                    ],
+                }
+            ),
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": later * 1000,
+                    "data": [
+                        bingx_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                        bingx_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lb2_forming_close_time"] = loader_case(
+        "BingX excluye la barra en formación por closeTime",
+        options(visibleBars=1, warmupBars=1, now=base + 130),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": (base + 130) * 1000,
+                    "data": [
+                        bingx_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            close_time=(base + 179) * 1000,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lb3_discards_trim"] = loader_case(
+        "BingX descarta filas inválidas y recorta el buffer",
+        options(visibleBars=1, warmupBars=2, now=base + 400),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": (base + 400) * 1000,
+                    "data": [
+                        bingx_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 240, 103.0, 104.0, 102.0, 103.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                        "not-a-row",
+                        bingx_row(
+                            base + 300, 104.0, 105.0, 103.0, 104.0, -1.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lb4_empty"] = loader_case(
+        "BingX sin datos: noMorePages y cero barras",
+        options(visibleBars=1, warmupBars=1),
+        [json_response({"code": 0, "data": []})],
+    )
+
+    cases["lb5_provider_error"] = loader_case(
+        "BingX code distinto de cero: error del proveedor",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {
+                    "code": 100204,
+                    "msg": "range too large",
+                }
+            ),
+        ],
+    )
+
+    cases["lb6_malformed_json"] = loader_case(
+        "BingX cuerpo que no es JSON: malformedResponse=true",
+        options(visibleBars=1, warmupBars=1),
+        [text_response("not json")],
+    )
+
+    cases["lb7_malformed_data"] = loader_case(
+        "BingX data no es un array: malformedResponse=true",
+        options(visibleBars=1, warmupBars=1),
+        [json_response({"code": 0, "data": "nope"})],
+    )
+
+    cases["lb8_max_pages"] = loader_case(
+        "BingX agota maxPages antes de alcanzar el objetivo",
+        options(
+            visibleBars=5,
+            warmupBars=5,
+            maxPages=2,
+            now=base + 3600,
+        ),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "data": [
+                        bingx_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                        bingx_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0,
+                        ),
+                    ],
+                }
+            ),
+            json_response(
+                {
+                    "code": 0,
+                    "data": [
+                        bingx_row(
+                            base - 60, 98.0, 99.0, 97.0, 98.0, 1.0,
+                        ),
+                        bingx_row(
+                            base - 120, 97.0, 98.0, 96.0, 97.0, 1.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lb9_daily_forming"] = loader_case(
+        "BingX 1D excluye la barra diaria en formación por closeTime",
+        options(
+            timeframe="1D",
+            visibleBars=1,
+            warmupBars=0,
+            now=utc_seconds(2026, 11, 7, 12, 0),
+        ),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": utc_seconds(2026, 11, 7, 12, 0) * 1000,
+                    "data": [
+                        bingx_row(
+                            utc_seconds(2026, 11, 5, 16, 0),
+                            99.0, 100.0, 98.0, 99.0, 1.0,
+                            close_time=utc_seconds(
+                                2026, 11, 6, 15, 59, 59
+                            )
+                            * 1000,
+                        ),
+                        bingx_row(
+                            utc_seconds(2026, 11, 6, 16, 0),
+                            100.0, 101.0, 99.0, 100.0, 1.0,
+                            close_time=utc_seconds(
+                                2026, 11, 7, 15, 59, 59
+                            )
+                            * 1000,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    return cases
+
+
+def build_loader_validation_cases() -> dict[str, dict[str, Any]]:
+    base: dict[str, Any] = {
+        "provider": "massive",
+        "symbol": "SPY",
+        "timeframe": "1m",
+        "visibleBars": 10,
+        "warmupBars": 10,
+        "now": utc_seconds(2026, 11, 7, 20, 0),
+        "maxPages": 3,
+        "apiKey": FIXTURE_API_KEY,
+    }
+
+    def case(description: str, **overrides: Any) -> dict[str, Any]:
+        options = dict(base)
+        for key, value in overrides.items():
+            if key == "apiKey" and value is None:
+                options.pop(key, None)
+            else:
+                options[key] = value
+        error = validate_load_options(options)
+        if error is None:
+            raise RuntimeError(
+                f"validation case did not fail: {description}"
+            )
+        return {
+            "description": description,
+            "options": options,
+            "expectedError": error,
+        }
+
+    return {
+        "v1_provider": case(
+            "proveedor no soportado", provider="other"
+        ),
+        "v2_timeframe": case(
+            "temporalidad no soportada", timeframe="2m"
+        ),
+        "v3_symbol": case("símbolo vacío", symbol="   "),
+        "v4_visible": case(
+            "visibleBars negativo", visibleBars=-1
+        ),
+        "v5_visible_fraction": case(
+            "visibleBars no entero", visibleBars=1.5
+        ),
+        "v6_warmup": case(
+            "warmupBars negativo", warmupBars=-1
+        ),
+        "v7_zero": case(
+            "buffer total cero", visibleBars=0, warmupBars=0
+        ),
+        "v8_now": case("now no entero", now=1.5),
+        "v9_max_pages": case("maxPages cero", maxPages=0),
+        "v10_api_key": case(
+            "Massive sin clave", **{"apiKey": None}
+        ),
+        "v11_base_url": case(
+            "baseUrl vacío", baseUrl="///"
+        ),
+    }
+
+
 def build_fixture() -> dict[str, Any]:
     return {
         "metadata": {
@@ -906,7 +2137,9 @@ def build_fixture() -> dict[str, Any]:
             "method": (
                 "Referencia independiente en Python, explícita, sin importar "
                 "el código TypeScript. Valida, convierte ms->s, ordena, detecta "
-                "huecos sin rellenar y reporta descartes. BingX nunca expone vw."
+                "huecos sin rellenar y reporta descartes. BingX nunca expone vw. "
+                "El cargador se simula con respuestas HTTP grabadas y un reloj "
+                "determinista en segundos UTC."
             ),
             "tolerance": (
                 "Exacta para tiempos, precios, volúmenes, contadores y banderas; "
@@ -925,6 +2158,11 @@ def build_fixture() -> dict[str, Any]:
         "normalizers": {
             "massive": {"cases": build_massive_cases()},
             "bingx": {"cases": build_bingx_cases()},
+        },
+        "loaders": {
+            "massive": {"cases": build_massive_loader_cases()},
+            "bingx": {"cases": build_bingx_loader_cases()},
+            "validation": {"cases": build_loader_validation_cases()},
         },
     }
 
@@ -946,6 +2184,8 @@ def main() -> None:
     print(f"Fixture generado exitosamente en: {FIXTURE_PATH}")
     for provider, section in fixture["normalizers"].items():
         print(f"  - {provider}: {len(section['cases'])} casos")
+    for provider, section in fixture["loaders"].items():
+        print(f"  - loaders/{provider}: {len(section['cases'])} casos")
     print(f"Tamaño: {FIXTURE_PATH.stat().st_size} bytes")
 
 
