@@ -306,6 +306,54 @@ describe('loadBars: seguridad', () => {
     expect(reportText).not.toContain(`${authToken}${apiKey}`);
     expect(result.report.providerError?.message).toContain('<redacted>');
   });
+
+  it('no sigue un next_url de otro host ni le envía la clave', async () => {
+    const apiKey = 'secret-value';
+    const requests: string[] = [];
+    const fetchFn: FetchFn = (url: string): Promise<FetchResponse> => {
+      requests.push(url);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: JSON.stringify({
+          status: 'OK',
+          results: [
+            { t: 1_793_955_660_000, o: 100, h: 101, l: 99, c: 100, v: 1, vw: 100 },
+            { t: 1_793_955_600_000, o: 99, h: 100, l: 98, c: 99, v: 1, vw: 99 },
+          ],
+          next_url: 'https://evil.example/steal?cursor=abc123',
+        }),
+      });
+    };
+
+    const result = await loadBars({
+      provider: 'massive',
+      symbol: 'SPY',
+      timeframe: '1m',
+      visibleBars: 2,
+      warmupBars: 2,
+      now: 1_794_099_600,
+      maxPages: 5,
+      apiKey,
+      fetchFn,
+    });
+
+    expect(requests).toHaveLength(1);
+    const firstRequest = requests[0];
+    if (firstRequest === undefined) {
+      throw new Error('missing request');
+    }
+    const firstUrl = new URL(firstRequest);
+    expect(firstUrl.host).toBe('api.polygon.io');
+    expect(firstUrl.searchParams.get('apiKey')).toBe(apiKey);
+
+    expect(result.report.stoppedReason).toBe('malformedResponse');
+    expect(result.report.malformedResponse).toBe(true);
+    expect(result.report.providerError).toBeNull();
+    expect(result.bars).toHaveLength(2);
+    expect(result.report.pages).toBe(1);
+    expect(JSON.stringify(result)).not.toContain('evil.example');
+  });
 });
 
 describe('loadBars: integración con muestras reales', () => {

@@ -1105,6 +1105,55 @@ def with_api_key(url: str, api_key: str, base_url: str) -> str:
     )
 
 
+def default_port(scheme: str) -> int | None:
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
+
+
+def allowed_next_url(url: str, base_url: str) -> str:
+    """Devuelve la URL absoluta de next_url o lanza ValueError.
+
+    Regla escrita a partir del requisito, de forma independiente: un
+    next_url solo se sigue si pertenece al MISMO origen que base_url
+    (esquema, host y puerto), con esquema http/https y sin credenciales
+    en la propia URL. La clave nunca viaja a un host distinto del
+    configurado.
+    """
+    absolute = urllib.parse.urljoin(base_url, url)
+    parts = urllib.parse.urlsplit(absolute)
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported next_url protocol: {scheme}")
+    if parts.username or parts.password:
+        raise ValueError("next_url must not include credentials")
+    base = urllib.parse.urlsplit(base_url)
+    base_scheme = base.scheme.lower()
+    if scheme != base_scheme:
+        raise ValueError("next_url scheme mismatch")
+    host = (parts.hostname or "").lower()
+    base_host = (base.hostname or "").lower()
+    if host != base_host:
+        raise ValueError("next_url host mismatch")
+    port = parts.port if parts.port is not None else default_port(scheme)
+    base_port = (
+        base.port if base.port is not None else default_port(base_scheme)
+    )
+    if port != base_port:
+        raise ValueError("next_url port mismatch")
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            parts.query,
+            parts.fragment,
+        )
+    )
+
+
 def expected_load_request(
     url: str, provider: str, api_key: str
 ) -> dict[str, Any]:
@@ -1312,7 +1361,11 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
                 stopped = "maxPages"
                 break
             try:
-                url = with_api_key(next_url, api_key, base_url)
+                url = with_api_key(
+                    allowed_next_url(next_url, base_url),
+                    api_key,
+                    base_url,
+                )
             except ValueError:
                 malformed = True
                 stopped = "malformedResponse"
@@ -1837,6 +1890,99 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
                             100.0,
                         ),
                     ],
+                }
+            ),
+        ],
+    )
+
+    def two_rows_page() -> dict[str, Any]:
+        return {
+            "status": "OK",
+            "results": [
+                massive_row(
+                    base + 60, 100.0, 101.0, 99.0, 100.0, 1.0, 100.0,
+                ),
+                massive_row(
+                    base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                ),
+            ],
+        }
+
+    cases["lm14_next_url_external_host"] = loader_case(
+        "Massive rechaza un next_url de otro host y no le envía la clave",
+        options(visibleBars=2, warmupBars=2),
+        [
+            json_response(
+                {
+                    **two_rows_page(),
+                    "next_url": (
+                        "https://evil.example/v2/steal"
+                        "?cursor=abc123&api_key=old-key"
+                    ),
+                }
+            ),
+        ],
+    )
+
+    cases["lm15_next_url_relative_same_origin"] = loader_case(
+        "Massive acepta un next_url relativo del mismo origen",
+        options(),
+        [
+            json_response(
+                {
+                    **two_rows_page(),
+                    "next_url": (
+                        "/v2/aggs/ticker/SPY/range/1/minute/"
+                        "1793955600000/1794048000000"
+                        "?adjusted=true&sort=desc&limit=50000"
+                        "&cursor=abc123&api_key=old-key"
+                    ),
+                }
+            ),
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                        massive_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                            102.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm16_next_url_scheme_downgrade"] = loader_case(
+        "Massive rechaza un next_url http cuando la base es https",
+        options(visibleBars=2, warmupBars=2),
+        [
+            json_response(
+                {
+                    **two_rows_page(),
+                    "next_url": (
+                        "http://api.polygon.io/v2/steal?cursor=abc123"
+                    ),
+                }
+            ),
+        ],
+    )
+
+    cases["lm17_next_url_with_credentials"] = loader_case(
+        "Massive rechaza un next_url con credenciales en la URL",
+        options(visibleBars=2, warmupBars=2),
+        [
+            json_response(
+                {
+                    **two_rows_page(),
+                    "next_url": (
+                        "https://user:pass@api.polygon.io/v2/steal"
+                        "?cursor=abc123"
+                    ),
                 }
             ),
         ],
