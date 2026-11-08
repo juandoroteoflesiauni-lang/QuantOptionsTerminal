@@ -468,6 +468,13 @@ class MassiveClient:
         *,
         page_index: int,
     ) -> tuple[dict[str, Any], HttpResponse]:
+        actual_path = path
+        query_params = dict(params)
+        if "from" in query_params and "to" in query_params:
+            from_val = query_params.pop("from")
+            to_val = query_params.pop("to")
+            actual_path = f"{path.rstrip('/')}/{from_val}/{to_val}"
+
         attempts = (
             list(self._initial_attempts)
             if self._base is None
@@ -477,9 +484,9 @@ class MassiveClient:
         last_entry: dict[str, Any] | None = None
 
         for base, auth_param in attempts:
-            clean_url = f"{base}{path}"
-            if params:
-                clean_url += "?" + urllib.parse.urlencode(params)
+            clean_url = f"{base}{actual_path}"
+            if query_params:
+                clean_url += "?" + urllib.parse.urlencode(query_params)
             self._auth_param = auth_param
             authorized = self._authorized_url(clean_url)
             say(f"GET {sanitize_url(clean_url)}")
@@ -1346,6 +1353,12 @@ def main() -> int:
     massive_key = (
         os.environ.get("MASSIVE_API_KEY", "").strip()
         or env.get("MASSIVE_API_KEY", "").strip()
+        or os.environ.get("MASSIVE_KEY_OPTIONS", "").strip()
+        or env.get("MASSIVE_KEY_OPTIONS", "").strip()
+        or os.environ.get("MASSIVE_OPTIONS", "").strip()
+        or env.get("MASSIVE_OPTIONS", "").strip()
+        or os.environ.get("MASSIVE_KEY", "").strip()
+        or env.get("MASSIVE_KEY", "").strip()
     )
     SCRUBBER = SecretScrubber(massive_key)
 
