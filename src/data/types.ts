@@ -187,6 +187,18 @@ export interface LoaderFields {
    * alcanzar el warmup por defecto de 1000.
    */
   readonly warmupSatisfied: boolean;
+  /**
+   * true si el buffer contiene la primera barra de la sesión que contiene
+   * la primera barra visible: en Massive, la barra del mismo día ET que
+   * abre a las 09:30 ET (la primera que acumula el VWAP de sesión); en
+   * BingX, la barra que abre a las 00:00 UTC del día UTC. false si el
+   * buffer está vacío o sin tramo visible, si esa barra no está en el
+   * buffer (el buffer empieza a mitad de sesión o hay un hueco) o si la
+   * temporalidad no tiene barra en el inicio de sesión (1h/4h/1D en
+   * acciones, 1D en cripto): en esos casos el VWAP de sesión es parcial
+   * (límite del SPEC punto 8).
+   */
+  readonly sessionStartCovered: boolean;
   /** Número de peticiones HTTP realizadas. */
   readonly pages: number;
   /** Apertura de la primera barra del buffer ya recortado; null si está vacío. */

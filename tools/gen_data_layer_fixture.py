@@ -33,6 +33,10 @@ Método:
   - El reporte incluye warmupSatisfied: true solo si el buffer alcanzó
     requestedBars barras. BingX 1D está limitado a ~380 días por carga
     (code 100204) y no puede alcanzar el warmup por defecto de 1000.
+  - El reporte incluye sessionStartCovered: true solo si el buffer contiene
+    la primera barra de la sesión de la primera barra visible (09:30 ET en
+    acciones, 00:00 UTC en cripto); false anticipa un VWAP de sesión
+    parcial (límite del SPEC punto 8).
   - `now` del cargador debe ser un entero positivo dentro de
     MAX_TIME_SECONDS; fuera de rango es un error de opciones.
 
@@ -1235,6 +1239,43 @@ def is_rth(seconds: int) -> bool:
     return 1 <= weekday <= 5 and 9 * 60 + 30 <= minutes < 16 * 60
 
 
+def session_start_covered(
+    bars: list[dict[str, Any]], visible_start: int, provider: str
+) -> bool:
+    """true si el buffer contiene la primera barra de la sesión visible.
+
+    Massive: la barra del mismo día ET que abre a las 09:30 ET. BingX: la
+    barra que abre a las 00:00 UTC del día UTC. Sin tramo visible, sin esa
+    barra, o con una temporalidad sin barra en el inicio de sesión (1h/4h/
+    1D en acciones, 1D en cripto) el flag es false: VWAP de sesión parcial.
+    """
+    if visible_start >= len(bars):
+        return False
+    first_visible = bars[visible_start]["time"]
+
+    if provider == "massive":
+        visible_parts = datetime.fromtimestamp(first_visible, tz=NEW_YORK)
+        date_key = visible_parts.date().isoformat()
+        for bar in bars:
+            parts = datetime.fromtimestamp(bar["time"], tz=NEW_YORK)
+            if (
+                parts.date().isoformat() == date_key
+                and parts.hour * 60 + parts.minute == 9 * 60 + 30
+                and is_rth(bar["time"])
+            ):
+                return True
+        return False
+
+    visible_day = first_visible // 86400
+    for bar in bars:
+        if (
+            bar["time"] % 86400 == 0
+            and bar["time"] // 86400 == visible_day
+        ):
+            return True
+    return False
+
+
 def massive_lookback_days(
     requested_bars: int,
     timeframe: str,
@@ -1779,6 +1820,9 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
                 forming is not None and len(closed) < len(bars)
             ),
             "warmupSatisfied": normalized_bars >= requested_bars,
+            "sessionStartCovered": session_start_covered(
+                trimmed, visible_start, provider
+            ),
             "pages": pages,
             "firstTime": trimmed[0]["time"] if trimmed else None,
             "lastTime": trimmed[-1]["time"] if trimmed else None,
@@ -2476,6 +2520,48 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         ],
     )
 
+    lm24_rows = [
+        massive_row(
+            et_seconds(2026, 11, 6, 11, 59) - index * 60,
+            104.0 + (index % 5) * 0.1,
+            105.0 + (index % 5) * 0.1,
+            103.0 + (index % 5) * 0.1,
+            104.0 + (index % 5) * 0.1,
+            1.0,
+            104.0 + (index % 5) * 0.1,
+        )
+        for index in range(150)
+    ]
+    lm24_rows += [
+        massive_row(et_seconds(2026, 11, 6, 9, 29), 99.9, 100.9, 98.9, 99.9, 1.0, 99.9),
+        massive_row(et_seconds(2026, 11, 6, 9, 28), 99.8, 100.8, 98.8, 99.8, 1.0, 99.8),
+    ]
+
+    cases["lm24_session_start_covered"] = loader_case(
+        "Massive: el buffer devuelto contiene la barra de 09:30 ET de la sesión visible (sessionStartCovered=true)",
+        options(visibleBars=2, warmupBars=150, now=et_seconds(2026, 11, 6, 12, 0)),
+        [json_response({"status": "OK", "results": lm24_rows})],
+    )
+
+    cases["lm25_session_start_partial"] = loader_case(
+        "Massive: el buffer empieza a mitad de sesión (sin barra de 09:30 ET) y sessionStartCovered=false",
+        options(visibleBars=2, warmupBars=3, now=et_seconds(2026, 11, 6, 12, 0)),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(et_seconds(2026, 11, 6, 11, 59), 104.4, 105.4, 103.4, 104.4, 1.0, 104.4),
+                        massive_row(et_seconds(2026, 11, 6, 11, 58), 104.3, 105.3, 103.3, 104.3, 1.0, 104.3),
+                        massive_row(et_seconds(2026, 11, 6, 11, 57), 104.2, 105.2, 103.2, 104.2, 1.0, 104.2),
+                        massive_row(et_seconds(2026, 11, 6, 11, 56), 104.1, 105.1, 103.1, 104.1, 1.0, 104.1),
+                        massive_row(et_seconds(2026, 11, 6, 11, 55), 104.0, 105.0, 103.0, 104.0, 1.0, 104.0),
+                    ],
+                }
+            ),
+        ],
+    )
+
     return cases
 
 
@@ -2811,6 +2897,46 @@ def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
                 }
             ),
             json_response({"code": 0, "data": []}),
+        ],
+    )
+
+    cases["lb16_session_start_covered"] = loader_case(
+        "BingX: el buffer contiene la barra de 00:00 UTC de la sesión visible (sessionStartCovered=true)",
+        options(visibleBars=2, warmupBars=3, now=utc_seconds(2026, 11, 7, 0, 30)),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": utc_seconds(2026, 11, 7, 0, 30) * 1000,
+                    "data": [
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 2), 101.0, 102.0, 100.0, 101.0, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 1), 100.9, 101.9, 99.9, 100.9, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 0), 100.8, 101.8, 99.8, 100.8, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 6, 23, 59), 100.7, 101.7, 99.7, 100.7, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 6, 23, 58), 100.6, 101.6, 99.6, 100.6, 1.0),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lb17_session_start_partial"] = loader_case(
+        "BingX: el buffer empieza a mitad de sesión (sin barra de 00:00 UTC) y sessionStartCovered=false",
+        options(visibleBars=2, warmupBars=3, now=utc_seconds(2026, 11, 7, 0, 30)),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": utc_seconds(2026, 11, 7, 0, 30) * 1000,
+                    "data": [
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 5), 101.0, 102.0, 100.0, 101.0, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 4), 100.9, 101.9, 99.9, 100.9, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 3), 100.8, 101.8, 99.8, 100.8, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 2), 100.7, 101.7, 99.7, 100.7, 1.0),
+                        bingx_row(utc_seconds(2026, 11, 7, 0, 1), 100.6, 101.6, 99.6, 100.6, 1.0),
+                    ],
+                }
+            ),
         ],
     )
 

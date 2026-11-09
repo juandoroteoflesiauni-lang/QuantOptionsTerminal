@@ -11,6 +11,9 @@
  *    está dentro de RTH; el objetivo y el recorte se aplican sobre barras
  *    RTH y el lookback se escala a barras RTH por día. Los huecos se
  *    calculan sobre el buffer cerrado completo, antes del filtro.
+ *  - `sessionStartCovered` indica si el buffer contiene la primera barra de
+ *    la sesión de la primera barra visible (09:30 ET en acciones, 00:00 UTC
+ *    en cripto); false anticipa un VWAP de sesión parcial (SPEC punto 8).
  *
  * En el reporte, `gaps` se calcula sobre las barras cerradas ANTES del
  * recorte del buffer; `firstTime`/`lastTime` describen el buffer ya
@@ -24,7 +27,12 @@
 
 import { URL, URLSearchParams } from 'node:url';
 import type { Bar } from '../core/types.js';
-import { MAX_TIME_SECONDS, getMarketParts, isRth } from '../core/sessions.js';
+import {
+  MAX_TIME_SECONDS,
+  getMarketParts,
+  isRth,
+  RTH_START_MINUTES,
+} from '../core/sessions.js';
 import { alignDown } from './alignment.js';
 import { normalizeBingxKlines } from './normalizeBingx.js';
 import { normalizeMassiveAggs } from './normalizeMassive.js';
@@ -551,6 +559,11 @@ function finalizeMassive(
       result.report.formingBar !== null &&
       closedBars.length < result.bars.length,
     warmupSatisfied: normalizedBars >= options.requestedBars,
+    sessionStartCovered: sessionStartCovered(
+      bars,
+      visibleStart,
+      'massive',
+    ),
     pages,
     firstTime: bars[0]?.time ?? null,
     lastTime: bars[bars.length - 1]?.time ?? null,
@@ -591,6 +604,11 @@ function finalizeBingx(
       result.report.formingBar !== null &&
       closedBars.length < result.bars.length,
     warmupSatisfied: normalizedBars >= options.requestedBars,
+    sessionStartCovered: sessionStartCovered(
+      bars,
+      visibleStart,
+      'bingx',
+    ),
     pages,
     firstTime: bars[0]?.time ?? null,
     lastTime: bars[bars.length - 1]?.time ?? null,
@@ -598,6 +616,46 @@ function finalizeBingx(
   };
 
   return { bars, visibleStart, report };
+}
+
+/**
+ * Indica si el buffer contiene la primera barra de la sesión que contiene
+ * la primera barra visible.
+ *
+ * En Massive esa barra es la del mismo día ET que abre a las 09:30 ET (la
+ * primera que acumula el VWAP de sesión); en BingX, la que abre a las
+ * 00:00 UTC del día UTC. Si la temporalidad no tiene barra en el inicio de
+ * sesión (1h/4h/1D en acciones, 1D en cripto) el flag es false: el VWAP de
+ * sesión es parcial por construcción (SPEC punto 8).
+ */
+function sessionStartCovered(
+  bars: readonly Bar[],
+  visibleStart: number,
+  provider: DataProvider,
+): boolean {
+  const firstVisible = bars[visibleStart];
+  if (firstVisible === undefined) {
+    return false;
+  }
+
+  if (provider === 'massive') {
+    const visibleParts = getMarketParts(firstVisible.time, 'EQUITY');
+    return bars.some((bar) => {
+      const parts = getMarketParts(bar.time, 'EQUITY');
+      return (
+        parts.dateKey === visibleParts.dateKey &&
+        parts.minutesOfDay === RTH_START_MINUTES &&
+        isRth(bar.time)
+      );
+    });
+  }
+
+  const visibleDay = Math.floor(firstVisible.time / SECONDS_PER_DAY);
+  return bars.some(
+    (bar) =>
+      bar.time % SECONDS_PER_DAY === 0 &&
+      Math.floor(bar.time / SECONDS_PER_DAY) === visibleDay,
+  );
 }
 
 function excludeFormingBar(

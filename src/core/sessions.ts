@@ -31,7 +31,7 @@ export interface MarketParts {
 /** Umbral máximo admitido para un timestamp en segundos. */
 export const MAX_TIME_SECONDS = 1e11;
 
-const RTH_START_MINUTES = 9 * 60 + 30;
+export const RTH_START_MINUTES = 9 * 60 + 30;
 const RTH_END_MINUTES = 16 * 60;
 
 const FORMATTER_OPTIONS: Intl.DateTimeFormatOptions = {
