@@ -24,6 +24,7 @@ interface FixtureLoaderOptions {
   maxPages?: number;
   apiKey?: string;
   baseUrl?: string;
+  rthOnly?: boolean;
 }
 
 interface FixtureResponse {
@@ -137,6 +138,9 @@ function toLoadOptions(
     ...(fixtureOptions.baseUrl === undefined
       ? {}
       : { baseUrl: fixtureOptions.baseUrl }),
+    ...(fixtureOptions.rthOnly === undefined
+      ? {}
+      : { rthOnly: fixtureOptions.rthOnly }),
   };
 }
 

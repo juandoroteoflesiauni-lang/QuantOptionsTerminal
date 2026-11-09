@@ -25,6 +25,11 @@ Método:
     en la paginación; solo un closeTime entero en ms dentro de la duración
     de la barra participa en la formación (si no, fallback por intervalo);
     solo un timestamp del servidor en ms plausible fija `now`.
+  - Massive rthOnly: el buffer solo contiene barras con apertura dentro de
+    RTH (09:30-16:00 ET, lunes a viernes); el objetivo y el recorte se
+    aplican sobre barras RTH, el lookback se escala a barras RTH por día
+    y los huecos se calculan sobre el buffer cerrado completo, antes del
+    filtro. rthOnly con BingX o con 1D es un error de opciones.
   - `now` del cargador debe ser un entero positivo dentro de
     MAX_TIME_SECONDS; fuera de rango es un error de opciones.
 
@@ -1172,6 +1177,17 @@ MASSIVE_BARS_PER_DAY = {
     "1D": 1,
 }
 
+# Barras RTH por día (apertura dentro de 09:30-16:00 ET). Con rthOnly el
+# lookback se escala con esta tabla. Sin entrada para 1D: rthOnly con 1D
+# se rechaza en la validación porque ninguna barra diaria abre dentro de RTH.
+MASSIVE_RTH_BARS_PER_DAY = {
+    "1m": 390,
+    "5m": 78,
+    "15m": 26,
+    "1h": 6,
+    "4h": 1,
+}
+
 BINGX_LOAD_INTERVALS = {
     "1m": "1m",
     "5m": "5m",
@@ -1208,12 +1224,26 @@ def massive_align_down(time: int, timeframe: str) -> int:
     return time - (time % TIMEFRAME_SECONDS[timeframe])
 
 
-def massive_lookback_days(requested_bars: int, timeframe: str) -> int:
+def is_rth(seconds: int) -> bool:
+    """RTH del SPEC: 09:30 <= t < 16:00 ET, lunes a viernes."""
+    parts = datetime.fromtimestamp(seconds, tz=NEW_YORK)
+    minutes = parts.hour * 60 + parts.minute
+    weekday = parts.isoweekday()  # lunes = 1 ... domingo = 7
+    return 1 <= weekday <= 5 and 9 * 60 + 30 <= minutes < 16 * 60
+
+
+def massive_lookback_days(
+    requested_bars: int,
+    timeframe: str,
+    rth_only: bool = False,
+) -> int:
+    bars_per_day = (
+        MASSIVE_RTH_BARS_PER_DAY[timeframe]
+        if rth_only
+        else MASSIVE_BARS_PER_DAY[timeframe]
+    )
     return (
-        math.ceil(
-            (requested_bars / MASSIVE_BARS_PER_DAY[timeframe]) * (7 / 5)
-        )
-        + 10
+        math.ceil((requested_bars / bars_per_day) * (7 / 5)) + 10
     )
 
 
@@ -1223,9 +1253,14 @@ def shift_date_key(date_key: str, delta_days: int) -> str:
 
 
 def massive_load_window(
-    now: int, timeframe: str, requested_bars: int
+    now: int,
+    timeframe: str,
+    requested_bars: int,
+    rth_only: bool = False,
 ) -> dict[str, Any]:
-    lookback_days = massive_lookback_days(requested_bars, timeframe)
+    lookback_days = massive_lookback_days(
+        requested_bars, timeframe, rth_only
+    )
     if timeframe == "1D":
         to_date = et_date_key(now)
         return {
@@ -1486,6 +1521,7 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
             else BINGX_LOAD_BASE
         )
     base_url = base_url.rstrip("/")
+    rth_only = options.get("rthOnly", False)
     bar_seconds = TIMEFRAME_SECONDS[timeframe]
 
     responses = case["responses"]
@@ -1501,7 +1537,9 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     server_ts_max: int | None = None
 
     if provider == "massive":
-        window = massive_load_window(now, timeframe, requested_bars)
+        window = massive_load_window(
+            now, timeframe, requested_bars, rth_only
+        )
         url = massive_load_url(base_url, symbol, timeframe, window)
         url = with_api_key(url, api_key, base_url)
     else:
@@ -1587,7 +1625,12 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
             )
             probe = (bars, report)
             closed = closed_bars(bars, report["formingBar"])
-            if len(closed) >= requested_bars:
+            candidates = (
+                [bar for bar in closed if is_rth(bar["time"])]
+                if rth_only
+                else closed
+            )
+            if len(candidates) >= requested_bars:
                 stopped = "targetReached"
                 break
             if not page_rows:
@@ -1700,8 +1743,16 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     bars, report = probe
     forming = report["formingBar"]
     closed = closed_bars(bars, forming)
-    normalized_bars = len(closed)
-    trimmed = closed[-requested_bars:] if requested_bars > 0 else []
+    # Con rthOnly el objetivo y el recorte se aplican sobre barras RTH;
+    # los huecos se calculan sobre el buffer cerrado completo, antes del
+    # filtro.
+    candidates = (
+        [bar for bar in closed if is_rth(bar["time"])]
+        if (rth_only and provider == "massive")
+        else closed
+    )
+    normalized_bars = len(candidates)
+    trimmed = candidates[-requested_bars:] if requested_bars > 0 else []
     trimmed_bars = normalized_bars - len(trimmed)
     visible_start = max(0, len(trimmed) - visible_bars)
     gaps, gap_detection = detect_gaps(closed, bar_seconds, provider)
@@ -1821,6 +1872,13 @@ def validate_load_options(options: dict[str, Any]) -> str | None:
         or max_pages < 1
     ):
         return f"maxPages must be a positive integer (got {max_pages})"
+    rth_only = options.get("rthOnly", False)
+    if not isinstance(rth_only, bool):
+        return f"rthOnly must be a boolean (got {rth_only})"
+    if rth_only and provider != "massive":
+        return "rthOnly is only supported for massive"
+    if rth_only and timeframe == "1D":
+        return "rthOnly does not support the 1D timeframe"
     api_key = options.get("apiKey")
     if provider == "massive" and (
         not isinstance(api_key, str) or api_key == ""
@@ -2300,6 +2358,120 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         ],
     )
 
+    saturday = et_seconds(2026, 11, 7, 20, 0)
+
+    def rth_case_options(**overrides: Any) -> dict[str, Any]:
+        values = options(now=saturday, **overrides)
+        values["rthOnly"] = True
+        return values
+
+    cases["lm20_rth_only_filter"] = loader_case(
+        "Massive rthOnly: el buffer solo contiene barras con apertura dentro de RTH y el lookback se escala",
+        rth_case_options(visibleBars=2, warmupBars=3),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(et_seconds(2026, 11, 6, 15, 59), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 15, 58), 104.9, 105.9, 103.9, 104.9, 1.0, 104.9),
+                        massive_row(et_seconds(2026, 11, 6, 15, 57), 104.8, 105.8, 103.8, 104.8, 1.0, 104.8),
+                        massive_row(et_seconds(2026, 11, 6, 15, 56), 104.7, 105.7, 103.7, 104.7, 1.0, 104.7),
+                        massive_row(et_seconds(2026, 11, 6, 15, 55), 104.6, 105.6, 103.6, 104.6, 1.0, 104.6),
+                        massive_row(et_seconds(2026, 11, 6, 16, 1), 105.1, 106.1, 104.1, 105.1, 1.0, 105.1),
+                        massive_row(et_seconds(2026, 11, 6, 16, 0), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 9, 29), 99.9, 100.9, 98.9, 99.9, 1.0, 99.9),
+                        massive_row(et_seconds(2026, 11, 6, 9, 28), 99.8, 100.8, 98.8, 99.8, 1.0, 99.8),
+                        massive_row(et_seconds(2026, 11, 6, 4, 0), 99.0, 100.0, 98.0, 99.0, 1.0, 99.0),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm21_rth_only_halt_gap"] = loader_case(
+        "Massive rthOnly: el hueco de una parada dentro de RTH se reporta sobre el buffer cerrado completo",
+        rth_case_options(visibleBars=2, warmupBars=4),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(et_seconds(2026, 11, 6, 15, 59), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 15, 58), 104.9, 105.9, 103.9, 104.9, 1.0, 104.9),
+                        massive_row(et_seconds(2026, 11, 6, 15, 57), 104.8, 105.8, 103.8, 104.8, 1.0, 104.8),
+                        massive_row(et_seconds(2026, 11, 6, 15, 56), 104.7, 105.7, 103.7, 104.7, 1.0, 104.7),
+                        massive_row(et_seconds(2026, 11, 6, 15, 55), 104.6, 105.6, 103.6, 104.6, 1.0, 104.6),
+                        massive_row(et_seconds(2026, 11, 6, 15, 54), 104.5, 105.5, 103.5, 104.5, 1.0, 104.5),
+                        massive_row(et_seconds(2026, 11, 6, 15, 53), 104.4, 105.4, 103.4, 104.4, 1.0, 104.4),
+                        massive_row(et_seconds(2026, 11, 6, 15, 46), 103.9, 104.9, 102.9, 103.9, 1.0, 103.9),
+                        massive_row(et_seconds(2026, 11, 6, 15, 45), 103.8, 104.8, 102.8, 103.8, 1.0, 103.8),
+                        massive_row(et_seconds(2026, 11, 6, 15, 44), 103.7, 104.7, 102.7, 103.7, 1.0, 103.7),
+                        massive_row(et_seconds(2026, 11, 6, 15, 43), 103.6, 104.6, 102.6, 103.6, 1.0, 103.6),
+                        massive_row(et_seconds(2026, 11, 6, 15, 42), 103.5, 104.5, 102.5, 103.5, 1.0, 103.5),
+                        massive_row(et_seconds(2026, 11, 6, 15, 41), 103.4, 104.4, 102.4, 103.4, 1.0, 103.4),
+                        massive_row(et_seconds(2026, 11, 6, 15, 40), 103.3, 104.3, 102.3, 103.3, 1.0, 103.3),
+                        massive_row(et_seconds(2026, 11, 6, 15, 39), 103.2, 104.2, 102.2, 103.2, 1.0, 103.2),
+                        massive_row(et_seconds(2026, 11, 6, 15, 38), 103.1, 104.1, 102.1, 103.1, 1.0, 103.1),
+                        massive_row(et_seconds(2026, 11, 6, 15, 37), 103.0, 104.0, 102.0, 103.0, 1.0, 103.0),
+                        massive_row(et_seconds(2026, 11, 6, 15, 36), 102.9, 103.9, 101.9, 102.9, 1.0, 102.9),
+                        massive_row(et_seconds(2026, 11, 6, 15, 35), 102.8, 103.8, 101.8, 102.8, 1.0, 102.8),
+                        massive_row(et_seconds(2026, 11, 6, 15, 34), 102.7, 103.7, 101.7, 102.7, 1.0, 102.7),
+                        massive_row(et_seconds(2026, 11, 6, 15, 33), 102.6, 103.6, 101.6, 102.6, 1.0, 102.6),
+                        massive_row(et_seconds(2026, 11, 6, 15, 32), 102.5, 103.5, 101.5, 102.5, 1.0, 102.5),
+                        massive_row(et_seconds(2026, 11, 6, 15, 31), 102.4, 103.4, 101.4, 102.4, 1.0, 102.4),
+                        massive_row(et_seconds(2026, 11, 6, 15, 30), 102.3, 103.3, 101.3, 102.3, 1.0, 102.3),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm22_rth_only_insufficient"] = loader_case(
+        "Massive rthOnly: sin barras RTH suficientes el reporte lo muestra (noMorePages con normalizedBars menor)",
+        rth_case_options(visibleBars=2, warmupBars=4),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(et_seconds(2026, 11, 6, 15, 59), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 15, 58), 104.9, 105.9, 103.9, 104.9, 1.0, 104.9),
+                        massive_row(et_seconds(2026, 11, 6, 15, 57), 104.8, 105.8, 103.8, 104.8, 1.0, 104.8),
+                        massive_row(et_seconds(2026, 11, 6, 16, 1), 105.1, 106.1, 104.1, 105.1, 1.0, 105.1),
+                        massive_row(et_seconds(2026, 11, 6, 16, 0), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 9, 29), 99.9, 100.9, 98.9, 99.9, 1.0, 99.9),
+                        massive_row(et_seconds(2026, 11, 6, 9, 28), 99.8, 100.8, 98.8, 99.8, 1.0, 99.8),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lm23_rth_only_lookback"] = loader_case(
+        "Massive rthOnly: el lookback se escala a barras RTH por día (12 días RTH vs 11 con la tabla normal)",
+        rth_case_options(visibleBars=10, warmupBars=500),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(et_seconds(2026, 11, 6, 15, 59), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 15, 58), 104.9, 105.9, 103.9, 104.9, 1.0, 104.9),
+                        massive_row(et_seconds(2026, 11, 6, 15, 57), 104.8, 105.8, 103.8, 104.8, 1.0, 104.8),
+                        massive_row(et_seconds(2026, 11, 6, 15, 56), 104.7, 105.7, 103.7, 104.7, 1.0, 104.7),
+                        massive_row(et_seconds(2026, 11, 6, 15, 55), 104.6, 105.6, 103.6, 104.6, 1.0, 104.6),
+                        massive_row(et_seconds(2026, 11, 6, 16, 1), 105.1, 106.1, 104.1, 105.1, 1.0, 105.1),
+                        massive_row(et_seconds(2026, 11, 6, 16, 0), 105.0, 106.0, 104.0, 105.0, 1.0, 105.0),
+                        massive_row(et_seconds(2026, 11, 6, 9, 29), 99.9, 100.9, 98.9, 99.9, 1.0, 99.9),
+                        massive_row(et_seconds(2026, 11, 6, 9, 28), 99.8, 100.8, 98.8, 99.8, 1.0, 99.8),
+                        massive_row(et_seconds(2026, 11, 6, 4, 0), 99.0, 100.0, 98.0, 99.0, 1.0, 99.0),
+                    ],
+                }
+            ),
+        ],
+    )
+
     return cases
 
 
@@ -2671,6 +2843,15 @@ def build_loader_validation_cases() -> dict[str, dict[str, Any]]:
         ),
         "v12_now_range": case(
             "now fuera del rango admitido", now=10**15
+        ),
+        "v13_rth_only_bingx": case(
+            "rthOnly con BingX", provider="bingx", rthOnly=True
+        ),
+        "v14_rth_only_1d": case(
+            "rthOnly con 1D", timeframe="1D", rthOnly=True
+        ),
+        "v15_rth_only_type": case(
+            "rthOnly no booleano", rthOnly="yes"
         ),
     }
 

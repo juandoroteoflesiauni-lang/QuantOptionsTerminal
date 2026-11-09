@@ -7,6 +7,10 @@
  *  - Se excluye la barra en formación cuando el normalizador puede distinguirla.
  *  - Se conservan las últimas `requestedBars` barras cerradas.
  *  - `visibleStart = max(0, bars.length - visibleBars)`.
+ *  - `rthOnly` (solo Massive): el buffer solo contiene barras cuya apertura
+ *    está dentro de RTH; el objetivo y el recorte se aplican sobre barras
+ *    RTH y el lookback se escala a barras RTH por día. Los huecos se
+ *    calculan sobre el buffer cerrado completo, antes del filtro.
  *
  * En el reporte, `gaps` se calcula sobre las barras cerradas ANTES del
  * recorte del buffer; `firstTime`/`lastTime` describen el buffer ya
@@ -20,7 +24,7 @@
 
 import { URL, URLSearchParams } from 'node:url';
 import type { Bar } from '../core/types.js';
-import { MAX_TIME_SECONDS, getMarketParts } from '../core/sessions.js';
+import { MAX_TIME_SECONDS, getMarketParts, isRth } from '../core/sessions.js';
 import { alignDown } from './alignment.js';
 import { normalizeBingxKlines } from './normalizeBingx.js';
 import { normalizeMassiveAggs } from './normalizeMassive.js';
@@ -76,6 +80,22 @@ const MASSIVE_BARS_PER_DAY: Readonly<Record<Timeframe, number>> = Object.freeze(
   '1D': 1,
 });
 
+/**
+ * Barras RTH por día (apertura dentro de 09:30-16:00 ET). Con `rthOnly` el
+ * lookback se escala con esta tabla para que el objetivo de barras RTH sea
+ * alcanzable. Sin entrada para 1D: `rthOnly` con 1D se rechaza en
+ * `resolveOptions` porque ninguna barra diaria abre dentro de RTH.
+ */
+const MASSIVE_RTH_BARS_PER_DAY: Readonly<
+  Record<Exclude<Timeframe, '1D'>, number>
+> = Object.freeze({
+  '1m': 390,
+  '5m': 78,
+  '15m': 26,
+  '1h': 6,
+  '4h': 1,
+});
+
 const BINGX_INTERVAL: Readonly<Record<Timeframe, string>> = Object.freeze({
   '1m': '1m',
   '5m': '5m',
@@ -117,6 +137,7 @@ interface ResolvedLoadOptions {
   readonly maxPages: number;
   readonly apiKey: string;
   readonly baseUrl: string;
+  readonly rthOnly: boolean;
 }
 
 interface MassiveRequestWindow {
@@ -206,6 +227,17 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
     );
   }
 
+  const rthOnly = options.rthOnly ?? false;
+  if (typeof rthOnly !== 'boolean') {
+    throw new Error(`rthOnly must be a boolean (got ${String(rthOnly)})`);
+  }
+  if (rthOnly && provider !== 'massive') {
+    throw new Error('rthOnly is only supported for massive');
+  }
+  if (rthOnly && timeframe === '1D') {
+    throw new Error('rthOnly does not support the 1D timeframe');
+  }
+
   if (
     provider === 'massive' &&
     (typeof options.apiKey !== 'string' || options.apiKey === '')
@@ -233,6 +265,7 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
     maxPages,
     apiKey: options.apiKey ?? '',
     baseUrl,
+    rthOnly,
   };
 }
 
@@ -241,7 +274,12 @@ async function loadMassive(
 ): Promise<LoadBarsResult> {
   const barSeconds = timeframeSeconds(options.timeframe);
   const now = options.explicitNow ?? options.requestNow;
-  const window = massiveWindow(now, options.timeframe, options.requestedBars);
+  const window = massiveWindow(
+    now,
+    options.timeframe,
+    options.requestedBars,
+    options.rthOnly,
+  );
   let url = withApiKey(
     massiveUrl(options.baseUrl, options.symbol, options.timeframe, window),
     options.apiKey,
@@ -290,10 +328,12 @@ async function loadMassive(
     );
     probe = result;
 
-    if (
-      countClosedBars(result.bars, result.report.formingBar) >=
-      options.requestedBars
-    ) {
+    const candidates = candidateBars(
+      result.bars,
+      result.report.formingBar,
+      options.rthOnly,
+    );
+    if (candidates.length >= options.requestedBars) {
       stoppedReason = 'targetReached';
       break;
     }
@@ -483,8 +523,11 @@ function finalizeMassive(
   malformed: boolean,
 ): LoadBarsResult {
   const closedBars = excludeFormingBar(result.bars, result.report.formingBar);
-  const normalizedBars = closedBars.length;
-  const bars = trimToBuffer(closedBars, options.requestedBars);
+  const candidates = options.rthOnly
+    ? closedBars.filter((bar) => isRth(bar.time))
+    : closedBars;
+  const normalizedBars = candidates.length;
+  const bars = trimToBuffer(candidates, options.requestedBars);
   const trimmedBars = normalizedBars - bars.length;
   const visibleStart = Math.max(0, bars.length - options.visibleBars);
   const { gaps, gapDetection } = detectGaps(closedBars, barSeconds, 'massive');
@@ -559,6 +602,19 @@ function excludeFormingBar(
     return bars;
   }
   return bars.filter((bar) => bar.time !== formingBar.time);
+}
+
+/**
+ * Barras cerradas candidatas a poblar el buffer: sin la barra en formación
+ * y, con `rthOnly`, solo las que abren dentro de RTH.
+ */
+function candidateBars(
+  bars: readonly Bar[],
+  formingBar: FormingBarInfo | null,
+  rthOnly: boolean,
+): readonly Bar[] {
+  const closed = excludeFormingBar(bars, formingBar);
+  return rthOnly ? closed.filter((bar) => isRth(bar.time)) : closed;
 }
 
 function trimToBuffer(
@@ -767,8 +823,13 @@ function massiveWindow(
   now: number,
   timeframe: Timeframe,
   requestedBars: number,
+  rthOnly: boolean,
 ): MassiveRequestWindow {
-  const lookbackDays = massiveLookbackDays(requestedBars, timeframe);
+  const lookbackDays = massiveLookbackDays(
+    requestedBars,
+    timeframe,
+    rthOnly,
+  );
 
   if (timeframe === '1D') {
     const to = getMarketParts(now, 'EQUITY').dateKey;
@@ -786,11 +847,13 @@ function massiveWindow(
 function massiveLookbackDays(
   requestedBars: number,
   timeframe: Timeframe,
+  rthOnly: boolean,
 ): number {
+  const barsPerDay = rthOnly
+    ? MASSIVE_RTH_BARS_PER_DAY[timeframe as Exclude<Timeframe, '1D'>]
+    : MASSIVE_BARS_PER_DAY[timeframe];
   return (
-    Math.ceil(
-      (requestedBars / MASSIVE_BARS_PER_DAY[timeframe]) * (7 / 5),
-    ) + 10
+    Math.ceil((requestedBars / barsPerDay) * (7 / 5)) + 10
   );
 }
 

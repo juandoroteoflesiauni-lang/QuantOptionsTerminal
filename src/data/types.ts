@@ -39,9 +39,10 @@ export type DiscardCounts = Readonly<Record<DiscardCause, number>>;
 /**
  * Hueco detectado entre dos barras consecutivas. No se rellena nunca.
  *
- * Se calcula sobre las barras cerradas del resultado normalizado ANTES de
- * que el cargador recorte el buffer, así que `previousTime` y `nextTime`
- * pueden referenciar barras fuera del buffer devuelto.
+ * Se calcula sobre las barras cerradas del resultado normalizado ANTES del
+ * filtro RTH (si `rthOnly`) y ANTES de que el cargador recorte el buffer,
+ * así que `previousTime` y `nextTime` pueden referenciar barras fuera del
+ * buffer devuelto.
  */
 export interface BarGap {
   readonly previousTime: number;
@@ -158,8 +159,9 @@ export type StopReason =
  *
  * Los campos de recorte describen el buffer devuelto; `gaps` y
  * `gapDetection` (heredados del normalizador) se calcularon sobre las
- * barras cerradas ANTES del recorte, así que pueden referenciar barras
- * fuera de `bars`, y `firstTime`/`lastTime` no acotan su rango.
+ * barras cerradas ANTES del filtro RTH (si `rthOnly`) y ANTES del recorte,
+ * así que pueden referenciar barras fuera de `bars`, y
+ * `firstTime`/`lastTime` no acotan su rango.
  */
 export interface LoaderFields {
   /** visibleBars + warmupBars. */
@@ -167,9 +169,10 @@ export interface LoaderFields {
   readonly visibleBars: number;
   readonly warmupBars: number;
   /**
-   * Barras cerradas tras excluir la barra en formación, antes de recortar.
-   * Difiere de `accepted` del normalizador justo en esa barra: con 6 filas
-   * aceptadas y 1 en formación, `normalizedBars` es 5.
+   * Barras cerradas tras excluir la barra en formación (y filtrar RTH si
+   * `rthOnly`), antes de recortar. Difiere de `accepted` del normalizador
+   * justo en esa barra: con 6 filas aceptadas y 1 en formación,
+   * `normalizedBars` es 5.
    */
   readonly normalizedBars: number;
   /** Barras cerradas eliminadas por quedar fuera del buffer solicitado. */
@@ -229,4 +232,15 @@ export interface LoadBarsOptions {
   readonly apiKey?: string;
   /** Origen alternativo (proxy o host distinto). */
   readonly baseUrl?: string;
+  /**
+   * Solo Massive. Si es true, el buffer devuelto solo contiene barras
+   * cerradas cuya APERTURA está dentro de RTH (09:30 <= t < 16:00 ET,
+   * lunes a viernes; SPEC puntos 3 y 9). El objetivo `requestedBars` y el
+   * recorte se aplican sobre las barras RTH, y el lookback se escala a
+   * barras RTH por día. `gaps` se sigue calculando sobre el buffer
+   * cerrado completo, antes del filtro. Con BingX lanza error (en cripto
+   * no hay RTH) y con 1D también (ninguna barra diaria abre dentro de
+   * RTH).
+   */
+  readonly rthOnly?: boolean;
 }
