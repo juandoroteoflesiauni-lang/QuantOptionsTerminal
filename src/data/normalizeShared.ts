@@ -1,6 +1,6 @@
 /** Helpers internos compartidos por los normalizadores de Massive y BingX. */
 
-import { sessionKey } from '../core/sessions.js';
+import { MAX_TIME_SECONDS, sessionKey } from '../core/sessions.js';
 import type { Bar } from '../core/types.js';
 import type {
   BarGap,
@@ -98,6 +98,10 @@ export function parseBingxCode(value: unknown): BingxCodeField {
  * Devuelve null si el valor no es un entero positivo en milisegundos exactos.
  * Un valor en segundos (por ejemplo 1793955600) NO se acepta: no es múltiplo
  * de 1000, y normalizarlo silenciosamente mezclaría unidades.
+ *
+ * También devuelve null si el resultado en segundos excede MAX_TIME_SECONDS
+ * (el umbral que admiten las sesiones): una fila con un timestamp imposible
+ * se reporta como invalidTime en lugar de llegar a sessionKey y lanzar.
  */
 export function parseMilliseconds(value: unknown): number | null {
   if (
@@ -110,7 +114,11 @@ export function parseMilliseconds(value: unknown): number | null {
   }
 
   const seconds = value / 1_000;
-  if (!Number.isSafeInteger(seconds) || seconds <= 0) {
+  if (
+    !Number.isSafeInteger(seconds) ||
+    seconds <= 0 ||
+    seconds > MAX_TIME_SECONDS
+  ) {
     return null;
   }
   return seconds;

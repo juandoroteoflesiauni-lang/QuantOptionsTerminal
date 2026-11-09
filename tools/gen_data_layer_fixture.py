@@ -18,6 +18,9 @@ Método:
   - BingX: el campo `code` numérico (o string numérico decimal) distinto de
     0 es un error del proveedor; un `code` presente que no es numérico hace
     la respuesta malformada. Un `code` ausente o null se tolera.
+  - Los timestamps cuyo resultado en segundos excede MAX_TIME_SECONDS
+    (1e11, el umbral que sessionKey admite) se descartan como invalidTime:
+    la fila imposible no llega a sessionKey y el cálculo no se lanza.
 
 Los valores no finitos se representan en el JSON de entrada como cadenas
 ("NaN", "Infinity") o null, porque JSON estricto no admite NaN/Infinity.
@@ -84,8 +87,19 @@ def empty_discard_counts() -> dict[str, int]:
     return {cause: 0 for cause in DISCARD_CAUSES}
 
 
+# Umbral máximo de timestamp en segundos: el mismo contrato que admite
+# sessionKey en las sesiones. Un resultado mayor se rechaza como invalidTime.
+MAX_TIME_SECONDS = 10**11
+
+
 def parse_milliseconds(value: Any) -> int | None:
-    """Devuelve segundos UTC enteros o None si el valor no es ms válidos."""
+    """Devuelve segundos UTC enteros o None si el valor no es ms válidos.
+
+    Un resultado en segundos por encima de MAX_TIME_SECONDS se rechaza:
+    sessionKey no admite timestamps tan lejanos y la fila se reporta como
+    invalidTime en lugar de lanzar. (MAX_TIME_SECONDS subsume el límite de
+    entero seguro de 2**53 - 1.)
+    """
     if not is_finite_number(value):
         return None
     if not float(value).is_integer():
@@ -94,7 +108,7 @@ def parse_milliseconds(value: Any) -> int | None:
     if milliseconds <= 0 or milliseconds % 1000 != 0:
         return None
     seconds = milliseconds // 1000
-    if seconds <= 0 or seconds > 2**53 - 1:
+    if seconds <= 0 or seconds > MAX_TIME_SECONDS:
         return None
     return seconds
 
@@ -788,6 +802,32 @@ def build_massive_cases() -> dict[str, dict[str, Any]]:
         after,
     )
 
+    cases["m12_out_of_range_time_gap"] = massive_case(
+        "t fuera de rango (1e15 ms) se descarta como invalidTime; el hueco se calcula con las barras válidas sin lanzar",
+        {
+            "status": "OK",
+            "results": [
+                massive_row(base, 100.0, 101.0, 99.0, 100.0, 1.0, 100.0),
+                massive_row(10**12, 101.0, 102.0, 100.0, 101.0, 1.0, 101.0),
+                massive_row(base + 120, 102.0, 103.0, 101.0, 102.0, 1.0, 102.0),
+            ],
+        },
+        60,
+        after,
+    )
+
+    cases["m13_time_upper_bound"] = massive_case(
+        "t en el límite exacto (1e14 ms = 1e11 s) se acepta",
+        {
+            "status": "OK",
+            "results": [
+                massive_row(10**11, 100.0, 101.0, 99.0, 100.0, 1.0, 100.0),
+                massive_row(10**11 + 60, 101.0, 102.0, 100.0, 101.0, 1.0, 101.0),
+            ],
+        },
+        60,
+    )
+
     return cases
 
 
@@ -972,6 +1012,33 @@ def build_bingx_cases() -> dict[str, dict[str, Any]]:
         },
         60,
         after,
+    )
+
+    cases["b14_out_of_range_time_gap"] = bingx_case(
+        "openTime fuera de rango (1e15 ms) se descarta como invalidTime; el hueco se calcula sin lanzar",
+        {
+            "code": 0,
+            "timestamp": after * 1000,
+            "data": [
+                bingx_row(base, 100.0, 101.0, 99.0, 100.0, 1.0),
+                bingx_row(10**12, 101.0, 102.0, 100.0, 101.0, 1.0),
+                bingx_row(base + 120, 102.0, 103.0, 101.0, 102.0, 1.0),
+            ],
+        },
+        60,
+        after,
+    )
+
+    cases["b15_time_upper_bound"] = bingx_case(
+        "openTime en el límite exacto (1e14 ms = 1e11 s) se acepta",
+        {
+            "code": 0,
+            "data": [
+                bingx_row(10**11, 100.0, 101.0, 99.0, 100.0, 1.0),
+                bingx_row(10**11 + 60, 101.0, 102.0, 100.0, 101.0, 1.0),
+            ],
+        },
+        60,
     )
 
     return cases
@@ -2069,6 +2136,23 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         ],
     )
 
+    cases["lm18_out_of_range_time"] = loader_case(
+        "Massive descarta t fuera de rango y calcula el hueco sin lanzar",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(base + 120, 102.0, 103.0, 101.0, 102.0, 1.0, 102.0),
+                        massive_row(10**12, 101.0, 102.0, 100.0, 101.0, 1.0, 101.0),
+                        massive_row(base, 100.0, 101.0, 99.0, 100.0, 1.0, 100.0),
+                    ],
+                }
+            ),
+        ],
+    )
+
     return cases
 
 
@@ -2330,6 +2414,24 @@ def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
         "BingX code presente no numérico: malformedResponse=true",
         options(visibleBars=1, warmupBars=1),
         [json_response({"code": "oops", "data": []})],
+    )
+
+    cases["lb13_out_of_range_time"] = loader_case(
+        "BingX descarta openTime fuera de rango y calcula el hueco sin lanzar",
+        options(visibleBars=1, warmupBars=1, now=base + 600),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": (base + 600) * 1000,
+                    "data": [
+                        bingx_row(base + 120, 102.0, 103.0, 101.0, 102.0, 1.0),
+                        bingx_row(10**12, 101.0, 102.0, 100.0, 101.0, 1.0),
+                        bingx_row(base, 100.0, 101.0, 99.0, 100.0, 1.0),
+                    ],
+                }
+            ),
+        ],
     )
 
     return cases
