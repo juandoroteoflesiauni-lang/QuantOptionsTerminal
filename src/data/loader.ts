@@ -108,6 +108,10 @@ const BINGX_INTERVAL: Readonly<Record<Timeframe, string>> = Object.freeze({
 /**
  * Rangos máximos conservadores observados en la muestra real. El proveedor
  * devuelve `code 100204` si se pide más historia en una sola consulta.
+ * La paginación de BingX fija `startTime` en `now - rango` y solo mueve
+ * `endTime`, así que el rango es también el techo de historia por carga:
+ * para 1D son ~380 días y el warmup por defecto (1000) no es alcanzable;
+ * `warmupSatisfied` lo reporta como false.
  */
 const BINGX_MAX_RANGE_DAYS: Readonly<Record<Timeframe, number>> = Object.freeze({
   '1m': 2,
@@ -546,6 +550,7 @@ function finalizeMassive(
     formingExcluded:
       result.report.formingBar !== null &&
       closedBars.length < result.bars.length,
+    warmupSatisfied: normalizedBars >= options.requestedBars,
     pages,
     firstTime: bars[0]?.time ?? null,
     lastTime: bars[bars.length - 1]?.time ?? null,
@@ -585,6 +590,7 @@ function finalizeBingx(
     formingExcluded:
       result.report.formingBar !== null &&
       closedBars.length < result.bars.length,
+    warmupSatisfied: normalizedBars >= options.requestedBars,
     pages,
     firstTime: bars[0]?.time ?? null,
     lastTime: bars[bars.length - 1]?.time ?? null,

@@ -30,6 +30,9 @@ Método:
     aplican sobre barras RTH, el lookback se escala a barras RTH por día
     y los huecos se calculan sobre el buffer cerrado completo, antes del
     filtro. rthOnly con BingX o con 1D es un error de opciones.
+  - El reporte incluye warmupSatisfied: true solo si el buffer alcanzó
+    requestedBars barras. BingX 1D está limitado a ~380 días por carga
+    (code 100204) y no puede alcanzar el warmup por defecto de 1000.
   - `now` del cargador debe ser un entero positivo dentro de
     MAX_TIME_SECONDS; fuera de rango es un error de opciones.
 
@@ -1775,6 +1778,7 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
             "formingExcluded": (
                 forming is not None and len(closed) < len(bars)
             ),
+            "warmupSatisfied": normalized_bars >= requested_bars,
             "pages": pages,
             "firstTime": trimmed[0]["time"] if trimmed else None,
             "lastTime": trimmed[-1]["time"] if trimmed else None,
@@ -2777,6 +2781,36 @@ def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
                     ],
                 }
             ),
+        ],
+    )
+
+    warmup_default = options(
+        timeframe="1D",
+        visibleBars=1,
+        now=utc_seconds(2026, 11, 8, 12, 0),
+    )
+    warmup_default.pop("warmupBars")
+    cases["lb15_warmup_insufficient_1d"] = loader_case(
+        "BingX 1D con warmup por defecto: el techo de ~380 días deja warmupSatisfied=false",
+        warmup_default,
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": utc_seconds(2026, 11, 8, 12, 0) * 1000,
+                    "data": [
+                        bingx_row(
+                            utc_seconds(2026, 11, 5, 16, 0),
+                            99.0, 100.0, 98.0, 99.0, 1.0,
+                        ),
+                        bingx_row(
+                            utc_seconds(2026, 11, 6, 16, 0),
+                            100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                    ],
+                }
+            ),
+            json_response({"code": 0, "data": []}),
         ],
     )
 

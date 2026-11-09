@@ -179,6 +179,14 @@ export interface LoaderFields {
   readonly trimmedBars: number;
   /** La barra en formación se excluyó del resultado. */
   readonly formingExcluded: boolean;
+  /**
+   * true si el buffer alcanzó `requestedBars` barras (cerradas, tras
+   * excluir la formación y filtrar RTH si `rthOnly`). false significa
+   * historia insuficiente para el calentamiento del SPEC punto 2: p. ej.
+   * BingX 1D está limitado a ~380 días por carga (code 100204) y no puede
+   * alcanzar el warmup por defecto de 1000.
+   */
+  readonly warmupSatisfied: boolean;
   /** Número de peticiones HTTP realizadas. */
   readonly pages: number;
   /** Apertura de la primera barra del buffer ya recortado; null si está vacío. */
