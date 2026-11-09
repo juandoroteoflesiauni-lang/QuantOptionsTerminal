@@ -4,13 +4,21 @@
  * Massive (acciones):
  *  - 1m/5m/15m/1h: el desfase ET es un número entero de horas, así que alinear
  *    contra la época UTC coincide con alinear contra la hora ET.
- *  - 4h: las barras abren a 00:00, 04:00, 08:00, 12:00, 16:00 y 20:00 ET,
- *    NO en múltiplos de 4h desde la época UTC.
+ *  - 4h: el proveedor ANCLA la rejilla al `from` de la petición y avanza en
+ *    UTC (evidencia del Paso C, `docs/step_c_report.md`). `alignDown` fija
+ *    ese ancla en un límite de pared ET del instante dado (00:00, 04:00,
+ *    ..., 20:00 ET), así que las barras empiezan en hora ET correcta EN EL
+ *    ANCLA. En una ventana que cruza un cambio de horario la rejilla sigue
+ *    avanzando en UTC y las horas ET de las barras se desplazan ±1h: una
+ *    sola petición no puede mantener una rejilla ET fija.
  *  - 1D: las barras abren a 00:00 ET, no a medianoche UTC.
  *
  * BingX (cripto):
  *  - 1m/5m/15m/1h/4h: múltiplos de la temporalidad desde la época UTC.
  *  - 1D: las barras abren a las 16:00 UTC (00:00 UTC+8), según la muestra real.
+ *
+ * `alignDown` nunca sube: si `time` ya es un límite devuelve el mismo
+ * instante, y aplicarla de nuevo sobre su resultado es idempotente.
  */
 
 import { getMarketParts } from '../core/sessions.js';

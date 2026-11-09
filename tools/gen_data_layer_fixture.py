@@ -2265,6 +2265,41 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         ],
     )
 
+    cases["lm19_4h_dst_window"] = loader_case(
+        "Massive 4h: el ancla del from usa el desfase ET del inicio de la ventana (cruza el cambio de noviembre)",
+        options(
+            timeframe="4h",
+            visibleBars=1,
+            warmupBars=2,
+            now=et_seconds(2026, 11, 7, 19, 30),
+        ),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            utc_seconds(2026, 11, 6, 8, 0),
+                            99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                        massive_row(
+                            utc_seconds(2026, 11, 6, 12, 0),
+                            100.0, 101.0, 99.0, 100.0, 1.0, 100.0,
+                        ),
+                        massive_row(
+                            utc_seconds(2026, 11, 6, 16, 0),
+                            101.0, 102.0, 100.0, 101.0, 1.0, 101.0,
+                        ),
+                        massive_row(
+                            utc_seconds(2026, 11, 6, 20, 0),
+                            102.0, 103.0, 101.0, 102.0, 1.0, 102.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
     return cases
 
 
@@ -2640,8 +2675,149 @@ def build_loader_validation_cases() -> dict[str, dict[str, Any]]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Referencia de alineación (auditoría A9)
+# ---------------------------------------------------------------------------
+
+
+def align_down(time: int, timeframe: str, provider: str) -> int:
+    """Baja `time` al inicio de la barra que lo contiene; nunca sube.
+
+    Massive: 1m/5m/15m/1h son múltiplos desde la época UTC (el desfase ET
+    es un número entero de horas); 4h fija el ancla en un límite de pared
+    ET del instante dado (00:00/04:00/.../20:00 ET); 1D abre a 00:00 ET.
+    BingX: múltiplos de la temporalidad desde la época UTC; 1D abre a las
+    16:00 UTC (00:00 UTC+8).
+
+    El ancla 4h es correcta en hora ET EN EL INSTANTE dado; la rejilla que
+    el proveedor avanza en UTC desplaza las horas ET ±1h en una ventana
+    que cruza un cambio de horario.
+    """
+    bar_seconds = TIMEFRAME_SECONDS[timeframe]
+    if provider == "bingx":
+        if timeframe == "1D":
+            return (
+                (time - 16 * 3600) // 86400
+            ) * 86400 + 16 * 3600
+        return time - (time % bar_seconds)
+    return massive_align_down(time, timeframe)
+
+
+def build_alignment_cases() -> dict[str, dict[str, Any]]:
+    """Casos de alignDown con implementación independiente.
+
+    Incluye el ancla de 4h alrededor de los cambios de horario de 2026
+    (08-mar spring forward, 01-nov fall back) y las ramas de época de
+    Massive y BingX que el cargador no ejercita.
+    """
+    cases: dict[str, dict[str, Any]] = {}
+
+    def case(
+        name: str,
+        description: str,
+        provider: str,
+        timeframe: str,
+        time: int,
+    ) -> None:
+        cases[name] = {
+            "description": description,
+            "provider": provider,
+            "timeframe": timeframe,
+            "time": time,
+            "expected": align_down(time, timeframe, provider),
+        }
+
+    case(
+        "a1_4h_fall_back_anchor",
+        "20:30 EDT: el límite de pared es 16:00 EDT = 20:00Z",
+        "massive",
+        "4h",
+        et_seconds(2026, 10, 26, 20, 30),
+    )
+    case(
+        "a2_4h_after_fall_back",
+        "03:00 EST tras el cambio: el límite es 00:00 EST = 05:00Z, no 04:00Z",
+        "massive",
+        "4h",
+        et_seconds(2026, 11, 2, 3, 0),
+    )
+    case(
+        "a3_4h_spring_forward",
+        "07:30Z del cambio de marzo (=03:30 EDT): baja a 00:00 ET = 05:00Z",
+        "massive",
+        "4h",
+        utc_seconds(2026, 3, 8, 7, 30),
+    )
+    case(
+        "a4_4h_edt_bucket",
+        "02:00 EDT de julio: baja a 00:00 EDT = 04:00Z",
+        "massive",
+        "4h",
+        et_seconds(2026, 7, 1, 2, 0),
+    )
+    case(
+        "a5_1d_est_midnight",
+        "12:00 EST de noviembre: 1D baja a 00:00 EST = 05:00Z",
+        "massive",
+        "1D",
+        et_seconds(2026, 11, 6, 12, 0),
+    )
+    case(
+        "a6_1d_edt_midnight",
+        "12:00 EDT de julio: 1D baja a 00:00 EDT = 04:00Z",
+        "massive",
+        "1D",
+        et_seconds(2026, 7, 1, 12, 0),
+    )
+    case(
+        "a7_1h_epoch",
+        "1h: múltiplo de hora desde la época UTC",
+        "massive",
+        "1h",
+        1794097800,
+    )
+    case(
+        "a8_15m_epoch",
+        "15m: múltiplo de 900 s desde la época UTC",
+        "massive",
+        "15m",
+        et_seconds(2026, 11, 6, 4, 0) + 150,
+    )
+    case(
+        "a9_1m_epoch",
+        "1m: múltiplo de 60 s desde la época UTC",
+        "massive",
+        "1m",
+        et_seconds(2026, 11, 6, 4, 0) + 30,
+    )
+    case(
+        "a10_bingx_4h_epoch",
+        "BingX 4h: múltiplo de 14400 s desde la época UTC",
+        "bingx",
+        "4h",
+        et_seconds(2026, 11, 6, 4, 0) + 100,
+    )
+    case(
+        "a11_bingx_1d_16_utc",
+        "BingX 1D: baja a las 16:00 UTC que contiene el instante",
+        "bingx",
+        "1D",
+        utc_seconds(2026, 11, 7, 12, 0),
+    )
+    case(
+        "a12_bingx_1d_boundary",
+        "BingX 1D: 16:00 UTC exacto no se mueve",
+        "bingx",
+        "1D",
+        utc_seconds(2026, 11, 7, 16, 0),
+    )
+
+    return cases
+
+
 def build_fixture() -> dict[str, Any]:
     return {
+        "alignment": {"cases": build_alignment_cases()},
         "metadata": {
             "generator": "tools/gen_data_layer_fixture.py",
             "command": "python tools/gen_data_layer_fixture.py",
@@ -2693,6 +2869,9 @@ def main() -> None:
         file.write("\n")
 
     print(f"Fixture generado exitosamente en: {FIXTURE_PATH}")
+    print(
+        f"  - alignment: {len(fixture['alignment']['cases'])} casos"
+    )
     for provider, section in fixture["normalizers"].items():
         print(f"  - {provider}: {len(section['cases'])} casos")
     for provider, section in fixture["loaders"].items():
