@@ -16,7 +16,7 @@
 
 import { URL, URLSearchParams } from 'node:url';
 import type { Bar } from '../core/types.js';
-import { getMarketParts } from '../core/sessions.js';
+import { MAX_TIME_SECONDS, getMarketParts } from '../core/sessions.js';
 import { alignDown } from './alignment.js';
 import { normalizeBingxKlines } from './normalizeBingx.js';
 import { normalizeMassiveAggs } from './normalizeMassive.js';
@@ -25,6 +25,7 @@ import {
   isFiniteNumber,
   isRecord,
   parseBingxCode,
+  parseMilliseconds,
   toErrorMessage,
 } from './normalizeShared.js';
 import { isTimeframe, timeframeSeconds } from './timeframes.js';
@@ -182,6 +183,15 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
   ) {
     throw new Error(
       `now must be finite integer seconds (got ${String(options.now)})`,
+    );
+  }
+
+  if (
+    options.now !== undefined &&
+    (options.now <= 0 || options.now > MAX_TIME_SECONDS)
+  ) {
+    throw new Error(
+      `now must be within the supported seconds range (got ${String(options.now)})`,
     );
   }
 
@@ -409,8 +419,8 @@ async function loadBingx(
       break;
     }
 
-    const oldest = oldestOpenTime(page.rows);
-    if (oldest === null || oldest <= startTime) {
+    const oldestSeconds = oldestOpenTimeSeconds(page.rows);
+    if (oldestSeconds === null || oldestSeconds * 1_000 <= startTime) {
       stoppedReason = 'noMorePages';
       break;
     }
@@ -420,7 +430,7 @@ async function loadBingx(
       break;
     }
 
-    endTime = oldest - 1;
+    endTime = oldestSeconds * 1_000 - 1;
     url = bingxUrl(
       options.baseUrl,
       options.symbol,
@@ -671,7 +681,9 @@ function parseBingxPage(
   }
 
   const timestamp = body['timestamp'];
-  const serverTimestampMs = isFiniteNumber(timestamp) ? timestamp : null;
+  const serverTimestampMs = isPlausibleServerTimestampMs(timestamp)
+    ? timestamp
+    : null;
 
   return {
     rows,
@@ -731,21 +743,17 @@ function extractHttpMessage(text: string, fallback: string): string {
   return fallback;
 }
 
-function oldestOpenTime(rows: readonly unknown[]): number | null {
+function oldestOpenTimeSeconds(rows: readonly unknown[]): number | null {
   let oldest: number | null = null;
   for (const row of rows) {
     if (!Array.isArray(row) || row.length === 0) {
       continue;
     }
-    const value: unknown = row[0];
-    if (
-      typeof value === 'number' &&
-      Number.isFinite(value) &&
-      Number.isInteger(value) &&
-      value > 0 &&
-      (oldest === null || value < oldest)
-    ) {
-      oldest = value;
+    // Solo un openTime en milisegundos válidos participa en la paginación:
+    // un valor en segundos o fuera de rango no debe mover la ventana.
+    const seconds = parseMilliseconds(row[0]);
+    if (seconds !== null && (oldest === null || seconds < oldest)) {
+      oldest = seconds;
     }
   }
   return oldest;
@@ -884,6 +892,23 @@ function withApiKey(url: string, apiKey: string, baseUrl: string): string {
   }
   parsed.searchParams.set(authParamForUrl(parsed.toString()), apiKey);
   return parsed.toString();
+}
+
+/**
+ * `timestamp` del servidor de BingX en milisegundos.
+ *
+ * Debe ser un entero dentro del rango plausible: en ms equivale a una fecha
+ * posterior a septiembre de 2001 (1e12) y dentro del umbral de sesiones
+ * (MAX_TIME_SECONDS * 1000). Un valor en segundos (~1.8e9) no pasa el mínimo
+ * y se ignora: `now` cae al reloj de la petición en lugar de a 1970.
+ */
+function isPlausibleServerTimestampMs(value: unknown): value is number {
+  return (
+    isFiniteNumber(value) &&
+    Number.isInteger(value) &&
+    value >= 1e12 &&
+    value <= MAX_TIME_SECONDS * 1_000
+  );
 }
 
 function errorMessage(error: unknown): string {

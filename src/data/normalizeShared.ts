@@ -138,6 +138,14 @@ export function assertNormalizeOptions(options: NormalizeOptions): void {
       `now must be finite integer seconds (got ${String(options.now)})`,
     );
   }
+  if (
+    options.now !== undefined &&
+    (options.now <= 0 || options.now > MAX_TIME_SECONDS)
+  ) {
+    throw new Error(
+      `now must be within the supported seconds range (got ${String(options.now)})`,
+    );
+  }
 }
 
 /**

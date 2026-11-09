@@ -21,6 +21,12 @@ Método:
   - Los timestamps cuyo resultado en segundos excede MAX_TIME_SECONDS
     (1e11, el umbral que sessionKey admite) se descartan como invalidTime:
     la fila imposible no llega a sessionKey y el cálculo no se lanza.
+  - Unidades validadas en BingX: solo un openTime en ms válidos participa
+    en la paginación; solo un closeTime entero en ms dentro de la duración
+    de la barra participa en la formación (si no, fallback por intervalo);
+    solo un timestamp del servidor en ms plausible fija `now`.
+  - `now` del cargador debe ser un entero positivo dentro de
+    MAX_TIME_SECONDS; fuera de rango es un error de opciones.
 
 Los valores no finitos se representan en el JSON de entrada como cadenas
 ("NaN", "Infinity") o null, porque JSON estricto no admite NaN/Infinity.
@@ -229,6 +235,47 @@ def forming_massive(
         if bar["time"] <= now < bar["time"] + bar_seconds:
             return {"time": bar["time"], "reason": "intervalContainsNow"}
     return None
+
+
+def is_valid_close_time(
+    value: Any, open_seconds: int, bar_seconds: int
+) -> bool:
+    """closeTime válido: entero ms dentro de (apertura, apertura + duración).
+
+    Un closeTime en segundos (~1.8e9), no entero, o que se sale de la
+    duración de la barra no participa en la detección de formación.
+    """
+    if not is_finite_number(value) or not float(value).is_integer():
+        return False
+    close_ms = int(value)
+    open_ms = open_seconds * 1000
+    return open_ms < close_ms < (open_seconds + bar_seconds) * 1000
+
+
+def is_plausible_server_timestamp_ms(value: Any) -> bool:
+    """timestamp del servidor de BingX en ms plausibles.
+
+    Debe ser un entero equivalente a una fecha posterior a septiembre de
+    2001 (1e12 ms) y dentro del umbral de sesiones (MAX_TIME_SECONDS ms
+    * 1000). Un valor en segundos (~1.8e9) no pasa el mínimo.
+    """
+    if not is_finite_number(value) or not float(value).is_integer():
+        return False
+    milliseconds = int(value)
+    return 1e12 <= milliseconds <= MAX_TIME_SECONDS * 1000
+
+
+def resolve_bingx_now(
+    explicit_now: int | None,
+    server_timestamp_ms: int | None,
+    request_now: int,
+) -> int:
+    """Orden de resolución de `now` para BingX, igual que el requisito."""
+    if explicit_now is not None:
+        return explicit_now
+    if server_timestamp_ms is not None:
+        return server_timestamp_ms // 1000
+    return request_now
 
 
 def forming_bingx(
@@ -474,7 +521,7 @@ def normalize_bingx(
         input_times.append(time)
 
         close_time = row[6] if len(row) >= 7 else None
-        if is_finite_number(close_time) and close_time > 0:
+        if is_valid_close_time(close_time, time, bar_seconds):
             close_times[time] = int(close_time)
 
         quote_volume = row[7] if len(row) >= 8 else None
@@ -1041,6 +1088,43 @@ def build_bingx_cases() -> dict[str, dict[str, Any]]:
         60,
     )
 
+    cases["b16_close_time_seconds_unit_fallback"] = bingx_case(
+        "closeTime en segundos se ignora: la barra cae al fallback por intervalo",
+        {
+            "code": 0,
+            "timestamp": (base + 90) * 1000,
+            "data": [
+                bingx_row(base + 120, 101.0, 102.0, 100.0, 101.0, 1.0),
+                bingx_row(
+                    base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                    close_time=base + 119,
+                ),
+            ],
+        },
+        60,
+        base + 90,
+    )
+
+    cases["b17_close_time_out_of_duration"] = bingx_case(
+        "closeTime más allá de la duración se ignora: la barra cerrada no se marca en formación",
+        {
+            "code": 0,
+            "timestamp": (base + 200) * 1000,
+            "data": [
+                bingx_row(
+                    base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                    close_time=(base + 120 + 7200) * 1000,
+                ),
+                bingx_row(
+                    base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                    close_time=(base + 119) * 1000 + 999,
+                ),
+            ],
+        },
+        60,
+        base + 200,
+    )
+
     return cases
 
 
@@ -1348,18 +1432,19 @@ def http_error_message(
     }
 
 
-def oldest_open_time(rows: list[Any]) -> int | None:
+def oldest_open_time_seconds(rows: list[Any]) -> int | None:
+    """openTime más antiguo EN SEGUNDOS, solo con ms válidos.
+
+    Una fila con openTime en segundos o fuera de rango no participa: no
+    debe mover la ventana de paginación hacia atrás de forma errónea.
+    """
     values: list[int] = []
     for row in rows:
         if not isinstance(row, list) or not row:
             continue
-        value = row[0]
-        if (
-            is_finite_number(value)
-            and float(value).is_integer()
-            and int(value) > 0
-        ):
-            values.append(int(value))
+        seconds = parse_milliseconds(row[0])
+        if seconds is not None:
+            values.append(seconds)
     return min(values) if values else None
 
 
@@ -1379,7 +1464,18 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     visible_bars = options["visibleBars"]
     warmup_bars = options.get("warmupBars", 1000)
     requested_bars = visible_bars + warmup_bars
-    now = options["now"]
+    # Orden de resolución de `now`: explícito -> timestamp del servidor
+    # (solo BingX, en ms plausibles) -> reloj de la petición. Ningún caso
+    # del fixture omite `now`: el reloj del sistema no es reproducible en
+    # el generador, así que la rama del timestamp queda especificada pero
+    # no ejercida por los casos.
+    explicit_now: int | None = options.get("now")
+    request_now: int | None = explicit_now
+    if request_now is None:
+        raise RuntimeError(
+            "los casos del cargador fijan now de forma explícita"
+        )
+    now: int = request_now
     max_pages = options.get("maxPages", DEFAULT_LOAD_MAX_PAGES)
     api_key = options.get("apiKey", "")
     base_url = options.get("baseUrl")
@@ -1402,6 +1498,7 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     probe: tuple[list[dict[str, Any]], dict[str, Any]] | None = None
     start_time: int | None = None
     end_time: int | None = None
+    server_ts_max: int | None = None
 
     if provider == "massive":
         window = massive_load_window(now, timeframe, requested_bars)
@@ -1546,6 +1643,19 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
                 break
 
             rows.extend(page_rows)
+            server_ts = body.get("timestamp")
+            if not is_plausible_server_timestamp_ms(server_ts):
+                server_ts = None
+            if server_ts is not None:
+                server_ts = int(server_ts)
+                server_ts_max = (
+                    server_ts
+                    if server_ts_max is None
+                    else max(server_ts_max, server_ts)
+                )
+            now = resolve_bingx_now(
+                explicit_now, server_ts_max, request_now
+            )
             bars, report = normalize_bingx(
                 {"code": 0, "data": rows}, bar_seconds, now
             )
@@ -1558,18 +1668,18 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
                 stopped = "noMorePages"
                 break
 
-            oldest = oldest_open_time(page_rows)
+            oldest = oldest_open_time_seconds(page_rows)
             if (
                 oldest is None
                 or start_time is None
-                or oldest <= start_time
+                or oldest * 1000 <= start_time
             ):
                 stopped = "noMorePages"
                 break
             if pages >= max_pages:
                 stopped = "maxPages"
                 break
-            end_time = oldest - 1
+            end_time = oldest * 1000 - 1
             url = bingx_load_url(
                 base_url, symbol, timeframe, start_time, end_time
             )
@@ -1702,6 +1812,8 @@ def validate_load_options(options: dict[str, Any]) -> str | None:
         or not float(now).is_integer()
     ):
         return f"now must be finite integer seconds (got {now})"
+    if now is not None and (now <= 0 or now > MAX_TIME_SECONDS):
+        return f"now must be within the supported seconds range (got {now})"
     max_pages = options.get("maxPages", DEFAULT_LOAD_MAX_PAGES)
     if (
         not isinstance(max_pages, int)
@@ -2434,6 +2546,33 @@ def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
         ],
     )
 
+    cases["lb14_seconds_open_time_pagination"] = loader_case(
+        "BingX ignora un openTime en segundos al paginar y alcanza el objetivo",
+        options(visibleBars=1, warmupBars=2, now=base + 600),
+        [
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": (base + 600) * 1000,
+                    "data": [
+                        bingx_row(base + 120, 101.0, 102.0, 100.0, 101.0, 1.0),
+                        bingx_row(base + 60, 100.0, 101.0, 99.0, 100.0, 1.0),
+                        [base, 100.0, 101.0, 99.0, 100.0, 1.0],
+                    ],
+                }
+            ),
+            json_response(
+                {
+                    "code": 0,
+                    "timestamp": (base + 600) * 1000,
+                    "data": [
+                        bingx_row(base, 99.0, 100.0, 98.0, 99.0, 1.0),
+                    ],
+                }
+            ),
+        ],
+    )
+
     return cases
 
 
@@ -2494,6 +2633,9 @@ def build_loader_validation_cases() -> dict[str, dict[str, Any]]:
         ),
         "v11_base_url": case(
             "baseUrl vacío", baseUrl="///"
+        ),
+        "v12_now_range": case(
+            "now fuera del rango admitido", now=10**15
         ),
     }
 

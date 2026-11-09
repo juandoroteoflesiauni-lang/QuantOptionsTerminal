@@ -40,6 +40,24 @@ import type {
   ProviderError,
 } from './types.js';
 
+/**
+ * Un `closeTime` válido es un entero en milisegundos estrictamente posterior
+ * a la apertura y anterior al cierre de la propia barra (apertura + duración).
+ * Cualquier otro valor se ignora y la barra usa el fallback por intervalo.
+ */
+function isValidCloseTime(
+  value: unknown,
+  openTimeSeconds: number,
+  barSeconds: number,
+): value is number {
+  return (
+    isFiniteNumber(value) &&
+    Number.isInteger(value) &&
+    value > openTimeSeconds * 1_000 &&
+    value < (openTimeSeconds + barSeconds) * 1_000
+  );
+}
+
 function detectFormingBar(
   bars: readonly Bar[],
   closeTimes: ReadonlyMap<number, number>,
@@ -188,7 +206,10 @@ export function normalizeBingxKlines(
     inputTimes.push(time);
 
     const closeTime = values[6];
-    if (isFiniteNumber(closeTime) && closeTime > 0) {
+    // Solo un closeTime en ms, entero y dentro de la duración de la barra
+    // participa en la detección de formación. Un closeTime inválido se
+    // ignora y la barra cae al fallback por intervalo.
+    if (isValidCloseTime(closeTime, time, options.barSeconds)) {
       closeTimes.set(time, closeTime);
     }
 

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Bar } from '../src/core/types.js';
 import { loadBars } from '../src/data/loader.js';
 import type {
@@ -353,6 +353,117 @@ describe('loadBars: seguridad', () => {
     expect(result.bars).toHaveLength(2);
     expect(result.report.pages).toBe(1);
     expect(JSON.stringify(result)).not.toContain('evil.example');
+  });
+});
+
+describe('loadBars: timestamp del servidor BingX', () => {
+  const base = 1_794_033_600; // 2026-11-07 12:00:00 UTC
+  const fakeNowSeconds = base + 570;
+  const expectedBars = [
+    {
+      time: base + 480,
+      open: 99,
+      high: 100,
+      low: 98,
+      close: 99,
+      volume: 1,
+    },
+  ];
+  const expectedRequests = [
+    'https://open-api.bingx.com/openApi/spot/v2/market/kline?' +
+      'symbol=BTC-USDT&interval=1m&limit=1000' +
+      `&startTime=${String((fakeNowSeconds - 172_800) * 1000)}` +
+      `&endTime=${String(fakeNowSeconds * 1000)}`,
+    'https://open-api.bingx.com/openApi/spot/v2/market/kline?' +
+      'symbol=BTC-USDT&interval=1m&limit=1000' +
+      `&startTime=${String((fakeNowSeconds - 172_800) * 1000)}` +
+      `&endTime=${String((base + 480) * 1000 - 1)}`,
+  ];
+  const expectedFormingBar = {
+    time: base + 540,
+    reason: 'closeTimeContainsServerTime',
+  } as const;
+
+  function bingxResponses(timestamp: number): readonly FixtureResponse[] {
+    return [
+      {
+        status: 200,
+        ok: true,
+        text: JSON.stringify({
+          code: 0,
+          timestamp,
+          data: [
+            [
+              (base + 540) * 1000,
+              100,
+              101,
+              99,
+              100,
+              1,
+              (base + 599) * 1000 + 999,
+            ],
+            [(base + 480) * 1000, 99, 100, 98, 99, 1],
+          ],
+        }),
+      },
+      { status: 200, ok: true, text: JSON.stringify({ code: 0, data: [] }) },
+    ];
+  }
+
+  function timestampCase(
+    timestamp: number,
+    description: string,
+  ): FixtureLoaderCase {
+    return {
+      description,
+      options: {
+        provider: 'bingx',
+        symbol: 'BTC-USDT',
+        timeframe: '1m',
+        visibleBars: 1,
+        warmupBars: 1,
+        maxPages: 5,
+      },
+      responses: bingxResponses(timestamp),
+      expected: { bars: [], visibleStart: 0, report: {}, requests: [] },
+    };
+  }
+
+  it('ignora un timestamp en segundos y acepta ms con precisión sub-second', async () => {
+    vi.useFakeTimers({
+      now: new Date(fakeNowSeconds * 1_000),
+      toFake: ['Date'],
+    });
+    try {
+      // Un timestamp en segundos (~1.8e9) no es ms plausibles: se ignora y
+      // `now` cae al reloj de la petición (simulado), no a 1970.
+      const secondsRun = await runCase(
+        timestampCase(fakeNowSeconds, 'timestamp en segundos'),
+      );
+      expect(secondsRun.requests).toEqual(expectedRequests);
+      expect(secondsRun.result.bars).toEqual(expectedBars);
+      expect(secondsRun.result.visibleStart).toBe(0);
+      expect(secondsRun.result.report.stoppedReason).toBe('noMorePages');
+      expect(secondsRun.result.report.formingBar).toEqual(
+        expectedFormingBar,
+      );
+      expect(secondsRun.result.report.formingExcluded).toBe(true);
+      expect(secondsRun.result.report.pages).toBe(2);
+
+      // Un timestamp en ms con precisión sub-second sí es plausible y fija
+      // `now` (floor a segundos) con el mismo resultado.
+      const msRun = await runCase(
+        timestampCase(
+          fakeNowSeconds * 1_000 + 250,
+          'timestamp en ms con precisión',
+        ),
+      );
+      expect(msRun.requests).toEqual(expectedRequests);
+      expect(msRun.result.bars).toEqual(expectedBars);
+      expect(msRun.result.report.formingBar).toEqual(expectedFormingBar);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -438,6 +438,23 @@ describe('Capa de datos: normalizadores (SPEC punto 6)', () => {
         ).toThrow();
       }
     });
+
+    it('rechaza now fuera del rango admitido', () => {
+      for (const now of [0, -1, 10 ** 15]) {
+        expect(() =>
+          normalizeMassiveAggs(
+            { status: 'OK', results: [] },
+            { barSeconds: 60, now },
+          ),
+        ).toThrow('now must be within the supported seconds range');
+        expect(() =>
+          normalizeBingxKlines(
+            { code: 0, data: [] },
+            { barSeconds: 60, now },
+          ),
+        ).toThrow('now must be within the supported seconds range');
+      }
+    });
   });
 
   describe('Estadísticas del candidato VWAP de BingX', () => {
