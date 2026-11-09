@@ -36,7 +36,13 @@ export interface DiscardRecord {
 
 export type DiscardCounts = Readonly<Record<DiscardCause, number>>;
 
-/** Hueco detectado entre dos barras consecutivas. No se rellena nunca. */
+/**
+ * Hueco detectado entre dos barras consecutivas. No se rellena nunca.
+ *
+ * Se calcula sobre las barras cerradas del resultado normalizado ANTES de
+ * que el cargador recorte el buffer, así que `previousTime` y `nextTime`
+ * pueden referenciar barras fuera del buffer devuelto.
+ */
 export interface BarGap {
   readonly previousTime: number;
   readonly nextTime: number;
@@ -71,8 +77,16 @@ export interface NormalizeOptions {
 
 export interface BaseNormalizeReport<P extends DataProvider> {
   readonly provider: P;
+  /** Filas crudas recibidas del proveedor, sin validar. */
   readonly received: number;
+  /**
+   * Filas aceptadas tras la validación, INCLUIDA la barra en formación:
+   * el normalizador la reporta pero no la elimina; excluirla decide la
+   * capa de carga. Por eso `accepted` puede no coincidir con
+   * `normalizedBars` del cargador aunque no haya descartes.
+   */
   readonly accepted: number;
+  /** received - accepted. */
   readonly discarded: number;
   readonly discardCounts: DiscardCounts;
   readonly discards: readonly DiscardRecord[];
@@ -139,21 +153,41 @@ export type StopReason =
   | 'providerError'
   | 'malformedResponse';
 
+/**
+ * Campos que añade el cargador al reporte del normalizador.
+ *
+ * Los campos de recorte describen el buffer devuelto; `gaps` y
+ * `gapDetection` (heredados del normalizador) se calcularon sobre las
+ * barras cerradas ANTES del recorte, así que pueden referenciar barras
+ * fuera de `bars`, y `firstTime`/`lastTime` no acotan su rango.
+ */
 export interface LoaderFields {
   /** visibleBars + warmupBars. */
   readonly requestedBars: number;
   readonly visibleBars: number;
   readonly warmupBars: number;
-  /** Barras válidas tras excluir la barra en formación, antes de recortar. */
+  /**
+   * Barras cerradas tras excluir la barra en formación, antes de recortar.
+   * Difiere de `accepted` del normalizador justo en esa barra: con 6 filas
+   * aceptadas y 1 en formación, `normalizedBars` es 5.
+   */
   readonly normalizedBars: number;
-  /** Barras válidas eliminadas por quedar fuera del buffer solicitado. */
+  /** Barras cerradas eliminadas por quedar fuera del buffer solicitado. */
   readonly trimmedBars: number;
   /** La barra en formación se excluyó del resultado. */
   readonly formingExcluded: boolean;
   /** Número de peticiones HTTP realizadas. */
   readonly pages: number;
+  /** Apertura de la primera barra del buffer ya recortado; null si está vacío. */
   readonly firstTime: number | null;
+  /** Apertura de la última barra del buffer ya recortado; null si está vacío. */
   readonly lastTime: number | null;
+  /**
+   * `targetReached`: buffer completo; `noMorePages`: el proveedor no dio
+   * más datos; `maxPages`: se agotó el límite de peticiones;
+   * `providerError`: error del proveedor; `malformedResponse`: respuesta
+   * no interpretable (incluye un `next_url` rechazado).
+   */
   readonly stoppedReason: StopReason;
 }
 

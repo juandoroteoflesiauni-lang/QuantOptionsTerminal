@@ -8,6 +8,10 @@
  *  - Se conservan las últimas `requestedBars` barras cerradas.
  *  - `visibleStart = max(0, bars.length - visibleBars)`.
  *
+ * En el reporte, `gaps` se calcula sobre las barras cerradas ANTES del
+ * recorte del buffer; `firstTime`/`lastTime` describen el buffer ya
+ * recortado y no acotan el rango de los huecos.
+ *
  * No se inventan barras ni se rellenan huecos. La clave de Massive solo se
  * añade a la URL de la petición; nunca se incluye en el reporte. Un
  * `next_url` solo se sigue si pertenece al mismo origen que `baseUrl`:
