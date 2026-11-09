@@ -24,6 +24,7 @@ import {
   detectGaps,
   isFiniteNumber,
   isRecord,
+  parseBingxCode,
   toErrorMessage,
 } from './normalizeShared.js';
 import { isTimeframe, timeframeSeconds } from './timeframes.js';
@@ -646,10 +647,17 @@ function parseBingxPage(
     return malformedPage();
   }
 
-  const code = body['code'];
-  if (isFiniteNumber(code) && code !== 0) {
+  const parsedCode = parseBingxCode(body['code']);
+  if (parsedCode.kind === 'malformed') {
+    return malformedPage();
+  }
+  if (parsedCode.kind === 'number' && parsedCode.code !== 0) {
     const message = body['msg'] ?? body['message'];
-    return providerErrorPage(code, toErrorMessage(message, ''), secrets);
+    return providerErrorPage(
+      parsedCode.code,
+      toErrorMessage(message, ''),
+      secrets,
+    );
   }
 
   const data = body['data'];

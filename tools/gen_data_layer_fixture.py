@@ -15,6 +15,9 @@ Método:
   - BingX: calcula quoteVolume/volume como candidato a VWAP, pero NUNCA lo
     expone en las barras. La muestra real falló la verificación del SPEC:
     185 de 3.445 barras de 1m quedaron fuera de [low, high].
+  - BingX: el campo `code` numérico (o string numérico decimal) distinto de
+    0 es un error del proveedor; un `code` presente que no es numérico hace
+    la respuesta malformada. Un `code` ausente o null se tolera.
 
 Los valores no finitos se representan en el JSON de entrada como cadenas
 ("NaN", "Infinity") o null, porque JSON estricto no admite NaN/Infinity.
@@ -150,16 +153,51 @@ def provider_error_from_massive(raw: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def provider_error_from_bingx(raw: dict[str, Any]) -> dict[str, Any] | None:
-    code = raw.get("code")
-    if is_finite_number(code) and code != 0:
-        message = raw.get("msg")
-        if not isinstance(message, str):
-            message = raw.get("message")
-        if not isinstance(message, str):
-            message = ""
-        return {"code": int(code), "message": message}
-    return None
+DECIMAL_NUMBER_RE = re.compile(
+    r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?"
+)
+
+
+def parse_bingx_code(value: Any) -> tuple[str, float | None]:
+    """Interpreta el campo `code` de BingX, de forma independiente.
+
+    Devuelve ("absent", None) si el campo no viene; ("number", code) si es
+    un número decimal finito, o un string que casa con la gramática
+    decimal finita; ("malformed", None) en cualquier otro caso.
+    "0x10", "inf", "NaN" o "" NO son números aquí.
+    """
+    if value is None:
+        return ("absent", None)
+    if isinstance(value, bool):
+        return ("malformed", None)
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if not math.isfinite(number):
+            return ("malformed", None)
+        return ("number", number)
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not DECIMAL_NUMBER_RE.fullmatch(trimmed):
+            return ("malformed", None)
+        number = float(trimmed)
+        if not math.isfinite(number):
+            return ("malformed", None)
+        return ("number", number)
+    return ("malformed", None)
+
+
+def bingx_code_error(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Error del proveedor si `code` es numérico distinto de cero."""
+    kind, number = parse_bingx_code(raw.get("code"))
+    if kind != "number" or number == 0:
+        return None
+    message = raw.get("msg")
+    if not isinstance(message, str):
+        message = raw.get("message")
+    if not isinstance(message, str):
+        message = ""
+    code = int(number) if float(number).is_integer() else number
+    return {"code": code, "message": message}
 
 
 def forming_massive(
@@ -356,15 +394,21 @@ def normalize_bingx(
     if not is_record(raw):
         malformed = True
     else:
-        provider_error = provider_error_from_bingx(raw)
-        data = raw.get("data")
-        if data is None:
-            rows = []
-        elif isinstance(data, list):
-            rows = data
-        else:
+        code_kind, _ = parse_bingx_code(raw.get("code"))
+        if code_kind == "malformed":
+            # Un `code` presente no numérico no cumple el contrato del
+            # proveedor: respuesta malformada, sin filas.
             malformed = True
-            rows = []
+        else:
+            provider_error = bingx_code_error(raw)
+            data = raw.get("data")
+            if data is None:
+                rows = []
+            elif isinstance(data, list):
+                rows = data
+            else:
+                malformed = True
+                rows = []
 
     received = len(rows)
 
@@ -897,6 +941,39 @@ def build_bingx_cases() -> dict[str, dict[str, Any]]:
         after,
     )
 
+    cases["b11_code_numeric_string_error"] = bingx_case(
+        "code como string numérico distinto de cero: error del proveedor",
+        {"code": "100204", "msg": "range too large"},
+        60,
+        after,
+    )
+
+    cases["b12_code_string_zero"] = bingx_case(
+        'code "0" como string: respuesta válida y barras aceptadas',
+        {
+            "code": "0",
+            "timestamp": after * 1000,
+            "data": [
+                bingx_row(base + 60, 100.0, 101.0, 99.0, 100.0, 1.0),
+                bingx_row(base, 99.0, 100.0, 98.0, 99.0, 1.0),
+            ],
+        },
+        60,
+        after,
+    )
+
+    cases["b13_code_malformed"] = bingx_case(
+        "code presente no numérico: malformedResponse=true y sin filas",
+        {
+            "code": "oops",
+            "data": [
+                bingx_row(base, 99.0, 100.0, 98.0, 99.0, 1.0),
+            ],
+        },
+        60,
+        after,
+    )
+
     return cases
 
 
@@ -1375,14 +1452,18 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
                 malformed = True
                 stopped = "malformedResponse"
                 break
-            code = body.get("code")
-            if is_finite_number(code) and code != 0:
-                message = body.get("msg") or body.get("message") or ""
-                if not isinstance(message, str):
-                    message = ""
+            code_kind, _ = parse_bingx_code(body.get("code"))
+            if code_kind == "malformed":
+                malformed = True
+                stopped = "malformedResponse"
+                break
+            code_error = bingx_code_error(body)
+            if code_error is not None:
                 page_error = {
-                    "code": int(code),
-                    "message": redact_load_secret(message, api_key),
+                    "code": code_error["code"],
+                    "message": redact_load_secret(
+                        code_error["message"], api_key
+                    ),
                 }
                 stopped = "providerError"
                 break
@@ -2209,6 +2290,46 @@ def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
                 }
             ),
         ],
+    )
+
+    cases["lb10_code_numeric_string_error"] = loader_case(
+        "BingX code como string numérico distinto de cero: error del proveedor",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {
+                    "code": "100204",
+                    "msg": "range too large",
+                }
+            ),
+        ],
+    )
+
+    cases["lb11_code_string_zero"] = loader_case(
+        'BingX code "0" como string: respuesta válida y barras cargadas',
+        options(visibleBars=1, warmupBars=1, now=base + 600),
+        [
+            json_response(
+                {
+                    "code": "0",
+                    "timestamp": (base + 600) * 1000,
+                    "data": [
+                        bingx_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0,
+                        ),
+                        bingx_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                        ),
+                    ],
+                }
+            ),
+        ],
+    )
+
+    cases["lb12_code_malformed"] = loader_case(
+        "BingX code presente no numérico: malformedResponse=true",
+        options(visibleBars=1, warmupBars=1),
+        [json_response({"code": "oops", "data": []})],
     )
 
     return cases

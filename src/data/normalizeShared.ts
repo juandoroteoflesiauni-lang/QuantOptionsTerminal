@@ -52,6 +52,47 @@ export function toErrorMessage(value: unknown, fallback: string): string {
 }
 
 /**
+ * Campo `code` de una respuesta de BingX.
+ *
+ * - `absent`: el campo no viene (se tolera, igual que hoy).
+ * - `number`: código numérico; 0 significa éxito y cualquier otro valor es
+ *   un error del proveedor.
+ * - `malformed`: el campo está presente pero no es un número decimal finito
+ *   (por ejemplo "oops", "", "0x10" o "inf"); la respuesta no cumple el
+ *   contrato del proveedor.
+ */
+export type BingxCodeField =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'number'; readonly code: number }
+  | { readonly kind: 'malformed' };
+
+/** Gramática decimal aceptada para un `code` en string. */
+const DECIMAL_NUMBER_PATTERN =
+  /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+export function parseBingxCode(value: unknown): BingxCodeField {
+  if (value === undefined || value === null) {
+    return { kind: 'absent' };
+  }
+  if (typeof value === 'number') {
+    return isFiniteNumber(value)
+      ? { kind: 'number', code: value }
+      : { kind: 'malformed' };
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!DECIMAL_NUMBER_PATTERN.test(trimmed)) {
+      return { kind: 'malformed' };
+    }
+    const parsed = Number(trimmed);
+    return isFiniteNumber(parsed)
+      ? { kind: 'number', code: parsed }
+      : { kind: 'malformed' };
+  }
+  return { kind: 'malformed' };
+}
+
+/**
  * Convierte milisegundos crudos a segundos UTC enteros.
  *
  * Devuelve null si el valor no es un entero positivo en milisegundos exactos.

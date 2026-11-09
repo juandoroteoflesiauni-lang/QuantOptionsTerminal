@@ -13,6 +13,10 @@
  * El resto de reglas es idéntico a Massive: ms -> segundos, descartes
  * reportados, orden ascendente, huecos sin rellenar y barra en formación
  * reportada pero no eliminada.
+ *
+ * Sobre `code`: un número (o string numérico decimal) distinto de 0 es un
+ * error del proveedor; un `code` presente que no es numérico hace la
+ * respuesta malformada. Un `code` ausente o null se tolera.
  */
 
 import type { Bar } from '../core/types.js';
@@ -22,6 +26,7 @@ import {
   detectGaps,
   isFiniteNumber,
   isRecord,
+  parseBingxCode,
   parseMilliseconds,
   toErrorMessage,
 } from './normalizeShared.js';
@@ -102,27 +107,29 @@ export function normalizeBingxKlines(
   if (!isRecord(raw)) {
     malformedResponse = true;
   } else {
-    const code = raw['code'];
-    if (
-      typeof code === 'number' &&
-      Number.isFinite(code) &&
-      code !== 0
-    ) {
-      const message = raw['msg'] ?? raw['message'];
-      providerError = {
-        code,
-        message: toErrorMessage(message, ''),
-      };
-    }
-
-    const data = raw['data'];
-    if (data === undefined || data === null) {
-      rows = [];
-    } else if (Array.isArray(data)) {
-      rows = data;
-    } else {
+    const parsedCode = parseBingxCode(raw['code']);
+    if (parsedCode.kind === 'malformed') {
+      // Un `code` presente que no es un número decimal finito no cumple el
+      // contrato del proveedor: respuesta malformada, sin filas.
       malformedResponse = true;
-      rows = [];
+    } else {
+      if (parsedCode.kind === 'number' && parsedCode.code !== 0) {
+        const message = raw['msg'] ?? raw['message'];
+        providerError = {
+          code: parsedCode.code,
+          message: toErrorMessage(message, ''),
+        };
+      }
+
+      const data = raw['data'];
+      if (data === undefined || data === null) {
+        rows = [];
+      } else if (Array.isArray(data)) {
+        rows = data;
+      } else {
+        malformedResponse = true;
+        rows = [];
+      }
     }
   }
 
