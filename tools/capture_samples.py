@@ -82,6 +82,7 @@ MASSIVE_TIMEFRAMES: dict[str, tuple[str, int, int]] = {
     "1m": ("minute", 1, 60),
     "5m": ("minute", 5, 300),
     "15m": ("minute", 15, 900),
+    "30m": ("minute", 30, 1_800),
     "1h": ("hour", 1, 3_600),
     "4h": ("hour", 4, 14_400),
     "1D": ("day", 1, 86_400),
@@ -100,6 +101,7 @@ MASSIVE_LATEST_LIMIT: dict[str, int] = {
     "1m": 5,
     "5m": 25,
     "15m": 75,
+    "30m": 150,
     "1h": 300,
     "4h": 1_200,
     "1D": 5,
@@ -112,6 +114,7 @@ MASSIVE_RANGE_DAYS: dict[str, int] = {
     "1m": 4,
     "5m": 14,
     "15m": 40,
+    "30m": 120,
     "1h": 250,
     "4h": 800,
     "1D": 3_000,
@@ -124,6 +127,7 @@ MASSIVE_MAX_DAYS: dict[str, int] = {
     "1m": 260,
     "5m": 1_100,
     "15m": 3_000,
+    "30m": 9_200,
     "1h": 9_200,
     "4h": 9_200,
     "1D": 9_200,
@@ -924,6 +928,8 @@ def capture_massive(
     )
 
     for timeframe in MASSIVE_TIMEFRAMES:
+        if args.timeframes and timeframe not in args.timeframes:
+            continue
         payload: dict[str, Any] = {
             "provider": "massive",
             "symbol": "SPY",
@@ -1375,14 +1381,17 @@ def capture_bingx(*, day: date, args: argparse.Namespace) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def print_plan(massive_day: date, bingx_day: date) -> None:
+def print_plan(massive_day: date, bingx_day: date, args: argparse.Namespace | None = None) -> None:
     say(f"Plan de captura (dia de referencia Massive: {massive_day.isoformat()} ET)")
     say(f"Plan de captura (dia de referencia BingX: {bingx_day.isoformat()} UTC)")
     say("")
     for timeframe, (timespan, multiplier, _seconds) in MASSIVE_TIMEFRAMES.items():
+        if args.timeframes and timeframe not in args.timeframes:
+            continue
         say(
             f"Massive SPY {timeframe}: day + range({MASSIVE_RANGE_DAYS[timeframe]}d, "
-            f"limit=1000) + max({MASSIVE_MAX_DAYS[timeframe]}d, limit=50000) + latest"
+            f"limit=1000) + max({MASSIVE_MAX_DAYS[timeframe]}d, limit=50000) + latest "
+            f"(latest limit={MASSIVE_LATEST_LIMIT[timeframe]})"
         )
         say(f"  endpoint: /v2/aggs/ticker/SPY/range/{multiplier}/{timespan}")
     say("")
@@ -1461,6 +1470,13 @@ def parse_args() -> argparse.Namespace:
         help="Reintentos ante 429/5xx/errores de red.",
     )
     parser.add_argument(
+        "--timeframes",
+        help=(
+            "Lista separada por comas de temporalidades Massive a capturar "
+            "(p. ej. 30m o 1m,5m). Por defecto: todas."
+        ),
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=3,
@@ -1487,6 +1503,16 @@ def main() -> int:
     if args.max_pages < 1 or args.target_bars < 1 or args.http_retries < 1:
         say("ERROR: --max-pages, --target-bars y --http-retries deben ser >= 1")
         return 2
+
+    if args.timeframes:
+        parsed = {part.strip() for part in args.timeframes.split(",") if part.strip()}
+        unknown = sorted(parsed - set(MASSIVE_TIMEFRAMES))
+        if unknown:
+            say(f"ERROR: temporalidades desconocidas: {', '.join(unknown)}")
+            return 2
+        args.timeframes = parsed
+    else:
+        args.timeframes = set()
 
     env = load_env_file(ENV_FILE)
     massive_key = (
@@ -1516,7 +1542,7 @@ def main() -> int:
         bingx_day = datetime.now(UTC).date() - timedelta(days=1)
 
     if args.print_plan:
-        print_plan(massive_day, bingx_day)
+        print_plan(massive_day, bingx_day, args)
         return 0
 
     failures: list[str] = []
