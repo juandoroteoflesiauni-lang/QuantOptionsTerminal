@@ -80,6 +80,24 @@ MASSIVE_TIMEFRAMES: dict[str, tuple[str, int, int]] = {
     "1D": ("day", 1, 86_400),
 }
 
+# Limite del escenario "latest". El motor de Massive acota las barras BASE
+# escaneadas por peticion (1-minute en todo intradia, 1-day en 1D), no las
+# barras de salida: con limit=5 y sort=desc escanea solo los 5 minutos mas
+# recientes, asi que 1m devuelve 5 barras pero 5m devuelve una cubeta parcial
+# descentrada y 15m/1h/4h devuelven 0 (evidencia 2026-11-07: queryCount=5 en
+# las cuatro, resultsCount=5/1/0/0; sondas con limit=25/75/1200 devuelven
+# 5/7/6 cubetas). Para "las ultimas 5 barras de salida" se escanean
+# 5 x multiplicador en minutos base. En 1D las barras base son diarias y el
+# motor devuelve la ventana completa (devolvio 7 con limit=5).
+MASSIVE_LATEST_LIMIT: dict[str, int] = {
+    "1m": 5,
+    "5m": 25,
+    "15m": 75,
+    "1h": 300,
+    "4h": 1_200,
+    "1D": 5,
+}
+
 # Dias de calendario para pedir al menos 2 paginas de 1000 barras en el
 # escenario "range". En acciones se usa una estimacion conservadora de barras
 # por dia (incluye premercado y postmercado cuando el proveedor los devuelve).
@@ -759,11 +777,12 @@ def massive_scenario(
 
     elif kind == "latest":
         now = datetime.now(UTC)
+        latest_limit = MASSIVE_LATEST_LIMIT[timeframe]
         if timeframe == "1D":
             params = {
                 "adjusted": "true",
                 "sort": "desc",
-                "limit": 5,
+                "limit": latest_limit,
                 "from": (now.date() - timedelta(days=10)).isoformat(),
                 "to": now.date().isoformat(),
             }
@@ -775,13 +794,13 @@ def massive_scenario(
             params = {
                 "adjusted": "true",
                 "sort": "desc",
-                "limit": 5,
+                "limit": latest_limit,
                 "from": start_ms,
                 "to": end_ms,
             }
             scenario["requested_from_utc"] = ms_to_iso(start_ms)
             scenario["requested_to_utc"] = ms_to_iso(end_ms)
-        scenario["requested_limit"] = 5
+        scenario["requested_limit"] = latest_limit
         pages, has_next = massive_fetch_pages(
             client, path=path_base, params=params, max_pages=1, target_rows=1
         )
