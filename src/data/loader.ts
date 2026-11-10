@@ -10,7 +10,10 @@
  *  - `rthOnly` (solo Massive): el buffer solo contiene barras cuya apertura
  *    está dentro de RTH; el objetivo y el recorte se aplican sobre barras
  *    RTH y el lookback se escala a barras RTH por día. Los huecos se
- *    calculan sobre el buffer cerrado completo, antes del filtro.
+ *    calculan sobre el buffer cerrado completo, antes del filtro. Con
+ *    rthOnly + 1h la 1h nativa no se usa: se piden 30m y se agregan 7
+ *    ventanas 09:30-ancladas por día ET (`aggregatedPartialBars` cuenta las
+ *    ventanas cerradas con menos mitades que las esperadas).
  *  - `sessionStartCovered` indica si el buffer contiene la primera barra de
  *    la sesión de la primera barra visible (09:30 ET en acciones, 00:00 UTC
  *    en cripto); false anticipa un VWAP de sesión parcial (SPEC punto 8).
@@ -34,6 +37,7 @@ import {
   RTH_START_MINUTES,
 } from '../core/sessions.js';
 import { alignDown } from './alignment.js';
+import { aggregateRth1hFrom30m, RTH_1H_FETCH_BAR_SECONDS } from './aggregateRth1h.js';
 import { normalizeBingxKlines } from './normalizeBingx.js';
 import { normalizeMassiveAggs } from './normalizeMassive.js';
 import {
@@ -100,8 +104,26 @@ const MASSIVE_RTH_BARS_PER_DAY: Readonly<
   '1m': 390,
   '5m': 78,
   '15m': 26,
-  '1h': 6,
+  // 7 ventanas 09:30-ancladas por día: en rthOnly la 1h nativa no se usa; se
+  // piden 30m y se agregan (la 1h de 09:00 mezclaría premarket con apertura).
+  '1h': 7,
   '4h': 1,
+});
+
+/**
+ * Modo rthOnly + 1h: en lugar de la 1h nativa se piden barras de 30m y se
+ * agregan en 7 ventanas 09:30-ancladas por día ET (`aggregateRth1hFrom30m`).
+ * La detección de la barra en formación y los huecos se calculan sobre la
+ * granularidad pedida (1800 s).
+ */
+const RTH_1H_FETCH: Readonly<{
+  multiplier: number;
+  timespan: string;
+  barSeconds: number;
+}> = Object.freeze({
+  multiplier: 30,
+  timespan: 'minute',
+  barSeconds: RTH_1H_FETCH_BAR_SECONDS,
 });
 
 const BINGX_INTERVAL: Readonly<Record<Timeframe, string>> = Object.freeze({
@@ -285,15 +307,26 @@ async function loadMassive(
   options: ResolvedLoadOptions,
 ): Promise<LoadBarsResult> {
   const barSeconds = timeframeSeconds(options.timeframe);
+  const rth1hAggregated = options.rthOnly && options.timeframe === '1h';
+  const fetchBarSeconds = rth1hAggregated
+    ? RTH_1H_FETCH.barSeconds
+    : barSeconds;
   const now = options.explicitNow ?? options.requestNow;
   const window = massiveWindow(
     now,
     options.timeframe,
     options.requestedBars,
     options.rthOnly,
+    rth1hAggregated ? RTH_1H_FETCH.barSeconds : undefined,
   );
   let url = withApiKey(
-    massiveUrl(options.baseUrl, options.symbol, options.timeframe, window),
+    massiveUrl(
+      options.baseUrl,
+      options.symbol,
+      options.timeframe,
+      window,
+      rth1hAggregated ? RTH_1H_FETCH : undefined,
+    ),
     options.apiKey,
     options.baseUrl,
   );
@@ -336,7 +369,7 @@ async function loadMassive(
     rows.push(...page.rows);
     const result = normalizeMassiveAggs(
       { status: 'OK', results: rows },
-      { barSeconds, now },
+      { barSeconds: fetchBarSeconds, now },
     );
     probe = result;
 
@@ -345,7 +378,12 @@ async function loadMassive(
       result.report.formingBar,
       options.rthOnly,
     );
-    if (candidates.length >= options.requestedBars) {
+    // En el modo rthOnly+1h el objetivo se cuenta en VENTANAS cerradas, no
+    // en mitades de 30m.
+    const targetCount = rth1hAggregated
+      ? aggregateRth1hFrom30m(candidates, now).bars.length
+      : candidates.length;
+    if (targetCount >= options.requestedBars) {
       stoppedReason = 'targetReached';
       break;
     }
@@ -377,7 +415,7 @@ async function loadMassive(
     probe ??
     normalizeMassiveAggs(
       { status: 'OK', results: rows },
-      { barSeconds, now },
+      { barSeconds: fetchBarSeconds, now },
     );
 
   return finalizeMassive(
@@ -535,14 +573,36 @@ function finalizeMassive(
   malformed: boolean,
 ): LoadBarsResult {
   const closedBars = excludeFormingBar(result.bars, result.report.formingBar);
-  const candidates = options.rthOnly
-    ? closedBars.filter((bar) => isRth(bar.time))
-    : closedBars;
-  const normalizedBars = candidates.length;
-  const bars = trimToBuffer(candidates, options.requestedBars);
+  const rth1hAggregated = options.rthOnly && options.timeframe === '1h';
+  let bufferBars: readonly Bar[];
+  let formingWindow: FormingBarInfo | null = null;
+  let aggregatedPartialBars: number | undefined;
+  if (rth1hAggregated) {
+    // El buffer son ventanas de 1h 09:30-ancladas agregadas desde 30m: la
+    // ventana en formación no se emite y el recorte se aplica sobre ventanas.
+    const aggregated = aggregateRth1hFrom30m(
+      closedBars.filter((bar) => isRth(bar.time)),
+      options.explicitNow ?? options.requestNow,
+    );
+    bufferBars = aggregated.bars;
+    formingWindow = aggregated.formingWindow;
+    aggregatedPartialBars = aggregated.partialBars;
+  } else {
+    bufferBars = options.rthOnly
+      ? closedBars.filter((bar) => isRth(bar.time))
+      : closedBars;
+  }
+  const normalizedBars = bufferBars.length;
+  const bars = trimToBuffer(bufferBars, options.requestedBars);
   const trimmedBars = normalizedBars - bars.length;
   const visibleStart = Math.max(0, bars.length - options.visibleBars);
-  const { gaps, gapDetection } = detectGaps(closedBars, barSeconds, 'massive');
+  // Los huecos se calculan sobre el buffer cerrado completo (las 30m en el
+  // modo agregado), antes del filtro RTH y del recorte.
+  const { gaps, gapDetection } = detectGaps(
+    closedBars,
+    rth1hAggregated ? RTH_1H_FETCH.barSeconds : barSeconds,
+    'massive',
+  );
 
   const report: MassiveLoadBarsReport = {
     ...result.report,
@@ -556,8 +616,9 @@ function finalizeMassive(
     normalizedBars,
     trimmedBars,
     formingExcluded:
-      result.report.formingBar !== null &&
-      closedBars.length < result.bars.length,
+      (result.report.formingBar !== null &&
+        closedBars.length < result.bars.length) ||
+      formingWindow !== null,
     warmupSatisfied: normalizedBars >= options.requestedBars,
     sessionStartCovered: sessionStartCovered(
       bars,
@@ -568,6 +629,9 @@ function finalizeMassive(
     firstTime: bars[0]?.time ?? null,
     lastTime: bars[bars.length - 1]?.time ?? null,
     stoppedReason,
+    ...(aggregatedPartialBars === undefined
+      ? {}
+      : { aggregatedPartialBars }),
   };
 
   return { bars, visibleStart, report };
@@ -624,9 +688,11 @@ function finalizeBingx(
  *
  * En Massive esa barra es la del mismo día ET que abre a las 09:30 ET (la
  * primera que acumula el VWAP de sesión); en BingX, la que abre a las
- * 00:00 UTC del día UTC. Si la temporalidad no tiene barra en el inicio de
- * sesión (1h/4h/1D en acciones, 1D en cripto) el flag es false: el VWAP de
- * sesión es parcial por construcción (SPEC punto 8).
+ * 00:00 UTC del día UTC. Si la temporalidad no tiene barra en el inicio
+ * de sesión (4h/1D en acciones, 1D en cripto) el flag es false: el VWAP de
+ * sesión es parcial por construcción (SPEC punto 8). Con rthOnly + 1h la
+ * ventana de 09:30 agregada hace de primera barra del día, así que el flag
+ * puede ser true.
  */
 function sessionStartCovered(
   bars: readonly Bar[],
@@ -888,6 +954,7 @@ function massiveWindow(
   timeframe: Timeframe,
   requestedBars: number,
   rthOnly: boolean,
+  alignBarSeconds?: number,
 ): MassiveRequestWindow {
   const lookbackDays = massiveLookbackDays(
     requestedBars,
@@ -900,11 +967,14 @@ function massiveWindow(
     return { from: shiftDateKey(to, -lookbackDays), to };
   }
 
-  const from = alignDown(
-    now - lookbackDays * SECONDS_PER_DAY,
-    timeframe,
-    'massive',
-  );
+  const rawFrom = now - lookbackDays * SECONDS_PER_DAY;
+  // En el modo rthOnly+1h la petición pide 30m: el ancla se baja a la rejilla
+  // de 30 min en UTC. Los desfases ET son horas enteras, así que coincide con
+  // la rejilla :00/:30 ET y la barra de 09:30 existe.
+  const from =
+    alignBarSeconds === undefined
+      ? alignDown(rawFrom, timeframe, 'massive')
+      : rawFrom - (rawFrom % alignBarSeconds);
   return { from: from * 1_000, to: now * 1_000 };
 }
 
@@ -938,8 +1008,12 @@ function massiveUrl(
   symbol: string,
   timeframe: Timeframe,
   window: MassiveRequestWindow,
+  pathOverride?: Readonly<{
+    multiplier: number;
+    timespan: string;
+  }>,
 ): string {
-  const path = MASSIVE_TIMEFRAME_PATH[timeframe];
+  const path = pathOverride ?? MASSIVE_TIMEFRAME_PATH[timeframe];
   const urlPath =
     `/v2/aggs/ticker/${encodeURIComponent(symbol)}/range/` +
     `${String(path.multiplier)}/${path.timespan}/` +

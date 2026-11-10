@@ -194,9 +194,10 @@ export interface LoaderFields {
    * BingX, la barra que abre a las 00:00 UTC del día UTC. false si el
    * buffer está vacío o sin tramo visible, si esa barra no está en el
    * buffer (el buffer empieza a mitad de sesión o hay un hueco) o si la
-   * temporalidad no tiene barra en el inicio de sesión (1h/4h/1D en
-   * acciones, 1D en cripto): en esos casos el VWAP de sesión es parcial
-   * (límite del SPEC punto 8).
+   * temporalidad no tiene barra en el inicio de sesión (4h/1D en
+   * acciones, 1D en cripto; con rthOnly + 1h la ventana de 09:30 agregada
+   * existe): en esos casos el VWAP de sesión es parcial (límite del SPEC
+   * punto 8).
    */
   readonly sessionStartCovered: boolean;
   /** Número de peticiones HTTP realizadas. */
@@ -216,7 +217,16 @@ export interface LoaderFields {
 
 export interface MassiveLoadBarsReport
   extends MassiveNormalizeReport,
-    LoaderFields {}
+    LoaderFields {
+  /**
+   * Solo rthOnly + 1h (ventanas agregadas desde 30m): ventanas cerradas
+   * construidas con menos mitades de 30m que las esperadas, porque Massive
+   * omite las barras sin operaciones. La ventana 15:30-16:00 espera una sola
+   * mitad, así que su forma normal no cuenta como parcial. Ausente en el
+   * resto de modos.
+   */
+  readonly aggregatedPartialBars?: number;
+}
 
 export interface BingxLoadBarsReport
   extends BingxNormalizeReport,

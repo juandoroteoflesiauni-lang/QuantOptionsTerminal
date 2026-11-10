@@ -43,8 +43,11 @@ function assertIntegerSeconds(time: number): void {
  * reproduce exactamente la hora civil pedida. Las horas inexistentes del salto
  * de primavera caen fuera de los límites usados aquí (00:00 y múltiplos de 4h),
  * así que el fallback EST solo cubre un caso defensivo.
+ *
+ * Exportada para la agregación rthOnly+1h: la apertura nominal de cada
+ * ventana 09:30-anclada se construye con esta conversión.
  */
-function etWallTimeToUtc(
+export function etWallTimeToUtc(
   year: number,
   month: number,
   day: number,

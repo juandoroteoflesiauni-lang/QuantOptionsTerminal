@@ -560,3 +560,75 @@ describe('loadBars: integración con muestras reales', () => {
     expect(result.report.lastTime).toBe(times.at(-1));
   });
 });
+
+describe('loadBars: agregación rthOnly 1h desde 30m', () => {
+  it('el volumen de cada ventana y el total del día son la suma de las 30m (caso lm31)', async () => {
+    const name = 'lm31_rth_1h_day_volume';
+    const testCase = fixture.loaders.massive.cases[name];
+    if (testCase === undefined) {
+      throw new Error(`missing fixture case ${name}`);
+    }
+    const { result, requests } = await runCase(testCase);
+
+    // No se pide la 1h nativa: la petición va contra la rejilla de 30m.
+    expect(requests).toHaveLength(1);
+    const firstRequest = requests[0];
+    if (firstRequest === undefined) {
+      throw new Error('missing request');
+    }
+    expect(new URL(firstRequest).pathname).toContain('/range/30/minute/');
+
+    // Mitades crudas del día, en segundos, ordenadas ascendente.
+    const firstResponse = testCase.responses[0];
+    const rawResults = (
+      JSON.parse(firstResponse?.text ?? '') as {
+        results: Array<{ t: number; v: number }>;
+      }
+    ).results;
+    const halves = rawResults
+      .map((row) => ({ seconds: row.t / 1000, volume: row.v }))
+      .sort((left, right) => left.seconds - right.seconds);
+
+    // Cada mitad RTH cae en la ventana que contiene su apertura; las de
+    // 09:00 y 16:00 ET quedan fuera de toda ventana. Las ventanas son las
+    // 7 de un mismo día consecutivas, así que el cierre de cada una es la
+    // apertura de la siguiente (la última cubre 30 minutos).
+    const perWindow = new Map<number, number>();
+    let outOfSession = 0;
+    for (const half of halves) {
+      const owner = result.bars.find((window, index) => {
+        const next = result.bars[index + 1];
+        const end = next !== undefined ? next.time : window.time + 1_800;
+        return half.seconds >= window.time && half.seconds < end;
+      });
+      if (owner === undefined) {
+        outOfSession += half.volume;
+        continue;
+      }
+      perWindow.set(
+        owner.time,
+        (perWindow.get(owner.time) ?? 0) + half.volume,
+      );
+    }
+
+    expect(result.bars).toHaveLength(7);
+    expect(outOfSession).toBe(2);
+    for (const window of result.bars) {
+      expect(window.volume).toBe(perWindow.get(window.time));
+    }
+
+    // Total del día agregado = suma de las mitades de 30m del día
+    // (2026-11-06, EST: RTH 14:30-21:00 UTC).
+    const rthStart = Date.UTC(2026, 10, 6, 14, 30) / 1000;
+    const rthEnd = Date.UTC(2026, 10, 6, 21, 0) / 1000;
+    const dayTotal = halves
+      .filter((half) => half.seconds >= rthStart && half.seconds < rthEnd)
+      .reduce((total, half) => total + half.volume, 0);
+    const aggregatedTotal = result.bars.reduce(
+      (total, window) => total + window.volume,
+      0,
+    );
+    expect(aggregatedTotal).toBe(dayTotal);
+    expect(aggregatedTotal).toBe(9_750);
+  });
+});

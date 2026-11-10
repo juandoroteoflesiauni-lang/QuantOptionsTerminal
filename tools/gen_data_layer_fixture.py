@@ -1187,11 +1187,13 @@ MASSIVE_BARS_PER_DAY = {
 # Barras RTH por día (apertura dentro de 09:30-16:00 ET). Con rthOnly el
 # lookback se escala con esta tabla. Sin entrada para 1D: rthOnly con 1D
 # se rechaza en la validación porque ninguna barra diaria abre dentro de RTH.
+# 1h = 7: en modo rthOnly la 1h nativa no se usa; se agregan 7 ventanas de
+# 30m ancladas a 09:30 ET (09:30-10:30, ..., 15:30-16:00 de 30 min).
 MASSIVE_RTH_BARS_PER_DAY = {
     "1m": 390,
     "5m": 78,
     "15m": 26,
-    "1h": 6,
+    "1h": 7,
     "4h": 1,
 }
 
@@ -1237,6 +1239,149 @@ def is_rth(seconds: int) -> bool:
     minutes = parts.hour * 60 + parts.minute
     weekday = parts.isoweekday()  # lunes = 1 ... domingo = 7
     return 1 <= weekday <= 5 and 9 * 60 + 30 <= minutes < 16 * 60
+
+
+# --- rthOnly + 1h: ventanas de 1h ancladas a 09:30 ET desde barras de 30m ---
+
+# En modo rthOnly+1h el cargador NO usa la 1h nativa (la barra de 09:00
+# mezcla premarket con apertura y con rthOnly se descartaría perdiendo media
+# hora de RTH): pide barras de 30m y agrega las 7 ventanas de la sesión
+# regular 09:30-10:30, ..., 15:30-16:00 (la última dura 30 minutos).
+RTH_1H_FETCH_BAR_SECONDS = 1_800
+RTH_1H_FETCH_PATH = (30, "minute")
+RTH_1H_START_MINUTES = 9 * 60 + 30  # 09:30 ET
+RTH_1H_END_MINUTES = 16 * 60  # 16:00 ET
+# Mitades de 30m esperadas por ventana: 6 ventanas de 2 mitades y la última
+# (15:30-16:00) de 1. Una ventana cerrada con menos mitades que las esperadas
+# es una agregación parcial (Massive omite las barras sin operaciones).
+RTH_1H_EXPECTED_HALVES = (2, 2, 2, 2, 2, 2, 1)
+
+
+def usable_vw(value: Any) -> bool:
+    """vw utilizable: numérico finito y > 0 (0, nulo o no finito = ausente)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value) and value > 0
+
+
+def rth_1h_window_open_seconds(
+    year: int, month: int, day: int, index: int
+) -> int:
+    """Apertura nominal de la ventana index (0..6) en segundos UTC."""
+    minutes = RTH_1H_START_MINUTES + 60 * index
+    return et_seconds(year, month, day, minutes // 60, minutes % 60)
+
+
+def rth_1h_window_end_seconds(
+    year: int, month: int, day: int, index: int
+) -> int:
+    """Cierre nominal de la ventana index (0..6); la última acaba a las 16:00."""
+    minutes = min(
+        RTH_1H_START_MINUTES + 60 * (index + 1),
+        RTH_1H_END_MINUTES,
+    )
+    return et_seconds(year, month, day, minutes // 60, minutes % 60)
+
+
+def aggregate_rth_1h(
+    bars: list[dict[str, Any]], now: int
+) -> dict[str, Any]:
+    """REFERENCIA INDEPENDIENTE de la agregación rthOnly+1h (30m -> 1h).
+
+    Entrada: barras de 30m CERRADAS (sin la barra en formación) en orden
+    ascendente. Filtrar RTH es precondición del cargador; por defensa, una
+    apertura fuera de 09:30-16:00 ET se ignora en vez de producir ventanas
+    desalineadas.
+
+    Reglas de la pieza:
+      - 7 ventanas por día ET ancladas a 09:30 (por reloj civil ET, así que
+        un cambio de horario dentro de la ventana de petición no desalinea).
+      - time = apertura nominal de la ventana en ET, aunque falte la primera
+        mitad: la ventana representa su tramo de rejilla.
+      - open de la primera mitad, close de la última, high = máx, low = mín,
+        volume = suma (acumulando en orden ascendente de tiempo).
+      - vw = sum(vw*volume)/sum(volume) SOLO si todas las mitades tienen vw
+        utilizable y la suma de volumen es > 0; si no, la ventana sale sin
+        vw (un valor no calculable nunca se sustituye).
+      - Una ventana está cerrada solo si el final de su ventana ya pasó
+        respecto a now. La que está en formación no se emite y se reporta
+        en formingWindow.
+      - Ventana cerrada con menos mitades que las esperadas = agregación
+        parcial; se cuenta en partialBars. No se inventan ventanas: las
+        que se quedan sin mitades solo quedan como huecos de 30m.
+    """
+    groups: dict[tuple[str, int], dict[str, Any]] = {}
+    for bar in bars:
+        parts = datetime.fromtimestamp(bar["time"], tz=NEW_YORK)
+        minutes = parts.hour * 60 + parts.minute
+        if not RTH_1H_START_MINUTES <= minutes < RTH_1H_END_MINUTES:
+            continue
+        index = (minutes - RTH_1H_START_MINUTES) // 60
+        key = (parts.date().isoformat(), index)
+        group = groups.get(key)
+        if group is None:
+            group = {
+                "year": parts.year,
+                "month": parts.month,
+                "day": parts.day,
+                "halves": [],
+            }
+            groups[key] = group
+        group["halves"].append(bar)
+
+    windows: list[dict[str, Any]] = []
+    forming_window: dict[str, Any] | None = None
+    partial_bars = 0
+    for key in sorted(groups):
+        index = key[1]
+        group = groups[key]
+        halves = sorted(group["halves"], key=lambda bar: bar["time"])
+        open_seconds = rth_1h_window_open_seconds(
+            group["year"], group["month"], group["day"], index
+        )
+        end_seconds = rth_1h_window_end_seconds(
+            group["year"], group["month"], group["day"], index
+        )
+        if now < end_seconds:
+            forming_window = {
+                "time": open_seconds,
+                "reason": "intervalContainsNow",
+            }
+            continue
+        volume = 0.0
+        high = -math.inf
+        low = math.inf
+        vw_numerator = 0.0
+        vw_usable = True
+        for half in halves:
+            volume += half["volume"]
+            if half["high"] > high:
+                high = half["high"]
+            if half["low"] < low:
+                low = half["low"]
+            if usable_vw(half.get("vw")):
+                vw_numerator += half["vw"] * half["volume"]
+            else:
+                vw_usable = False
+        window: dict[str, Any] = {
+            "time": open_seconds,
+            "open": halves[0]["open"],
+            "high": high,
+            "low": low,
+            "close": halves[-1]["close"],
+            "volume": volume,
+        }
+        if vw_usable and volume > 0:
+            window["vw"] = vw_numerator / volume
+        windows.append(window)
+        if len(halves) < RTH_1H_EXPECTED_HALVES[index]:
+            partial_bars += 1
+
+    return {
+        "bars": windows,
+        "formingWindow": forming_window,
+        "partialBars": partial_bars,
+    }
 
 
 def session_start_covered(
@@ -1301,6 +1446,7 @@ def massive_load_window(
     timeframe: str,
     requested_bars: int,
     rth_only: bool = False,
+    align_bar_seconds: int | None = None,
 ) -> dict[str, Any]:
     lookback_days = massive_lookback_days(
         requested_bars, timeframe, rth_only
@@ -1311,9 +1457,14 @@ def massive_load_window(
             "from": shift_date_key(to_date, -lookback_days),
             "to": to_date,
         }
-    from_time = massive_align_down(
-        now - lookback_days * SECONDS_PER_DAY, timeframe
-    )
+    raw_from = now - lookback_days * SECONDS_PER_DAY
+    if align_bar_seconds is not None:
+        # Modo rthOnly+1h: la petición pide 30m, así que el ancla se baja a
+        # la rejilla de 30 min en UTC (los desfases ET son horas enteras, así
+        # que coincide con la rejilla :00/:30 de ET y la 09:30 existe).
+        from_time = raw_from - raw_from % align_bar_seconds
+    else:
+        from_time = massive_align_down(raw_from, timeframe)
     return {"from": from_time * 1000, "to": now * 1000}
 
 
@@ -1322,8 +1473,13 @@ def massive_load_url(
     symbol: str,
     timeframe: str,
     window: dict[str, Any],
+    path_override: tuple[int, str] | None = None,
 ) -> str:
-    multiplier, timespan = MASSIVE_LOAD_TIMEFRAMES[timeframe]
+    multiplier, timespan = (
+        path_override
+        if path_override is not None
+        else MASSIVE_LOAD_TIMEFRAMES[timeframe]
+    )
     path = (
         f"/v2/aggs/ticker/{urllib.parse.quote(symbol, safe='')}/range/"
         f"{multiplier}/{timespan}/{window['from']}/{window['to']}"
@@ -1567,6 +1723,15 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     base_url = base_url.rstrip("/")
     rth_only = options.get("rthOnly", False)
     bar_seconds = TIMEFRAME_SECONDS[timeframe]
+    # rthOnly + 1h: no se usa la 1h nativa; se piden 30m y se agregan en
+    # ventanas de 1h ancladas a 09:30 ET. La detección de formación y los
+    # huecos se calculan sobre la granularidad pedida (1800 s).
+    rth_1h_aggregated = (
+        provider == "massive" and rth_only and timeframe == "1h"
+    )
+    fetch_bar_seconds = (
+        RTH_1H_FETCH_BAR_SECONDS if rth_1h_aggregated else bar_seconds
+    )
 
     responses = case["responses"]
     requests: list[dict[str, Any]] = []
@@ -1582,9 +1747,21 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
 
     if provider == "massive":
         window = massive_load_window(
-            now, timeframe, requested_bars, rth_only
+            now,
+            timeframe,
+            requested_bars,
+            rth_only,
+            align_bar_seconds=(
+                RTH_1H_FETCH_BAR_SECONDS if rth_1h_aggregated else None
+            ),
         )
-        url = massive_load_url(base_url, symbol, timeframe, window)
+        url = massive_load_url(
+            base_url,
+            symbol,
+            timeframe,
+            window,
+            path_override=RTH_1H_FETCH_PATH if rth_1h_aggregated else None,
+        )
         url = with_api_key(url, api_key, base_url)
     else:
         start_time, end_time = bingx_load_window(now, timeframe)
@@ -1665,7 +1842,7 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
 
             rows.extend(page_rows)
             bars, report = normalize_massive(
-                {"status": "OK", "results": rows}, bar_seconds, now
+                {"status": "OK", "results": rows}, fetch_bar_seconds, now
             )
             probe = (bars, report)
             closed = closed_bars(bars, report["formingBar"])
@@ -1674,7 +1851,12 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
                 if rth_only
                 else closed
             )
-            if len(candidates) >= requested_bars:
+            if rth_1h_aggregated:
+                # El objetivo se cuenta en VENTANAS cerradas, no en mitades.
+                target_count = len(aggregate_rth_1h(candidates, now)["bars"])
+            else:
+                target_count = len(candidates)
+            if target_count >= requested_bars:
                 stopped = "targetReached"
                 break
             if not page_rows:
@@ -1777,7 +1959,7 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     if probe is None:
         if provider == "massive":
             probe = normalize_massive(
-                {"status": "OK", "results": rows}, bar_seconds, now
+                {"status": "OK", "results": rows}, fetch_bar_seconds, now
             )
         else:
             probe = normalize_bingx(
@@ -1789,17 +1971,30 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     closed = closed_bars(bars, forming)
     # Con rthOnly el objetivo y el recorte se aplican sobre barras RTH;
     # los huecos se calculan sobre el buffer cerrado completo, antes del
-    # filtro.
-    candidates = (
-        [bar for bar in closed if is_rth(bar["time"])]
-        if (rth_only and provider == "massive")
-        else closed
-    )
-    normalized_bars = len(candidates)
-    trimmed = candidates[-requested_bars:] if requested_bars > 0 else []
+    # filtro. En el modo rthOnly+1h el buffer son VENTANAS agregadas desde
+    # 30m: el recorte se aplica sobre ventanas y los huecos se calculan
+    # sobre las 30m cerradas completas (granularidad 1800 s).
+    forming_window: dict[str, Any] | None = None
+    partial_bars = 0
+    if rth_1h_aggregated:
+        rth_closed = [bar for bar in closed if is_rth(bar["time"])]
+        aggregated = aggregate_rth_1h(rth_closed, now)
+        buffer_bars = aggregated["bars"]
+        forming_window = aggregated["formingWindow"]
+        partial_bars = aggregated["partialBars"]
+        gap_bar_seconds = RTH_1H_FETCH_BAR_SECONDS
+    else:
+        buffer_bars = (
+            [bar for bar in closed if is_rth(bar["time"])]
+            if (rth_only and provider == "massive")
+            else closed
+        )
+        gap_bar_seconds = bar_seconds
+    normalized_bars = len(buffer_bars)
+    trimmed = buffer_bars[-requested_bars:] if requested_bars > 0 else []
     trimmed_bars = normalized_bars - len(trimmed)
     visible_start = max(0, len(trimmed) - visible_bars)
-    gaps, gap_detection = detect_gaps(closed, bar_seconds, provider)
+    gaps, gap_detection = detect_gaps(closed, gap_bar_seconds, provider)
 
     report = dict(report)
     report["gaps"] = gaps
@@ -1818,7 +2013,8 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
             "trimmedBars": trimmed_bars,
             "formingExcluded": (
                 forming is not None and len(closed) < len(bars)
-            ),
+            )
+            or forming_window is not None,
             "warmupSatisfied": normalized_bars >= requested_bars,
             "sessionStartCovered": session_start_covered(
                 trimmed, visible_start, provider
@@ -1829,6 +2025,10 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
             "stoppedReason": stopped,
         }
     )
+    if rth_1h_aggregated:
+        # Solo en el modo agregado: ventanas cerradas construidas con menos
+        # mitades de 30m que las esperadas (Massive omite las sin operaciones).
+        report["aggregatedPartialBars"] = partial_bars
 
     return {
         "bars": trimmed,
@@ -2560,6 +2760,199 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
                 }
             ),
         ],
+    )
+
+    # --- rthOnly + 1h: ventanas agregadas desde 30m (sin 1h nativa) ---
+
+    def rth_1h_options(**overrides: Any) -> dict[str, Any]:
+        values = options(timeframe="1h", **overrides)
+        values["rthOnly"] = True
+        return values
+
+    def rth_30m_day_rows(
+        year: int,
+        month: int,
+        day: int,
+        *,
+        skip_minutes: set[int] | None = None,
+        end_minutes: int = RTH_1H_END_MINUTES,
+    ) -> list[dict[str, Any]]:
+        """Mitades de 30m RTH de un día ET, en orden DESC como Massive.
+
+        El volumen de cada mitad es su minuto de apertura (distintivo, valor
+        entero exacto) para poder verificar sumas sin ruido de redondeo.
+        """
+        rows: list[dict[str, Any]] = []
+        minutes = RTH_1H_START_MINUTES
+        while minutes < end_minutes:
+            if skip_minutes is None or minutes not in skip_minutes:
+                seconds = et_seconds(
+                    year, month, day, minutes // 60, minutes % 60
+                )
+                price = 100.0 + minutes * 0.01
+                rows.append(
+                    massive_row(
+                        seconds,
+                        price,
+                        price + 0.5,
+                        price - 0.5,
+                        price + 0.25,
+                        float(minutes),
+                        price + 0.1,
+                    )
+                )
+            minutes += 30
+        rows.reverse()
+        return rows
+
+    def rth_30m_out_of_session_rows(
+        year: int, month: int, day: int
+    ) -> list[dict[str, Any]]:
+        """Mitades de 30m contiguas a RTH (09:00 y 16:00): fuera del buffer.
+
+        La de 09:00 es la mitad que la 1h nativa mezclaría con la apertura;
+        aquí se excluye porque abre fuera de RTH.
+        """
+        rows: list[dict[str, Any]] = []
+        for hour, minute in ((16, 0), (9, 0)):
+            seconds = et_seconds(year, month, day, hour, minute)
+            price = 108.0 + hour * 0.1
+            rows.append(
+                massive_row(
+                    seconds,
+                    price,
+                    price + 0.5,
+                    price - 0.5,
+                    price + 0.25,
+                    1.0,
+                    price + 0.1,
+                )
+            )
+        return rows
+
+    lm26_rows = (
+        rth_30m_out_of_session_rows(2026, 11, 6)
+        + rth_30m_out_of_session_rows(2026, 11, 5)
+        + rth_30m_day_rows(2026, 11, 6)
+        + rth_30m_day_rows(2026, 11, 5)
+    )
+    cases["lm26_rth_1h_full_day"] = loader_case(
+        "Massive rthOnly+1h: dos días completos se agregan en 7 ventanas "
+        "09:30-ancladas por día desde 30m (sin la 1h nativa)",
+        rth_1h_options(
+            visibleBars=3, warmupBars=4, now=et_seconds(2026, 11, 6, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm26_rows})],
+    )
+
+    lm27_rows = (
+        rth_30m_out_of_session_rows(2026, 11, 27)
+        + rth_30m_out_of_session_rows(2026, 11, 25)
+        + rth_30m_day_rows(2026, 11, 27, end_minutes=13 * 60)
+        + rth_30m_day_rows(2026, 11, 25)
+    )
+    cases["lm27_rth_1h_early_close"] = loader_case(
+        "Massive rthOnly+1h: media sesión (cierre anticipado 13:00 ET); la "
+        "ventana de 12:30 se agrega con su única mitad y cuenta como parcial",
+        rth_1h_options(
+            visibleBars=2, warmupBars=2, now=et_seconds(2026, 11, 27, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm27_rows})],
+    )
+
+    lm28_rows = (
+        rth_30m_out_of_session_rows(2026, 11, 6)
+        + rth_30m_out_of_session_rows(2026, 11, 5)
+        + rth_30m_day_rows(2026, 11, 6, skip_minutes={12 * 60})
+        + rth_30m_day_rows(2026, 11, 5)
+    )
+    cases["lm28_rth_1h_missing_half"] = loader_case(
+        "Massive rthOnly+1h: la mitad de las 12:00 no llegó (sin operaciones); "
+        "la ventana 11:30-12:30 se agrega con una sola mitad, cuenta como "
+        "parcial y el hueco se reporta sobre las 30m cerradas",
+        rth_1h_options(
+            visibleBars=2, warmupBars=5, now=et_seconds(2026, 11, 6, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm28_rows})],
+    )
+
+    lm29_rows = (
+        rth_30m_out_of_session_rows(2026, 11, 2)
+        + rth_30m_out_of_session_rows(2026, 10, 30)
+        + rth_30m_day_rows(2026, 11, 2)
+        + rth_30m_day_rows(2026, 10, 30)
+    )
+    cases["lm29_rth_1h_dst"] = loader_case(
+        "Massive rthOnly+1h: cambio de horario (30 oct EDT, 2 nov EST); las "
+        "ventanas siguen ancladas al reloj civil ET en ambos días",
+        rth_1h_options(
+            visibleBars=7, warmupBars=7, now=et_seconds(2026, 11, 2, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm29_rows})],
+    )
+
+    lm30_rows = list(
+        reversed(
+            [
+                massive_row(et_seconds(2026, 11, 6, 9, 0), 108.9, 109.4, 108.4, 109.15, 1.0, 109.0),
+                massive_row(et_seconds(2026, 11, 6, 9, 30), 109.3, 109.8, 108.8, 109.55, 570.0, 109.4),
+                massive_row(et_seconds(2026, 11, 6, 10, 0), 109.55, 110.05, 109.05, 109.8, 600.0, 109.65),
+                massive_row(et_seconds(2026, 11, 6, 10, 30), 109.8, 110.3, 109.3, 110.05, 630.0, 109.9),
+                massive_row(et_seconds(2026, 11, 6, 11, 0), 110.05, 110.55, 109.55, 110.3, 660.0, 110.15),
+            ]
+        )
+    )
+    cases["lm30_rth_1h_forming_window"] = loader_case(
+        "Massive rthOnly+1h: la mitad de 30m en formación se excluye y la "
+        "ventana cuyo tramo aún no cerró no se emite (en formación)",
+        rth_1h_options(
+            visibleBars=1, warmupBars=0, now=et_seconds(2026, 11, 6, 11, 15)
+        ),
+        [json_response({"status": "OK", "results": lm30_rows})],
+    )
+
+    lm31_rows = (
+        rth_30m_out_of_session_rows(2026, 11, 6)
+        + rth_30m_day_rows(2026, 11, 6)
+    )
+    lm31_case = loader_case(
+        "Massive rthOnly+1h: el volumen de cada ventana y el total del día "
+        "coinciden con la suma de las mitades de 30m (verificación explícita)",
+        rth_1h_options(
+            visibleBars=1, warmupBars=6, now=et_seconds(2026, 11, 6, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm31_rows})],
+    )
+    cases["lm31_rth_1h_day_volume"] = lm31_case
+
+    # Verificación explícita dentro del generador: el volumen total del día
+    # agregado es la suma de las mitades de 30m del día (volúmenes enteros:
+    # comparación exacta).
+    lm31_day_volume = sum(
+        row["v"]
+        for row in lm31_rows
+        if is_rth(int(row["t"] // 1000))
+    )
+    lm31_aggregated_volume = sum(
+        bar["volume"] for bar in lm31_case["expected"]["bars"]
+    )
+    assert lm31_aggregated_volume == lm31_day_volume, (
+        "el volumen del día agregado no coincide con la suma de las 30m"
+    )
+
+    lm32_rows = (
+        rth_30m_out_of_session_rows(2026, 11, 6)
+        + rth_30m_out_of_session_rows(2026, 11, 5)
+        + rth_30m_day_rows(2026, 11, 6)
+        + rth_30m_day_rows(2026, 11, 5)
+    )
+    cases["lm32_rth_1h_session_start_partial"] = loader_case(
+        "Massive rthOnly+1h: el buffer recortado empieza a mitad de sesión sin "
+        "la ventana de 09:30 (sessionStartCovered=false, VWAP de sesión parcial)",
+        rth_1h_options(
+            visibleBars=1, warmupBars=1, now=et_seconds(2026, 11, 6, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm32_rows})],
     )
 
     return cases
