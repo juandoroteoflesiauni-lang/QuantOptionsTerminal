@@ -16,6 +16,7 @@ export const DISCARD_CAUSES: readonly DiscardCause[] = Object.freeze([
   'nonFinite',
   'invalidPrice',
   'highBelowLow',
+  'invalidOhlc',
   'invalidVolume',
   'duplicate',
 ]);
@@ -27,6 +28,7 @@ export function createDiscardCounts(): Record<DiscardCause, number> {
     nonFinite: 0,
     invalidPrice: 0,
     highBelowLow: 0,
+    invalidOhlc: 0,
     invalidVolume: 0,
     duplicate: 0,
   };

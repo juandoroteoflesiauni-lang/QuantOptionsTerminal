@@ -66,6 +66,8 @@ interface FixtureMassiveReport extends FixtureBaseReport {
   vwZero: number;
   vwNonFinite: number;
   vwOutsideRange: number;
+  vwMaxDeviationPct: number;
+  vwBarsOver2Pct: number;
 }
 
 interface FixtureBingxReport extends FixtureBaseReport {
@@ -210,6 +212,12 @@ function expectMassiveReport(
   );
   expect(actual.vwOutsideRange, `${context} vwOutsideRange`).toBe(
     expected.vwOutsideRange,
+  );
+  expect(actual.vwMaxDeviationPct, `${context} vwMaxDeviationPct`).toBe(
+    expected.vwMaxDeviationPct,
+  );
+  expect(actual.vwBarsOver2Pct, `${context} vwBarsOver2Pct`).toBe(
+    expected.vwBarsOver2Pct,
   );
 }
 
@@ -363,6 +371,41 @@ describe('Capa de datos: normalizadores (SPEC punto 6)', () => {
       expect(result.bars).toHaveLength(30);
       expect(result.report.gapDetection).toBe('skippedDaily');
       expect(result.report.gaps).toHaveLength(0);
+    });
+
+    it('Massive SPY 1m y 1D (max): desviación de vw medida, open/close sin violaciones', () => {
+      // 50 000 barras de 1m: 13 959 con vw fuera de rango (normal en Massive),
+      // desviación máxima 6,49 % y 9 barras por encima del 2 %. Ninguna con
+      // open/close fuera de [low, high].
+      const oneMinute = readSample('SPY_1m_2026-11-06.json');
+      const oneMinuteResult = normalizeMassiveAggs(
+        { status: 'OK', results: mergeMassiveRows(oneMinute, 'max') },
+        { barSeconds: 60, now: 1_794_093_240 },
+      );
+
+      expect(oneMinuteResult.report.received).toBe(50_000);
+      expect(oneMinuteResult.report.accepted).toBe(50_000);
+      expect(oneMinuteResult.report.discarded).toBe(0);
+      expect(oneMinuteResult.report.discardCounts.invalidOhlc).toBe(0);
+      expect(oneMinuteResult.report.vwOutsideRange).toBe(13_959);
+      expect(oneMinuteResult.report.vwMaxDeviationPct).toBe(6.49361134143375);
+      expect(oneMinuteResult.report.vwBarsOver2Pct).toBe(9);
+
+      // 5 828 barras diarias: el outlier de 2009-05-20 (vw 737,4009 frente a
+      // high 92,80) da una desviación del 8,01 % respecto del propio vw.
+      const daily = readSample('SPY_1D_2026-11-06.json');
+      const dailyResult = normalizeMassiveAggs(
+        { status: 'OK', results: mergeMassiveRows(daily, 'max') },
+        { barSeconds: 86_400, now: 1_794_093_240 },
+      );
+
+      expect(dailyResult.report.received).toBe(5_828);
+      expect(dailyResult.report.accepted).toBe(5_828);
+      expect(dailyResult.report.discarded).toBe(0);
+      expect(dailyResult.report.discardCounts.invalidOhlc).toBe(0);
+      expect(dailyResult.report.vwOutsideRange).toBe(1);
+      expect(dailyResult.report.vwMaxDeviationPct).toBe(8.007236499715003);
+      expect(dailyResult.report.vwBarsOver2Pct).toBe(1);
     });
 
     it('BingX BTC-USDT 1m: 1.440 barras, 10 candidatos fuera y vw nunca expuesto', () => {

@@ -88,6 +88,11 @@ export function normalizeMassiveAggs(
   let vwZero = 0;
   let vwNonFinite = 0;
   let vwOutsideRange = 0;
+  // Desviación de vw fuera de [low, high], en % del propio vw. Solo barras
+  // aceptadas con vw finito y > 0 (vw = 0 significa ausente y evitaría dividir
+  // por cero). Sin desviaciones (o sin vw útil) la máxima es 0.
+  let vwMaxDeviationPct = 0;
+  let vwBarsOver2Pct = 0;
   let malformedResponse = false;
   let providerError: ProviderError | null = null;
 
@@ -161,6 +166,11 @@ export function normalizeMassiveAggs(
       continue;
     }
 
+    if (open < low || open > high || close < low || close > high) {
+      recordDiscard('invalidOhlc', time);
+      continue;
+    }
+
     if (volume < 0) {
       recordDiscard('invalidVolume', time);
       continue;
@@ -198,6 +208,16 @@ export function normalizeMassiveAggs(
       if (vw < low || vw > high) {
         vwOutsideRange += 1;
       }
+      if (vw > 0) {
+        // Misma fórmula que analyze_samples.py vw-excess, en porcentaje.
+        const deviationPct = (Math.max(low - vw, vw - high, 0) / vw) * 100;
+        if (deviationPct > vwMaxDeviationPct) {
+          vwMaxDeviationPct = deviationPct;
+        }
+        if (deviationPct > 2) {
+          vwBarsOver2Pct += 1;
+        }
+      }
     }
 
     bars.push(bar);
@@ -234,6 +254,8 @@ export function normalizeMassiveAggs(
     vwZero,
     vwNonFinite,
     vwOutsideRange,
+    vwMaxDeviationPct,
+    vwBarsOver2Pct,
     formingBar,
     malformedResponse,
     providerError,

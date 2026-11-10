@@ -10,6 +10,9 @@ Subcomandos:
   vw-excess  Magnitud del vw fuera de rango por temporalidad y escenario:
              exceso = max(low - vw, vw - high, 0) / vw; conteos > 0, > 0.1%,
              > 0.5%, > 2%; max, p50, p99; top-10 con hora ET.
+  ohlc-check Violaciones open/close fuera de [low, high] (candidatas a
+              invalidOhlc) y estadisticas de desviacion de vw, por temporalidad
+              y escenario, deduplicadas por tf+t.
   warmup     Barras por dia por temporalidad (extendido y RTH) y dias de
              calendario para 500 visibles + 1000 de calentamiento, con factor
              de fin de semana (5/7) y feriados (~251 sesiones/365.25 dias).
@@ -89,6 +92,13 @@ def self_check() -> None:
     assert percentile([2.0, 4.0], 0.5) == 3.0  # idx = 0.5 -> interpolado
     assert et_minutes(1793975400000) == 9 * 60 + 30  # 2026-11-06 09:30 ET
     assert et_date(1793975400000) == "2026-11-06"
+    # open/close dentro de [low, high]: sin violacion; fuera: causa exacta.
+    assert ohlc_violation({"o": 100.0, "h": 101.0, "l": 99.0, "c": 100.5}) is None
+    assert ohlc_violation({"o": 100.0, "h": 101.0, "l": 100.0, "c": 101.0}) is None  # bordes ok
+    assert ohlc_violation({"o": 98.0, "h": 101.0, "l": 99.0, "c": 100.0}) == "open<low"
+    assert ohlc_violation({"o": 102.0, "h": 101.0, "l": 99.0, "c": 100.0}) == "open>high"
+    assert ohlc_violation({"o": 100.0, "h": 101.0, "l": 99.0, "c": 98.0}) == "close<low"
+    assert ohlc_violation({"o": 100.0, "h": 101.0, "l": 99.0, "c": 102.0}) == "close>high"
 
 
 def iter_sample_files(samples_dir: Path) -> list[Path]:
@@ -183,6 +193,94 @@ def cmd_vw_excess(samples_dir: Path) -> int:
     return 0
 
 
+def ohlc_violation(r: dict) -> str | None:
+    """Descripcion de la violacion open/close fuera de [low, high], o None."""
+    o, h, l, c = r["o"], r["h"], r["l"], r["c"]
+    if o < l:
+        return "open<low"
+    if o > h:
+        return "open>high"
+    if c < l:
+        return "close<low"
+    if c > h:
+        return "close>high"
+    return None
+
+
+def cmd_ohlc_check(samples_dir: Path) -> int:
+    bars_by_tf = load_bars(samples_dir)
+    order = ["1m", "5m", "15m", "30m", "1h", "4h", "1D"]
+    bad_all: list[tuple[str, int, str, str]] = []  # (tf, t, escenario, causa)
+    seen_bad: set[tuple[str, int]] = set()
+    dev_seen: set[tuple[str, int]] = set()
+    dev_max_all = 0.0
+    dev_over2_all = 0
+
+    print("VALIDACION OHLC: open y close deben estar dentro de [low, high]")
+    print("DESVIACION vw: exceso = max(low - vw, vw - high, 0) / vw, en %")
+    print("Umbrales desviacion: >2%   (sin red; muestras SPY_*.json)")
+    print()
+    for tf in order:
+        if tf not in bars_by_tf:
+            continue
+        print(f"--- SPY {tf} ---")
+        print(
+            f"{'escenario':>9} {'barras':>7} {'violaciones':>11} "
+            f"{'open<low':>9} {'open>high':>10} {'close<low':>10} {'close>high':>11} "
+            f"{'desv.max%':>10} {'desv.>2%':>9}"
+        )
+        for kind in SCENARIOS:
+            bars = bars_by_tf[tf].get(kind)
+            if not bars:
+                continue
+            causes = {"open<low": 0, "open>high": 0, "close<low": 0, "close>high": 0}
+            violations = 0
+            dev_max = 0.0
+            dev_over2 = 0
+            for r in bars:
+                cause = ohlc_violation(r)
+                if cause is not None:
+                    violations += 1
+                    causes[cause] += 1
+                    key = (tf, r["t"])
+                    if key not in seen_bad:
+                        seen_bad.add(key)
+                        bad_all.append((tf, r["t"], kind, cause))
+                vw = r.get("vw")
+                if vw is None or not isinstance(vw, (int, float)) or vw <= 0:
+                    continue
+                dev_pct = max(r["l"] - vw, vw - r["h"], 0.0) / vw * 100.0
+                if dev_pct > dev_max:
+                    dev_max = dev_pct
+                if dev_pct > 2.0:
+                    dev_over2 += 1
+                    key = (tf, r["t"])
+                    if key not in dev_seen:
+                        dev_seen.add(key)
+                        dev_over2_all += 1
+                if dev_pct > dev_max_all:
+                    dev_max_all = dev_pct
+            print(
+                f"{kind:>9} {len(bars):>7} {violations:>11} "
+                f"{causes['open<low']:>9} {causes['open>high']:>10} "
+                f"{causes['close<low']:>10} {causes['close>high']:>11} "
+                f"{dev_max:>10.4f} {dev_over2:>9}"
+            )
+        print()
+
+    print("RESUMEN GLOBAL (unicas por tf+t):")
+    print(f"  violaciones open/close: {len(bad_all)}")
+    print(f"  barras con desviacion vw > 2%: {dev_over2_all}")
+    print(f"  desviacion vw maxima: {dev_max_all:.4f}%")
+    if bad_all:
+        print()
+        print("DETALLE DE VIOLACIONES:")
+        print(f"{'tf':>4} {'t (ms)':>14} {'hora ET':>21} {'escenario':>9} causa")
+        for tf, t, kind, cause in bad_all:
+            print(f"{tf:>4} {t:>14} {et_str(t):>21} {kind:>9} {cause}")
+    return 0
+
+
 def day_counts(bars: list[dict]) -> tuple[int, int]:
     """Barras del dia completo (extendido) y dentro de RTH por minuto ET."""
     ext = len(bars)
@@ -262,7 +360,7 @@ def cmd_warmup(samples_dir: Path, visible: int, warmup: int) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Analisis offline de muestras Massive (SPY).")
-    parser.add_argument("command", choices=("vw-excess", "warmup"))
+    parser.add_argument("command", choices=("vw-excess", "ohlc-check", "warmup"))
     parser.add_argument("--dir", default="fixtures/samples", help="Directorio de muestras.")
     parser.add_argument("--visible", type=int, default=500, help="Barras visibles (SPEC: 500).")
     parser.add_argument("--warmup", type=int, default=1000, help="Barras de calentamiento (SPEC: 1000).")
@@ -271,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     samples_dir = Path(args.dir)
     if args.command == "vw-excess":
         return cmd_vw_excess(samples_dir)
+    if args.command == "ohlc-check":
+        return cmd_ohlc_check(samples_dir)
     return cmd_warmup(samples_dir, args.visible, args.warmup)
 
 

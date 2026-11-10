@@ -19,6 +19,7 @@ export type DiscardCause =
   | 'nonFinite'
   | 'invalidPrice'
   | 'highBelowLow'
+  | 'invalidOhlc'
   | 'invalidVolume'
   | 'duplicate';
 
@@ -108,6 +109,15 @@ export interface MassiveNormalizeReport extends BaseNormalizeReport<'massive'> {
   readonly vwNonFinite: number;
   /** Barras aceptadas cuyo `vw` queda fuera de [low, high]. */
   readonly vwOutsideRange: number;
+  /**
+   * Máxima desviación de `vw` fuera de [low, high], en % del propio `vw`:
+   * max(low - vw, vw - high, 0) / vw * 100. Solo barras aceptadas con `vw`
+   * finito y > 0; sin barras que se desvíen vale 0. En Massive es normal que
+   * `vw` quede fuera de rango (p99 <= 0,56 % en 1m): se mide, no se descarta.
+   */
+  readonly vwMaxDeviationPct: number;
+  /** Barras aceptadas con desviación de `vw` estrictamente superior al 2 %. */
+  readonly vwBarsOver2Pct: number;
 }
 
 export interface BingxNormalizeReport extends BaseNormalizeReport<'bingx'> {

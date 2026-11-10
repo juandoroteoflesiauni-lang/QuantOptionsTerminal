@@ -10,7 +10,7 @@ Método:
   - Convierte milisegundos a segundos SOLO en esta capa.
   - Valida cada fila con un orden de causas documentado:
         malformedRow -> invalidTime -> nonFinite -> invalidPrice
-        -> highBelowLow -> invalidVolume -> duplicate
+        -> highBelowLow -> invalidOhlc -> invalidVolume -> duplicate
   - No rellena huecos: solo los detecta y reporta.
   - BingX: calcula quoteVolume/volume como candidato a VWAP, pero NUNCA lo
     expone en las barras. La muestra real falló la verificación del SPEC:
@@ -84,6 +84,7 @@ DISCARD_CAUSES = (
     "nonFinite",
     "invalidPrice",
     "highBelowLow",
+    "invalidOhlc",
     "invalidVolume",
     "duplicate",
 )
@@ -325,6 +326,12 @@ def normalize_massive(
     vw_zero = 0
     vw_non_finite = 0
     vw_outside = 0
+    # Desviacion de vw respecto del rango, en % del propio vw:
+    # exceso = max(low - vw, vw - high, 0) / vw * 100. Solo barras aceptadas
+    # con vw finito y > 0 (vw = 0 significa ausente y evita dividir por cero).
+    # Sin barras que se desvien (o sin vw util) la maxima es 0.
+    vw_max_deviation_pct = 0.0
+    vw_bars_over_2_pct = 0
     malformed = False
     provider_error: dict[str, Any] | None = None
 
@@ -384,6 +391,10 @@ def normalize_massive(
             discard("highBelowLow", time)
             continue
 
+        if open_price < low or open_price > high or close < low or close > high:
+            discard("invalidOhlc", time)
+            continue
+
         if volume < 0:
             discard("invalidVolume", time)
             continue
@@ -414,6 +425,12 @@ def normalize_massive(
                 vw_zero += 1
             if vw < low or vw > high:
                 vw_outside += 1
+            if vw > 0:
+                deviation_pct = max(low - vw, vw - high, 0.0) / vw * 100.0
+                if deviation_pct > vw_max_deviation_pct:
+                    vw_max_deviation_pct = deviation_pct
+                if deviation_pct > 2.0:
+                    vw_bars_over_2_pct += 1
 
         bars.append(bar)
 
@@ -436,6 +453,8 @@ def normalize_massive(
         "vwZero": vw_zero,
         "vwNonFinite": vw_non_finite,
         "vwOutsideRange": vw_outside,
+        "vwMaxDeviationPct": vw_max_deviation_pct,
+        "vwBarsOver2Pct": vw_bars_over_2_pct,
         "formingBar": forming,
         "malformedResponse": malformed,
         "providerError": provider_error,
@@ -885,6 +904,30 @@ def build_massive_cases() -> dict[str, dict[str, Any]]:
             ],
         },
         60,
+    )
+
+    cases["m14_vw_deviation_and_ohlc"] = massive_case(
+        "desviación de vw en % del propio vw (solo barras aceptadas con vw>0) y descartes invalidOhlc",
+        {
+            "status": "OK",
+            "results": [
+                # Aceptadas: desviación 80%, 45%, 0.5587% y vw=0 (sin desviación).
+                massive_row(base, 100.0, 110.0, 90.0, 100.0, 1.0, 50.0),
+                massive_row(base + 60, 100.0, 110.0, 90.0, 100.0, 1.0, 200.0),
+                massive_row(base + 120, 100.0, 110.0, 90.0, 100.0, 1.0, 89.5),
+                massive_row(base + 180, 100.0, 110.0, 90.0, 100.0, 1.0, 0.0),
+                # Descartes invalidOhlc: su vw (80%, 45%) NO cuenta en la desviación.
+                massive_row(base + 240, 89.0, 110.0, 90.0, 100.0, 1.0, 50.0),  # open < low
+                massive_row(base + 300, 100.0, 110.0, 90.0, 111.0, 1.0, 200.0),  # close > high
+                massive_row(base + 360, 111.0, 110.0, 90.0, 100.0, 1.0, 50.0),  # open > high
+                # highBelowLow tiene prioridad sobre invalidOhlc (open < low también).
+                massive_row(base + 420, 89.0, 80.0, 90.0, 100.0, 1.0, 50.0),
+                # invalidOhlc tiene prioridad sobre invalidVolume (volume < 0 también).
+                massive_row(base + 480, 100.0, 110.0, 90.0, 111.0, -1.0, 200.0),
+            ],
+        },
+        60,
+        after,
     )
 
     return cases
