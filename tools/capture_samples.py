@@ -19,7 +19,14 @@ Uso:
   python tools/capture_samples.py all
   python tools/capture_samples.py massive
   python tools/capture_samples.py bingx
+  python tools/capture_samples.py live
   python tools/capture_samples.py all --print-plan
+
+El modo "live" se ejecuta DURANTE la sesion (RTH 09:30-16:00 ET): pide las
+ultimas 5 barras de SPY 1m y 5m (sort=desc, ventana de 3 dias) dos veces con
+90 s de diferencia y guarda la hora UTC exacta de cada peticion, para
+determinar si Massive incluye la barra en formacion, si cambia entre
+peticiones y como se distingue de una cerrada.
 
 Salida:
   fixtures/samples/SPY_<temporalidad>_<fecha>.json
@@ -143,6 +150,12 @@ BINGX_RANGE_DAYS: dict[str, int] = {
 BINGX_REST_BASE = "https://open-api.bingx.com"
 BINGX_KLINE_PATH = "/openApi/spot/v2/market/kline"
 BINGX_DEFAULT_SOURCE_KEY = "BX-AI-SKILL"
+
+# Modo live (tarea de captura en sesion): rondas separadas 90 s, ventana de 3
+# dias y objetivo de 5 barras de salida por peticion.
+LIVE_ROUNDS = 2
+LIVE_ROUND_SLEEP_SECONDS = 90.0
+LIVE_LOOKBACK_DAYS = 3
 
 SAFE_HEADERS = (
     "content-type",
@@ -1197,6 +1210,107 @@ def bingx_scenario(
     return scenario
 
 
+def capture_live(*, args: argparse.Namespace, api_key: str) -> list[str]:
+    """Modo live: 2 rondas (90 s de diferencia) de 1m y 5m durante RTH.
+
+    Cada peticion pide las ultimas 5 barras (sort=desc, ventana de 3 dias)
+    con limit escalado al multiplicador (tarea del hallazgo del limite base).
+    El sobre guarda captured_at_utc por peticion para comparar rondas.
+    """
+    failures: list[str] = []
+    out_dir = Path(args.out)
+    client = MassiveClient(
+        api_key=api_key,
+        base_mode=args.massive_base_url,
+        timeout=args.timeout,
+        delay=2.0,
+        retries=args.http_retries,
+    )
+    scenarios: dict[str, dict[str, Any]] = {}
+    for timeframe in ("1m", "5m"):
+        timespan, multiplier, seconds = MASSIVE_TIMEFRAMES[timeframe]
+        scenarios[timeframe] = {
+            "kind": "live",
+            "timeframe_seconds": seconds,
+            "requested_limit": MASSIVE_LATEST_LIMIT[timeframe],
+            "target_output_bars": 5,
+            "lookback_days": LIVE_LOOKBACK_DAYS,
+            "rounds": [],
+        }
+    for round_index in range(1, LIVE_ROUNDS + 1):
+        if round_index > 1:
+            say(f"live: esperando {LIVE_ROUND_SLEEP_SECONDS:.0f} s hasta la ronda {round_index}")
+            time.sleep(LIVE_ROUND_SLEEP_SECONDS)
+        for timeframe in ("1m", "5m"):
+            timespan, multiplier, _ = MASSIVE_TIMEFRAMES[timeframe]
+            now = datetime.now(UTC)
+            start_ms = int((now - timedelta(days=LIVE_LOOKBACK_DAYS)).timestamp() * 1000)
+            end_ms = int(now.timestamp() * 1000)
+            params = {
+                "adjusted": "true",
+                "sort": "desc",
+                "limit": MASSIVE_LATEST_LIMIT[timeframe],
+                "from": start_ms,
+                "to": end_ms,
+            }
+            path = f"/v2/aggs/ticker/SPY/range/{multiplier}/{timespan}"
+            say(f"live SPY {timeframe} ronda {round_index}: preparando")
+            try:
+                entry, response = client.request_path(path, params, page_index=0)
+            except Exception as exc:  # noqa: BLE001 - se guarda como evidencia
+                message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+                scenarios[timeframe]["rounds"].append(
+                    {"round": round_index, "error": message}
+                )
+                failures.append(f"live SPY {timeframe} ronda {round_index}: {message}")
+                say(f"live SPY {timeframe} ronda {round_index}: ERROR {message}")
+                continue
+            body = response.body if isinstance(response.body, dict) else {}
+            scenarios[timeframe]["rounds"].append(
+                {
+                    "round": round_index,
+                    "url": entry["url"],
+                    "params": entry["params"],
+                    "http_status": response.status,
+                    "captured_at_utc": entry["captured_at_utc"],
+                    "queryCount": body.get("queryCount"),
+                    "resultsCount": body.get("resultsCount"),
+                    "body": entry["body"],
+                }
+            )
+            say(
+                f"live SPY {timeframe} ronda {round_index}: "
+                f"{body.get('resultsCount')} resultados a {entry['captured_at_utc']}"
+            )
+
+    payload: dict[str, Any] = {
+        "provider": "massive",
+        "symbol": "SPY",
+        "timeframe": "live",
+        "capture_date_utc": iso_utc(datetime.now(UTC)),
+        "timezone": "America/New_York",
+        "notes": [
+            "Ejecutar durante RTH (09:30-16:00 ET): el objetivo es observar la barra en formacion.",
+            "Dos rondas separadas por 90 s; cada ronda pide las ultimas 5 barras de 1m y 5m.",
+            "sort=desc con ventana de 3 dias; limit escalado al multiplicador porque el motor",
+            "acota barras base de 1 minuto por peticion (limit=5x1 en 1m, 5x5 en 5m).",
+            "captured_at_utc de cada ronda es la hora UTC exacta de la peticion.",
+            "Preguntas a responder: incluye Massive la barra en formacion? cambia entre rondas?",
+            "como se distingue una barra cerrada de una en formacion?",
+        ],
+        "scenarios": scenarios,
+    }
+    path = out_dir / f"SPY_live_{datetime.now(UTC).date().isoformat()}.json"
+    try:
+        write_sample_file(path, payload)
+        say(f"escrito {path} ({path.stat().st_size} bytes)")
+    except Exception as exc:  # noqa: BLE001
+        message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+        failures.append(f"live: {message}")
+        say(f"live: ERROR al escribir: {message}")
+    return failures
+
+
 def capture_bingx(*, day: date, args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
     out_dir = Path(args.out)
@@ -1277,6 +1391,12 @@ def print_plan(massive_day: date, bingx_day: date) -> None:
         f"{first_sunday(massive_day.year, 11).isoformat()}"
     )
     say("")
+    say(
+        "Massive SPY live: 2 rondas separadas por 90 s (ejecutar en RTH); "
+        "1m y 5m, ultimas 5 barras (sort=desc, ventana de 3 dias, "
+        "limit escalado al multiplicador)"
+    )
+    say("")
     for timeframe, (interval, seconds_ms) in BINGX_TIMEFRAMES.items():
         say(
             f"BingX BTC-USDT {timeframe}: day + range({BINGX_RANGE_DAYS[timeframe]}d, "
@@ -1298,8 +1418,8 @@ def parse_args() -> argparse.Namespace:
         "provider",
         nargs="?",
         default="all",
-        choices=("all", "massive", "bingx"),
-        help="Proveedor a capturar (por defecto: all).",
+        choices=("all", "massive", "bingx", "live"),
+        help="Proveedor a capturar (por defecto: all). 'live' ejecuta el modo en sesion.",
     )
     parser.add_argument(
         "--day",
@@ -1401,29 +1521,45 @@ def main() -> int:
 
     failures: list[str] = []
 
-    if args.provider in ("all", "massive"):
+    if args.provider == "live":
         if not massive_key:
             message = (
-                "massive: MASSIVE_API_KEY no esta definida en .env ni en el entorno. "
-                "No se capturan muestras Massive."
+                "live: MASSIVE_API_KEY no esta definida en .env ni en el entorno. "
+                "No se ejecuta el modo live."
             )
             say("ERROR: " + message)
             failures.append(message)
         else:
             try:
-                failures.extend(capture_massive(day=massive_day, api_key=massive_key, args=args))
+                failures.extend(capture_live(args=args, api_key=massive_key))
             except Exception as exc:  # noqa: BLE001
                 message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
-                failures.append(f"massive: {message}")
-                say(f"massive: ERROR fatal {message}")
+                failures.append(f"live: {message}")
+                say(f"live: ERROR fatal {message}")
+    else:
+        if args.provider in ("all", "massive"):
+            if not massive_key:
+                message = (
+                    "massive: MASSIVE_API_KEY no esta definida en .env ni en el entorno. "
+                    "No se capturan muestras Massive."
+                )
+                say("ERROR: " + message)
+                failures.append(message)
+            else:
+                try:
+                    failures.extend(capture_massive(day=massive_day, api_key=massive_key, args=args))
+                except Exception as exc:  # noqa: BLE001
+                    message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+                    failures.append(f"massive: {message}")
+                    say(f"massive: ERROR fatal {message}")
 
-    if args.provider in ("all", "bingx"):
-        try:
-            failures.extend(capture_bingx(day=bingx_day, args=args))
-        except Exception as exc:  # noqa: BLE001
-            message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
-            failures.append(f"bingx: {message}")
-            say(f"bingx: ERROR fatal {message}")
+        if args.provider in ("all", "bingx"):
+            try:
+                failures.extend(capture_bingx(day=bingx_day, args=args))
+            except Exception as exc:  # noqa: BLE001
+                message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+                failures.append(f"bingx: {message}")
+                say(f"bingx: ERROR fatal {message}")
 
     say("")
     if failures:
