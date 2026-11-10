@@ -3041,6 +3041,32 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         [json_response({"status": "OK", "results": lm32_rows})],
     )
 
+    cases["lm33_visible_bars_zero"] = loader_case(
+        "Massive con visibleBars=0: el tramo visible queda vacío "
+        "(visibleStart = len(buffer)) y el buffer guarda el warmup",
+        options(visibleBars=0, warmupBars=2),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                        massive_row(
+                            base + 60, 100.0, 101.0, 99.0, 100.0, 1.0,
+                            100.0,
+                        ),
+                        massive_row(
+                            base, 99.0, 100.0, 98.0, 99.0, 1.0, 99.0,
+                        ),
+                    ],
+                }
+            )
+        ],
+    )
+
     return cases
 
 
