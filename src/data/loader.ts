@@ -13,7 +13,12 @@
  *    calculan sobre el buffer cerrado completo, antes del filtro. Con
  *    rthOnly + 1h la 1h nativa no se usa: se piden 30m y se agregan 7
  *    ventanas 09:30-ancladas por día ET (`aggregatedPartialBars` cuenta las
- *    ventanas cerradas con menos mitades que las esperadas).
+ *    ventanas cerradas con menos mitades que las esperadas, y
+ *    `aggregatedVwFallbackHalves` las mitades cuyo vw se sustituyó por su
+ *    precio típico). En los días de cierre anticipado (p. ej. vísperas de
+ *    festivo, sesión hasta 13:00 ET) las ventanas de la tarde no existen y
+ *    las de la 13:00 quedan con menos mitades: `aggregatedPartialBars` sube
+ *    por causa normal del calendario, no por datos defectuosos.
  *  - `sessionStartCovered` indica si el buffer contiene la primera barra de
  *    la sesión de la primera barra visible (09:30 ET en acciones, 00:00 UTC
  *    en cripto); false anticipa un VWAP de sesión parcial (SPEC punto 8).
