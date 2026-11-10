@@ -1380,9 +1380,11 @@ def aggregate_rth_1h(
         mitad: la ventana representa su tramo de rejilla.
       - open de la primera mitad, close de la última, high = máx, low = mín,
         volume = suma (acumulando en orden ascendente de tiempo).
-      - vw = sum(vw*volume)/sum(volume) SOLO si todas las mitades tienen vw
-        utilizable y la suma de volumen es > 0; si no, la ventana sale sin
-        vw (un valor no calculable nunca se sustituye).
+      - vw = sum(price*volume)/sum(volume) con price = vw de la mitad si es
+        utilizable (finito y > 0) o el precio típico (high+low+close)/3 de
+        esa mitad si no; cada mitad que usa el fallback cuenta en
+        vwFallbackHalves. La ventana sale sin vw solo si la suma de volumen
+        es 0 (no hay promedio posible).
       - Una ventana está cerrada solo si el final de su ventana ya pasó
         respecto a now. La que está en formación no se emite y se reporta
         en formingWindow.
@@ -1412,6 +1414,7 @@ def aggregate_rth_1h(
     windows: list[dict[str, Any]] = []
     forming_window: dict[str, Any] | None = None
     partial_bars = 0
+    vw_fallback_halves = 0
     for key in sorted(groups):
         index = key[1]
         group = groups[key]
@@ -1432,7 +1435,6 @@ def aggregate_rth_1h(
         high = -math.inf
         low = math.inf
         vw_numerator = 0.0
-        vw_usable = True
         for half in halves:
             volume += half["volume"]
             if half["high"] > high:
@@ -1442,7 +1444,13 @@ def aggregate_rth_1h(
             if usable_vw(half.get("vw")):
                 vw_numerator += half["vw"] * half["volume"]
             else:
-                vw_usable = False
+                # Mitad sin vw utilizable: su contribución al promedio usa el
+                # precio típico de esa mitad (high + low + close) / 3.
+                typical_price = (
+                    half["high"] + half["low"] + half["close"]
+                ) / 3
+                vw_numerator += typical_price * half["volume"]
+                vw_fallback_halves += 1
         window: dict[str, Any] = {
             "time": open_seconds,
             "open": halves[0]["open"],
@@ -1451,7 +1459,7 @@ def aggregate_rth_1h(
             "close": halves[-1]["close"],
             "volume": volume,
         }
-        if vw_usable and volume > 0:
+        if volume > 0:
             window["vw"] = vw_numerator / volume
         windows.append(window)
         if len(halves) < RTH_1H_EXPECTED_HALVES[index]:
@@ -1461,6 +1469,7 @@ def aggregate_rth_1h(
         "bars": windows,
         "formingWindow": forming_window,
         "partialBars": partial_bars,
+        "vwFallbackHalves": vw_fallback_halves,
     }
 
 
@@ -2056,12 +2065,14 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     # sobre las 30m cerradas completas (granularidad 1800 s).
     forming_window: dict[str, Any] | None = None
     partial_bars = 0
+    fallback_halves = 0
     if rth_1h_aggregated:
         rth_closed = [bar for bar in closed if is_rth(bar["time"])]
         aggregated = aggregate_rth_1h(rth_closed, now)
         buffer_bars = aggregated["bars"]
         forming_window = aggregated["formingWindow"]
         partial_bars = aggregated["partialBars"]
+        fallback_halves = aggregated["vwFallbackHalves"]
         gap_bar_seconds = RTH_1H_FETCH_BAR_SECONDS
     else:
         buffer_bars = (
@@ -2107,8 +2118,10 @@ def simulate_loader(case: dict[str, Any]) -> dict[str, Any]:
     )
     if rth_1h_aggregated:
         # Solo en el modo agregado: ventanas cerradas construidas con menos
-        # mitades de 30m que las esperadas (Massive omite las sin operaciones).
+        # mitades de 30m que las esperadas (Massive omite las sin operaciones)
+        # y mitades cuyo vw no utilizable se sustituyó por el precio típico.
         report["aggregatedPartialBars"] = partial_bars
+        report["aggregatedVwFallbackHalves"] = fallback_halves
 
     return {
         "bars": trimmed,
@@ -3065,6 +3078,30 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
                 }
             )
         ],
+    )
+
+    # Mitades de 30m del 2026-11-06 con vw distinguible: la 10:00 y la 11:30
+    # vienen SIN vw, la 10:30 con vw=0 (no utilizable) y el resto con vw.
+    # Volúmenes distintivos (10, 20, ..., 80) para verificar el promedio
+    # ponderado sin ruido de redondeo.
+    lm34_halves_desc = [
+        massive_row(et_seconds(2026, 11, 6, 13, 0), 103.5, 104.5, 103.0, 104.0, 80.0, 102.8),
+        massive_row(et_seconds(2026, 11, 6, 12, 30), 103.0, 104.0, 102.5, 103.5, 70.0, 102.7),
+        massive_row(et_seconds(2026, 11, 6, 12, 0), 102.5, 103.5, 102.0, 103.0, 60.0),
+        massive_row(et_seconds(2026, 11, 6, 11, 30), 102.0, 103.0, 101.5, 102.5, 50.0),
+        massive_row(et_seconds(2026, 11, 6, 11, 0), 101.5, 102.5, 101.0, 102.0, 40.0, 101.4),
+        massive_row(et_seconds(2026, 11, 6, 10, 30), 101.0, 102.0, 100.5, 101.5, 30.0, 0.0),
+        massive_row(et_seconds(2026, 11, 6, 10, 0), 100.5, 101.5, 100.0, 101.0, 20.0),
+        massive_row(et_seconds(2026, 11, 6, 9, 30), 100.0, 100.5, 99.5, 100.25, 10.0, 100.2),
+    ]
+    cases["lm34_rth_1h_vw_fallback"] = loader_case(
+        "Massive rthOnly+1h: la mitad sin vw utilizable (ausente o 0) aporta "
+        "(high+low+close)/3 al promedio ponderado y cuenta en "
+        "aggregatedVwFallbackHalves",
+        rth_1h_options(
+            visibleBars=2, warmupBars=2, now=et_seconds(2026, 11, 6, 20, 0)
+        ),
+        [json_response({"status": "OK", "results": lm34_halves_desc})],
     )
 
     return cases

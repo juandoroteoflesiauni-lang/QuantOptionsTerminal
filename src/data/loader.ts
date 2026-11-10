@@ -582,6 +582,7 @@ function finalizeMassive(
   let bufferBars: readonly Bar[];
   let formingWindow: FormingBarInfo | null = null;
   let aggregatedPartialBars: number | undefined;
+  let aggregatedVwFallbackHalves: number | undefined;
   if (rth1hAggregated) {
     // El buffer son ventanas de 1h 09:30-ancladas agregadas desde 30m: la
     // ventana en formación no se emite y el recorte se aplica sobre ventanas.
@@ -592,6 +593,7 @@ function finalizeMassive(
     bufferBars = aggregated.bars;
     formingWindow = aggregated.formingWindow;
     aggregatedPartialBars = aggregated.partialBars;
+    aggregatedVwFallbackHalves = aggregated.vwFallbackHalves;
   } else {
     bufferBars = options.rthOnly
       ? closedBars.filter((bar) => isRth(bar.time))
@@ -637,6 +639,9 @@ function finalizeMassive(
     ...(aggregatedPartialBars === undefined
       ? {}
       : { aggregatedPartialBars }),
+    ...(aggregatedVwFallbackHalves === undefined
+      ? {}
+      : { aggregatedVwFallbackHalves }),
   };
 
   return { bars, visibleStart, report };

@@ -236,6 +236,13 @@ export interface MassiveLoadBarsReport
    * resto de modos.
    */
   readonly aggregatedPartialBars?: number;
+  /**
+   * Solo rthOnly + 1h (ventanas agregadas desde 30m): mitades sin vw
+   * utilizable (ausente, 0 o no finito) cuya contribución al promedio
+   * ponderado usó el precio típico (high + low + close) / 3 de esa mitad.
+   * Ausente en el resto de modos.
+   */
+  readonly aggregatedVwFallbackHalves?: number;
 }
 
 export interface BingxLoadBarsReport

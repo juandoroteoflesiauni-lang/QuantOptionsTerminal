@@ -9,7 +9,10 @@
  *
  * Funciones puras: no mutan los argumentos y no tocan la red. No se inventan
  * barras: una ventana sin mitades no se emite (los huecos de 30m la
- * reportan) y un vw no calculable se omite, nunca se sustituye.
+ * reportan) y el vw de una mitad no utilizable se sustituye por el precio
+ * típico de ESA mitad, (high+low+close)/3, dentro del promedio ponderado
+ * (cada sustitución cuenta en `vwFallbackHalves`); la ventana solo sale sin
+ * vw si la suma de volumen es 0.
  */
 
 import { getMarketParts } from '../core/sessions.js';
@@ -40,6 +43,11 @@ export interface Rth1hAggregate {
   readonly formingWindow: FormingBarInfo | null;
   /** Ventanas cerradas agregadas con menos mitades que las esperadas. */
   readonly partialBars: number;
+  /**
+   * Mitades cuyo vw no utilizable (ausente, 0 o no finito) se sustituyó por
+   * (high + low + close) / 3 en el promedio ponderado, tengan volumen o no.
+   */
+  readonly vwFallbackHalves: number;
 }
 
 interface WindowGroup {
@@ -88,8 +96,11 @@ function windowEndSeconds(group: WindowGroup, index: number): number {
  *    primera mitad: la ventana representa su tramo de rejilla.
  *  - open de la primera mitad, close de la última, high = máx, low = mín,
  *    volume = suma (acumulando en orden ascendente de tiempo).
- *  - vw = sum(vw * volume) / sum(volume) solo si TODAS las mitades tienen vw
- *    utilizable y la suma de volumen es > 0; si no, la ventana sale sin vw.
+ *  - vw = sum(price * volume) / sum(volume) con price = vw de la mitad si es
+ *    utilizable (finito y > 0) o el precio típico (high+low+close)/3 de esa
+ *    mitad si no; cada mitad que usa el fallback cuenta en
+ *    `vwFallbackHalves`. La ventana sale sin vw solo si la suma de volumen
+ *    es 0.
  *  - Una ventana está cerrada solo si el final de su ventana ya pasó respecto
  *    a `now`; la que está en formación no se emite y se reporta en
  *    `formingWindow`.
@@ -128,6 +139,7 @@ export function aggregateRth1hFrom30m(
   const bars: Bar[] = [];
   let formingWindow: FormingBarInfo | null = null;
   let partialBars = 0;
+  let vwFallbackHalves = 0;
 
   const dateKeys = [...groups.keys()].sort();
   for (const dateKey of dateKeys) {
@@ -160,7 +172,6 @@ export function aggregateRth1hFrom30m(
       let high = -Infinity;
       let low = Infinity;
       let vwNumerator = 0;
-      let vwUsable = true;
       for (const half of halves) {
         volume += half.volume;
         if (half.high > high) {
@@ -172,7 +183,11 @@ export function aggregateRth1hFrom30m(
         if (isUsableVw(half.vw)) {
           vwNumerator += half.vw * half.volume;
         } else {
-          vwUsable = false;
+          // Mitad sin vw utilizable: su contribución al promedio usa el
+          // precio típico de esa mitad (high + low + close) / 3.
+          const typicalPrice = (half.high + half.low + half.close) / 3;
+          vwNumerator += typicalPrice * half.volume;
+          vwFallbackHalves += 1;
         }
       }
 
@@ -187,7 +202,7 @@ export function aggregateRth1hFrom30m(
         low,
         close: lastHalf.close,
         volume,
-        ...(vwUsable && volume > 0 ? { vw: vwNumerator / volume } : {}),
+        ...(volume > 0 ? { vw: vwNumerator / volume } : {}),
       };
       bars.push(window);
       if (halves.length < expectedHalves) {
@@ -196,5 +211,5 @@ export function aggregateRth1hFrom30m(
     }
   }
 
-  return { bars, formingWindow, partialBars };
+  return { bars, formingWindow, partialBars, vwFallbackHalves };
 }
