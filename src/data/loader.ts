@@ -285,6 +285,15 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
   if (baseUrl === '') {
     throw new Error('baseUrl must be a non-empty URL');
   }
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(baseUrl);
+  } catch {
+    throw new Error(`baseUrl must be an absolute https URL (got ${baseUrl})`);
+  }
+  if (parsedBaseUrl.protocol !== 'https:') {
+    throw new Error(`baseUrl must be an absolute https URL (got ${baseUrl})`);
+  }
 
   return {
     provider,

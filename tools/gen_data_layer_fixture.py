@@ -2186,6 +2186,12 @@ def validate_load_options(options: dict[str, Any]) -> str | None:
     ).rstrip("/")
     if resolved_base == "":
         return "baseUrl must be a non-empty URL"
+    try:
+        parsed_base = urllib.parse.urlparse(resolved_base)
+    except ValueError:
+        return f"baseUrl must be an absolute https URL (got {resolved_base})"
+    if parsed_base.scheme != "https" or parsed_base.netloc == "":
+        return f"baseUrl must be an absolute https URL (got {resolved_base})"
     return None
 
 
@@ -3448,6 +3454,12 @@ def build_loader_validation_cases() -> dict[str, dict[str, Any]]:
         ),
         "v15_rth_only_type": case(
             "rthOnly no booleano", rthOnly="yes"
+        ),
+        "v16_base_url_relative": case(
+            "baseUrl relativa (no absoluta)", baseUrl="api.polygon.io/v2"
+        ),
+        "v17_base_url_http": case(
+            "baseUrl http (no https)", baseUrl="http://api.polygon.io"
         ),
     }
 
