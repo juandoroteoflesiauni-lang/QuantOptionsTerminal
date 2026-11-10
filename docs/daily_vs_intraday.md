@@ -204,13 +204,54 @@ comparable con la diaria histórica:**
 - GLDD delisted (última diaria 2026-03-31): excluido; BGS lo sustituye.
 - Los scripts de captura/análisis de este documento son desechables (fuera del
   repo); las muestras crudas quedan en `fixtures/samples/` y el método está
-  descrito en §1 para reproducirlo.
+  descrito en §1 y §7 para reproducirlo.
 
-## 6. Decisiones pendientes
+## 6. Decisiones del dueño (2026-11-10)
 
-1. ¿Commitear las muestras nuevas (QQQ/CSCO/BGS/GLDD, ~27 MB en 1m)? Sin ellas
-   los números del documento no son reproducibles offline.
-2. ¿Añadir `--symbol` a `tools/capture_samples.py` (pieza futura con tests)
-   para reproducir estas capturas con la herramienta oficial?
-3. ¿Convertir la regla de §4 en pieza del motor (SPEC) cuando toque la diaria
-   del día en curso?
+1. **Muestras**: NO se commitean QQQ/CSCO/BGS (~27 MB en 1m) ni las de
+   BTC-USDT del 11-09 (BingX congelado); quedan fuera del seguimiento
+   (`.gitignore`) y se regeneran con el método de §7. Las capturas SPY del
+   2026-11-09 (8,05 MB < 10 MB) sí se commitean. El repositorio debe
+   permanecer privado (datos de un proveedor con licencia).
+2. **EMAs**: se calculan sobre la serie en horario extendido (premarket +
+   RTH + after-hours), sin `rthOnly` y sin rellenar barras sin operaciones.
+   `rthOnly` queda como opción, no como camino por defecto. Temporalidades
+   de la primera entrega: 1m, 5m, 15m, 1h, 1D (4h fuera).
+3. **`--symbol` en `tools/capture_samples.py`**: pieza futura, baja
+   prioridad, con tests.
+4. **Regla de la diaria del día en curso (§4)**: pieza futura del motor,
+   cuando necesite EMA o AVWAP diarios en vivo. **Pendiente documentado:**
+   al sustituir la barra construida por la diaria del proveedor, el volumen
+   extendido queda ~2,5-3 % por debajo del oficial → habrá un pequeño salto
+   en el AVWAP diario anclado a esa barra; hay que medirlo al implementar.
+
+## 7. Regeneración de las muestras fuera del seguimiento
+
+Las muestras QQQ/CSCO/BGS/GLDD y las capturas auxiliares SPY del 2026-11-10
+no están en el repositorio. Para regenerarlas:
+
+1. `tools/capture_samples.py` aún no acepta `--symbol` (pieza futura). El
+   método usado reutiliza sus internos desde un script desechable:
+   - `MassiveClient` (autenticación por query, reintentos, pausa de 12 s
+     entre peticiones: plan gratuito 5/min),
+   - `massive_fetch_pages(client, path, params, max_pages, target_rows)`
+     con `path = /v2/aggs/ticker/{SIMBOLO}/range/{mult}/{timespan}`,
+   - `cs.write_sample_file(out, payload)` para guardar: comprueba que la
+     clave no aparece en la salida y se niega a escribir si está
+     (fail-closed). No serializar el payload dos veces.
+2. Escenarios por símbolo (QQQ/CSCO/BGS): `1m` con `day` (día cerrado),
+   `range` (day−4 días, límite 1000, hasta 4 páginas) y `max` (day−260 días,
+   límite 50 000, hasta 2 páginas → ~100 000 filas ≈ 104 días hábiles);
+   `1D` con `day` (day−40) y `max` (desde 2003). Misma estructura de payload
+   que los ficheros SPY existentes (provider, symbol, timeframe,
+   capture_date_utc, reference_closed_day_et, timezone, notes, scenarios).
+3. Capturas auxiliares SPY 2026-11-10 (fuera del seguimiento): `1h` con
+   ventana de 150 días (1 658 filas) y `15m` con 60 (2 727 filas); cubren
+   la ventana que pide el cargador para 500+1000 barras (142 y 43 días
+   calendario).
+4. Tras escribir, ejecutar el escaneo de secretos (`key_found False`,
+   `apiKey_param_found False`).
+5. Nota: Massive pagina por tramo temporal aunque la respuesta tenga menos
+   de 50 000 filas (el `max` de 1h con 260 días devolvió 1 744 filas,
+   2026-02-23→07-29, con cursor; con `max_pages` insuficiente la ventana
+   queda truncada — detectarlo con `has_next_url_after_last_page`).

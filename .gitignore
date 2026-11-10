@@ -5,5 +5,11 @@ coverage/
 .DS_Store
 .env
 fixtures/samples/*.secret*
+fixtures/samples/QQQ_*
+fixtures/samples/CSCO_*
+fixtures/samples/BGS_*
+fixtures/samples/GLDD_*
+fixtures/samples/BTC-USDT_*_2026-11-09.json
+fixtures/samples/SPY_*_2026-11-10.json
 __pycache__/
 *.pyc
