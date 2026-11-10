@@ -522,4 +522,36 @@ describe('Capa de datos: normalizadores (SPEC punto 6)', () => {
       }
     });
   });
+
+  describe('Redacción del error del proveedor', () => {
+    it('Massive: el mensaje de error no revela el parámetro de autenticación', () => {
+      const result = normalizeMassiveAggs(
+        {
+          status: 'ERROR',
+          error:
+            'request failed: https://api.polygon.io/v2/aggs?apiKey=leaked-value&cursor=x',
+        },
+        { barSeconds: 60 },
+      );
+
+      expect(result.report.providerError?.message).toBe(
+        'request failed: https://api.polygon.io/v2/aggs?apiKey=<redacted>&cursor=x',
+      );
+    });
+
+    it('BingX: el mensaje de error no revela el parámetro de autenticación', () => {
+      const result = normalizeBingxKlines(
+        {
+          code: 100_204,
+          msg: 'invalid request https://open-api.bingx.com/x?apikey=leaked-value',
+          data: null,
+        },
+        { barSeconds: 60 },
+      );
+
+      expect(result.report.providerError?.message).toBe(
+        'invalid request https://open-api.bingx.com/x?apikey=<redacted>',
+      );
+    });
+  });
 });

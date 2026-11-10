@@ -41,11 +41,13 @@ import { aggregateRth1hFrom30m, RTH_1H_FETCH_BAR_SECONDS } from './aggregateRth1
 import { normalizeBingxKlines } from './normalizeBingx.js';
 import { normalizeMassiveAggs } from './normalizeMassive.js';
 import {
+  AUTH_PARAM_NAMES,
   detectGaps,
   isFiniteNumber,
   isRecord,
   parseBingxCode,
   parseMilliseconds,
+  redact,
   toErrorMessage,
 } from './normalizeShared.js';
 import { isTimeframe, timeframeSeconds } from './timeframes.js';
@@ -151,12 +153,6 @@ const BINGX_MAX_RANGE_DAYS: Readonly<Record<Timeframe, number>> = Object.freeze(
   '4h': 350,
   '1D': 380,
 });
-
-const AUTH_PARAM_NAMES = new Set(['apikey', 'api_key', 'api-key']);
-const AUTH_PARAM_PATTERN = new RegExp(
-  `([?&](?:${[...AUTH_PARAM_NAMES].join('|')})=)[^&\\s]+`,
-  'gi',
-);
 
 interface ResolvedLoadOptions {
   readonly provider: DataProvider;
@@ -1133,14 +1129,4 @@ function errorMessage(error: unknown): string {
     return error;
   }
   return 'fetch failed';
-}
-
-function redact(text: string, secrets: readonly string[]): string {
-  let out = text;
-  for (const secret of secrets) {
-    if (secret !== '') {
-      out = out.split(secret).join('<redacted>');
-    }
-  }
-  return out.replace(AUTH_PARAM_PATTERN, '$1<redacted>');
 }

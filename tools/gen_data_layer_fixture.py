@@ -174,6 +174,16 @@ def detect_gaps(
     return gaps, "performed"
 
 
+def redact_provider_message(text: str) -> str:
+    """Redacción aplicable al mensaje de error de un proveedor.
+
+    Los normalizadores no reciben el valor de la clave (solo el cargador lo
+    conoce), así que únicamente aplican el patrón de parámetro de
+    autenticación: cualquier `?apiKey=valor` de la URL pasa a `<redacted>`.
+    """
+    return AUTH_PARAM_PATTERN.sub(r"\1<redacted>", text)
+
+
 def provider_error_from_massive(raw: dict[str, Any]) -> dict[str, Any] | None:
     status = raw.get("status")
     if isinstance(status, str) and status.upper() != "OK":
@@ -182,7 +192,7 @@ def provider_error_from_massive(raw: dict[str, Any]) -> dict[str, Any] | None:
             message = raw.get("message")
         if not isinstance(message, str):
             message = status
-        return {"code": 0, "message": message}
+        return {"code": 0, "message": redact_provider_message(message)}
     return None
 
 
@@ -230,7 +240,7 @@ def bingx_code_error(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(message, str):
         message = ""
     code = int(number) if float(number).is_integer() else number
-    return {"code": code, "message": message}
+    return {"code": code, "message": redact_provider_message(message)}
 
 
 def forming_massive(
@@ -930,6 +940,19 @@ def build_massive_cases() -> dict[str, dict[str, Any]]:
         after,
     )
 
+    cases["m15_provider_error_redacted"] = massive_case(
+        "el mensaje de error del proveedor redacta el parámetro de autenticación",
+        {
+            "status": "ERROR",
+            "error": (
+                "request failed: https://api.polygon.io/v2/aggs/ticker/SPY"
+                "?apiKey=leaked-value&cursor=abc123"
+            ),
+        },
+        60,
+        after,
+    )
+
     return cases
 
 
@@ -1178,6 +1201,20 @@ def build_bingx_cases() -> dict[str, dict[str, Any]]:
         },
         60,
         base + 200,
+    )
+
+    cases["b18_provider_error_redacted"] = bingx_case(
+        "el mensaje de error de BingX redacta el parámetro de autenticación",
+        {
+            "code": 100204,
+            "msg": (
+                "invalid request https://open-api.bingx.com/openApi/spot/v2"
+                "/market/kline?symbol=BTC-USDT&apiKey=leaked-value"
+            ),
+            "data": None,
+        },
+        60,
+        after,
     )
 
     return cases

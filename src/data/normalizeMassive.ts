@@ -23,6 +23,7 @@ import {
   isFiniteNumber,
   isRecord,
   parseMilliseconds,
+  redact,
   toErrorMessage,
 } from './normalizeShared.js';
 import type {
@@ -110,7 +111,10 @@ export function normalizeMassiveAggs(
       const message = raw['error'] ?? raw['message'];
       providerError = {
         code: 0,
-        message: toErrorMessage(message, status),
+        // El mensaje del proveedor puede repetir la URL de la petición (con
+        // la clave): se redacta el parámetro de autenticación por si el
+        // normalizador se usa sin pasar por el cargador.
+        message: redact(toErrorMessage(message, status), []),
       };
     }
 

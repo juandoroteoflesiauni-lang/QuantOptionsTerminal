@@ -10,6 +10,41 @@ import type {
   NormalizeOptions,
 } from './types.js';
 
+/**
+ * Nombres de parámetro de autenticación que viajan en la URL. Se normalizan a
+ * minúsculas para comparar (los proveedores aceptan cualquier capitalización).
+ */
+export const AUTH_PARAM_NAMES: ReadonlySet<string> = new Set([
+  'apikey',
+  'api_key',
+  'api-key',
+]);
+
+export const AUTH_PARAM_PATTERN = new RegExp(
+  `([?&](?:${[...AUTH_PARAM_NAMES].join('|')})=)[^&\\s]+`,
+  'gi',
+);
+
+/**
+ * Redacción de secretos en texto que puede acabar en un reporte o error.
+ *
+ * Sustituye cada secreto conocido (el valor real de la clave cuando se
+ * conoce) por `<redacted>` y, siempre, el valor de cualquier parámetro de
+ * autenticación en una URL (`?apiKey=...` -> `?apiKey=<redacted>`).
+ *
+ * Los normalizadores no reciben la clave, así que la invocan con lista de
+ * secretos vacía: solo aplican el patrón de la URL.
+ */
+export function redact(text: string, secrets: readonly string[]): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret !== '') {
+      out = out.split(secret).join('<redacted>');
+    }
+  }
+  return out.replace(AUTH_PARAM_PATTERN, '$1<redacted>');
+}
+
 export const DISCARD_CAUSES: readonly DiscardCause[] = Object.freeze([
   'malformedRow',
   'invalidTime',
