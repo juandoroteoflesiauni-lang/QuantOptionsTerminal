@@ -1237,6 +1237,14 @@ AUTH_PARAM_PATTERN = re.compile(
 )
 SECONDS_PER_DAY = 86_400
 
+# Orígenes que un next_url de Massive puede apuntar. Constante fija, no
+# configurable: el proveedor reparte la paginación entre su dominio
+# histórico (api.polygon.io) y su dominio actual (api.massive.com). BingX
+# no pagina con next_url, así que no tiene lista.
+MASSIVE_NEXT_URL_ORIGINS = frozenset(
+    {"https://api.polygon.io", "https://api.massive.com"}
+)
+
 TIMEFRAME_SECONDS = {
     "1m": 60,
     "5m": 300,
@@ -1672,44 +1680,46 @@ def default_port(scheme: str) -> int | None:
     return None
 
 
-def allowed_next_url(url: str, base_url: str) -> str:
-    """Devuelve la URL absoluta de next_url o lanza ValueError.
+def origin_of(parts: urllib.parse.SplitResult) -> str:
+    """Origen serializado; el puerto por defecto del esquema se omite."""
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    port = parts.port if parts.port is not None else default_port(scheme)
+    if port is None or port == default_port(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
 
-    Regla escrita a partir del requisito, de forma independiente: un
-    next_url solo se sigue si pertenece al MISMO origen que base_url
-    (esquema, host y puerto), con esquema http/https y sin credenciales
-    en la propia URL. La clave nunca viaja a un host distinto del
-    configurado.
+
+def allowed_next_url(url: str, base_url: str) -> str:
+    """Devuelve la URL de next_url lista para pedir o lanza ValueError.
+
+    Regla escrita a partir del requisito, de forma independiente:
+      - solo https;
+      - sin credenciales en la propia URL;
+      - el origen de next_url debe ser el MISMO origen que base_url (se
+        sigue tal cual) o un origen espejo de la lista fija del proveedor
+        (se reescribe al origen de base_url conservando path y query);
+      - cualquier otro origen se rechaza: la clave nunca viaja a un host
+        distinto del configurado.
     """
     absolute = urllib.parse.urljoin(base_url, url)
     parts = urllib.parse.urlsplit(absolute)
     scheme = parts.scheme.lower()
-    if scheme not in ("http", "https"):
+    if scheme != "https":
         raise ValueError(f"Unsupported next_url protocol: {scheme}")
     if parts.username or parts.password:
         raise ValueError("next_url must not include credentials")
     base = urllib.parse.urlsplit(base_url)
-    base_scheme = base.scheme.lower()
-    if scheme != base_scheme:
-        raise ValueError("next_url scheme mismatch")
-    host = (parts.hostname or "").lower()
-    base_host = (base.hostname or "").lower()
-    if host != base_host:
-        raise ValueError("next_url host mismatch")
-    port = parts.port if parts.port is not None else default_port(scheme)
-    base_port = (
-        base.port if base.port is not None else default_port(base_scheme)
-    )
-    if port != base_port:
-        raise ValueError("next_url port mismatch")
-    return urllib.parse.urlunsplit(
-        (
-            parts.scheme,
-            parts.netloc,
-            parts.path,
-            parts.query,
-            parts.fragment,
+    if origin_of(parts) != origin_of(base):
+        next_origin = origin_of(parts)
+        if next_origin not in MASSIVE_NEXT_URL_ORIGINS:
+            raise ValueError(f"next_url origin not allowed: {next_origin}")
+        # Espejo: origen de base_url, path y query de next_url.
+        return urllib.parse.urlunsplit(
+            (base.scheme, base.netloc, parts.path, parts.query, "")
         )
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, parts.query, parts.fragment)
     )
 
 
@@ -3150,6 +3160,83 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         "333 días calendario (ceil(1500*1.03/7 * 365.25/250) + 10)",
         rth_1h_options(visibleBars=500, warmupBars=1000),
         [json_response({"status": "OK", "results": []})],
+    )
+
+    cases["lm41_next_url_mirror_polygon_base_massive"] = loader_case(
+        "Massive con base massive reescribe un next_url del origen espejo "
+        "polygon al origen configurado, conservando path y query",
+        options(baseUrl="https://api.massive.com"),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                            102.0,
+                        ),
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                    ],
+                    "next_url": (
+                        "https://api.polygon.io/v2/aggs/ticker/SPY/range/"
+                        "1/minute/1793955600000/1794048000000"
+                        "?adjusted=true&sort=desc&limit=50000"
+                        "&cursor=abc123&api_key=old-key"
+                    ),
+                }
+            ),
+            json_response(two_rows_page()),
+        ],
+    )
+
+    cases["lm42_next_url_mirror_massive_base_polygon"] = loader_case(
+        "Massive con base polygon reescribe un next_url del origen espejo "
+        "massive al origen configurado, conservando path y query",
+        options(),
+        [
+            json_response(
+                {
+                    "status": "OK",
+                    "results": [
+                        massive_row(
+                            base + 180, 102.0, 103.0, 101.0, 102.0, 1.0,
+                            102.0,
+                        ),
+                        massive_row(
+                            base + 120, 101.0, 102.0, 100.0, 101.0, 1.0,
+                            101.0,
+                        ),
+                    ],
+                    "next_url": (
+                        "https://api.massive.com/v2/aggs/ticker/SPY/range/"
+                        "1/minute/1793955600000/1794048000000"
+                        "?adjusted=true&sort=desc&limit=50000"
+                        "&cursor=abc123&api_key=old-key"
+                    ),
+                }
+            ),
+            json_response(two_rows_page()),
+        ],
+    )
+
+    cases["lm43_next_url_external_host_base_massive"] = loader_case(
+        "Massive con base massive rechaza un next_url de un host externo "
+        "que no está en la lista de orígenes del proveedor",
+        options(baseUrl="https://api.massive.com"),
+        [
+            json_response(
+                {
+                    **two_rows_page(),
+                    "next_url": (
+                        "https://evil.example/v2/steal"
+                        "?cursor=abc123&api_key=old-key"
+                    ),
+                }
+            ),
+        ],
     )
 
     return cases

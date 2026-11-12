@@ -29,8 +29,10 @@
  *
  * No se inventan barras ni se rellenan huecos. La clave de Massive solo se
  * añade a la URL de la petición; nunca se incluye en el reporte. Un
- * `next_url` solo se sigue si pertenece al mismo origen que `baseUrl`:
- * la clave nunca se envía a un host distinto del configurado.
+ * `next_url` solo se sigue si pertenece al mismo origen que `baseUrl`, o
+ * si apunta a uno de los orígenes espejo fijos del proveedor, en cuyo caso
+ * se reescribe al origen configurado: la clave nunca se envía a un host
+ * distinto del configurado.
  */
 
 import { URL, URLSearchParams } from 'node:url';
@@ -73,6 +75,17 @@ import type {
 
 const MASSIVE_BASE_URL = 'https://api.polygon.io';
 const BINGX_BASE_URL = 'https://open-api.bingx.com';
+
+/**
+ * Orígenes que un `next_url` de Massive puede apuntar. Constante fija, no
+ * configurable: el proveedor reparte la paginación entre su dominio
+ * histórico (api.polygon.io) y su dominio actual (api.massive.com).
+ * BingX no pagina con `next_url`, así que no tiene lista.
+ */
+const MASSIVE_NEXT_URL_ORIGINS: ReadonlySet<string> = new Set([
+  'https://api.polygon.io',
+  'https://api.massive.com',
+]);
 const MASSIVE_PAGE_LIMIT = 50_000;
 const BINGX_PAGE_LIMIT = 1_000;
 const DEFAULT_MAX_PAGES = 10;
@@ -1081,22 +1094,29 @@ function bingxUrl(
 /**
  * Resuelve y valida el `next_url` del proveedor.
  *
- * Solo se acepta una URL del MISMO origen que `baseUrl` (esquema, host y
- * puerto), con esquema http/https y sin credenciales en la propia URL.
- * Cualquier otra URL se rechaza: la clave nunca se envía a un host distinto
- * del configurado por el llamador.
+ * Reglas fijas, no configurables: solo https, sin credenciales en la
+ * propia URL, y el origen de `next_url` debe ser el MISMO origen que
+ * `baseUrl` (se sigue tal cual) o uno de los orígenes espejo de la lista
+ * del proveedor (se reescribe al origen de `baseUrl` conservando path y
+ * query). Cualquier otro origen, esquema distinto de https o URL inválida
+ * se rechaza: la clave nunca se envía a un host distinto del configurado.
  */
 function allowedNextUrl(nextUrl: string, baseUrl: string): string {
   const base = new URL(baseUrl);
   const next = new URL(nextUrl, base);
-  if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+  if (next.protocol !== 'https:') {
     throw new Error(`Unsupported next_url protocol: ${next.protocol}`);
   }
   if (next.username !== '' || next.password !== '') {
     throw new Error('next_url must not include credentials');
   }
   if (next.origin !== base.origin) {
-    throw new Error(`next_url origin mismatch: ${next.origin}`);
+    if (!MASSIVE_NEXT_URL_ORIGINS.has(next.origin)) {
+      throw new Error(`next_url origin not allowed: ${next.origin}`);
+    }
+    // Espejo: se reescribe al origen configurado conservando path y query.
+    const rewritten = new URL(next.pathname + next.search, base);
+    return rewritten.toString();
   }
   return next.toString();
 }
