@@ -994,11 +994,12 @@ function massiveWindow(
 }
 
 /**
- * Días calendario de lookback para alcanzar `requestedBars`.
+ * Días calendario de lookback para alcanzar `requestedBars` con 3% extra.
  *
- * El factor 365.25/250 convierte sesiones de bolsa (~250/año) en días
- * calendario, cubriendo fines de semana y feriados de EE. UU.; los 10 días
- * extra añaden margen.
+ * El objetivo se pide con un margen del 3% (`requestedBars * 1.03`, decisión
+ * del dueño) y el factor 365.25/250 convierte sesiones de bolsa (~250/año)
+ * en días calendario, cubriendo fines de semana y feriados de EE. UU.; los
+ * 10 días finales añaden margen adicional.
  */
 function massiveLookbackDays(
   requestedBars: number,
@@ -1009,7 +1010,7 @@ function massiveLookbackDays(
     ? MASSIVE_RTH_BARS_PER_DAY[timeframe as Exclude<Timeframe, '1D'>]
     : MASSIVE_BARS_PER_DAY[timeframe];
   return (
-    Math.ceil((requestedBars / barsPerDay) * (365.25 / 250)) + 10
+    Math.ceil((requestedBars * 1.03 / barsPerDay) * (365.25 / 250)) + 10
   );
 }
 
