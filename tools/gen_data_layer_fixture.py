@@ -1515,13 +1515,19 @@ def massive_lookback_days(
     timeframe: str,
     rth_only: bool = False,
 ) -> int:
+    """Días calendario de lookback para alcanzar requested_bars.
+
+    Factor 365.25/250: convierte sesiones de bolsa (~250/año) en días
+    calendario, cubriendo fines de semana y feriados de EE. UU.; los 10
+    días extra añaden margen.
+    """
     bars_per_day = (
         MASSIVE_RTH_BARS_PER_DAY[timeframe]
         if rth_only
         else MASSIVE_BARS_PER_DAY[timeframe]
     )
     return (
-        math.ceil((requested_bars / bars_per_day) * (7 / 5)) + 10
+        math.ceil((requested_bars / bars_per_day) * (365.25 / 250)) + 10
     )
 
 
@@ -3102,6 +3108,47 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
             visibleBars=2, warmupBars=2, now=et_seconds(2026, 11, 6, 20, 0)
         ),
         [json_response({"status": "OK", "results": lm34_halves_desc})],
+    )
+
+    # Ventanas de lookback con 500 visibles + 1000 de calentamiento: fijan el
+    # ancla `from` de la primera petición por temporalidad con el factor
+    # 365.25/250 (días calendario por sesión de bolsa). Respuesta vacía: el
+    # caso asserts la URL pedida, no las barras.
+    cases["lm35_lookback_5m"] = loader_case(
+        "Massive 5m con 500+1000 barras: la ventana pide 22 días calendario "
+        "(ceil(1500/192 * 365.25/250) + 10)",
+        options(timeframe="5m", visibleBars=500, warmupBars=1000),
+        [json_response({"status": "OK", "results": []})],
+    )
+    cases["lm36_lookback_15m"] = loader_case(
+        "Massive 15m con 500+1000 barras: la ventana pide 45 días calendario "
+        "(ceil(1500/64 * 365.25/250) + 10)",
+        options(timeframe="15m", visibleBars=500, warmupBars=1000),
+        [json_response({"status": "OK", "results": []})],
+    )
+    cases["lm37_lookback_1h"] = loader_case(
+        "Massive 1h con 500+1000 barras: la ventana pide 147 días calendario "
+        "(ceil(1500/16 * 365.25/250) + 10)",
+        options(timeframe="1h", visibleBars=500, warmupBars=1000),
+        [json_response({"status": "OK", "results": []})],
+    )
+    cases["lm38_lookback_4h"] = loader_case(
+        "Massive 4h con 500+1000 barras: la ventana pide 558 días calendario "
+        "(ceil(1500/4 * 365.25/250) + 10)",
+        options(timeframe="4h", visibleBars=500, warmupBars=1000),
+        [json_response({"status": "OK", "results": []})],
+    )
+    cases["lm39_lookback_1d"] = loader_case(
+        "Massive 1D con 500+1000 barras: la ventana pide 2202 días calendario "
+        "(ceil(1500/1 * 365.25/250) + 10)",
+        options(timeframe="1D", visibleBars=500, warmupBars=1000),
+        [json_response({"status": "OK", "results": []})],
+    )
+    cases["lm40_lookback_rth_1h_30m"] = loader_case(
+        "Massive rthOnly+1h (pide 30m) con 500+1000 ventanas: la ventana pide "
+        "324 días calendario (ceil(1500/7 * 365.25/250) + 10)",
+        rth_1h_options(visibleBars=500, warmupBars=1000),
+        [json_response({"status": "OK", "results": []})],
     )
 
     return cases

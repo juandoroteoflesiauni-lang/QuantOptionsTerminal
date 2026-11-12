@@ -993,6 +993,13 @@ function massiveWindow(
   return { from: from * 1_000, to: now * 1_000 };
 }
 
+/**
+ * Días calendario de lookback para alcanzar `requestedBars`.
+ *
+ * El factor 365.25/250 convierte sesiones de bolsa (~250/año) en días
+ * calendario, cubriendo fines de semana y feriados de EE. UU.; los 10 días
+ * extra añaden margen.
+ */
 function massiveLookbackDays(
   requestedBars: number,
   timeframe: Timeframe,
@@ -1002,7 +1009,7 @@ function massiveLookbackDays(
     ? MASSIVE_RTH_BARS_PER_DAY[timeframe as Exclude<Timeframe, '1D'>]
     : MASSIVE_BARS_PER_DAY[timeframe];
   return (
-    Math.ceil((requestedBars / barsPerDay) * (7 / 5)) + 10
+    Math.ceil((requestedBars / barsPerDay) * (365.25 / 250)) + 10
   );
 }
 
