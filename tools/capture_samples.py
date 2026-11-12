@@ -161,9 +161,10 @@ LIVE_ROUNDS = 2
 LIVE_ROUND_SLEEP_SECONDS = 90.0
 LIVE_LOOKBACK_DAYS = 3
 
-# Modo live-poll: sondeo de la barra en formacion cada 10 s durante 4 min y
-# seguimientos a +5 min y +30 min del fin del sondeo.
-LIVEPOLL_INTERVAL_SECONDS = 10.0
+# Modo live-poll: sondeo de la barra en formacion cada 13 s durante 4 min
+# (13 s ~ 4.6/min respeta el limite de 5 peticiones/min del plan gratuito)
+# y seguimientos a +5 min y +30 min del fin del sondeo.
+LIVEPOLL_INTERVAL_SECONDS = 13.0
 LIVEPOLL_DURATION_SECONDS = 240.0
 LIVEPOLL_FOLLOWUP_OFFSETS = (300.0, 1800.0)
 
@@ -1326,9 +1327,10 @@ def capture_live(*, args: argparse.Namespace, api_key: str) -> list[str]:
 def capture_live_poll(*, args: argparse.Namespace, api_key: str) -> list[str]:
     """Modo live-poll: sondeo de la barra en formacion de 1m durante RTH.
 
-    Cada --poll-interval segundos (10 por defecto) durante --poll-duration
-    (240 s) pide las ultimas 5 barras de 1m de SPY (misma consulta que el
-    modo live) y guarda captured_at_utc exacto por peticion. A +5 min y
+    Cada --poll-interval segundos (13 por defecto, ~4.6/min para respetar
+    el limite de 5/min del plan gratuito) durante --poll-duration (240 s)
+    pide las ultimas 5 barras de 1m de SPY (misma consulta que el modo
+    live) y guarda captured_at_utc exacto por peticion. A +5 min y
     +30 min del fin del sondeo re-pide el rango de minutos observado
     (sort=asc, limit=50000) para guardar la segunda version de esas barras
     y detectar revisiones del proveedor.
@@ -1497,16 +1499,17 @@ def capture_live_poll(*, args: argparse.Namespace, api_key: str) -> list[str]:
         "timezone": "America/New_York",
         "notes": [
             "Ejecutar durante RTH (09:30-16:00 ET), lejos de la apertura y del cierre.",
-            "Sondeo cada --poll-interval s (10) durante --poll-duration s (240):",
+            "Sondeo cada --poll-interval s (13) durante --poll-duration s (240):",
             "ultimas 5 barras de 1m de SPY (sort=desc, ventana de 3 dias),",
             "misma consulta que el modo live. captured_at_utc exacto por peticion.",
             "A +5 min y +30 min del fin del sondeo se re-pide el rango de minutos",
             "observado (sort=asc, limit=50000): segunda version de esas barras.",
             "Preguntas: la barra en formacion aparece y cambia entre rondas?",
             "las barras cerradas se revisan despues (+5/+30 min)?",
-            "Plan gratuito (5 peticiones/min): el sondeo a 10 s produce 429",
-            "periodicos; el cliente reintenta honrando Retry-After y la ronda",
-            "afectada aterriza tarde (su captured_at_utc lo refleja).",
+            "Plan gratuito (5 peticiones/min): el intervalo por defecto de 13 s",
+            "(~4.6/min) respeta el limite; con intervalos menores el cliente",
+            "reintenta los 429 honrando Retry-After y la ronda afectada aterriza",
+            "tarde (su captured_at_utc lo refleja).",
         ],
         "scenarios": {"1m": scenario},
     }
@@ -1611,7 +1614,7 @@ def print_plan(massive_day: date, bingx_day: date, args: argparse.Namespace | No
     )
     say("")
     say(
-        "Massive SPY live-poll: sondeo de 1m cada 10 s durante 4 min con "
+        "Massive SPY live-poll: sondeo de 1m cada 13 s durante 4 min con "
         "seguimientos a +5 min y +30 min (ejecutar en RTH)"
     )
     say("")
@@ -1685,7 +1688,7 @@ def parse_args() -> argparse.Namespace:
         "--poll-interval",
         type=float,
         default=LIVEPOLL_INTERVAL_SECONDS,
-        help="live-poll: segundos entre rondas de sondeo (por defecto: 10).",
+        help="live-poll: segundos entre rondas de sondeo (por defecto: 13).",
     )
     parser.add_argument(
         "--poll-duration",
