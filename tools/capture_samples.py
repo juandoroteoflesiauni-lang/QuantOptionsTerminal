@@ -161,6 +161,12 @@ LIVE_ROUNDS = 2
 LIVE_ROUND_SLEEP_SECONDS = 90.0
 LIVE_LOOKBACK_DAYS = 3
 
+# Modo live-poll: sondeo de la barra en formacion cada 10 s durante 4 min y
+# seguimientos a +5 min y +30 min del fin del sondeo.
+LIVEPOLL_INTERVAL_SECONDS = 10.0
+LIVEPOLL_DURATION_SECONDS = 240.0
+LIVEPOLL_FOLLOWUP_OFFSETS = (300.0, 1800.0)
+
 SAFE_HEADERS = (
     "content-type",
     "content-length",
@@ -1317,6 +1323,204 @@ def capture_live(*, args: argparse.Namespace, api_key: str) -> list[str]:
     return failures
 
 
+def capture_live_poll(*, args: argparse.Namespace, api_key: str) -> list[str]:
+    """Modo live-poll: sondeo de la barra en formacion de 1m durante RTH.
+
+    Cada --poll-interval segundos (10 por defecto) durante --poll-duration
+    (240 s) pide las ultimas 5 barras de 1m de SPY (misma consulta que el
+    modo live) y guarda captured_at_utc exacto por peticion. A +5 min y
+    +30 min del fin del sondeo re-pide el rango de minutos observado
+    (sort=asc, limit=50000) para guardar la segunda version de esas barras
+    y detectar revisiones del proveedor.
+    """
+    failures: list[str] = []
+    out_dir = Path(args.out)
+    client = MassiveClient(
+        api_key=api_key,
+        base_mode=args.massive_base_url,
+        timeout=args.timeout,
+        # El ritmo lo marca el bucle de sondeo: delay=0 evita duplicar la
+        # espera entre rondas. Los 429 se reintentan en http_get_json
+        # honrando Retry-After.
+        delay=0.0,
+        retries=args.http_retries,
+    )
+    timespan, multiplier, _ = MASSIVE_TIMEFRAMES["1m"]
+    path = f"/v2/aggs/ticker/SPY/range/{multiplier}/{timespan}"
+    limit = MASSIVE_LATEST_LIMIT["1m"]
+
+    scenario: dict[str, Any] = {
+        "kind": "live-poll",
+        "timeframe_seconds": 60,
+        "requested_limit": limit,
+        "lookback_days": LIVE_LOOKBACK_DAYS,
+        "poll_interval_seconds": args.poll_interval,
+        "poll_duration_seconds": args.poll_duration,
+        "followup_offsets_seconds": list(LIVEPOLL_FOLLOWUP_OFFSETS),
+        "first_polled_bar_open_ms": None,
+        "last_polled_bar_open_ms": None,
+        "rounds": [],
+        "followups": [],
+    }
+    rounds = scenario["rounds"]
+
+    say(
+        f"live-poll: sondeando 1m cada {args.poll_interval:.0f} s "
+        f"durante {args.poll_duration:.0f} s"
+    )
+    first_ms: int | None = None
+    last_ms: int | None = None
+    start = datetime.now(UTC)
+    poll_end = start + timedelta(seconds=args.poll_duration)
+    round_index = 0
+    while datetime.now(UTC) < poll_end:
+        round_index += 1
+        now = datetime.now(UTC)
+        start_ms = int((now - timedelta(days=LIVE_LOOKBACK_DAYS)).timestamp() * 1000)
+        end_ms = int(now.timestamp() * 1000)
+        params = {
+            "adjusted": "true",
+            "sort": "desc",
+            "limit": limit,
+            "from": start_ms,
+            "to": end_ms,
+        }
+        say(f"live-poll SPY 1m ronda {round_index}: preparando")
+        try:
+            entry, response = client.request_path(
+                path, params, page_index=round_index - 1
+            )
+        except Exception as exc:  # noqa: BLE001 - se guarda como evidencia
+            message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+            rounds.append({"round": round_index, "error": message})
+            failures.append(f"live-poll SPY 1m ronda {round_index}: {message}")
+            say(f"live-poll SPY 1m ronda {round_index}: ERROR {message}")
+        else:
+            body = response.body if isinstance(response.body, dict) else {}
+            results = body.get("results") or []
+            opens = [
+                row["t"]
+                for row in results
+                if isinstance(row, dict) and isinstance(row.get("t"), int)
+            ]
+            if opens:
+                if first_ms is None or min(opens) < first_ms:
+                    first_ms = min(opens)
+                if last_ms is None or max(opens) > last_ms:
+                    last_ms = max(opens)
+            rounds.append(
+                {
+                    "round": round_index,
+                    "url": entry["url"],
+                    "params": entry["params"],
+                    "http_status": response.status,
+                    "captured_at_utc": entry["captured_at_utc"],
+                    "queryCount": body.get("queryCount"),
+                    "resultsCount": body.get("resultsCount"),
+                    "body": entry["body"],
+                }
+            )
+            say(
+                f"live-poll SPY 1m ronda {round_index}: "
+                f"{body.get('resultsCount')} resultados a {entry['captured_at_utc']}"
+            )
+        # Ritmo: la siguiente ronda sale a tick + intervalo desde el inicio;
+        # si una ronda con 429 tardo mas que el intervalo, la siguiente sale
+        # inmediatamente y captured_at_utc refleja el retraso.
+        next_tick = start + timedelta(seconds=round_index * args.poll_interval)
+        wait = (next_tick - datetime.now(UTC)).total_seconds()
+        if wait > 0 and datetime.now(UTC) < poll_end:
+            time.sleep(wait)
+
+    scenario["first_polled_bar_open_ms"] = first_ms
+    scenario["last_polled_bar_open_ms"] = last_ms
+
+    if first_ms is None or last_ms is None:
+        message = "live-poll: ninguna ronda devolvio barras; sin seguimientos"
+        failures.append(message)
+        say(f"ERROR: {message}")
+        return failures
+
+    # Segunda version de los mismos minutos: from/to filtran por apertura de
+    # barra, el +59_999 ms cubre proveedores que acotan por fin de vela.
+    follow_from = first_ms
+    follow_to = last_ms + 59_999
+    for offset in LIVEPOLL_FOLLOWUP_OFFSETS:
+        label = f"plus_{int(offset // 60)}_min"
+        target = poll_end + timedelta(seconds=offset)
+        wait = (target - datetime.now(UTC)).total_seconds()
+        if wait > 0:
+            say(
+                f"live-poll: esperando {wait:.0f} s hasta el seguimiento "
+                f"+{offset / 60:.0f} min"
+            )
+            time.sleep(wait)
+        params = {
+            "adjusted": "true",
+            "sort": "asc",
+            "limit": 50_000,
+            "from": follow_from,
+            "to": follow_to,
+        }
+        say(f"live-poll SPY 1m seguimiento {label}: preparando")
+        try:
+            entry, response = client.request_path(path, params, page_index=0)
+        except Exception as exc:  # noqa: BLE001 - se guarda como evidencia
+            message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+            scenario["followups"].append({"label": label, "error": message})
+            failures.append(f"live-poll seguimiento {label}: {message}")
+            say(f"live-poll seguimiento {label}: ERROR {message}")
+            continue
+        body = response.body if isinstance(response.body, dict) else {}
+        scenario["followups"].append(
+            {
+                "label": label,
+                "url": entry["url"],
+                "params": entry["params"],
+                "http_status": response.status,
+                "captured_at_utc": entry["captured_at_utc"],
+                "queryCount": body.get("queryCount"),
+                "resultsCount": body.get("resultsCount"),
+                "body": entry["body"],
+            }
+        )
+        say(
+            f"live-poll seguimiento {label}: {body.get('resultsCount')} "
+            f"resultados a {entry['captured_at_utc']}"
+        )
+
+    payload: dict[str, Any] = {
+        "provider": "massive",
+        "symbol": "SPY",
+        "timeframe": "live-poll",
+        "capture_date_utc": iso_utc(datetime.now(UTC)),
+        "timezone": "America/New_York",
+        "notes": [
+            "Ejecutar durante RTH (09:30-16:00 ET), lejos de la apertura y del cierre.",
+            "Sondeo cada --poll-interval s (10) durante --poll-duration s (240):",
+            "ultimas 5 barras de 1m de SPY (sort=desc, ventana de 3 dias),",
+            "misma consulta que el modo live. captured_at_utc exacto por peticion.",
+            "A +5 min y +30 min del fin del sondeo se re-pide el rango de minutos",
+            "observado (sort=asc, limit=50000): segunda version de esas barras.",
+            "Preguntas: la barra en formacion aparece y cambia entre rondas?",
+            "las barras cerradas se revisan despues (+5/+30 min)?",
+            "Plan gratuito (5 peticiones/min): el sondeo a 10 s produce 429",
+            "periodicos; el cliente reintenta honrando Retry-After y la ronda",
+            "afectada aterriza tarde (su captured_at_utc lo refleja).",
+        ],
+        "scenarios": {"1m": scenario},
+    }
+    path_out = out_dir / f"SPY_livepoll_{datetime.now(NEW_YORK).date().isoformat()}.json"
+    try:
+        write_sample_file(path_out, payload)
+        say(f"escrito {path_out} ({path_out.stat().st_size} bytes)")
+    except Exception as exc:  # noqa: BLE001
+        message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
+        failures.append(f"live-poll: {message}")
+        say(f"live-poll: ERROR al escribir: {message}")
+    return failures
+
+
 def capture_bingx(*, day: date, args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
     out_dir = Path(args.out)
@@ -1406,6 +1610,11 @@ def print_plan(massive_day: date, bingx_day: date, args: argparse.Namespace | No
         "limit escalado al multiplicador)"
     )
     say("")
+    say(
+        "Massive SPY live-poll: sondeo de 1m cada 10 s durante 4 min con "
+        "seguimientos a +5 min y +30 min (ejecutar en RTH)"
+    )
+    say("")
     for timeframe, (interval, seconds_ms) in BINGX_TIMEFRAMES.items():
         say(
             f"BingX BTC-USDT {timeframe}: day + range({BINGX_RANGE_DAYS[timeframe]}d, "
@@ -1427,8 +1636,11 @@ def parse_args() -> argparse.Namespace:
         "provider",
         nargs="?",
         default="all",
-        choices=("all", "massive", "bingx", "live"),
-        help="Proveedor a capturar (por defecto: all). 'live' ejecuta el modo en sesion.",
+        choices=("all", "massive", "bingx", "live", "live-poll"),
+        help=(
+            "Proveedor a capturar (por defecto: all). 'live' y 'live-poll' "
+            "ejecutan modos en sesion."
+        ),
     )
     parser.add_argument(
         "--day",
@@ -1470,6 +1682,18 @@ def parse_args() -> argparse.Namespace:
         help="Reintentos ante 429/5xx/errores de red.",
     )
     parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=LIVEPOLL_INTERVAL_SECONDS,
+        help="live-poll: segundos entre rondas de sondeo (por defecto: 10).",
+    )
+    parser.add_argument(
+        "--poll-duration",
+        type=float,
+        default=LIVEPOLL_DURATION_SECONDS,
+        help="live-poll: duracion total del sondeo en segundos (por defecto: 240).",
+    )
+    parser.add_argument(
         "--timeframes",
         help=(
             "Lista separada por comas de temporalidades Massive a capturar "
@@ -1502,6 +1726,12 @@ def main() -> int:
 
     if args.max_pages < 1 or args.target_bars < 1 or args.http_retries < 1:
         say("ERROR: --max-pages, --target-bars y --http-retries deben ser >= 1")
+        return 2
+
+    if args.provider == "live-poll" and (
+        args.poll_interval <= 0 or args.poll_duration <= 0
+    ):
+        say("ERROR: --poll-interval y --poll-duration deben ser > 0")
         return 2
 
     if args.timeframes:
@@ -1547,21 +1777,22 @@ def main() -> int:
 
     failures: list[str] = []
 
-    if args.provider == "live":
+    if args.provider in ("live", "live-poll"):
         if not massive_key:
             message = (
-                "live: MASSIVE_API_KEY no esta definida en .env ni en el entorno. "
-                "No se ejecuta el modo live."
+                f"{args.provider}: MASSIVE_API_KEY no esta definida en .env ni "
+                "en el entorno. No se ejecuta el modo en sesion."
             )
             say("ERROR: " + message)
             failures.append(message)
         else:
+            runner = capture_live if args.provider == "live" else capture_live_poll
             try:
-                failures.extend(capture_live(args=args, api_key=massive_key))
+                failures.extend(runner(args=args, api_key=massive_key))
             except Exception as exc:  # noqa: BLE001
                 message = SCRUBBER.scrub(f"{type(exc).__name__}: {exc}")
-                failures.append(f"live: {message}")
-                say(f"live: ERROR fatal {message}")
+                failures.append(f"{args.provider}: {message}")
+                say(f"{args.provider}: ERROR fatal {message}")
     else:
         if args.provider in ("all", "massive"):
             if not massive_key:
