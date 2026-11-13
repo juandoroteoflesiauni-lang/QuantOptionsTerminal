@@ -17,6 +17,10 @@
  * La clave se lee de MASSIVE_API_KEY (entorno o .env, con los alias
  * históricos de tools/capture_samples.py) y NUNCA se imprime: los
  * resúmenes solo muestran origen, path y contadores.
+ *
+ * Cadencia: TODAS las peticiones (páginas y escenarios incluidos) se
+ * espacian 13,001 s con un acelerador compartido entre escenarios, para
+ * respetar las 5 peticiones/minuto del plan gratuito (~4,6/min).
  */
 
 import { readFileSync } from 'node:fs';
@@ -42,10 +46,19 @@ const KEY_ENV_NAMES: readonly string[] = [
   'MASSIVE_KEY',
 ];
 
-/** Pausa entre escenarios para respetar las 5 peticiones/minuto del plan gratuito. */
-const SCENARIO_PAUSE_MS = 13_001;
+/**
+ * Espacio mínimo entre dos peticiones cualesquiera (páginas incluidas).
+ * El plan gratuito permite 5/min; 13,001 s dan ~4,6/min.
+ */
+const REQUEST_THROTTLE_MS = 13_001;
+
+/** Estado compartido del acelerador entre escenarios. */
+interface ThrottleState {
+  nextAllowedAt: number;
+}
 
 interface PageSummary {
+  readonly status: number;
   readonly origin: string;
   readonly pathname: string;
   readonly rows: number;
@@ -108,8 +121,16 @@ function massiveApiKey(): string {
   return '';
 }
 
-function liveFetch(pages: PageSummary[]): FetchFn {
+function createThrottledFetch(
+  pages: PageSummary[],
+  throttle: ThrottleState,
+): FetchFn {
   return async (url: string) => {
+    const waitMs = throttle.nextAllowedAt - Date.now();
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    throttle.nextAllowedAt = Date.now() + REQUEST_THROTTLE_MS;
     const response = await fetch(url);
     const text = await response.text();
     let rows = 0;
@@ -132,6 +153,7 @@ function liveFetch(pages: PageSummary[]): FetchFn {
     }
     const requested = new URL(url);
     pages.push({
+      status: response.status,
       origin: requested.origin,
       pathname: requested.pathname,
       rows,
@@ -146,7 +168,7 @@ function summarize(pages: readonly PageSummary[]): string {
   return pages
     .map(
       (page, index) =>
-        `${String(index + 1)}: ${page.origin}${page.pathname} filas=${String(page.rows)} next_url=${page.hasNextUrl ? (page.nextUrlHost ?? '?') : '-'}`,
+        `${String(index + 1)}: http=${String(page.status)} ${page.origin}${page.pathname} filas=${String(page.rows)} next_url=${page.hasNextUrl ? (page.nextUrlHost ?? '?') : '-'}`,
     )
     .join('\n');
 }
@@ -158,11 +180,11 @@ it('sigue un next_url real de 2+ páginas y mantiene toda la salida en el origen
     'MASSIVE_API_KEY (o alias) no está definida en .env ni en el entorno',
   ).not.toBe('');
 
-  for (const [index, baseUrl] of BASE_URLS.entries()) {
-    if (index > 0) {
-      await sleep(SCENARIO_PAUSE_MS);
-    }
+  // El acelerador es compartido: también separa la 1a petición del
+  // escenario 2 de la última del escenario 1.
+  const throttle: ThrottleState = { nextAllowedAt: 0 };
 
+  for (const baseUrl of BASE_URLS) {
     const pages: PageSummary[] = [];
     const result: LoadBarsResult = await loadBars({
       provider: 'massive',
@@ -173,7 +195,7 @@ it('sigue un next_url real de 2+ páginas y mantiene toda la salida en el origen
       maxPages: 6,
       apiKey,
       baseUrl,
-      fetchFn: liveFetch(pages),
+      fetchFn: createThrottledFetch(pages, throttle),
     });
 
     console.log(`[next_url smoke] base=${baseUrl}\n${summarize(pages)}`);

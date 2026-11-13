@@ -8,6 +8,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['tests/**/*.smoke.ts'],
-    testTimeout: 120_000,
+    // 6 páginas por escenario como máximo, 13,001 s entre peticiones:
+    // hasta ~156 s + latencia por escenario.
+    testTimeout: 300_000,
   },
 });
