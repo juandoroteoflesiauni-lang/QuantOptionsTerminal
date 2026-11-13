@@ -1,0 +1,207 @@
+{
+  "description": "Referencia independiente del ritmo y reintento del cargador: parseRetryAfterSeconds y retryDelayMs (pieza del 2026-11-13). Generado por tools/gen_retry_reference.py.",
+  "parse_cases": [
+    {
+      "id": "p01_segundos_enteros",
+      "value": "120",
+      "now_ms": 1445243280000,
+      "expected": 120.0
+    },
+    {
+      "id": "p02_espacios",
+      "value": " 45 ",
+      "now_ms": 1445243280000,
+      "expected": 45.0
+    },
+    {
+      "id": "p03_cero",
+      "value": "0",
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p04_negativo",
+      "value": "-3",
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p05_decimal",
+      "value": "1.5",
+      "now_ms": 1445243280000,
+      "expected": 1.5
+    },
+    {
+      "id": "p06_basura",
+      "value": "abc",
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p07_vacio",
+      "value": "",
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p08_ausente",
+      "value": null,
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p09_fecha_futura",
+      "value": "Wed, 21 Oct 2015 07:28:00 GMT",
+      "now_ms": 1445243280000,
+      "expected": 169200
+    },
+    {
+      "id": "p10_fecha_pasada",
+      "value": "Mon, 19 Oct 2015 07:28:00 GMT",
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p11_fecha_igual_al_reloj",
+      "value": "Mon, 19 Oct 2015 07:28:00 GMT",
+      "now_ms": 1445243280000,
+      "expected": null
+    },
+    {
+      "id": "p12_segundos_fraccionarios",
+      "value": "0.25",
+      "now_ms": 1445243280000,
+      "expected": 0.25
+    }
+  ],
+  "delay_cases": [
+    {
+      "id": "d01_intento0_sin_ra",
+      "attempt": 0,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 1000.0
+    },
+    {
+      "id": "d02_intento1",
+      "attempt": 1,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 2000.0
+    },
+    {
+      "id": "d03_intento2",
+      "attempt": 2,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 4000.0
+    },
+    {
+      "id": "d04_intento3",
+      "attempt": 3,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 8000.0
+    },
+    {
+      "id": "d05_intento4",
+      "attempt": 4,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 16000.0
+    },
+    {
+      "id": "d06_intento5_cap",
+      "attempt": 5,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 30000.0
+    },
+    {
+      "id": "d07_intento6_cap",
+      "attempt": 6,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 30000.0
+    },
+    {
+      "id": "d08_ra7",
+      "attempt": 0,
+      "retry_after_seconds": 7.0,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 7000.0
+    },
+    {
+      "id": "d09_ra120_cap",
+      "attempt": 0,
+      "retry_after_seconds": 120.0,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 30000.0
+    },
+    {
+      "id": "d10_ra_medio",
+      "attempt": 3,
+      "retry_after_seconds": 0.5,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 500.0
+    },
+    {
+      "id": "d11_ra_cero",
+      "attempt": 0,
+      "retry_after_seconds": 0.0,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 1000.0
+    },
+    {
+      "id": "d12_ra_negativo",
+      "attempt": 0,
+      "retry_after_seconds": -2.0,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 1000.0
+    },
+    {
+      "id": "d13_base500_cap1000",
+      "attempt": 3,
+      "retry_after_seconds": null,
+      "base_delay_ms": 500,
+      "max_delay_ms": 1000,
+      "expected": 1000.0
+    },
+    {
+      "id": "d14_base_cero",
+      "attempt": 2,
+      "retry_after_seconds": null,
+      "base_delay_ms": 0,
+      "max_delay_ms": 30000,
+      "expected": 0.0
+    },
+    {
+      "id": "d15_max_cero",
+      "attempt": 2,
+      "retry_after_seconds": null,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 0,
+      "expected": 0.0
+    },
+    {
+      "id": "d16_ra_gana_al_backoff",
+      "attempt": 4,
+      "retry_after_seconds": 2.0,
+      "base_delay_ms": 1000,
+      "max_delay_ms": 30000,
+      "expected": 2000.0
+    }
+  ]
+}

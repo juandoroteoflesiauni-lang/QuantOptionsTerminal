@@ -152,10 +152,24 @@ export interface FetchResponse {
   readonly ok: boolean;
   readonly status: number;
   readonly text: string;
+  /**
+   * Cabeceras de la respuesta con nombre en minúsculas, cuando el
+   * transporte las expone. Opcional: los `fetchFn` de tests no las
+   * construyen. El cargador solo lee `retry-after` para reintentos 429.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * Segundos de espera de `Retry-After`, ya interpretados por el
+   * transporte; null/ausente si la cabecera falta o no es interpretable.
+   */
+  readonly retryAfterSeconds?: number | null;
 }
 
 /** Inyección de red: permite tests deterministas sin tocar la red real. */
 export type FetchFn = (url: string) => Promise<FetchResponse>;
+
+/** Espera inyectable para pausas y reintentos: tests sin temporizadores reales. */
+export type SleepFn = (ms: number) => Promise<void>;
 
 export type StopReason =
   | 'targetReached'
@@ -275,6 +289,29 @@ export interface LoadBarsOptions {
   readonly now?: number;
   /** Máximo de peticiones HTTP. Por defecto 10. */
   readonly maxPages?: number;
+  /**
+   * Pausa fija aplicada antes de cada petición a partir de la segunda
+   * (páginas y reintentos), en ms. Por defecto 0: sin pausa. Los espaciados
+   * de 12 s del capturador y 13,001 s del smoke existían SOLO para el tope
+   * de 5 peticiones/minuto del plan gratuito de Massive; con un plan de
+   * pago no hacen falta.
+   */
+  readonly minRequestIntervalMs?: number;
+  /**
+   * Reintento opt-in ante HTTP 429 de la misma petición: máximo de reintentos
+   * DESPUÉS del primer intento. Por defecto 0 (sin reintento). La espera
+   * respeta `Retry-After` (`retryAfterSeconds` del transporte o su cabecera)
+   * y, sin él, un backoff exponencial `retry429BaseDelayMs × 2^reintento`;
+   * toda espera se recorta a `retry429MaxDelayMs`. Agotados los reintentos, la
+   * última respuesta 429 se clasifica como hoy: `providerError` con code 429.
+   */
+  readonly retry429MaxAttempts?: number;
+  /** Base del backoff exponencial ante 429, en ms. Por defecto 1000. */
+  readonly retry429BaseDelayMs?: number;
+  /** Tope de la espera de cada reintento ante 429, en ms. Por defecto 30000. */
+  readonly retry429MaxDelayMs?: number;
+  /** Espera usada para pausas y reintentos. Por defecto `setTimeout`. */
+  readonly sleepFn?: SleepFn;
   /** Obligatoria para Massive. BingX spot es público. */
   readonly apiKey?: string;
   /** Origen alternativo (proxy o host distinto). */

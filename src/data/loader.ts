@@ -22,6 +22,13 @@
  *  - `sessionStartCovered` indica si el buffer contiene la primera barra de
  *    la sesión de la primera barra visible (09:30 ET en acciones, 00:00 UTC
  *    en cripto); false anticipa un VWAP de sesión parcial (SPEC punto 8).
+ *  - El ritmo y el reintento son configurables: `minRequestIntervalMs` es
+ *    una pausa fija entre peticiones (por defecto 0 — los espaciados de
+ *    12-13 s existían SOLO para el tope de 5/min del plan gratuito de
+ *    Massive; con un plan de pago no hacen falta) y ante HTTP 429 se
+ *    reintenta hasta `retry429MaxAttempts` veces (por defecto 0, opt-in) con una
+ *    espera que respeta `Retry-After` y, sin él, un backoff exponencial
+ *    configurable recortado por `retry429MaxDelayMs`.
  *
  * En el reporte, `gaps` se calcula sobre las barras cerradas ANTES del
  * recorte del buffer; `firstTime`/`lastTime` describen el buffer ya
@@ -57,6 +64,7 @@ import {
   redact,
   toErrorMessage,
 } from './normalizeShared.js';
+import { parseRetryAfterSeconds, retryDelayMs } from './retry.js';
 import { isTimeframe, timeframeSeconds } from './timeframes.js';
 import type {
   BingxLoadBarsReport,
@@ -69,6 +77,7 @@ import type {
   MassiveLoadBarsReport,
   MassiveNormalizeResult,
   ProviderError,
+  SleepFn,
   StopReason,
   Timeframe,
 } from './types.js';
@@ -183,6 +192,11 @@ interface ResolvedLoadOptions {
   readonly explicitNow: number | undefined;
   readonly requestNow: number;
   readonly maxPages: number;
+  readonly minRequestIntervalMs: number;
+  readonly retry429MaxAttempts: number;
+  readonly retry429BaseDelayMs: number;
+  readonly retry429MaxDelayMs: number;
+  readonly sleepFn: SleepFn;
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly rthOnly: boolean;
@@ -286,6 +300,34 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
     throw new Error('rthOnly does not support the 1D timeframe');
   }
 
+  const minRequestIntervalMs = options.minRequestIntervalMs ?? 0;
+  if (!Number.isInteger(minRequestIntervalMs) || minRequestIntervalMs < 0) {
+    throw new Error(
+      `minRequestIntervalMs must be a non-negative integer (got ${String(minRequestIntervalMs)})`,
+    );
+  }
+
+  const retry429MaxAttempts = options.retry429MaxAttempts ?? 0;
+  if (!Number.isInteger(retry429MaxAttempts) || retry429MaxAttempts < 0) {
+    throw new Error(
+      `retry429MaxAttempts must be a non-negative integer (got ${String(retry429MaxAttempts)})`,
+    );
+  }
+
+  const retry429BaseDelayMs = options.retry429BaseDelayMs ?? 1_000;
+  if (!Number.isInteger(retry429BaseDelayMs) || retry429BaseDelayMs < 0) {
+    throw new Error(
+      `retry429BaseDelayMs must be a non-negative integer (got ${String(retry429BaseDelayMs)})`,
+    );
+  }
+
+  const retry429MaxDelayMs = options.retry429MaxDelayMs ?? 30_000;
+  if (!Number.isInteger(retry429MaxDelayMs) || retry429MaxDelayMs < 0) {
+    throw new Error(
+      `retry429MaxDelayMs must be a non-negative integer (got ${String(retry429MaxDelayMs)})`,
+    );
+  }
+
   if (
     provider === 'massive' &&
     (typeof options.apiKey !== 'string' || options.apiKey === '')
@@ -320,10 +362,81 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
     explicitNow: options.now,
     requestNow: options.now ?? Math.floor(Date.now() / 1_000),
     maxPages,
+    minRequestIntervalMs,
+    retry429MaxAttempts,
+    retry429BaseDelayMs,
+    retry429MaxDelayMs,
+    sleepFn: options.sleepFn ?? defaultSleep,
     apiKey: options.apiKey ?? '',
     baseUrl,
     rthOnly,
   };
+}
+
+/** Espera por defecto: temporizador real. Los tests inyectan la suya. */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, ms);
+  });
+}
+
+/** Peticiones HTTP realizadas por una carga (páginas y reintentos). */
+interface RequestRhythm {
+  requestsMade: number;
+}
+
+/**
+ * Realiza una petición con el ritmo configurado y reintenta HTTP 429.
+ *
+ * La pausa `minRequestIntervalMs` precede a cada petición salvo la primera
+ * de la carga. Ante un 429 se reintenta hasta `retry429MaxAttempts` veces
+ * después del primer intento: la espera respeta `Retry-After`
+ * (`retryAfterSeconds` del transporte o su cabecera, interpretada con
+ * `parseRetryAfterSeconds`) y, sin él, un backoff exponencial
+ * `retry429BaseDelayMs × 2^reintento`; toda espera se recorta a
+ * `retry429MaxDelayMs`. Agotados los reintentos se devuelve la última
+ * respuesta 429, que el bucle clasifica como hoy: `providerError`. Un
+ * rechazo de red NO se reintenta (comportamiento previo).
+ */
+async function performRequest(
+  options: ResolvedLoadOptions,
+  rhythm: RequestRhythm,
+  url: string,
+): Promise<
+  | { readonly ok: true; readonly response: FetchResponse }
+  | { readonly ok: false; readonly error: unknown }
+> {
+  let retriesUsed = 0;
+  for (;;) {
+    if (rhythm.requestsMade > 0 && options.minRequestIntervalMs > 0) {
+      await options.sleepFn(options.minRequestIntervalMs);
+    }
+    rhythm.requestsMade += 1;
+
+    let response: FetchResponse;
+    try {
+      response = await options.fetchFn(url);
+    } catch (error) {
+      return { ok: false, error };
+    }
+
+    if (response.status !== 429 || retriesUsed >= options.retry429MaxAttempts) {
+      return { ok: true, response };
+    }
+
+    const retryAfter =
+      response.retryAfterSeconds ??
+      parseRetryAfterSeconds(response.headers?.['retry-after'], Date.now());
+    await options.sleepFn(
+      retryDelayMs({
+        attempt: retriesUsed,
+        retryAfterSeconds: retryAfter,
+        baseDelayMs: options.retry429BaseDelayMs,
+        maxDelayMs: options.retry429MaxDelayMs,
+      }),
+    );
+    retriesUsed += 1;
+  }
 }
 
 async function loadMassive(
@@ -361,23 +474,22 @@ async function loadMassive(
   let pageError: ProviderError | null = null;
   let malformed = false;
   let probe: MassiveNormalizeResult | null = null;
+  const rhythm: RequestRhythm = { requestsMade: 0 };
 
   while (pages < options.maxPages) {
     pages += 1;
 
-    let response: FetchResponse;
-    try {
-      response = await options.fetchFn(url);
-    } catch (error) {
+    const outcome = await performRequest(options, rhythm, url);
+    if (!outcome.ok) {
       pageError = {
         code: 0,
-        message: redact(errorMessage(error), secrets),
+        message: redact(errorMessage(outcome.error), secrets),
       };
       stoppedReason = 'providerError';
       break;
     }
 
-    const page = parseMassivePage(response, secrets);
+    const page = parseMassivePage(outcome.response, secrets);
     if (page.providerError !== null) {
       pageError = page.providerError;
       stoppedReason = 'providerError';
@@ -480,23 +592,22 @@ async function loadBingx(
   let malformed = false;
   let probe: BingxNormalizeResult | null = null;
   let serverTimestampMs: number | null = null;
+  const rhythm: RequestRhythm = { requestsMade: 0 };
 
   while (pages < options.maxPages) {
     pages += 1;
 
-    let response: FetchResponse;
-    try {
-      response = await options.fetchFn(url);
-    } catch (error) {
+    const outcome = await performRequest(options, rhythm, url);
+    if (!outcome.ok) {
       pageError = {
         code: 0,
-        message: redact(errorMessage(error), secrets),
+        message: redact(errorMessage(outcome.error), secrets),
       };
       stoppedReason = 'providerError';
       break;
     }
 
-    const page = parseBingxPage(response, secrets);
+    const page = parseBingxPage(outcome.response, secrets);
     if (page.providerError !== null) {
       pageError = page.providerError;
       stoppedReason = 'providerError';
