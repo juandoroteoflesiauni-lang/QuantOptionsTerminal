@@ -1,0 +1,1088 @@
+{
+  "meta": {
+    "generator": "tools/gen_options_bsm_fixture.py",
+    "precisionDigits": 60,
+    "notes": "Independent 60-digit Decimal erfc + 4th-order finite-difference Greeks + 150-step bisection IV."
+  },
+  "erfcCases": [
+    {
+      "x": -27.0,
+      "erfc": 2.0,
+      "normCdf": 7.389481006885622e-161,
+      "normPdf": 1.9978892591682797e-159
+    },
+    {
+      "x": -25.0,
+      "erfc": 2.0,
+      "normCdf": 3.056696706382875e-138,
+      "normPdf": 7.653929736419393e-137
+    },
+    {
+      "x": -10.0,
+      "erfc": 2.0,
+      "normCdf": 7.619853024160595e-24,
+      "normPdf": 7.69459862670642e-23
+    },
+    {
+      "x": -4.5,
+      "erfc": 1.999999999803384,
+      "normCdf": 3.397673124730062e-06,
+      "normPdf": 1.5983741106905478e-05
+    },
+    {
+      "x": -4.0,
+      "erfc": 1.999999984582742,
+      "normCdf": 3.1671241833119965e-05,
+      "normPdf": 0.00013383022576488537
+    },
+    {
+      "x": -3.5,
+      "erfc": 1.9999992569016276,
+      "normCdf": 0.00023262907903552502,
+      "normPdf": 0.0008726826950457602
+    },
+    {
+      "x": -1.0,
+      "erfc": 1.842700792949715,
+      "normCdf": 0.15865525393145707,
+      "normPdf": 0.24197072451914337
+    },
+    {
+      "x": -0.46875,
+      "erfc": 1.4926134732179381,
+      "normCdf": 0.31962417151711764,
+      "normPdf": 0.3574349775195373
+    },
+    {
+      "x": -0.46,
+      "erfc": 1.4846553900016797,
+      "normCdf": 0.3227581102503477,
+      "normPdf": 0.35889029103354464
+    },
+    {
+      "x": -0.1,
+      "erfc": 1.1124629160182848,
+      "normCdf": 0.460172162722971,
+      "normPdf": 0.3969525474770118
+    },
+    {
+      "x": 0.0,
+      "erfc": 1.0,
+      "normCdf": 0.5,
+      "normPdf": 0.3989422804014327
+    },
+    {
+      "x": 0.1,
+      "erfc": 0.8875370839817152,
+      "normCdf": 0.539827837277029,
+      "normPdf": 0.3969525474770118
+    },
+    {
+      "x": 0.46,
+      "erfc": 0.5153446099983203,
+      "normCdf": 0.6772418897496524,
+      "normPdf": 0.35889029103354464
+    },
+    {
+      "x": 0.46875,
+      "erfc": 0.507386526782062,
+      "normCdf": 0.6803758284828824,
+      "normPdf": 0.3574349775195373
+    },
+    {
+      "x": 1.0,
+      "erfc": 0.1572992070502851,
+      "normCdf": 0.8413447460685428,
+      "normPdf": 0.24197072451914337
+    },
+    {
+      "x": 3.5,
+      "erfc": 7.430983723414126e-07,
+      "normCdf": 0.9997673709209645,
+      "normPdf": 0.0008726826950457602
+    },
+    {
+      "x": 4.0,
+      "erfc": 1.5417257900280017e-08,
+      "normCdf": 0.9999683287581669,
+      "normPdf": 0.00013383022576488537
+    },
+    {
+      "x": 4.5,
+      "erfc": 1.9661604415428876e-10,
+      "normCdf": 0.9999966023268753,
+      "normPdf": 1.5983741106905478e-05
+    },
+    {
+      "x": 10.0,
+      "erfc": 2.088487583762545e-45,
+      "normCdf": 1.0,
+      "normPdf": 7.69459862670642e-23
+    },
+    {
+      "x": 20.0,
+      "erfc": 5.395865611607901e-176,
+      "normCdf": 1.0,
+      "normPdf": 5.520948362159764e-88
+    },
+    {
+      "x": 25.0,
+      "erfc": 8.300172571196522e-274,
+      "normCdf": 1.0,
+      "normPdf": 7.653929736419393e-137
+    },
+    {
+      "x": 27.0,
+      "erfc": 5.23705e-319,
+      "normCdf": 1.0,
+      "normPdf": 1.9978892591682797e-159
+    }
+  ],
+  "timeToExpiryCases": [
+    {
+      "label": "exact_1y_act365",
+      "nowUtcSec": 1700000000,
+      "expiryUtcSec": 1731536000,
+      "expected": 1.0
+    },
+    {
+      "label": "15_minutes_before_close",
+      "nowUtcSec": 1763066700,
+      "expiryUtcSec": 1763067600,
+      "expected": 2.8538812785388127e-05
+    },
+    {
+      "label": "at_expiry_zero",
+      "nowUtcSec": 1763067600,
+      "expiryUtcSec": 1763067600,
+      "expected": 0.0
+    },
+    {
+      "label": "expired_negative_nan",
+      "nowUtcSec": 1763067601,
+      "expiryUtcSec": 1763067600,
+      "expected": "NaN"
+    },
+    {
+      "label": "reject_milliseconds_now",
+      "nowUtcSec": 1763066700000,
+      "expiryUtcSec": 1763067600,
+      "expected": "NaN"
+    },
+    {
+      "label": "reject_milliseconds_expiry",
+      "nowUtcSec": 1763066700,
+      "expiryUtcSec": 1763067600000,
+      "expected": "NaN"
+    },
+    {
+      "label": "custom_basis_252d",
+      "nowUtcSec": 1700000000,
+      "expiryUtcSec": 1701814400,
+      "secondsPerYear": 21772800,
+      "expected": 0.08333333333333333
+    },
+    {
+      "label": "invalid_basis_zero",
+      "nowUtcSec": 1700000000,
+      "expiryUtcSec": 1700086400,
+      "secondsPerYear": 0,
+      "expected": "NaN"
+    }
+  ],
+  "expiryPayoffCases": [
+    {
+      "underlier": 5850.0,
+      "strike": 5800.0,
+      "contractType": "call",
+      "expected": 50.0
+    },
+    {
+      "underlier": 5750.0,
+      "strike": 5800.0,
+      "contractType": "call",
+      "expected": 0.0
+    },
+    {
+      "underlier": 5750.0,
+      "strike": 5800.0,
+      "contractType": "put",
+      "expected": 50.0
+    },
+    {
+      "underlier": 5850.0,
+      "strike": 5800.0,
+      "contractType": "put",
+      "expected": 0.0
+    },
+    {
+      "underlier": 0.0,
+      "strike": 100.0,
+      "contractType": "call",
+      "expected": "NaN"
+    },
+    {
+      "underlier": 100.0,
+      "strike": -5.0,
+      "contractType": "put",
+      "expected": "NaN"
+    }
+  ],
+  "bsmCases": [
+    {
+      "label": "atm_benchmark_call",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "volatility": 0.2,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 2.8969248806041294,
+        "upper": 98.01986733067552
+      },
+      "expected": {
+        "price": 9.227005508154047,
+        "delta": 0.586851146134764,
+        "gamma": 0.018950578755008714,
+        "theta": -5.089318913998333,
+        "thetaDaily": -0.01394333949040639,
+        "vega": 37.90115751001743,
+        "vegaPer1Pct": 0.3790115751001743,
+        "rho": 49.45810910532235,
+        "vanna": -0.09475289377504358,
+        "charm": -0.03563942396482651
+      },
+      "impliedVolRoundTrip": 0.19999999999999998
+    },
+    {
+      "label": "atm_benchmark_put",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "volatility": 0.2,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 95.1229424500714
+      },
+      "expected": {
+        "price": 6.330080627549918,
+        "delta": -0.3933475271719913,
+        "gamma": 0.018950578755008714,
+        "theta": -2.293569138108273,
+        "thetaDaily": -0.006283751063310337,
+        "vega": 37.90115751001743,
+        "vegaPer1Pct": 0.3790115751001743,
+        "rho": -45.66483334474905,
+        "vanna": -0.09475289377504358,
+        "charm": -0.05524339743096161
+      },
+      "impliedVolRoundTrip": 0.19999999999999998
+    },
+    {
+      "label": "spxw_0dte_itm_call",
+      "input": {
+        "spot": 5850.0,
+        "strike": 5750.0,
+        "timeToExpiry": 0.00011415525114155251,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "volatility": 0.22,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 100.02085609495813,
+        "upper": 5849.991318499592
+      },
+      "expected": {
+        "price": 100.02085609495833,
+        "delta": 0.9999985159827278,
+        "gamma": 5.89162566112994e-14,
+        "theta": -182.69878371648707,
+        "thetaDaily": -0.5005446129218823,
+        "vega": 5.0636706645392994e-11,
+        "vegaPer1Pct": 5.0636706645393e-13,
+        "rho": 0.6563893221922374,
+        "vanna": -2.7013043815031318e-11,
+        "charm": 0.01300000672651536
+      },
+      "impliedVolRoundTrip": 0.2198826595863408
+    },
+    {
+      "label": "spxw_0dte_mod_itm_call",
+      "input": {
+        "spot": 5850.0,
+        "strike": 5810.0,
+        "timeToExpiry": 0.00011415525114155251,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "volatility": 0.22,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 40.02116431334456,
+        "upper": 5849.991318499592
+      },
+      "expected": {
+        "price": 40.02808042169662,
+        "delta": 0.9982576141987751,
+        "gamma": 0.00040644683422559586,
+        "theta": -521.6855299387423,
+        "thetaDaily": -1.429275424489705,
+        "vega": 0.34932852654598173,
+        "vegaPer1Pct": 0.0034932852654598174,
+        "rho": 0.662075224045792,
+        "vanna": -0.07416285299332795,
+        "charm": 71.40021564598837
+      },
+      "impliedVolRoundTrip": 0.2199999999999986
+    },
+    {
+      "label": "spxw_0dte_itm_put",
+      "input": {
+        "spot": 5750.0,
+        "strike": 5850.0,
+        "timeToExpiry": 0.00011415525114155251,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "volatility": 0.22,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 99.97848180601478,
+        "upper": 5849.969948707324
+      },
+      "expected": {
+        "price": 99.97848180601498,
+        "delta": -0.9999985159827234,
+        "gamma": 6.238967219119244e-14,
+        "theta": 188.49875857217302,
+        "thetaDaily": 0.5164349549922548,
+        "vega": 5.180443813934771e-11,
+        "vegaPer1Pct": 5.180443813934771e-13,
+        "rho": -0.6678047886651455,
+        "vanna": 2.8113712814380685e-11,
+        "charm": -0.013000007809628771
+      },
+      "impliedVolRoundTrip": 0.21989863556326655
+    },
+    {
+      "label": "short_t_3min_near_atm_call",
+      "input": {
+        "spot": 5850.0,
+        "strike": 5855.0,
+        "timeToExpiry": 5.707762557077626e-06,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "volatility": 0.18,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 5849.999565924673
+      },
+      "expected": {
+        "price": 0.022170533291678108,
+        "delta": 0.023515635673124622,
+        "gamma": 0.022067925904427667,
+        "theta": -12238.95855640528,
+        "thetaDaily": -33.53139330521994,
+        "vega": 0.7759105420523383,
+        "vegaPer1Pct": 0.007759105420523383,
+        "rho": 0.0007850701949457042,
+        "vanna": 0.6126714463493317,
+        "charm": -9664.734176062306
+      },
+      "impliedVolRoundTrip": 0.18
+    },
+    {
+      "label": "short_t_3min_near_atm_put",
+      "input": {
+        "spot": 5850.0,
+        "strike": 5845.0,
+        "timeToExpiry": 5.707762557077626e-06,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "volatility": 0.18,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 5844.998498715946
+      },
+      "expected": {
+        "price": 0.022001438619970542,
+        "delta": -0.02335078349502736,
+        "gamma": 0.021937686668962224,
+        "theta": -12157.97995212766,
+        "thetaDaily": -33.30953411541825,
+        "vega": 0.7713313171526299,
+        "vegaPer1Pct": 0.0077133131715262995,
+        "rho": -0.0007798178360989156,
+        "vanna": -0.6097050505707711,
+        "charm": 9609.722198895302
+      },
+      "impliedVolRoundTrip": 0.18
+    },
+    {
+      "label": "extreme_otm_call",
+      "input": {
+        "spot": 100.0,
+        "strike": 165.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.03,
+        "volatility": 0.35,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 98.51119396030627
+      },
+      "expected": {
+        "price": 0.2751938911161644,
+        "delta": 0.031024295789096504,
+        "gamma": 0.0028195194384172274,
+        "theta": -1.7752445530529366,
+        "thetaDaily": -0.0048636837069943465,
+        "vega": 4.934159017230148,
+        "vegaPer1Pct": 0.049341590172301476,
+        "rho": 1.413617843896743,
+        "vanna": 0.4200280705616007,
+        "charm": -0.15171813469972179
+      },
+      "impliedVolRoundTrip": 0.35
+    },
+    {
+      "label": "extreme_otm_put",
+      "input": {
+        "spot": 100.0,
+        "strike": 55.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.03,
+        "volatility": 0.35,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 53.64204516155829
+      },
+      "expected": {
+        "price": 0.04102296837811208,
+        "delta": -0.004869625228020065,
+        "gamma": 0.0005697372542798057,
+        "theta": -0.3371736693714353,
+        "thetaDaily": -0.0009237634777299596,
+        "vega": 0.99704019498966,
+        "vegaPer1Pct": 0.0099704019498966,
+        "rho": -0.2639927455900593,
+        "vanna": -0.09395976584224582,
+        "charm": 0.03160035477938582
+      },
+      "impliedVolRoundTrip": 0.35
+    },
+    {
+      "label": "high_div_yield_call",
+      "input": {
+        "spot": 450.0,
+        "strike": 440.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.03,
+        "dividendYield": 0.08,
+        "volatility": 0.4,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 4.377058867618977,
+        "upper": 441.08940298803986
+      },
+      "expected": {
+        "price": 37.1927847260783,
+        "delta": 0.5484840402034381,
+        "gamma": 0.004296399835045486,
+        "theta": -56.14500288137717,
+        "thetaDaily": -0.1538219257024032,
+        "vega": 87.00209665967108,
+        "vegaPer1Pct": 0.8700209665967109,
+        "rho": 52.406258341367206,
+        "vanna": 0.04846569802109186,
+        "charm": 0.10177516108792499
+      },
+      "impliedVolRoundTrip": 0.39999999999999997
+    },
+    {
+      "label": "high_div_yield_put",
+      "input": {
+        "spot": 450.0,
+        "strike": 440.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.03,
+        "dividendYield": 0.08,
+        "volatility": 0.4,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 436.71234412042094
+      },
+      "expected": {
+        "price": 32.815725858459324,
+        "delta": -0.43171463310331726,
+        "gamma": 0.004296399835045486,
+        "theta": -78.33078479680773,
+        "thetaDaily": -0.21460488985426776,
+        "vega": 87.00209665967108,
+        "vegaPer1Pct": 0.8700209665967109,
+        "rho": -56.77182768873802,
+        "vanna": 0.04846569802109186,
+        "charm": 0.023359267223384564
+      },
+      "impliedVolRoundTrip": 0.39999999999999997
+    },
+    {
+      "label": "negative_rate_call",
+      "input": {
+        "spot": 100.0,
+        "strike": 105.0,
+        "timeToExpiry": 0.75,
+        "rate": -0.01,
+        "dividendYield": 0.0,
+        "volatility": 0.25,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 100.0
+      },
+      "expected": {
+        "price": 6.271722406791845,
+        "delta": 0.4396960208536926,
+        "gamma": 0.018215437521339167,
+        "theta": -5.315345428632715,
+        "thetaDaily": -0.014562590215432096,
+        "vega": 34.15394535251094,
+        "vegaPer1Pct": 0.34153945352510934,
+        "rho": 28.27340975893306,
+        "vanna": 0.58090971416024,
+        "charm": -0.07860284817203417
+      },
+      "impliedVolRoundTrip": 0.25
+    },
+    {
+      "label": "leap_2_5y_put",
+      "input": {
+        "spot": 200.0,
+        "strike": 220.0,
+        "timeToExpiry": 2.5,
+        "rate": 0.045,
+        "dividendYield": 0.01,
+        "volatility": 0.28,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 1.529433958206914,
+        "upper": 196.59141636387344
+      },
+      "expected": {
+        "price": 35.07634394992698,
+        "delta": -0.4089346916375414,
+        "gamma": 0.004304104789417616,
+        "theta": -2.307857990597318,
+        "thetaDaily": -0.006322898604376214,
+        "vega": 120.51493410369325,
+        "vegaPer1Pct": 1.2051493410369325,
+        "rho": -292.1582056935882,
+        "vanna": 0.32529864404638126,
+        "charm": -0.05243480450889608
+      },
+      "impliedVolRoundTrip": 0.27999999999999997
+    },
+    {
+      "label": "deep_wing_near_zero_greeks",
+      "input": {
+        "spot": 5850.0,
+        "strike": 5000.0,
+        "timeToExpiry": 9.512937595129377e-06,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "volatility": 0.15,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 850.0014169516414,
+        "upper": 5849.999276541141
+      },
+      "expected": {
+        "price": 850.0014169516414,
+        "delta": 0.9999998763318189,
+        "gamma": -4.87009034017581e-45,
+        "theta": -148.94991308649264,
+        "thetaDaily": -0.40808195366162364,
+        "vega": 0.0,
+        "vegaPer1Pct": 0.0,
+        "rho": 0.04756466761405536,
+        "vanna": 0.0,
+        "charm": 0.012999998392313646
+      },
+      "impliedVolRoundTrip": "NaN"
+    }
+  ],
+  "black76Cases": [
+    {
+      "label": "vix_atm_call",
+      "input": {
+        "forward": 18.5,
+        "strike": 18.5,
+        "timeToExpiry": 0.057534246575342465,
+        "rate": 0.045,
+        "volatility": 0.85,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 18.452164690237968
+      },
+      "expected": {
+        "price": 1.4982622692409016,
+        "delta": 0.539200728634564,
+        "gamma": 0.10494824232409627,
+        "theta": -12.908149304555339,
+        "thetaDaily": -0.03536479261522011,
+        "vega": 1.7565640176637858,
+        "vegaPer1Pct": 0.017565640176637858,
+        "rho": -0.08620139083303817,
+        "vanna": 0.04747470318010232,
+        "charm": -0.32642707820255756
+      },
+      "impliedVolRoundTrip": 0.8500000000000001
+    },
+    {
+      "label": "vix_atm_put",
+      "input": {
+        "forward": 18.5,
+        "strike": 18.5,
+        "timeToExpiry": 0.057534246575342465,
+        "rate": 0.045,
+        "volatility": 0.85,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 18.452164690237968
+      },
+      "expected": {
+        "price": 1.4982622692409016,
+        "delta": -0.4582135789458667,
+        "gamma": 0.10494824232409627,
+        "theta": -12.908149304555339,
+        "thetaDaily": -0.03536479261522011,
+        "vega": 1.7565640176637858,
+        "vegaPer1Pct": 0.017565640176637858,
+        "rho": -0.08620139083303817,
+        "vanna": 0.04747470318010232,
+        "charm": -0.371310722043677
+      },
+      "impliedVolRoundTrip": 0.8500000000000001
+    },
+    {
+      "label": "vix_otm_spike_call",
+      "input": {
+        "forward": 18.5,
+        "strike": 35.0,
+        "timeToExpiry": 0.0821917808219178,
+        "rate": 0.045,
+        "volatility": 1.15,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 18.431701725353456
+      },
+      "expected": {
+        "price": 0.08369141670390971,
+        "delta": 0.038305504171485816,
+        "gamma": 0.01362989685188481,
+        "theta": -3.0808541768832716,
+        "thetaDaily": -0.008440696375022661,
+        "vega": 0.4409224953855791,
+        "vegaPer1Pct": 0.004409224953855791,
+        "rho": -0.006878746578403537,
+        "vanna": 0.15171429797831035,
+        "charm": -1.0596441952522127
+      },
+      "impliedVolRoundTrip": 1.15
+    },
+    {
+      "label": "vix_deep_itm_call",
+      "input": {
+        "forward": 24.0,
+        "strike": 12.0,
+        "timeToExpiry": 0.038356164383561646,
+        "rate": 0.045,
+        "volatility": 0.9,
+        "contractType": "call"
+      },
+      "bounds": {
+        "lower": 11.97930553597651,
+        "upper": 23.95861107195302
+      },
+      "expected": {
+        "price": 11.97933415684191,
+        "delta": 0.9982464864357545,
+        "gamma": 2.9077283976078587e-05,
+        "theta": 0.5322868882519463,
+        "thetaDaily": 0.0014583202417861542,
+        "vega": 0.0005781679347528438,
+        "vegaPer1Pct": 5.781679347528437e-06,
+        "rho": -0.45948131012544313,
+        "vanna": -0.0005254171655289091,
+        "charm": 0.05108536113518919
+      },
+      "impliedVolRoundTrip": 0.9000000000016479
+    },
+    {
+      "label": "vix_deep_itm_put",
+      "input": {
+        "forward": 12.0,
+        "strike": 24.0,
+        "timeToExpiry": 0.038356164383561646,
+        "rate": 0.045,
+        "volatility": 0.9,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 11.97930553597651,
+        "upper": 23.95861107195302
+      },
+      "expected": {
+        "price": 11.97933415684191,
+        "delta": -0.9982151264680166,
+        "gamma": 0.00011630913590431435,
+        "theta": 0.5322868882519463,
+        "thetaDaily": 0.0014583202417861542,
+        "vega": 0.0005781679347528438,
+        "vegaPer1Pct": 5.781679347528437e-06,
+        "rho": -0.45948131012544313,
+        "vanna": 0.0010990149922872217,
+        "charm": -0.05781348158271619
+      },
+      "impliedVolRoundTrip": 0.9000000000016479
+    },
+    {
+      "label": "futures_zero_rate_put",
+      "input": {
+        "forward": 5800.0,
+        "strike": 5700.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.0,
+        "volatility": 0.16,
+        "contractType": "put"
+      },
+      "bounds": {
+        "lower": 0.0,
+        "upper": 5700.0
+      },
+      "expected": {
+        "price": 137.7804824859473,
+        "delta": -0.39843624267472766,
+        "gamma": 0.0008317741256363744,
+        "theta": -358.15528430601773,
+        "thetaDaily": -0.9812473542630623,
+        "vega": 1119.2352634563056,
+        "vegaPer1Pct": 11.192352634563054,
+        "rho": -34.44512062148682,
+        "vanna": -0.4279067589715251,
+        "charm": 0.13693016287088802
+      },
+      "impliedVolRoundTrip": 0.16
+    }
+  ],
+  "degenerateGreeksCases": [
+    {
+      "label": "zero_vol",
+      "model": "bsm",
+      "input": {
+        "spot": 100,
+        "strike": 100,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "volatility": 0.0,
+        "contractType": "call"
+      }
+    },
+    {
+      "label": "negative_vol",
+      "model": "black76",
+      "input": {
+        "forward": 20,
+        "strike": 20,
+        "timeToExpiry": 0.1,
+        "rate": 0.04,
+        "volatility": -0.3,
+        "contractType": "put"
+      }
+    },
+    {
+      "label": "zero_time",
+      "model": "bsm",
+      "input": {
+        "spot": 100,
+        "strike": 100,
+        "timeToExpiry": 0.0,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "volatility": 0.2,
+        "contractType": "call"
+      }
+    },
+    {
+      "label": "negative_time",
+      "model": "bsm",
+      "input": {
+        "spot": 100,
+        "strike": 100,
+        "timeToExpiry": -0.01,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "volatility": 0.2,
+        "contractType": "put"
+      }
+    },
+    {
+      "label": "non_positive_spot",
+      "model": "bsm",
+      "input": {
+        "spot": 0,
+        "strike": 100,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "volatility": 0.2,
+        "contractType": "call"
+      }
+    },
+    {
+      "label": "non_positive_strike",
+      "model": "black76",
+      "input": {
+        "forward": 20,
+        "strike": -1,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "volatility": 0.2,
+        "contractType": "call"
+      }
+    },
+    {
+      "label": "nan_rate",
+      "model": "bsm",
+      "input": {
+        "spot": 100,
+        "strike": 100,
+        "timeToExpiry": 0.5,
+        "rate": "NaN",
+        "dividendYield": 0.0,
+        "volatility": 0.2,
+        "contractType": "call"
+      }
+    }
+  ],
+  "ivCases": [
+    {
+      "label": "bsm_low_vol_0_005",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.04,
+        "dividendYield": 0.01,
+        "contractType": "call",
+        "price": 0.7454238080902444
+      },
+      "expectedIv": 0.004999999999999995
+    },
+    {
+      "label": "bsm_high_vol_3_5",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 120.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "contractType": "put",
+        "price": 93.70569602924702
+      },
+      "expectedIv": 3.5
+    },
+    {
+      "label": "bsm_spx_0dte_market_quote",
+      "model": "bsm",
+      "input": {
+        "spot": 5850.0,
+        "strike": 5860.0,
+        "timeToExpiry": 5.7077625570776254e-05,
+        "rate": 0.045,
+        "dividendYield": 0.013,
+        "contractType": "call",
+        "price": 12.75
+      },
+      "expectedIv": 0.9796249841535891
+    },
+    {
+      "label": "black76_vix_market_quote",
+      "model": "black76",
+      "input": {
+        "forward": 19.2,
+        "strike": 25.0,
+        "timeToExpiry": 0.07671232876712329,
+        "rate": 0.045,
+        "contractType": "call",
+        "price": 1.85
+      },
+      "expectedIv": 1.7144743722197635
+    },
+    {
+      "label": "bsm_below_intrinsic",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 90.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "contractType": "call",
+        "price": 12.359219125611268
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "bsm_exact_intrinsic_lower",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 90.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "contractType": "call",
+        "price": 12.40921912561127
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "bsm_exact_discounted_upper",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 90.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "contractType": "call",
+        "price": 98.01986733067552
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "bsm_above_discounted_upper",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 90.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "contractType": "call",
+        "price": 98.02986733067553
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "bsm_zero_price_otm",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 110.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "contractType": "call",
+        "price": 0.0
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "black76_below_lower_bound",
+      "model": "black76",
+      "input": {
+        "forward": 18.0,
+        "strike": 25.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "contractType": "put",
+        "price": 6.727169384198329
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "black76_above_upper_bound",
+      "model": "black76",
+      "input": {
+        "forward": 18.0,
+        "strike": 25.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "contractType": "put",
+        "price": 24.482747800708317
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "bsm_outside_narrow_bracket_returns_nan",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "contractType": "call",
+        "price": 9.227005508154047,
+        "options": {
+          "minVolatility": 0.3,
+          "maxVolatility": 1.0
+        }
+      },
+      "expectedIv": "NaN"
+    },
+    {
+      "label": "bsm_flat_vega_high_min_vega_threshold",
+      "model": "bsm",
+      "input": {
+        "spot": 100.0,
+        "strike": 250.0,
+        "timeToExpiry": 0.0027397260273972603,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "contractType": "call",
+        "price": 1.9385525557262532e-18,
+        "options": {
+          "minVega": 1.0
+        }
+      },
+      "expectedIv": "NaN"
+    }
+  ]
+}
