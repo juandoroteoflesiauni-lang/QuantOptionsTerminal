@@ -189,9 +189,40 @@ La fila 15m sellada 12:51 es la barra en formación (v=186,835): bajo la cuadrí
 
 ---
 
+## Pendiente documentado (2026-11-13): ritmo y reintentos de peticiones del cargador
+
+**Estado: PENDIENTE, sin implementar.** El cargador no espacia ni reintenta peticiones: el bucle de paginación (`loadMassive`/`loadBingx`) encadena página tras página sin pausa y, ante un fallo, corta con `stoppedReason = 'providerError'` (o `malformedResponse`) sin segundo intento. Además `FetchResponse` es `{ ok, status, text }` sin cabeceras, así que un `Retry-After` del proveedor es invisible para el cargador. Las dos mitigaciones existentes están FUERA del cargador: el capturador de muestras (`tools/capture_samples.py`) espacia 12 s por defecto y reintenta honrando `Retry-After`, y el smoke (`tests/dataLoader.smoke.ts`) acelera TODAS sus peticiones a 13,001 s. Con el plan gratuito de Massive (5 peticiones/min; BingX tiene su propio tope y un `limit` de página de 1.000), una carga larga puede agotar el tope del minuto y terminar en 429. Esta sección documenta Massive.
+
+**Tamaño efectivo de página [ESTIMACIÓN].** Calibración: la corrida registrada del smoke `next-url` (1h, visible 3.000 + warmup 1.000 = objetivo 4.000; `limit=50000`, `maxPages=6`; fuera de `verify`) necesitó 5 peticiones para el objetivo: el proveedor NO honra `limit=50000` por página (bastaría una) y el tamaño efectivo de página quedó en el orden de ~800–1.300 filas. Todo lo numérico de esta sección es estimación salvo los lookback y las filas de ventana, que salen del código (`massiveLookbackDays`, tablas `MASSIVE_BARS_PER_DAY`/`MASSIVE_RTH_BARS_PER_DAY`).
+
+**Peticiones de una carga típica de 1.000+500 barras [ESTIMACIÓN].** La paginación para por `targetReached` (barras candidatas ≥ `requestedBars`), no al agotar la ventana: el lookback solo garantiza disponibilidad y el número de páginas depende del objetivo (1.500) y del tamaño efectivo de página. Con `rthOnly` el filtro RTH se aplica por página ANTES de comparar: solo cuentan ~13 mitades de 30m RTH por día ET frente a ~32 en la ventana extendida (~40 % de las filas).
+
+| Temporalidad | Lookback (días) | Filas en la ventana (est.) | Páginas (est.) |
+|---|---|---|---|
+| 1m | 13 | ~12.500 | 2 |
+| 5m | 22 | ~4.200 | 2 |
+| 15m | 46 | ~2.900 | 2 |
+| 1h | 152 | ~2.400 | 2 (medido: 5 peticiones para objetivo 4.000) |
+| 4h | 575 | ~2.300 | 2 |
+| 1D | 2.268 días calendario (~6,2 años) | ~1.550 (días hábiles) | 2 |
+| rthOnly + 1h (pide 30m) | 333 | ~10.700 | ~6–10, puede saturar `maxPages=10` |
+
+El mínimo teórico es 1 página (una entrega de ≥ 1.500 candidatas; no observado). Fuera de rthOnly, 2 páginas típicas (una tercera si una página entrega menos de ~750 filas). Peor caso real: rthOnly+1h encadena hasta 10 peticiones seguidas (`maxPages`) y, con página efectiva por debajo de ~700 filas, satura el tope con `stoppedReason = 'maxPages'` y `warmupSatisfied = false`.
+
+**Riesgo 429 hoy.** De 2 a 10 peticiones back-to-back en < 1 s agotan el minuto en 1–2 cargas; una recarga o cargas encadenadas al montar la app (una por temporalidad/símbolo) pasan el tope de 5/min → 429 → hoy: `stoppedReason = 'providerError'` con `code = 429`, sin reintento; lo ya descargado se conserva (si el 429 llega en la primera página, buffer vacío) y `warmupSatisfied = false` (la app no recibe el warmup completo y no hay segundo intento).
+
+**Opciones evaluadas (a decisión del dueño, NINGUNA implementada):**
+1. **Espaciado dentro de `loadBars`**: pausa ≥ 13 s entre páginas del bucle. Pro: no cambia tipos ni el transporte. Contra: una carga de 10 páginas dura ~2 min y sigue sin recuperarse de un 429.
+2. **Reintento con backoff honrando `Retry-After`**: requiere exponer cabeceras en `FetchResponse` (cambio de tipo + tests del transporte). Pro: recupera 429 transitorios. Contra: retarda la carga y duplica la política que ya vive en el capturador.
+3. **Rate limiter a nivel de aplicación**: cola compartida con presupuesto de 5/min para todas las cargas. Pro: cubre el caso real de cargas encadenadas. Contra: es código fuera del cargador y hay que decidir qué pasa al agotar el presupuesto (esperar vs fallar).
+
+Hasta decidir, la regla operativa es no encadenar cargas de Massive a más de ~5/min y verificar `warmupSatisfied` tras una carga larga.
+
+---
+
 ## Conclusión
 
 - El core cumple el SPEC en todos los casos concretos examinados: EMA (semilla SMA, NaN estrictos, proyección en vivo pura), sessionVwap (RTH-only con reset diario y congelado documentado), AVWAP (HLC3 + volumen, anclas de periodo y visibles), Welford (recurrencia del punto 1) y sessions (partes ET/UTC, claves de semana/mes/año).
 - Las diferencias numéricas observadas (AVWAP vs sessionVwap +0.0966% el 11-09) provienen de fuentes de precio distintas AUTORIZADAS por el SPEC, no de defectos.
 - El hallazgo relevante no es del core sino de datos: cuadrículas de sellos desplazadas en peticiones con extremos sin alinear (15m/30m/4h en las muestras), con impacto potencial en la atribución de sesiones. Requiere sonda en vivo antes de cualquier cambio. **Resuelto el 2026-11-12** (sonda `c7ec318`): el ancla es `from`; producción (que envía `from` alineado) está a salvo — ver «Caso 6 en detalle».
-- Piezas futuras registradas (ninguna implementada aquí): regla de la diaria del día en curso (motor), sonda del ancla de cuadrícula (**ejecutada**: commit `c7ec318`, ancla = `from`; chequeo de sellos descartado por innecesario), VWAP por fases (propuesta b), muestra de cierre anticipado + test de integración, test de independencia de `vw` en AVWAP, tests de serie vacía/suspendido en el cargador.
+- Piezas futuras registradas (ninguna implementada aquí salvo las anotadas): regla de la diaria del día en curso (motor), sonda del ancla de cuadrícula (**ejecutada**: commit `c7ec318`, ancla = `from`; chequeo de sellos descartado por innecesario), VWAP por fases (propuesta b), muestra de cierre anticipado + test de integración (**captura programada 2026-11-27**, SPY `--timeframes 1m,5m,1D`), test de independencia de `vw` en AVWAP, tests de serie vacía/suspendido en el cargador (**implementados** en `cb17f43`), ritmo y reintentos de peticiones del cargador (**pendiente documentado** 2026-11-13, sección «Pendiente documentado»).
