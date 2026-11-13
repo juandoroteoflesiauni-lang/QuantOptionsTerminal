@@ -1,0 +1,1242 @@
+{
+  "schemaVersion": 1,
+  "description": "Independent Python reference fixture for Pieza 4 (Macro, SOFR, Dividends, OI, Unified Snapshot)",
+  "testSecret": "massive_live_secret_macro_987",
+  "treasury": {
+    "raw": {
+      "status": "OK",
+      "results": [
+        {
+          "date": "2026-04-02",
+          "yield_1_month": 4.35,
+          "yield_3_month": 4.32,
+          "yield_6_month": 4.24,
+          "yield_1_year": 4.08,
+          "yield_2_year": 3.92,
+          "yield_3_year": 3.88,
+          "yield_5_year": 3.94,
+          "yield_7_year": 4.08,
+          "yield_10_year": 4.31,
+          "yield_20_year": 4.72,
+          "yield_30_year": 4.81
+        },
+        {
+          "date": "1962-01-02",
+          "yield_1_month": null,
+          "yield_3_month": 2.72,
+          "yield_6_month": 2.91,
+          "yield_1_year": 3.06,
+          "yield_2_year": null,
+          "yield_3_year": 3.7,
+          "yield_5_year": 3.88,
+          "yield_7_year": null,
+          "yield_10_year": 4.06,
+          "yield_20_year": 4.07,
+          "yield_30_year": null
+        },
+        {
+          "date": "2026-04-03",
+          "yield_1_month": null,
+          "yield_10_year": null
+        },
+        {
+          "date": "2026-04-02",
+          "yield_1_month": 4.99
+        },
+        {
+          "date": "2026-02-30",
+          "yield_10_year": 4.3
+        },
+        "not-an-object"
+      ]
+    },
+    "expectedNormalized": {
+      "observations": [
+        {
+          "date": "1962-01-02",
+          "dateTime": -252374400,
+          "yield1Month": "NaN",
+          "yield3Month": 0.027200000000000002,
+          "yield6Month": 0.0291,
+          "yield1Year": 0.030600000000000002,
+          "yield2Year": "NaN",
+          "yield3Year": 0.037000000000000005,
+          "yield5Year": 0.0388,
+          "yield7Year": "NaN",
+          "yield10Year": 0.0406,
+          "yield20Year": 0.0407,
+          "yield30Year": "NaN",
+          "finiteTenors": 7
+        },
+        {
+          "date": "2026-04-02",
+          "dateTime": 1775088000,
+          "yield1Month": 0.0435,
+          "yield3Month": 0.0432,
+          "yield6Month": 0.0424,
+          "yield1Year": 0.0408,
+          "yield2Year": 0.0392,
+          "yield3Year": 0.0388,
+          "yield5Year": 0.0394,
+          "yield7Year": 0.0408,
+          "yield10Year": 0.0431,
+          "yield20Year": 0.0472,
+          "yield30Year": 0.0481,
+          "finiteTenors": 11
+        }
+      ],
+      "report": {
+        "provider": "massive",
+        "received": 6,
+        "accepted": 2,
+        "discarded": 4,
+        "discardCounts": {
+          "malformedRow": 1,
+          "invalidDate": 1,
+          "missingRates": 1,
+          "duplicate": 1
+        },
+        "discards": [
+          {
+            "cause": "missingRates",
+            "date": "2026-04-03"
+          },
+          {
+            "cause": "duplicate",
+            "date": "2026-04-02"
+          },
+          {
+            "cause": "invalidDate",
+            "date": "2026-02-30"
+          },
+          {
+            "cause": "malformedRow",
+            "date": null
+          }
+        ],
+        "reordered": true,
+        "malformedResponse": false,
+        "providerError": null
+      }
+    },
+    "interpolationCases": [
+      {
+        "name": "full_exact_1y_linear",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 1.0,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.0408
+      },
+      {
+        "name": "full_mid_45d_linear",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 0.1232876712328767,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.04342808219178082
+      },
+      {
+        "name": "full_mid_45d_logLinear",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 0.1232876712328767,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.04335416666666656
+      },
+      {
+        "name": "full_mid_18m_linear",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 1.5,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.04
+      },
+      {
+        "name": "full_mid_18m_logLinear",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 1.5,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.03973333333333331
+      },
+      {
+        "name": "full_with_sofr_7d_logLinear",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 0.019178082191780823,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": 0.0433,
+        "expectedRate": 0.04347725617159271
+      },
+      {
+        "name": "full_with_sofr_nan_rejects",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 0.25,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": "NaN",
+        "expectedRate": "NaN"
+      },
+      {
+        "name": "full_short_clamp",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 0.019178082191780823,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.0435
+      },
+      {
+        "name": "full_short_nan_extrap",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 0.019178082191780823,
+        "method": "linear",
+        "extrapolation": "nan",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": "NaN"
+      },
+      {
+        "name": "full_long_clamp",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 40.0,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.0481
+      },
+      {
+        "name": "full_long_nan_extrap",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": 40.0,
+        "method": "logLinear",
+        "extrapolation": "nan",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": "NaN"
+      },
+      {
+        "name": "hist_strict_missing_tenor_nan",
+        "sourceKind": "observation",
+        "observationDate": "1962-01-02",
+        "customPoints": null,
+        "tenorYears": 5.0,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": "NaN"
+      },
+      {
+        "name": "hist_sparse_allowed_4y_logLinear",
+        "sourceKind": "observation",
+        "observationDate": "1962-01-02",
+        "customPoints": null,
+        "tenorYears": 4.0,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": true,
+        "overnightRate": null,
+        "expectedRate": 0.03812499999999998
+      },
+      {
+        "name": "empty_curve_nan",
+        "sourceKind": "customPoints",
+        "observationDate": null,
+        "customPoints": [],
+        "tenorYears": 1.0,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": "NaN"
+      },
+      {
+        "name": "negative_tenor_nan",
+        "sourceKind": "observation",
+        "observationDate": "2026-04-02",
+        "customPoints": null,
+        "tenorYears": -0.1,
+        "method": "linear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": "NaN"
+      },
+      {
+        "name": "stress_neg_rate_logLinear",
+        "sourceKind": "customPoints",
+        "observationDate": null,
+        "customPoints": [
+          {
+            "tenorYears": 0.25,
+            "tenorLabel": "3M",
+            "rate": -0.005
+          },
+          {
+            "tenorYears": 1.0,
+            "tenorLabel": "1Y",
+            "rate": 0.0
+          },
+          {
+            "tenorYears": 4.0,
+            "tenorLabel": "4Y",
+            "rate": 0.048
+          }
+        ],
+        "tenorYears": 0.625,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": -0.0009999999999998738
+      },
+      {
+        "name": "stress_zero_to_pos_logLinear",
+        "sourceKind": "customPoints",
+        "observationDate": null,
+        "customPoints": [
+          {
+            "tenorYears": 0.25,
+            "tenorLabel": "3M",
+            "rate": -0.005
+          },
+          {
+            "tenorYears": 1.0,
+            "tenorLabel": "1Y",
+            "rate": 0.0
+          },
+          {
+            "tenorYears": 4.0,
+            "tenorLabel": "4Y",
+            "rate": 0.048
+          }
+        ],
+        "tenorYears": 2.5,
+        "method": "logLinear",
+        "extrapolation": "clamp",
+        "allowMissingTenors": false,
+        "overnightRate": null,
+        "expectedRate": 0.03840000000000003
+      }
+    ]
+  },
+  "funding": {
+    "raw": {
+      "status": "OK",
+      "results": [
+        {
+          "date": "2026-04-02",
+          "effective_fed_funds_rate": 4.33,
+          "effective_fed_funds_volume": 98,
+          "interest_on_reserve_balances": 4.4,
+          "target_range_lower": 4.25,
+          "target_range_upper": 4.5,
+          "secured_overnight_financing_rate": 4.31,
+          "sofr_volume": 2410,
+          "sofr_percentile_1": 4.26,
+          "sofr_percentile_25": 4.3,
+          "sofr_percentile_75": 4.34,
+          "sofr_percentile_99": 4.41,
+          "overnight_bank_funding_rate": 4.32,
+          "obfr_volume": 162,
+          "overnight_repo_operation_amount": 0.0,
+          "overnight_reverse_repo_operation_amount": 185.4
+        },
+        {
+          "date": "1954-07-01",
+          "effective_fed_funds_rate": 0.8,
+          "secured_overnight_financing_rate": null
+        },
+        {
+          "date": "2026-04-02",
+          "secured_overnight_financing_rate": 4.35
+        },
+        {
+          "date": "2026-04-03"
+        },
+        {
+          "date": "bad-date",
+          "secured_overnight_financing_rate": 4.3
+        },
+        42
+      ]
+    },
+    "expectedNormalized": {
+      "observations": [
+        {
+          "date": "1954-07-01",
+          "dateTime": -489283200,
+          "effectiveFedFundsRate": 0.008,
+          "interestOnReserveBalances": "NaN",
+          "targetRangeLower": "NaN",
+          "targetRangeUpper": "NaN",
+          "sofr": "NaN",
+          "sofrPercentile1": "NaN",
+          "sofrPercentile25": "NaN",
+          "sofrPercentile75": "NaN",
+          "sofrPercentile99": "NaN",
+          "overnightBankFundingRate": "NaN",
+          "effectiveFedFundsVolume": "NaN",
+          "sofrVolume": "NaN",
+          "obfrVolume": "NaN",
+          "overnightRepoOperationAmount": "NaN",
+          "overnightReverseRepoOperationAmount": "NaN"
+        },
+        {
+          "date": "2026-04-02",
+          "dateTime": 1775088000,
+          "effectiveFedFundsRate": 0.0433,
+          "interestOnReserveBalances": 0.044000000000000004,
+          "targetRangeLower": 0.0425,
+          "targetRangeUpper": 0.045,
+          "sofr": 0.0431,
+          "sofrPercentile1": 0.0426,
+          "sofrPercentile25": 0.043,
+          "sofrPercentile75": 0.0434,
+          "sofrPercentile99": 0.0441,
+          "overnightBankFundingRate": 0.0432,
+          "effectiveFedFundsVolume": 98.0,
+          "sofrVolume": 2410.0,
+          "obfrVolume": 162.0,
+          "overnightRepoOperationAmount": 0.0,
+          "overnightReverseRepoOperationAmount": 185.4
+        }
+      ],
+      "report": {
+        "provider": "massive",
+        "received": 6,
+        "accepted": 2,
+        "discarded": 4,
+        "discardCounts": {
+          "malformedRow": 1,
+          "invalidDate": 1,
+          "missingRates": 1,
+          "duplicate": 1
+        },
+        "discards": [
+          {
+            "cause": "duplicate",
+            "date": "2026-04-02"
+          },
+          {
+            "cause": "missingRates",
+            "date": "2026-04-03"
+          },
+          {
+            "cause": "invalidDate",
+            "date": "bad-date"
+          },
+          {
+            "cause": "malformedRow",
+            "date": null
+          }
+        ],
+        "reordered": true,
+        "malformedResponse": false,
+        "providerError": null
+      }
+    }
+  },
+  "dividends": {
+    "raw": {
+      "status": "OK",
+      "results": [
+        {
+          "id": "E_div_special_nov",
+          "ticker": "spy",
+          "declaration_date": "2025-11-01",
+          "ex_dividend_date": "2025-11-03",
+          "record_date": "2025-11-03",
+          "pay_date": "2025-11-28",
+          "cash_amount": 0.25,
+          "currency": "USD",
+          "distribution_type": "special"
+        },
+        {
+          "id": "E_div_reg_jul",
+          "ticker": "SPY",
+          "declaration_date": "2025-07-10",
+          "ex_dividend_date": "2025-07-15",
+          "record_date": "2025-07-15",
+          "pay_date": "2025-07-31",
+          "cash_amount": 1.7611,
+          "split_adjusted_cash_amount": 1.7611,
+          "historical_adjustment_factor": 0.99724,
+          "frequency": 4,
+          "currency": "USD",
+          "distribution_type": "recurring"
+        },
+        {
+          "id": "E_div_reg_jul",
+          "ticker": "SPY",
+          "ex_dividend_date": "2025-07-15",
+          "cash_amount": 1.7611
+        },
+        {
+          "id": "E_div_bad_cash",
+          "ticker": "AAPL",
+          "ex_dividend_date": "2025-08-10",
+          "cash_amount": -0.25
+        },
+        {
+          "ticker": "MSFT",
+          "ex_dividend_date": "2025-99-01",
+          "cash_amount": 0.83
+        },
+        {
+          "ticker": "  ",
+          "ex_dividend_date": "2025-08-12",
+          "cash_amount": 0.5
+        }
+      ]
+    },
+    "expectedNormalized": {
+      "dividends": [
+        {
+          "id": "E_div_reg_jul",
+          "ticker": "SPY",
+          "declarationDate": "2025-07-10",
+          "exDividendDate": "2025-07-15",
+          "exDividendTime": 1752586200,
+          "recordDate": "2025-07-15",
+          "payDate": "2025-07-31",
+          "cashAmount": 1.7611,
+          "splitAdjustedCashAmount": 1.7611,
+          "historicalAdjustmentFactor": 0.99724,
+          "frequency": 4,
+          "currency": "USD",
+          "distributionType": "recurring"
+        },
+        {
+          "id": "E_div_special_nov",
+          "ticker": "SPY",
+          "declarationDate": "2025-11-01",
+          "exDividendDate": "2025-11-03",
+          "exDividendTime": 1762180200,
+          "recordDate": "2025-11-03",
+          "payDate": "2025-11-28",
+          "cashAmount": 0.25,
+          "splitAdjustedCashAmount": "NaN",
+          "historicalAdjustmentFactor": "NaN",
+          "frequency": "NaN",
+          "currency": "USD",
+          "distributionType": "special"
+        }
+      ],
+      "report": {
+        "provider": "massive",
+        "received": 6,
+        "accepted": 2,
+        "discarded": 4,
+        "discardCounts": {
+          "malformedRow": 0,
+          "invalidTicker": 1,
+          "invalidExDividendDate": 1,
+          "invalidCashAmount": 1,
+          "duplicate": 1
+        },
+        "discards": [
+          {
+            "cause": "duplicate",
+            "ticker": "SPY",
+            "exDividendDate": "2025-07-15"
+          },
+          {
+            "cause": "invalidCashAmount",
+            "ticker": "AAPL",
+            "exDividendDate": "2025-08-10"
+          },
+          {
+            "cause": "invalidExDividendDate",
+            "ticker": "MSFT",
+            "exDividendDate": "2025-99-01"
+          },
+          {
+            "cause": "invalidTicker",
+            "ticker": null,
+            "exDividendDate": "2025-08-12"
+          }
+        ],
+        "reordered": true,
+        "malformedResponse": false,
+        "providerError": null
+      }
+    }
+  },
+  "openInterest": {
+    "raw": {
+      "status": "OK",
+      "results": [
+        {
+          "ticker": "O:SPXW260515P05500000",
+          "root": "spxw",
+          "underlying_ticker": "spx",
+          "contract_type": "put",
+          "expiration_date": "2026-05-15",
+          "strike_price": 5500,
+          "date": "2026-04-02",
+          "open_interest": 14250
+        },
+        {
+          "ticker": "O:SPY221021C00380000",
+          "root": "SPY",
+          "underlying": "SPY",
+          "contract_type": "call",
+          "expiration_date": "2022-10-21",
+          "strike_price": 380,
+          "date": "2022-09-01",
+          "open_interest": 0
+        },
+        {
+          "ticker": "O:SPXW260515P05500000",
+          "contract_type": "put",
+          "expiration_date": "2026-05-15",
+          "strike_price": 5500,
+          "date": "2026-04-02",
+          "open_interest": 999
+        },
+        {
+          "ticker": "O:QQQ260515C00500000",
+          "contract_type": "call",
+          "expiration_date": "2026-05-15",
+          "strike_price": 500,
+          "date": "2026-04-02",
+          "open_interest": 12.5
+        },
+        {
+          "ticker": "O:IWM260515P00200000",
+          "contract_type": "put",
+          "expiration_date": "2026-05-15",
+          "strike_price": 0,
+          "date": "2026-04-02",
+          "open_interest": 100
+        }
+      ]
+    },
+    "expectedNormalized": {
+      "records": [
+        {
+          "ticker": "O:SPY221021C00380000",
+          "root": "SPY",
+          "underlyingTicker": "SPY",
+          "date": "2022-09-01",
+          "dateTime": 1661990400,
+          "expirationDate": "2022-10-21",
+          "expirationTime": 1666382400,
+          "strikePrice": 380.0,
+          "contractType": "call",
+          "openInterest": 0
+        },
+        {
+          "ticker": "O:SPXW260515P05500000",
+          "root": "SPXW",
+          "underlyingTicker": "SPX",
+          "date": "2026-04-02",
+          "dateTime": 1775088000,
+          "expirationDate": "2026-05-15",
+          "expirationTime": 1778875200,
+          "strikePrice": 5500.0,
+          "contractType": "put",
+          "openInterest": 14250
+        }
+      ],
+      "report": {
+        "provider": "massive",
+        "received": 5,
+        "accepted": 2,
+        "discarded": 3,
+        "discardCounts": {
+          "malformedRow": 0,
+          "invalidTicker": 0,
+          "invalidDate": 0,
+          "invalidExpiration": 0,
+          "invalidStrike": 1,
+          "invalidContractType": 0,
+          "invalidOpenInterest": 1,
+          "duplicate": 1
+        },
+        "discards": [
+          {
+            "cause": "duplicate",
+            "ticker": "O:SPXW260515P05500000",
+            "date": "2026-04-02"
+          },
+          {
+            "cause": "invalidOpenInterest",
+            "ticker": "O:QQQ260515C00500000",
+            "date": "2026-04-02"
+          },
+          {
+            "cause": "invalidStrike",
+            "ticker": "O:IWM260515P00200000",
+            "date": "2026-04-02"
+          }
+        ],
+        "reordered": true,
+        "malformedResponse": false,
+        "providerError": null
+      }
+    }
+  },
+  "unifiedSnapshot": {
+    "raw": {
+      "status": "OK",
+      "results": [
+        {
+          "ticker": "TSLA",
+          "name": "Tesla Inc.",
+          "type": "stocks",
+          "market_status": "overnight_trading",
+          "timeframe": "REAL-TIME",
+          "session": {
+            "open": 258.0,
+            "high": 261.5,
+            "low": 256.8,
+            "close": 260.2,
+            "volume": 412000,
+            "vwap": 259.4,
+            "price": 260.2,
+            "previous_close": 255.0,
+            "change": 5.2,
+            "change_percent": 2.0392,
+            "last_updated": 1796605200000000000
+          },
+          "last_quote": {
+            "bid": 260.1,
+            "ask": 260.3,
+            "midpoint": 260.2,
+            "bid_size": 4,
+            "ask_size": 6,
+            "last_updated": 1796605200500000000,
+            "timeframe": "REAL-TIME"
+          },
+          "last_minute": {
+            "open": 259.9,
+            "high": 260.4,
+            "low": 259.8,
+            "close": 260.2,
+            "volume": 12450,
+            "vwap": 260.12,
+            "transactions": 182,
+            "last_updated": 1796605140000000000
+          }
+        },
+        {
+          "ticker": "AAPL",
+          "name": "Apple Inc.",
+          "type": "stocks",
+          "market_status": "early_trading",
+          "timeframe": "REAL-TIME",
+          "session": {
+            "previous_close": 212.4,
+            "price": 214.1,
+            "early_trading_change": 1.7,
+            "early_trading_change_percent": 0.800376647834275,
+            "last_updated": 1775127600000000000
+          },
+          "last_trade": {
+            "price": 214.1,
+            "size": 100,
+            "exchange": 12,
+            "conditions": [
+              37
+            ],
+            "sip_timestamp": 1775127600123000000
+          }
+        },
+        {
+          "ticker": "I:VIX",
+          "name": "CBOE Volatility Index",
+          "type": "indices",
+          "market_status": "open",
+          "timeframe": "REAL-TIME",
+          "value": 18.42,
+          "last_updated": 1775145600000000000,
+          "session": {
+            "open": 18.1,
+            "high": 19.05,
+            "low": 17.9,
+            "close": 18.42,
+            "previous_close": 18.01,
+            "change": 0.41,
+            "change_percent": 2.276513,
+            "last_updated": 1775145600000000000
+          }
+        },
+        {
+          "ticker": "I:SPX",
+          "name": "Standard & Poor's 500",
+          "type": "indices",
+          "market_status": "open",
+          "value": 5650.25,
+          "last_updated": 1775145600000,
+          "session": {
+            "open": 5630.0,
+            "high": 5662.5,
+            "low": 5624.1,
+            "close": 5650.25,
+            "previous_close": 5618.0,
+            "change": 32.25,
+            "change_percent": 0.574048
+          }
+        },
+        {
+          "ticker": "I:SKEW",
+          "name": "CBOE Skew Index",
+          "type": "indices",
+          "market_status": "closed",
+          "value": 148.9,
+          "last_updated": 1775145600,
+          "session": {
+            "previous_close": 146.2
+          }
+        },
+        {
+          "ticker": "I:NDX",
+          "name": "Nasdaq-100 Index",
+          "type": "indices",
+          "market_status": "open",
+          "value": 20125.4,
+          "last_updated": 1775145605000000000,
+          "session": {
+            "open": 20010.0,
+            "high": 20190.0,
+            "low": 19980.0,
+            "close": 20125.4,
+            "previous_close": 19995.0
+          }
+        },
+        {
+          "ticker": "O:SPXW260515C05700000",
+          "type": "options",
+          "market_status": "open",
+          "details": {
+            "contract_type": "call",
+            "exercise_style": "european",
+            "expiration_date": "2026-05-15",
+            "strike_price": 5700
+          },
+          "greeks": {},
+          "open_interest": 3200,
+          "session": {
+            "open": 42.5,
+            "high": 45.0,
+            "low": 41.2,
+            "close": 44.1,
+            "volume": 850
+          },
+          "underlying_asset": {
+            "ticker": "I:SPX",
+            "value": 5650.25,
+            "change_to_break_even": 93.85,
+            "last_updated": 1775145600000000000
+          }
+        },
+        {
+          "ticker": "O:NDX260515P19000000",
+          "type": "options",
+          "error": "NOT_ENTITLED",
+          "message": "Plan not entitled for OPRA via https://api.massive.com/v3/snapshot?apikey=massive_live_secret_macro_987"
+        },
+        {
+          "ticker": "UNKNOWNXYZ",
+          "error": "NOT_FOUND",
+          "message": "Ticker not found"
+        },
+        {
+          "ticker": "C:EURUSD",
+          "type": "fx",
+          "market_status": "open",
+          "session": {
+            "open": 1.084,
+            "high": 1.088,
+            "low": 1.082,
+            "close": 1.0865
+          }
+        },
+        {
+          "ticker": "FOOBAR",
+          "type": "commodities",
+          "session": {}
+        },
+        {
+          "ticker": "AAPL",
+          "type": "stocks",
+          "session": {}
+        }
+      ]
+    },
+    "expectedNormalized": {
+      "stocks": [
+        {
+          "assetClass": "stocks",
+          "ticker": "AAPL",
+          "name": "Apple Inc.",
+          "marketStatus": "early_trading",
+          "timeframe": "REAL-TIME",
+          "session": {
+            "open": "NaN",
+            "high": "NaN",
+            "low": "NaN",
+            "close": "NaN",
+            "volume": "NaN",
+            "vwap": "NaN",
+            "price": 214.1,
+            "previousClose": 212.4,
+            "change": "NaN",
+            "changePercent": "NaN",
+            "earlyTradingChange": 1.7,
+            "earlyTradingChangePercent": 0.800376647834275,
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": 1775127600,
+            "hasOhlc": false
+          },
+          "lastQuote": null,
+          "lastTrade": {
+            "price": 214.1,
+            "size": 100.0,
+            "exchange": 12,
+            "conditions": [
+              37
+            ],
+            "timestamp": 1775127600,
+            "timeframe": null
+          },
+          "lastMinute": null
+        },
+        {
+          "assetClass": "stocks",
+          "ticker": "TSLA",
+          "name": "Tesla Inc.",
+          "marketStatus": "overnight_trading",
+          "timeframe": "REAL-TIME",
+          "session": {
+            "open": 258.0,
+            "high": 261.5,
+            "low": 256.8,
+            "close": 260.2,
+            "volume": 412000.0,
+            "vwap": 259.4,
+            "price": 260.2,
+            "previousClose": 255.0,
+            "change": 5.2,
+            "changePercent": 2.0392,
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": 1796605200,
+            "hasOhlc": true
+          },
+          "lastQuote": {
+            "bid": 260.1,
+            "ask": 260.3,
+            "midpoint": 260.2,
+            "bidSize": 4.0,
+            "askSize": 6.0,
+            "updatedAt": 1796605200,
+            "timeframe": "REAL-TIME"
+          },
+          "lastTrade": null,
+          "lastMinute": {
+            "open": 259.9,
+            "high": 260.4,
+            "low": 259.8,
+            "close": 260.2,
+            "volume": 12450.0,
+            "vwap": 260.12,
+            "transactions": 182.0,
+            "lastUpdated": 1796605140
+          }
+        }
+      ],
+      "indices": [
+        {
+          "assetClass": "indices",
+          "ticker": "I:NDX",
+          "name": "Nasdaq-100 Index",
+          "marketStatus": "open",
+          "timeframe": null,
+          "value": 20125.4,
+          "session": {
+            "open": 20010.0,
+            "high": 20190.0,
+            "low": 19980.0,
+            "close": 20125.4,
+            "volume": "NaN",
+            "vwap": "NaN",
+            "price": "NaN",
+            "previousClose": 19995.0,
+            "change": "NaN",
+            "changePercent": "NaN",
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": "NaN",
+            "hasOhlc": true
+          },
+          "lastUpdated": 1775145605
+        },
+        {
+          "assetClass": "indices",
+          "ticker": "I:SKEW",
+          "name": "CBOE Skew Index",
+          "marketStatus": "closed",
+          "timeframe": null,
+          "value": 148.9,
+          "session": {
+            "open": "NaN",
+            "high": "NaN",
+            "low": "NaN",
+            "close": "NaN",
+            "volume": "NaN",
+            "vwap": "NaN",
+            "price": "NaN",
+            "previousClose": 146.2,
+            "change": "NaN",
+            "changePercent": "NaN",
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": "NaN",
+            "hasOhlc": false
+          },
+          "lastUpdated": "NaN"
+        },
+        {
+          "assetClass": "indices",
+          "ticker": "I:SPX",
+          "name": "Standard & Poor's 500",
+          "marketStatus": "open",
+          "timeframe": null,
+          "value": 5650.25,
+          "session": {
+            "open": 5630.0,
+            "high": 5662.5,
+            "low": 5624.1,
+            "close": 5650.25,
+            "volume": "NaN",
+            "vwap": "NaN",
+            "price": "NaN",
+            "previousClose": 5618.0,
+            "change": 32.25,
+            "changePercent": 0.574048,
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": "NaN",
+            "hasOhlc": true
+          },
+          "lastUpdated": 1775145600
+        },
+        {
+          "assetClass": "indices",
+          "ticker": "I:VIX",
+          "name": "CBOE Volatility Index",
+          "marketStatus": "open",
+          "timeframe": "REAL-TIME",
+          "value": 18.42,
+          "session": {
+            "open": 18.1,
+            "high": 19.05,
+            "low": 17.9,
+            "close": 18.42,
+            "volume": "NaN",
+            "vwap": "NaN",
+            "price": "NaN",
+            "previousClose": 18.01,
+            "change": 0.41,
+            "changePercent": 2.276513,
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": 1775145600,
+            "hasOhlc": true
+          },
+          "lastUpdated": 1775145600
+        }
+      ],
+      "options": [
+        {
+          "assetClass": "options",
+          "ticker": "O:SPXW260515C05700000",
+          "name": null,
+          "marketStatus": "open",
+          "timeframe": null,
+          "breakEvenPrice": "NaN",
+          "impliedVolatility": "NaN",
+          "openInterest": 3200.0,
+          "greeks": {
+            "delta": "NaN",
+            "gamma": "NaN",
+            "theta": "NaN",
+            "vega": "NaN"
+          },
+          "greeksMissing": true,
+          "details": {
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-05-15",
+            "expirationTime": 1778875200,
+            "sharesPerContract": 100,
+            "strikePrice": 5700.0
+          },
+          "session": {
+            "open": 42.5,
+            "high": 45.0,
+            "low": 41.2,
+            "close": 44.1,
+            "volume": 850.0,
+            "vwap": "NaN",
+            "price": "NaN",
+            "previousClose": "NaN",
+            "change": "NaN",
+            "changePercent": "NaN",
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": "NaN",
+            "hasOhlc": true
+          },
+          "lastQuote": null,
+          "lastTrade": null,
+          "lastMinute": null,
+          "underlyingAsset": {
+            "ticker": "I:SPX",
+            "price": 5650.25,
+            "sourceField": "value",
+            "changeToBreakEven": 93.85,
+            "updatedAt": 1775145600,
+            "timeframe": null
+          }
+        }
+      ],
+      "other": [
+        {
+          "assetClass": "fx",
+          "rawType": "fx",
+          "ticker": "C:EURUSD",
+          "name": null,
+          "marketStatus": "open",
+          "timeframe": null,
+          "session": {
+            "open": 1.084,
+            "high": 1.088,
+            "low": 1.082,
+            "close": 1.0865,
+            "volume": "NaN",
+            "vwap": "NaN",
+            "price": "NaN",
+            "previousClose": "NaN",
+            "change": "NaN",
+            "changePercent": "NaN",
+            "earlyTradingChange": "NaN",
+            "earlyTradingChangePercent": "NaN",
+            "lateTradingChange": "NaN",
+            "lateTradingChangePercent": "NaN",
+            "lastUpdated": "NaN",
+            "hasOhlc": true
+          },
+          "lastQuote": null,
+          "lastTrade": null,
+          "lastMinute": null
+        }
+      ],
+      "tickerErrors": [
+        {
+          "ticker": "O:NDX260515P19000000",
+          "type": "options",
+          "error": "NOT_ENTITLED",
+          "message": "Plan not entitled for OPRA via https://api.massive.com/v3/snapshot?apikey=<redacted>"
+        },
+        {
+          "ticker": "UNKNOWNXYZ",
+          "type": null,
+          "error": "NOT_FOUND",
+          "message": "Ticker not found"
+        }
+      ],
+      "report": {
+        "provider": "massive",
+        "received": 12,
+        "accepted": 8,
+        "errorCount": 2,
+        "discarded": 2,
+        "discardCounts": {
+          "malformedRow": 0,
+          "missingTicker": 0,
+          "unknownAssetType": 1,
+          "duplicate": 1
+        },
+        "discards": [
+          {
+            "cause": "unknownAssetType",
+            "ticker": "FOOBAR"
+          },
+          {
+            "cause": "duplicate",
+            "ticker": "AAPL"
+          }
+        ],
+        "stocksCount": 2,
+        "indicesCount": 4,
+        "optionsCount": 1,
+        "otherCount": 1,
+        "earlyTradingWithoutOhlc": 1,
+        "overnightTradingCount": 1,
+        "invalidTimestamps": 1,
+        "reordered": true,
+        "malformedResponse": false,
+        "providerError": null
+      }
+    }
+  },
+  "loaderHelpers": {
+    "mirrorNextUrlInput": "https://api.polygon.io/fed/v1/treasury-yields?cursor=page2abc&limit=1",
+    "mirrorNextUrlExpected": "https://api.massive.com/fed/v1/treasury-yields?cursor=page2abc&limit=1&apikey=massive_live_secret_macro_987"
+  }
+}
