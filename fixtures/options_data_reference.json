@@ -1,0 +1,1733 @@
+{
+  "metadata": {
+    "generator": "tools/gen_options_data_fixture.py",
+    "command": "python tools/gen_options_data_fixture.py",
+    "method": "Referencia independiente en Python (zoneinfo America/New_York, urllib.parse). Sin compartir código con TypeScript.",
+    "nonFiniteEncoding": "La cadena \"NaN\" representa Number.NaN."
+  },
+  "contracts_cases": {
+    "c1_binary_and_adjusted_excluded": {
+      "description": "Excluye binaria O:B1SPY, ajustada con additional_underlyings (shares=100) y mini (shares=10); ordena estándar",
+      "raw": {
+        "status": "OK",
+        "results": [
+          {
+            "cfi": "OCESCS",
+            "contract_type": "call",
+            "exercise_style": "european",
+            "expiration_date": "2026-11-13",
+            "primary_exchange": "XASE",
+            "shares_per_contract": 100,
+            "strike_price": 710,
+            "ticker": "O:B1SPY261113C00710000",
+            "underlying_ticker": "SPY",
+            "additional_underlyings": [
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 100
+              }
+            ],
+            "type": "binary",
+            "underlying_type": "equity"
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 25,
+            "ticker": "O:GME1261120C00025000",
+            "underlying_ticker": "GME",
+            "additional_underlyings": [
+              {
+                "type": "equity",
+                "underlying": "GME",
+                "amount": 100
+              },
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 5.5
+              }
+            ]
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "put",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 200,
+            "ticker": "O:AAPL261120P00200000",
+            "underlying_ticker": "AAPL"
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 195,
+            "ticker": "O:AAPL261120C00195000",
+            "underlying_ticker": "AAPL"
+          },
+          {
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "shares_per_contract": 10,
+            "strike_price": 50,
+            "ticker": "O:MINI261120C00050000",
+            "underlying_ticker": "MINI"
+          }
+        ]
+      },
+      "options": {},
+      "expected": {
+        "contracts": [
+          {
+            "ticker": "O:AAPL261120C00195000",
+            "underlyingTicker": "AAPL",
+            "contractType": "call",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 195.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": "BATO",
+            "cfi": "OCASPS",
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          },
+          {
+            "ticker": "O:AAPL261120P00200000",
+            "underlyingTicker": "AAPL",
+            "contractType": "put",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 200.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": "BATO",
+            "cfi": "OCASPS",
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "report": {
+          "provider": "massive",
+          "received": 5,
+          "accepted": 2,
+          "discarded": 3,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 0,
+            "binaryExcluded": 1,
+            "adjustedExcluded": 2,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [
+            {
+              "cause": "binaryExcluded",
+              "ticker": "O:B1SPY261113C00710000"
+            },
+            {
+              "cause": "adjustedExcluded",
+              "ticker": "O:GME1261120C00025000"
+            },
+            {
+              "cause": "adjustedExcluded",
+              "ticker": "O:MINI261120C00050000"
+            }
+          ],
+          "binaryDetected": 1,
+          "adjustedDetected": 2,
+          "binaryExcluded": 1,
+          "adjustedExcluded": 2,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 0,
+          "filterExcluded": 0,
+          "reordered": true,
+          "malformedResponse": false,
+          "providerError": null
+        }
+      }
+    },
+    "c2_include_binary_and_adjusted": {
+      "description": "Conserva binaria y ajustadas cuando excludeBinary=false y excludeAdjusted=false",
+      "raw": {
+        "status": "OK",
+        "results": [
+          {
+            "cfi": "OCESCS",
+            "contract_type": "call",
+            "exercise_style": "european",
+            "expiration_date": "2026-11-13",
+            "primary_exchange": "XASE",
+            "shares_per_contract": 100,
+            "strike_price": 710,
+            "ticker": "O:B1SPY261113C00710000",
+            "underlying_ticker": "SPY",
+            "additional_underlyings": [
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 100
+              }
+            ],
+            "type": "binary",
+            "underlying_type": "equity"
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 25,
+            "ticker": "O:GME1261120C00025000",
+            "underlying_ticker": "GME",
+            "additional_underlyings": [
+              {
+                "type": "equity",
+                "underlying": "GME",
+                "amount": 100
+              },
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 5.5
+              }
+            ]
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "put",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 200,
+            "ticker": "O:AAPL261120P00200000",
+            "underlying_ticker": "AAPL"
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 195,
+            "ticker": "O:AAPL261120C00195000",
+            "underlying_ticker": "AAPL"
+          },
+          {
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "shares_per_contract": 10,
+            "strike_price": 50,
+            "ticker": "O:MINI261120C00050000",
+            "underlying_ticker": "MINI"
+          }
+        ]
+      },
+      "options": {
+        "excludeBinary": false,
+        "excludeAdjusted": false
+      },
+      "expected": {
+        "contracts": [
+          {
+            "ticker": "O:B1SPY261113C00710000",
+            "underlyingTicker": "SPY",
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 710.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": "XASE",
+            "cfi": "OCESCS",
+            "correction": null,
+            "kind": "binary",
+            "underlyingType": "equity",
+            "additionalUnderlyings": [
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 100.0
+              }
+            ],
+            "isBinary": true,
+            "isAdjusted": false,
+            "isNonStandard": true
+          },
+          {
+            "ticker": "O:GME1261120C00025000",
+            "underlyingTicker": "GME",
+            "contractType": "call",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 25.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": "BATO",
+            "cfi": "OCASPS",
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [
+              {
+                "type": "equity",
+                "underlying": "GME",
+                "amount": 100.0
+              },
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 5.5
+              }
+            ],
+            "isBinary": false,
+            "isAdjusted": true,
+            "isNonStandard": true
+          },
+          {
+            "ticker": "O:MINI261120C00050000",
+            "underlyingTicker": "MINI",
+            "contractType": "call",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 50.0,
+            "sharesPerContract": 10.0,
+            "primaryExchange": null,
+            "cfi": null,
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": true,
+            "isNonStandard": true
+          },
+          {
+            "ticker": "O:AAPL261120C00195000",
+            "underlyingTicker": "AAPL",
+            "contractType": "call",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 195.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": "BATO",
+            "cfi": "OCASPS",
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          },
+          {
+            "ticker": "O:AAPL261120P00200000",
+            "underlyingTicker": "AAPL",
+            "contractType": "put",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 200.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": "BATO",
+            "cfi": "OCASPS",
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "report": {
+          "provider": "massive",
+          "received": 5,
+          "accepted": 5,
+          "discarded": 0,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 0,
+            "binaryExcluded": 0,
+            "adjustedExcluded": 0,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [],
+          "binaryDetected": 1,
+          "adjustedDetected": 2,
+          "binaryExcluded": 0,
+          "adjustedExcluded": 0,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 0,
+          "filterExcluded": 0,
+          "reordered": true,
+          "malformedResponse": false,
+          "providerError": null
+        }
+      }
+    },
+    "c3_discards_and_et_dte_rollover": {
+      "description": "Descartes malformados, duplicados, DTE en zona ET (20:00 ET ya día siguiente en UTC) y redacción de error",
+      "raw": {
+        "status": "ERROR",
+        "error": "rate error on https://api.massive.com/v3/reference?apikey=SECRET_KEY_1",
+        "results": [
+          "not-an-object",
+          {
+            "ticker": "   ",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-11-20",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:BAD_EXP",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-02-30",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:BAD_STRIKE",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-11-20",
+            "strike_price": -5,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:BAD_CT",
+            "underlying_ticker": "SPY",
+            "contract_type": "swap",
+            "expiration_date": "2026-11-20",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:DAY0",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-11-13",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:DAY35",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-12-18",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:LOW_K",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-11-20",
+            "strike_price": 50,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:OK1",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-11-20",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          },
+          {
+            "ticker": "O:OK1",
+            "underlying_ticker": "SPY",
+            "contract_type": "call",
+            "expiration_date": "2026-11-20",
+            "strike_price": 100,
+            "shares_per_contract": 100
+          }
+        ]
+      },
+      "options": {
+        "minDte": 1,
+        "maxDte": 14,
+        "minStrike": 90,
+        "maxStrike": 120,
+        "now": 1794618000
+      },
+      "expected": {
+        "contracts": [
+          {
+            "ticker": "O:OK1",
+            "underlyingTicker": "SPY",
+            "contractType": "call",
+            "exerciseStyle": null,
+            "expirationDate": "2026-11-20",
+            "expirationTime": 1795208400,
+            "strikePrice": 100.0,
+            "sharesPerContract": 100.0,
+            "primaryExchange": null,
+            "cfi": null,
+            "correction": null,
+            "kind": null,
+            "underlyingType": null,
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "report": {
+          "provider": "massive",
+          "received": 10,
+          "accepted": 1,
+          "discarded": 9,
+          "discardCounts": {
+            "malformedRow": 1,
+            "invalidTicker": 1,
+            "invalidExpiration": 1,
+            "invalidStrike": 1,
+            "invalidContractType": 1,
+            "invalidSharesPerContract": 0,
+            "duplicate": 1,
+            "binaryExcluded": 0,
+            "adjustedExcluded": 0,
+            "outOfDteRange": 2,
+            "outOfStrikeRange": 1,
+            "filteredContractType": 0
+          },
+          "discards": [
+            {
+              "cause": "malformedRow",
+              "ticker": null
+            },
+            {
+              "cause": "invalidTicker",
+              "ticker": null
+            },
+            {
+              "cause": "invalidExpiration",
+              "ticker": "O:BAD_EXP"
+            },
+            {
+              "cause": "invalidStrike",
+              "ticker": "O:BAD_STRIKE"
+            },
+            {
+              "cause": "invalidContractType",
+              "ticker": "O:BAD_CT"
+            },
+            {
+              "cause": "outOfDteRange",
+              "ticker": "O:DAY0"
+            },
+            {
+              "cause": "outOfDteRange",
+              "ticker": "O:DAY35"
+            },
+            {
+              "cause": "outOfStrikeRange",
+              "ticker": "O:LOW_K"
+            },
+            {
+              "cause": "duplicate",
+              "ticker": "O:OK1"
+            }
+          ],
+          "binaryDetected": 0,
+          "adjustedDetected": 0,
+          "binaryExcluded": 0,
+          "adjustedExcluded": 0,
+          "malformedDiscarded": 5,
+          "duplicateDiscarded": 1,
+          "filterExcluded": 3,
+          "reordered": false,
+          "malformedResponse": false,
+          "providerError": {
+            "code": 0,
+            "message": "rate error on https://api.massive.com/v3/reference?apikey=<redacted>"
+          }
+        }
+      }
+    }
+  },
+  "snapshot_cases": {
+    "s1_spy_binary_adjusted_empty_greeks_and_units": {
+      "description": "Snapshot SPY: nanosegundos/ms a s UTC, segundos crudos rechazados, greeks:{} -> NaN, binaria y ajustada excluidas por referencia",
+      "raw": {
+        "status": "OK",
+        "results": [
+          {
+            "break_even_price": 760.905,
+            "day": {
+              "change": -0.82,
+              "change_percent": -47.4,
+              "close": 0.91,
+              "high": 2.03,
+              "last_updated": 1794580622047000000,
+              "low": 0.91,
+              "open": 1.87,
+              "previous_close": 1.73,
+              "volume": 16228,
+              "vwap": 1.6091
+            },
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-13",
+              "shares_per_contract": 100,
+              "strike_price": 760,
+              "ticker": "O:SPY261113C00760000"
+            },
+            "greeks": {
+              "delta": 0.27457593553768195,
+              "gamma": 0.0633171656071293,
+              "theta": -2.0812456642282964,
+              "vega": 0.090618033036695
+            },
+            "implied_volatility": 0.20388271212136563,
+            "last_quote": {
+              "ask": 0.91,
+              "ask_size": 100,
+              "ask_exchange": 301,
+              "bid": 0.9,
+              "bid_size": 118,
+              "bid_exchange": 320,
+              "last_updated": 1794580645839102810,
+              "midpoint": 0.905,
+              "timeframe": "REAL-TIME"
+            },
+            "last_trade": {
+              "sip_timestamp": 1794580645919057658,
+              "conditions": [
+                219
+              ],
+              "price": 0.91,
+              "size": 10,
+              "exchange": 318,
+              "timeframe": "REAL-TIME"
+            },
+            "open_interest": 12256,
+            "underlying_asset": {
+              "change_to_break_even": 4.135,
+              "last_updated": 1794580646527788926,
+              "price": 756.77,
+              "ticker": "SPY",
+              "timeframe": "REAL-TIME"
+            }
+          },
+          {
+            "day": {},
+            "details": {
+              "contract_type": "put",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-13",
+              "shares_per_contract": 100,
+              "strike_price": 750,
+              "ticker": "O:SPY261113P00750000"
+            },
+            "greeks": {},
+            "last_quote": {
+              "ask": 0.15,
+              "bid": 0.0,
+              "midpoint": 0.075,
+              "last_updated": 1794580645123,
+              "timeframe": "REAL-TIME"
+            },
+            "last_trade": {},
+            "open_interest": 420,
+            "underlying_asset": {
+              "last_updated": 1794580646,
+              "price": 756.77,
+              "ticker": "SPY",
+              "timeframe": "REAL-TIME"
+            }
+          },
+          {
+            "day": {},
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "european",
+              "expiration_date": "2026-11-13",
+              "shares_per_contract": 100,
+              "strike_price": 710,
+              "ticker": "O:B1SPY261113C00710000"
+            },
+            "last_quote": {
+              "ask": 1.02,
+              "bid": 0.98,
+              "midpoint": 1.0,
+              "last_updated": 1794580454739282795,
+              "timeframe": "REAL-TIME"
+            },
+            "last_trade": {},
+            "open_interest": 0,
+            "underlying_asset": {
+              "last_updated": 1794580646527788926,
+              "price": 756.77,
+              "ticker": "SPY",
+              "timeframe": "REAL-TIME"
+            }
+          },
+          {
+            "day": {},
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 25,
+              "ticker": "O:GME1261120C00025000"
+            },
+            "greeks": {
+              "delta": 0.5
+            },
+            "last_quote": {},
+            "last_trade": {},
+            "open_interest": 10
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-13",
+              "shares_per_contract": 100,
+              "strike_price": 760,
+              "ticker": "O:SPY261113C00760000"
+            }
+          }
+        ]
+      },
+      "referenceRaw": {
+        "status": "OK",
+        "results": [
+          {
+            "cfi": "OCESCS",
+            "contract_type": "call",
+            "exercise_style": "european",
+            "expiration_date": "2026-11-13",
+            "primary_exchange": "XASE",
+            "shares_per_contract": 100,
+            "strike_price": 710,
+            "ticker": "O:B1SPY261113C00710000",
+            "underlying_ticker": "SPY",
+            "additional_underlyings": [
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 100
+              }
+            ],
+            "type": "binary",
+            "underlying_type": "equity"
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 25,
+            "ticker": "O:GME1261120C00025000",
+            "underlying_ticker": "GME",
+            "additional_underlyings": [
+              {
+                "type": "equity",
+                "underlying": "GME",
+                "amount": 100
+              },
+              {
+                "type": "currency",
+                "underlying": "USD",
+                "amount": 5.5
+              }
+            ]
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "put",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 200,
+            "ticker": "O:AAPL261120P00200000",
+            "underlying_ticker": "AAPL"
+          },
+          {
+            "cfi": "OCASPS",
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "primary_exchange": "BATO",
+            "shares_per_contract": 100,
+            "strike_price": 195,
+            "ticker": "O:AAPL261120C00195000",
+            "underlying_ticker": "AAPL"
+          },
+          {
+            "contract_type": "call",
+            "exercise_style": "american",
+            "expiration_date": "2026-11-20",
+            "shares_per_contract": 10,
+            "strike_price": 50,
+            "ticker": "O:MINI261120C00050000",
+            "underlying_ticker": "MINI"
+          }
+        ]
+      },
+      "options": {},
+      "expected": {
+        "contracts": [
+          {
+            "ticker": "O:SPY261113P00750000",
+            "contractType": "put",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 750.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": "NaN",
+            "impliedVolatility": "NaN",
+            "openInterest": 420.0,
+            "greeks": {
+              "delta": "NaN",
+              "gamma": "NaN",
+              "theta": "NaN",
+              "vega": "NaN"
+            },
+            "greeksMissing": true,
+            "day": {
+              "open": "NaN",
+              "high": "NaN",
+              "low": "NaN",
+              "close": "NaN",
+              "volume": "NaN",
+              "vwap": "NaN",
+              "previousClose": "NaN",
+              "change": "NaN",
+              "changePercent": "NaN",
+              "updatedAt": "NaN"
+            },
+            "lastQuote": {
+              "bid": 0.0,
+              "ask": 0.15,
+              "midpoint": 0.075,
+              "bidSize": "NaN",
+              "askSize": "NaN",
+              "bidExchange": null,
+              "askExchange": null,
+              "updatedAt": 1794580645,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": "NaN",
+              "size": "NaN",
+              "exchange": null,
+              "conditions": [],
+              "sipTimestamp": "NaN",
+              "timeframe": null
+            },
+            "underlyingAsset": {
+              "ticker": "SPY",
+              "price": 756.77,
+              "sourceField": "price",
+              "changeToBreakEven": "NaN",
+              "updatedAt": "NaN",
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          },
+          {
+            "ticker": "O:SPY261113C00760000",
+            "contractType": "call",
+            "exerciseStyle": "american",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 760.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": 760.905,
+            "impliedVolatility": 0.20388271212136563,
+            "openInterest": 12256.0,
+            "greeks": {
+              "delta": 0.27457593553768195,
+              "gamma": 0.0633171656071293,
+              "theta": -2.0812456642282964,
+              "vega": 0.090618033036695
+            },
+            "greeksMissing": false,
+            "day": {
+              "open": 1.87,
+              "high": 2.03,
+              "low": 0.91,
+              "close": 0.91,
+              "volume": 16228.0,
+              "vwap": 1.6091,
+              "previousClose": 1.73,
+              "change": -0.82,
+              "changePercent": -47.4,
+              "updatedAt": 1794580622
+            },
+            "lastQuote": {
+              "bid": 0.9,
+              "ask": 0.91,
+              "midpoint": 0.905,
+              "bidSize": 118.0,
+              "askSize": 100.0,
+              "bidExchange": 320,
+              "askExchange": 301,
+              "updatedAt": 1794580645,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": 0.91,
+              "size": 10.0,
+              "exchange": 318,
+              "conditions": [
+                219
+              ],
+              "sipTimestamp": 1794580645,
+              "timeframe": "REAL-TIME"
+            },
+            "underlyingAsset": {
+              "ticker": "SPY",
+              "price": 756.77,
+              "sourceField": "price",
+              "changeToBreakEven": 4.135,
+              "updatedAt": 1794580646,
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "underlying": {
+          "ticker": "SPY",
+          "price": 756.77,
+          "sourceField": "price",
+          "changeToBreakEven": 4.135,
+          "updatedAt": 1794580646,
+          "timeframe": "REAL-TIME"
+        },
+        "report": {
+          "provider": "massive",
+          "received": 5,
+          "accepted": 2,
+          "discarded": 3,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 1,
+            "binaryExcluded": 1,
+            "adjustedExcluded": 1,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [
+            {
+              "cause": "binaryExcluded",
+              "ticker": "O:B1SPY261113C00710000"
+            },
+            {
+              "cause": "adjustedExcluded",
+              "ticker": "O:GME1261120C00025000"
+            },
+            {
+              "cause": "duplicate",
+              "ticker": "O:SPY261113C00760000"
+            }
+          ],
+          "binaryDetected": 1,
+          "adjustedDetected": 1,
+          "binaryExcluded": 1,
+          "adjustedExcluded": 1,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 1,
+          "filterExcluded": 0,
+          "reordered": true,
+          "malformedResponse": false,
+          "providerError": null,
+          "emptyGreeks": 1,
+          "ivMissing": 1,
+          "emptyDay": 1,
+          "emptyLastQuote": 0,
+          "emptyLastTrade": 1,
+          "invalidTimestamps": 1,
+          "underlyingSource": "price"
+        }
+      }
+    },
+    "s2_index_ispx_underlying_value": {
+      "description": "Snapshot I:SPX con underlying_asset.value (sin price), greeks vacíos -> NaN y estilo europeo",
+      "raw": {
+        "status": "OK",
+        "results": [
+          {
+            "day": {},
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "european",
+              "expiration_date": "2026-11-13",
+              "shares_per_contract": 100,
+              "strike_price": 7580,
+              "ticker": "O:SPXW261113C07580000"
+            },
+            "greeks": {
+              "delta": 0.52,
+              "gamma": 0.011,
+              "theta": -4.2,
+              "vega": 1.8
+            },
+            "implied_volatility": 0.165,
+            "last_quote": {
+              "ask": 18.2,
+              "bid": 17.8,
+              "midpoint": 18.0,
+              "last_updated": 1794581119251379225,
+              "timeframe": "REAL-TIME"
+            },
+            "last_trade": {},
+            "open_interest": 1200,
+            "underlying_asset": {
+              "last_updated": 1794581115037000000,
+              "value": 7584.43,
+              "ticker": "I:SPX",
+              "timeframe": "REAL-TIME"
+            }
+          },
+          {
+            "day": {},
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "european",
+              "expiration_date": "2026-11-13",
+              "shares_per_contract": 100,
+              "strike_price": 3000,
+              "ticker": "O:SPXW261113C03000000"
+            },
+            "greeks": {},
+            "last_quote": {
+              "ask": 4590.6,
+              "bid": 4575.6,
+              "midpoint": 4583.1,
+              "last_updated": 1794581119251379225,
+              "timeframe": "REAL-TIME"
+            },
+            "last_trade": {},
+            "open_interest": 0,
+            "underlying_asset": {
+              "last_updated": 1794581115037000000,
+              "value": 7584.43,
+              "ticker": "I:SPX",
+              "timeframe": "REAL-TIME"
+            }
+          }
+        ]
+      },
+      "referenceRaw": null,
+      "options": {},
+      "expected": {
+        "contracts": [
+          {
+            "ticker": "O:SPXW261113C03000000",
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 3000.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": "NaN",
+            "impliedVolatility": "NaN",
+            "openInterest": 0.0,
+            "greeks": {
+              "delta": "NaN",
+              "gamma": "NaN",
+              "theta": "NaN",
+              "vega": "NaN"
+            },
+            "greeksMissing": true,
+            "day": {
+              "open": "NaN",
+              "high": "NaN",
+              "low": "NaN",
+              "close": "NaN",
+              "volume": "NaN",
+              "vwap": "NaN",
+              "previousClose": "NaN",
+              "change": "NaN",
+              "changePercent": "NaN",
+              "updatedAt": "NaN"
+            },
+            "lastQuote": {
+              "bid": 4575.6,
+              "ask": 4590.6,
+              "midpoint": 4583.1,
+              "bidSize": "NaN",
+              "askSize": "NaN",
+              "bidExchange": null,
+              "askExchange": null,
+              "updatedAt": 1794581119,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": "NaN",
+              "size": "NaN",
+              "exchange": null,
+              "conditions": [],
+              "sipTimestamp": "NaN",
+              "timeframe": null
+            },
+            "underlyingAsset": {
+              "ticker": "I:SPX",
+              "price": 7584.43,
+              "sourceField": "value",
+              "changeToBreakEven": "NaN",
+              "updatedAt": 1794581115,
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          },
+          {
+            "ticker": "O:SPXW261113C07580000",
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 7580.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": "NaN",
+            "impliedVolatility": 0.165,
+            "openInterest": 1200.0,
+            "greeks": {
+              "delta": 0.52,
+              "gamma": 0.011,
+              "theta": -4.2,
+              "vega": 1.8
+            },
+            "greeksMissing": false,
+            "day": {
+              "open": "NaN",
+              "high": "NaN",
+              "low": "NaN",
+              "close": "NaN",
+              "volume": "NaN",
+              "vwap": "NaN",
+              "previousClose": "NaN",
+              "change": "NaN",
+              "changePercent": "NaN",
+              "updatedAt": "NaN"
+            },
+            "lastQuote": {
+              "bid": 17.8,
+              "ask": 18.2,
+              "midpoint": 18.0,
+              "bidSize": "NaN",
+              "askSize": "NaN",
+              "bidExchange": null,
+              "askExchange": null,
+              "updatedAt": 1794581119,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": "NaN",
+              "size": "NaN",
+              "exchange": null,
+              "conditions": [],
+              "sipTimestamp": "NaN",
+              "timeframe": null
+            },
+            "underlyingAsset": {
+              "ticker": "I:SPX",
+              "price": 7584.43,
+              "sourceField": "value",
+              "changeToBreakEven": "NaN",
+              "updatedAt": 1794581115,
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "underlying": {
+          "ticker": "I:SPX",
+          "price": 7584.43,
+          "sourceField": "value",
+          "changeToBreakEven": "NaN",
+          "updatedAt": 1794581115,
+          "timeframe": "REAL-TIME"
+        },
+        "report": {
+          "provider": "massive",
+          "received": 2,
+          "accepted": 2,
+          "discarded": 0,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 0,
+            "binaryExcluded": 0,
+            "adjustedExcluded": 0,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [],
+          "binaryDetected": 0,
+          "adjustedDetected": 0,
+          "binaryExcluded": 0,
+          "adjustedExcluded": 0,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 0,
+          "filterExcluded": 0,
+          "reordered": true,
+          "malformedResponse": false,
+          "providerError": null,
+          "emptyGreeks": 1,
+          "ivMissing": 1,
+          "emptyDay": 2,
+          "emptyLastQuote": 0,
+          "emptyLastTrade": 2,
+          "invalidTimestamps": 0,
+          "underlyingSource": "value"
+        }
+      }
+    },
+    "s3_provider_error_and_malformed": {
+      "description": "Error de proveedor con ?apiKey redactado y results malformado",
+      "raw": {
+        "status": "ERROR",
+        "error": "invalid apiKey on ?apiKey=TOP_SECRET_VAL",
+        "results": "should-be-array"
+      },
+      "referenceRaw": null,
+      "options": {},
+      "expected": {
+        "contracts": [],
+        "underlying": null,
+        "report": {
+          "provider": "massive",
+          "received": 0,
+          "accepted": 0,
+          "discarded": 0,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 0,
+            "binaryExcluded": 0,
+            "adjustedExcluded": 0,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [],
+          "binaryDetected": 0,
+          "adjustedDetected": 0,
+          "binaryExcluded": 0,
+          "adjustedExcluded": 0,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 0,
+          "filterExcluded": 0,
+          "reordered": false,
+          "malformedResponse": true,
+          "providerError": {
+            "code": 0,
+            "message": "invalid apiKey on ?apiKey=<redacted>"
+          },
+          "emptyGreeks": 0,
+          "ivMissing": 0,
+          "emptyDay": 0,
+          "emptyLastQuote": 0,
+          "emptyLastTrade": 0,
+          "invalidTimestamps": 0,
+          "underlyingSource": "missing"
+        }
+      }
+    }
+  },
+  "loader_cases": {
+    "l1_ispx_multipage_mirror_rewrite_and_binary_filter": {
+      "description": "loadOptionChain('I:SPX') usa SPX sin I: en contracts y I:SPX en snapshot, reescribe mirror polygon->massive y excluye O:B1SPX",
+      "options": {
+        "underlying": "I:SPX",
+        "apiKey": "fixture-opt-secret-key",
+        "baseUrl": "https://api.massive.com"
+      },
+      "responses": [
+        {
+          "status": 200,
+          "ok": true,
+          "text": "{\"status\": \"OK\", \"results\": [{\"cfi\": \"OCESCS\", \"contract_type\": \"call\", \"exercise_style\": \"european\", \"expiration_date\": \"2026-11-13\", \"shares_per_contract\": 100, \"strike_price\": 7500, \"ticker\": \"O:B1SPX261113C07500000\", \"underlying_ticker\": \"SPX\", \"additional_underlyings\": [{\"type\": \"currency\", \"underlying\": \"USD\", \"amount\": 100}], \"type\": \"binary\", \"underlying_type\": \"equity\"}], \"next_url\": \"https://api.polygon.io/v3/reference/options/contracts?cursor=c2\"}"
+        },
+        {
+          "status": 200,
+          "ok": true,
+          "text": "{\"status\": \"OK\", \"results\": [{\"cfi\": \"OCEICS\", \"contract_type\": \"call\", \"exercise_style\": \"european\", \"expiration_date\": \"2026-11-13\", \"shares_per_contract\": 100, \"strike_price\": 7580, \"ticker\": \"O:SPXW261113C07580000\", \"underlying_ticker\": \"SPX\"}]}"
+        },
+        {
+          "status": 200,
+          "ok": true,
+          "text": "{\"status\": \"OK\", \"results\": [{\"day\": {}, \"details\": {\"contract_type\": \"call\", \"exercise_style\": \"european\", \"expiration_date\": \"2026-11-13\", \"shares_per_contract\": 100, \"strike_price\": 7500, \"ticker\": \"O:B1SPX261113C07500000\"}, \"last_quote\": {\"ask\": 1.0, \"bid\": 0.9, \"midpoint\": 0.95, \"last_updated\": 1794581119000000000}, \"last_trade\": {}, \"open_interest\": 0, \"underlying_asset\": {\"last_updated\": 1794581115037000000, \"value\": 7584.43, \"ticker\": \"I:SPX\"}}], \"next_url\": \"https://api.massive.com/v3/snapshot/options/I:SPX?cursor=s2\"}"
+        },
+        {
+          "status": 200,
+          "ok": true,
+          "text": "{\"status\": \"OK\", \"results\": [{\"day\": {}, \"details\": {\"contract_type\": \"call\", \"exercise_style\": \"european\", \"expiration_date\": \"2026-11-13\", \"shares_per_contract\": 100, \"strike_price\": 7580, \"ticker\": \"O:SPXW261113C07580000\"}, \"greeks\": {\"delta\": 0.52, \"gamma\": 0.011, \"theta\": -4.2, \"vega\": 1.8}, \"implied_volatility\": 0.165, \"last_quote\": {\"ask\": 18.2, \"bid\": 17.8, \"midpoint\": 18.0, \"last_updated\": 1794581119251379225, \"timeframe\": \"REAL-TIME\"}, \"last_trade\": {}, \"open_interest\": 1200, \"underlying_asset\": {\"last_updated\": 1794581115037000000, \"value\": 7584.43, \"ticker\": \"I:SPX\", \"timeframe\": \"REAL-TIME\"}}, {\"day\": {}, \"details\": {\"contract_type\": \"call\", \"exercise_style\": \"european\", \"expiration_date\": \"2026-11-13\", \"shares_per_contract\": 100, \"strike_price\": 3000, \"ticker\": \"O:SPXW261113C03000000\"}, \"greeks\": {}, \"last_quote\": {\"ask\": 4590.6, \"bid\": 4575.6, \"midpoint\": 4583.1, \"last_updated\": 1794581119251379225, \"timeframe\": \"REAL-TIME\"}, \"last_trade\": {}, \"open_interest\": 0, \"underlying_asset\": {\"last_updated\": 1794581115037000000, \"value\": 7584.43, \"ticker\": \"I:SPX\", \"timeframe\": \"REAL-TIME\"}}]}"
+        }
+      ],
+      "expected": {
+        "requests": [
+          "https://api.massive.com/v3/reference/options/contracts?underlying_ticker=SPX&limit=1000&apikey=fixture-opt-secret-key",
+          "https://api.massive.com/v3/reference/options/contracts?cursor=c2&apikey=fixture-opt-secret-key",
+          "https://api.massive.com/v3/snapshot/options/I:SPX?limit=250&apikey=fixture-opt-secret-key",
+          "https://api.massive.com/v3/snapshot/options/I:SPX?cursor=s2&apikey=fixture-opt-secret-key"
+        ],
+        "contracts": [
+          {
+            "ticker": "O:SPXW261113C03000000",
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 3000.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": "NaN",
+            "impliedVolatility": "NaN",
+            "openInterest": 0.0,
+            "greeks": {
+              "delta": "NaN",
+              "gamma": "NaN",
+              "theta": "NaN",
+              "vega": "NaN"
+            },
+            "greeksMissing": true,
+            "day": {
+              "open": "NaN",
+              "high": "NaN",
+              "low": "NaN",
+              "close": "NaN",
+              "volume": "NaN",
+              "vwap": "NaN",
+              "previousClose": "NaN",
+              "change": "NaN",
+              "changePercent": "NaN",
+              "updatedAt": "NaN"
+            },
+            "lastQuote": {
+              "bid": 4575.6,
+              "ask": 4590.6,
+              "midpoint": 4583.1,
+              "bidSize": "NaN",
+              "askSize": "NaN",
+              "bidExchange": null,
+              "askExchange": null,
+              "updatedAt": 1794581119,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": "NaN",
+              "size": "NaN",
+              "exchange": null,
+              "conditions": [],
+              "sipTimestamp": "NaN",
+              "timeframe": null
+            },
+            "underlyingAsset": {
+              "ticker": "I:SPX",
+              "price": 7584.43,
+              "sourceField": "value",
+              "changeToBreakEven": "NaN",
+              "updatedAt": 1794581115,
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          },
+          {
+            "ticker": "O:SPXW261113C07580000",
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 7580.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": "NaN",
+            "impliedVolatility": 0.165,
+            "openInterest": 1200.0,
+            "greeks": {
+              "delta": 0.52,
+              "gamma": 0.011,
+              "theta": -4.2,
+              "vega": 1.8
+            },
+            "greeksMissing": false,
+            "day": {
+              "open": "NaN",
+              "high": "NaN",
+              "low": "NaN",
+              "close": "NaN",
+              "volume": "NaN",
+              "vwap": "NaN",
+              "previousClose": "NaN",
+              "change": "NaN",
+              "changePercent": "NaN",
+              "updatedAt": "NaN"
+            },
+            "lastQuote": {
+              "bid": 17.8,
+              "ask": 18.2,
+              "midpoint": 18.0,
+              "bidSize": "NaN",
+              "askSize": "NaN",
+              "bidExchange": null,
+              "askExchange": null,
+              "updatedAt": 1794581119,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": "NaN",
+              "size": "NaN",
+              "exchange": null,
+              "conditions": [],
+              "sipTimestamp": "NaN",
+              "timeframe": null
+            },
+            "underlyingAsset": {
+              "ticker": "I:SPX",
+              "price": 7584.43,
+              "sourceField": "value",
+              "changeToBreakEven": "NaN",
+              "updatedAt": 1794581115,
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "underlying": {
+          "ticker": "I:SPX",
+          "price": 7584.43,
+          "sourceField": "value",
+          "changeToBreakEven": "NaN",
+          "updatedAt": 1794581115,
+          "timeframe": "REAL-TIME"
+        },
+        "report": {
+          "provider": "massive",
+          "received": 3,
+          "accepted": 2,
+          "discarded": 1,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 0,
+            "binaryExcluded": 1,
+            "adjustedExcluded": 0,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [
+            {
+              "cause": "binaryExcluded",
+              "ticker": "O:B1SPX261113C07500000"
+            }
+          ],
+          "binaryDetected": 1,
+          "adjustedDetected": 0,
+          "binaryExcluded": 1,
+          "adjustedExcluded": 0,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 0,
+          "filterExcluded": 0,
+          "reordered": true,
+          "malformedResponse": false,
+          "providerError": null,
+          "emptyGreeks": 1,
+          "ivMissing": 1,
+          "emptyDay": 2,
+          "emptyLastQuote": 0,
+          "emptyLastTrade": 2,
+          "invalidTimestamps": 0,
+          "underlyingSource": "value",
+          "pages": 4,
+          "referencePages": 2,
+          "snapshotPages": 2,
+          "stoppedReason": "noMorePages",
+          "snapshotUnderlyingAsset": "I:SPX",
+          "referenceUnderlyingTicker": "SPX",
+          "contractsReport": {
+            "provider": "massive",
+            "received": 2,
+            "accepted": 2,
+            "discarded": 0,
+            "discardCounts": {
+              "malformedRow": 0,
+              "invalidTicker": 0,
+              "invalidExpiration": 0,
+              "invalidStrike": 0,
+              "invalidContractType": 0,
+              "invalidSharesPerContract": 0,
+              "duplicate": 0,
+              "binaryExcluded": 0,
+              "adjustedExcluded": 0,
+              "outOfDteRange": 0,
+              "outOfStrikeRange": 0,
+              "filteredContractType": 0
+            },
+            "discards": [],
+            "binaryDetected": 1,
+            "adjustedDetected": 0,
+            "binaryExcluded": 0,
+            "adjustedExcluded": 0,
+            "malformedDiscarded": 0,
+            "duplicateDiscarded": 0,
+            "filterExcluded": 0,
+            "reordered": false,
+            "malformedResponse": false,
+            "providerError": null,
+            "pages": 2,
+            "stoppedReason": "noMorePages",
+            "referenceUnderlyingTicker": "SPX"
+          }
+        }
+      }
+    },
+    "l2_rejects_external_next_url": {
+      "description": "Rechaza next_url hacia host externo antes de enviar la clave",
+      "options": {
+        "underlying": "I:SPX",
+        "apiKey": "fixture-opt-secret-key",
+        "baseUrl": "https://api.massive.com",
+        "includeReferenceMetadata": false
+      },
+      "responses": [
+        {
+          "status": 200,
+          "ok": true,
+          "text": "{\"status\": \"OK\", \"results\": [{\"day\": {}, \"details\": {\"contract_type\": \"call\", \"exercise_style\": \"european\", \"expiration_date\": \"2026-11-13\", \"shares_per_contract\": 100, \"strike_price\": 7580, \"ticker\": \"O:SPXW261113C07580000\"}, \"greeks\": {\"delta\": 0.52, \"gamma\": 0.011, \"theta\": -4.2, \"vega\": 1.8}, \"implied_volatility\": 0.165, \"last_quote\": {\"ask\": 18.2, \"bid\": 17.8, \"midpoint\": 18.0, \"last_updated\": 1794581119251379225, \"timeframe\": \"REAL-TIME\"}, \"last_trade\": {}, \"open_interest\": 1200, \"underlying_asset\": {\"last_updated\": 1794581115037000000, \"value\": 7584.43, \"ticker\": \"I:SPX\", \"timeframe\": \"REAL-TIME\"}}], \"next_url\": \"https://evil.example.com/v3/snapshot/options/I:SPX?cursor=steal&apiKey=attacker\"}"
+        }
+      ],
+      "expected": {
+        "requests": [
+          "https://api.massive.com/v3/snapshot/options/I:SPX?limit=250&apikey=fixture-opt-secret-key"
+        ],
+        "contracts": [
+          {
+            "ticker": "O:SPXW261113C07580000",
+            "contractType": "call",
+            "exerciseStyle": "european",
+            "expirationDate": "2026-11-13",
+            "expirationTime": 1794603600,
+            "strikePrice": 7580.0,
+            "sharesPerContract": 100.0,
+            "breakEvenPrice": "NaN",
+            "impliedVolatility": 0.165,
+            "openInterest": 1200.0,
+            "greeks": {
+              "delta": 0.52,
+              "gamma": 0.011,
+              "theta": -4.2,
+              "vega": 1.8
+            },
+            "greeksMissing": false,
+            "day": {
+              "open": "NaN",
+              "high": "NaN",
+              "low": "NaN",
+              "close": "NaN",
+              "volume": "NaN",
+              "vwap": "NaN",
+              "previousClose": "NaN",
+              "change": "NaN",
+              "changePercent": "NaN",
+              "updatedAt": "NaN"
+            },
+            "lastQuote": {
+              "bid": 17.8,
+              "ask": 18.2,
+              "midpoint": 18.0,
+              "bidSize": "NaN",
+              "askSize": "NaN",
+              "bidExchange": null,
+              "askExchange": null,
+              "updatedAt": 1794581119,
+              "timeframe": "REAL-TIME"
+            },
+            "lastTrade": {
+              "price": "NaN",
+              "size": "NaN",
+              "exchange": null,
+              "conditions": [],
+              "sipTimestamp": "NaN",
+              "timeframe": null
+            },
+            "underlyingAsset": {
+              "ticker": "I:SPX",
+              "price": 7584.43,
+              "sourceField": "value",
+              "changeToBreakEven": "NaN",
+              "updatedAt": 1794581115,
+              "timeframe": "REAL-TIME"
+            },
+            "additionalUnderlyings": [],
+            "isBinary": false,
+            "isAdjusted": false,
+            "isNonStandard": false
+          }
+        ],
+        "underlying": {
+          "ticker": "I:SPX",
+          "price": 7584.43,
+          "sourceField": "value",
+          "changeToBreakEven": "NaN",
+          "updatedAt": 1794581115,
+          "timeframe": "REAL-TIME"
+        },
+        "report": {
+          "provider": "massive",
+          "received": 1,
+          "accepted": 1,
+          "discarded": 0,
+          "discardCounts": {
+            "malformedRow": 0,
+            "invalidTicker": 0,
+            "invalidExpiration": 0,
+            "invalidStrike": 0,
+            "invalidContractType": 0,
+            "invalidSharesPerContract": 0,
+            "duplicate": 0,
+            "binaryExcluded": 0,
+            "adjustedExcluded": 0,
+            "outOfDteRange": 0,
+            "outOfStrikeRange": 0,
+            "filteredContractType": 0
+          },
+          "discards": [],
+          "binaryDetected": 0,
+          "adjustedDetected": 0,
+          "binaryExcluded": 0,
+          "adjustedExcluded": 0,
+          "malformedDiscarded": 0,
+          "duplicateDiscarded": 0,
+          "filterExcluded": 0,
+          "reordered": false,
+          "malformedResponse": true,
+          "providerError": null,
+          "emptyGreeks": 0,
+          "ivMissing": 0,
+          "emptyDay": 1,
+          "emptyLastQuote": 0,
+          "emptyLastTrade": 1,
+          "invalidTimestamps": 0,
+          "underlyingSource": "value",
+          "pages": 1,
+          "referencePages": 0,
+          "snapshotPages": 1,
+          "stoppedReason": "malformedResponse",
+          "snapshotUnderlyingAsset": "I:SPX",
+          "referenceUnderlyingTicker": "SPX",
+          "contractsReport": null
+        }
+      }
+    },
+    "l3_http_error_secret_redaction": {
+      "description": "Redacta secreto crudo y parámetro de query ante HTTP 403",
+      "options": {
+        "underlying": "SPY",
+        "apiKey": "secret-value-xyz-987",
+        "baseUrl": "https://api.massive.com",
+        "includeReferenceMetadata": false
+      },
+      "responses": [
+        {
+          "status": 403,
+          "ok": false,
+          "text": "{\"status\": \"ERROR\", \"error\": \"Forbidden for token secret-value-xyz-987 at https://api.massive.com/v3/snapshot/options/SPY?apikey=secret-value-xyz-987\"}"
+        }
+      ],
+      "expected": {
+        "requests": [
+          "https://api.massive.com/v3/snapshot/options/SPY?limit=250&apikey=secret-value-xyz-987"
+        ],
+        "stoppedReason": "providerError",
+        "providerError": {
+          "code": 403,
+          "message": "Forbidden for token <redacted> at https://api.massive.com/v3/snapshot/options/SPY?apikey=<redacted>"
+        }
+      }
+    }
+  }
+}
