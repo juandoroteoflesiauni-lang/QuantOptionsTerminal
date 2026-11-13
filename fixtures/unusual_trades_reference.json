@@ -1,0 +1,604 @@
+{
+  "meta": {
+    "generator": "tools/gen_unusual_trades_fixture.py",
+    "precisionTolerance": 1e-09
+  },
+  "unusualTrades": {
+    "page1Rows": [
+      {
+        "ticker": "O:SPXW261218C05950000",
+        "underlying_ticker": "SPX",
+        "root": "SPXW",
+        "price": 14.25,
+        "size": 250,
+        "shares_per_contract": 100,
+        "exchange": 302,
+        "conditions": [
+          209,
+          219
+        ],
+        "flags": [
+          "block_premium",
+          "iso"
+        ],
+        "sip_timestamp": "1794580680500000123",
+        "sequence_number": 9002
+      },
+      {
+        "ticker": "O:SPX261218P05900000",
+        "underlying_ticker": "SPX",
+        "root": "SPX",
+        "price": 0.85,
+        "size": 1200,
+        "shares_per_contract": 100,
+        "exchange": 300,
+        "conditions": [
+          209
+        ],
+        "flags": [
+          "block_size"
+        ],
+        "sip_timestamp": 1794580680100000000,
+        "sequence_number": 9001
+      },
+      {
+        "ticker": "O:SPY261218C00600000",
+        "underlying_ticker": "SPY",
+        "root": "SPY",
+        "price": 5.0,
+        "size": 100,
+        "sip_timestamp": 1794580680100,
+        "flags": [
+          "block_premium"
+        ]
+      },
+      {
+        "ticker": "O:SPY261218C00600000",
+        "underlying_ticker": "SPY",
+        "root": "SPY",
+        "price": -2.5,
+        "size": 100,
+        "sip_timestamp": 1794580680200000000,
+        "flags": [
+          "block_premium"
+        ]
+      },
+      {
+        "ticker": "O:SPY261218C00600000",
+        "underlying_ticker": "SPY",
+        "root": "",
+        "price": 5.0,
+        "size": 100,
+        "sip_timestamp": 1794580680300000000,
+        "flags": [
+          "block_premium"
+        ]
+      }
+    ],
+    "page2Rows": [
+      {
+        "ticker": "O:SPXW261218C05950000",
+        "underlying_ticker": "SPX",
+        "root": "SPXW",
+        "price": 14.25,
+        "size": 250,
+        "shares_per_contract": 100,
+        "exchange": 302,
+        "conditions": [
+          209,
+          219
+        ],
+        "flags": [
+          "block_premium",
+          "iso"
+        ],
+        "sip_timestamp": "1794580680500000123",
+        "sequence_number": 9002
+      },
+      {
+        "ticker": "O:GME1261218C00025000",
+        "underlying_ticker": "GME",
+        "root": "GME1",
+        "price": 3.4,
+        "size": 400,
+        "exchange": 304,
+        "conditions": [
+          219
+        ],
+        "flags": [
+          "block_premium",
+          "iso"
+        ],
+        "sip_timestamp": "1794580679999999999",
+        "sequence_number": 8999
+      },
+      {
+        "ticker": "O:SPY261218C00600000",
+        "underlying_ticker": "SPY",
+        "root": "SPY",
+        "price": 2.15,
+        "size": 1500,
+        "exchange": 309,
+        "conditions": [
+          209
+        ],
+        "flags": [
+          "block_premium",
+          "block_size"
+        ],
+        "sip_timestamp": "1794580681000000500",
+        "sequence_number": 9010
+      },
+      {
+        "ticker": "O:B1SPY261113C00710000",
+        "underlying_ticker": "SPY",
+        "root": "B1SPY",
+        "type": "binary",
+        "price": 0.45,
+        "size": 2000,
+        "shares_per_contract": 100,
+        "exchange": 301,
+        "conditions": [],
+        "flags": [
+          "block_size"
+        ],
+        "sip_timestamp": "1794580682000000000",
+        "sequence_number": 9020
+      },
+      {
+        "ticker": "O:QQQ261218C00500000",
+        "underlying_ticker": "QQQ",
+        "root": "QQQ",
+        "price": 4.2,
+        "size": 0,
+        "sip_timestamp": 1794580683000000000,
+        "flags": [
+          "block_premium"
+        ]
+      },
+      "corrupt-row"
+    ],
+    "caseA_default100_unadjustedUnknown": {
+      "trades": [
+        {
+          "time": 1794580679,
+          "subsecond": {
+            "nanoseconds": 999999999,
+            "timestampNs": "1794580679999999999"
+          },
+          "ticker": "O:GME1261218C00025000",
+          "underlyingTicker": "GME",
+          "root": "GME1",
+          "rootKind": "adjusted",
+          "price": 3.4,
+          "size": 400.0,
+          "sharesPerContract": null,
+          "notional": null,
+          "exchange": 304,
+          "conditions": [
+            219
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": false,
+            "iso": true,
+            "raw": [
+              "block_premium",
+              "iso"
+            ]
+          },
+          "sequenceNumber": 8999
+        },
+        {
+          "time": 1794580680,
+          "subsecond": {
+            "nanoseconds": 100000000,
+            "timestampNs": "1794580680100000000"
+          },
+          "ticker": "O:SPX261218P05900000",
+          "underlyingTicker": "SPX",
+          "root": "SPX",
+          "rootKind": "standard",
+          "price": 0.85,
+          "size": 1200.0,
+          "sharesPerContract": 100.0,
+          "notional": 102000.0,
+          "exchange": 300,
+          "conditions": [
+            209
+          ],
+          "flags": {
+            "blockPremium": false,
+            "blockSize": true,
+            "iso": false,
+            "raw": [
+              "block_size"
+            ]
+          },
+          "sequenceNumber": 9001
+        },
+        {
+          "time": 1794580680,
+          "subsecond": {
+            "nanoseconds": 500000123,
+            "timestampNs": "1794580680500000123"
+          },
+          "ticker": "O:SPXW261218C05950000",
+          "underlyingTicker": "SPX",
+          "root": "SPXW",
+          "rootKind": "weekly_or_different",
+          "price": 14.25,
+          "size": 250.0,
+          "sharesPerContract": 100.0,
+          "notional": 356250.0,
+          "exchange": 302,
+          "conditions": [
+            209,
+            219
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": false,
+            "iso": true,
+            "raw": [
+              "block_premium",
+              "iso"
+            ]
+          },
+          "sequenceNumber": 9002
+        },
+        {
+          "time": 1794580681,
+          "subsecond": {
+            "nanoseconds": 500,
+            "timestampNs": "1794580681000000500"
+          },
+          "ticker": "O:SPY261218C00600000",
+          "underlyingTicker": "SPY",
+          "root": "SPY",
+          "rootKind": "standard",
+          "price": 2.15,
+          "size": 1500.0,
+          "sharesPerContract": 100.0,
+          "notional": 322500.0,
+          "exchange": 309,
+          "conditions": [
+            209
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": true,
+            "iso": false,
+            "raw": [
+              "block_premium",
+              "block_size"
+            ]
+          },
+          "sequenceNumber": 9010
+        },
+        {
+          "time": 1794580682,
+          "subsecond": {
+            "nanoseconds": 0,
+            "timestampNs": "1794580682000000000"
+          },
+          "ticker": "O:B1SPY261113C00710000",
+          "underlyingTicker": "SPY",
+          "root": "B1SPY",
+          "rootKind": "binary",
+          "price": 0.45,
+          "size": 2000.0,
+          "sharesPerContract": 100.0,
+          "notional": 90000.0,
+          "exchange": 301,
+          "conditions": [],
+          "flags": {
+            "blockPremium": false,
+            "blockSize": true,
+            "iso": false,
+            "raw": [
+              "block_size"
+            ]
+          },
+          "sequenceNumber": 9020
+        }
+      ],
+      "knownNotionalSum": 870750.0,
+      "validNotionalCount": 4,
+      "nanNotionalCount": 1,
+      "reordered": true,
+      "discardCounts": {
+        "malformedRow": 1,
+        "invalidTicker": 0,
+        "invalidRoot": 1,
+        "invalidTimestamp": 1,
+        "nonFinite": 0,
+        "invalidPrice": 1,
+        "invalidSize": 1,
+        "invalidSharesPerContract": 0,
+        "invalidFlags": 0,
+        "duplicate": 1,
+        "filteredOut": 0
+      }
+    },
+    "caseB_withVerifiedGme1Lookup": {
+      "sharesPerContractByTicker": {
+        "O:GME1261218C00025000": 100.0
+      },
+      "trades": [
+        {
+          "time": 1794580679,
+          "subsecond": {
+            "nanoseconds": 999999999,
+            "timestampNs": "1794580679999999999"
+          },
+          "ticker": "O:GME1261218C00025000",
+          "underlyingTicker": "GME",
+          "root": "GME1",
+          "rootKind": "adjusted",
+          "price": 3.4,
+          "size": 400.0,
+          "sharesPerContract": 100.0,
+          "notional": 136000.0,
+          "exchange": 304,
+          "conditions": [
+            219
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": false,
+            "iso": true,
+            "raw": [
+              "block_premium",
+              "iso"
+            ]
+          },
+          "sequenceNumber": 8999
+        },
+        {
+          "time": 1794580680,
+          "subsecond": {
+            "nanoseconds": 100000000,
+            "timestampNs": "1794580680100000000"
+          },
+          "ticker": "O:SPX261218P05900000",
+          "underlyingTicker": "SPX",
+          "root": "SPX",
+          "rootKind": "standard",
+          "price": 0.85,
+          "size": 1200.0,
+          "sharesPerContract": 100.0,
+          "notional": 102000.0,
+          "exchange": 300,
+          "conditions": [
+            209
+          ],
+          "flags": {
+            "blockPremium": false,
+            "blockSize": true,
+            "iso": false,
+            "raw": [
+              "block_size"
+            ]
+          },
+          "sequenceNumber": 9001
+        },
+        {
+          "time": 1794580680,
+          "subsecond": {
+            "nanoseconds": 500000123,
+            "timestampNs": "1794580680500000123"
+          },
+          "ticker": "O:SPXW261218C05950000",
+          "underlyingTicker": "SPX",
+          "root": "SPXW",
+          "rootKind": "weekly_or_different",
+          "price": 14.25,
+          "size": 250.0,
+          "sharesPerContract": 100.0,
+          "notional": 356250.0,
+          "exchange": 302,
+          "conditions": [
+            209,
+            219
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": false,
+            "iso": true,
+            "raw": [
+              "block_premium",
+              "iso"
+            ]
+          },
+          "sequenceNumber": 9002
+        },
+        {
+          "time": 1794580681,
+          "subsecond": {
+            "nanoseconds": 500,
+            "timestampNs": "1794580681000000500"
+          },
+          "ticker": "O:SPY261218C00600000",
+          "underlyingTicker": "SPY",
+          "root": "SPY",
+          "rootKind": "standard",
+          "price": 2.15,
+          "size": 1500.0,
+          "sharesPerContract": 100.0,
+          "notional": 322500.0,
+          "exchange": 309,
+          "conditions": [
+            209
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": true,
+            "iso": false,
+            "raw": [
+              "block_premium",
+              "block_size"
+            ]
+          },
+          "sequenceNumber": 9010
+        },
+        {
+          "time": 1794580682,
+          "subsecond": {
+            "nanoseconds": 0,
+            "timestampNs": "1794580682000000000"
+          },
+          "ticker": "O:B1SPY261113C00710000",
+          "underlyingTicker": "SPY",
+          "root": "B1SPY",
+          "rootKind": "binary",
+          "price": 0.45,
+          "size": 2000.0,
+          "sharesPerContract": 100.0,
+          "notional": 90000.0,
+          "exchange": 301,
+          "conditions": [],
+          "flags": {
+            "blockPremium": false,
+            "blockSize": true,
+            "iso": false,
+            "raw": [
+              "block_size"
+            ]
+          },
+          "sequenceNumber": 9020
+        }
+      ],
+      "totalNotional": 1006750.0,
+      "validNotionalCount": 5,
+      "nanNotionalCount": 0,
+      "distinctRoots": [
+        "B1SPY",
+        "GME1",
+        "SPX",
+        "SPXW",
+        "SPY"
+      ],
+      "distinctUnderlyingTickers": [
+        "GME",
+        "SPX",
+        "SPY"
+      ]
+    },
+    "caseC_spxwBlockPremiumIsoOnly": {
+      "trades": [
+        {
+          "time": 1794580680,
+          "subsecond": {
+            "nanoseconds": 500000123,
+            "timestampNs": "1794580680500000123"
+          },
+          "ticker": "O:SPXW261218C05950000",
+          "underlyingTicker": "SPX",
+          "root": "SPXW",
+          "rootKind": "weekly_or_different",
+          "price": 14.25,
+          "size": 250.0,
+          "sharesPerContract": 100.0,
+          "notional": 356250.0,
+          "exchange": 302,
+          "conditions": [
+            209,
+            219
+          ],
+          "flags": {
+            "blockPremium": true,
+            "blockSize": false,
+            "iso": true,
+            "raw": [
+              "block_premium",
+              "iso"
+            ]
+          },
+          "sequenceNumber": 9002
+        }
+      ],
+      "totalNotional": 356250.0
+    }
+  },
+  "flatFilesSplitReference": {
+    "splitsPayload": {
+      "status": "OK",
+      "results": [
+        {
+          "ticker": "NVDA",
+          "execution_date": "2024-06-10",
+          "split_from": 1,
+          "split_to": 10,
+          "historical_adjustment_factor": 0.1
+        },
+        {
+          "ticker": "NVDA",
+          "execution_date": "2021-07-20",
+          "split_from": 1,
+          "split_to": 4,
+          "historical_adjustment_factor": 0.025
+        }
+      ]
+    },
+    "cases": [
+      {
+        "description": "NVDA pre-2021-07-20 (both 4:1 and 10:1 splits apply -> historical_adjustment_factor=0.025)",
+        "barDateEt": "2020-05-15",
+        "raw": {
+          "open": 340.0,
+          "high": 350.0,
+          "low": 330.0,
+          "close": 344.0,
+          "volume": 100000.0
+        },
+        "expectedFactor": 0.025,
+        "expectedAdjusted": {
+          "open": 8.5,
+          "high": 8.75,
+          "low": 8.25,
+          "close": 8.6,
+          "volume": 4000000.0
+        }
+      },
+      {
+        "description": "NVDA between 2021-07-20 and 2024-06-10 (only 10:1 split applies -> historical_adjustment_factor=0.1)",
+        "barDateEt": "2023-11-10",
+        "raw": {
+          "open": 480.0,
+          "high": 490.0,
+          "low": 475.0,
+          "close": 485.0,
+          "volume": 500000.0
+        },
+        "expectedFactor": 0.1,
+        "expectedAdjusted": {
+          "open": 48.0,
+          "high": 49.0,
+          "low": 47.5,
+          "close": 48.5,
+          "volume": 5000000.0
+        }
+      },
+      {
+        "description": "NVDA on execution_date 2024-06-10 -> factor=1.0 (unscaled)",
+        "barDateEt": "2024-06-10",
+        "raw": {
+          "open": 120.5,
+          "high": 122.0,
+          "low": 119.0,
+          "close": 121.8,
+          "volume": 8000000.0
+        },
+        "expectedFactor": 1.0,
+        "expectedAdjusted": {
+          "open": 120.5,
+          "high": 122.0,
+          "low": 119.0,
+          "close": 121.8,
+          "volume": 8000000.0
+        }
+      }
+    ]
+  }
+}
