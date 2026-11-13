@@ -11,5 +11,7 @@ fixtures/samples/BGS_*
 fixtures/samples/GLDD_*
 fixtures/samples/BTC-USDT_*_2026-11-09.json
 fixtures/samples/SPY_*_2026-11-10.json
+fixtures/samples/SPY_*_2025-11-28.json
+fixtures/samples/SPY_*_2025-12-24.json
 __pycache__/
 *.pyc

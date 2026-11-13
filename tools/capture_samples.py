@@ -88,6 +88,11 @@ MASSIVE_TIMEFRAMES: dict[str, tuple[str, int, int]] = {
     "1D": ("day", 1, 86_400),
 }
 
+# Escenarios disponibles para Massive; --scenarios elige un subconjunto.
+MASSIVE_SCENARIO_KINDS: frozenset[str] = frozenset(
+    {"day", "range", "max", "latest"}
+)
+
 # Limite del escenario "latest". El motor de Massive acota las barras BASE
 # escaneadas por peticion (1-minute en todo intradia, 1-day en 1D), no las
 # barras de salida: con limit=5 y sort=desc escanea solo los 5 minutos mas
@@ -952,7 +957,11 @@ def capture_massive(
             ],
             "scenarios": {},
         }
-        scenario_kinds = ["day", "range", "max", "latest"]
+        scenario_kinds = [
+            kind
+            for kind in ("day", "range", "max", "latest")
+            if kind in args.scenarios
+        ]
         for kind in scenario_kinds:
             say(f"massive SPY {timeframe} {kind}: preparando")
             try:
@@ -1595,11 +1604,16 @@ def print_plan(massive_day: date, bingx_day: date, args: argparse.Namespace | No
     for timeframe, (timespan, multiplier, _seconds) in MASSIVE_TIMEFRAMES.items():
         if args.timeframes and timeframe not in args.timeframes:
             continue
-        say(
-            f"Massive SPY {timeframe}: day + range({MASSIVE_RANGE_DAYS[timeframe]}d, "
-            f"limit=1000) + max({MASSIVE_MAX_DAYS[timeframe]}d, limit=50000) + latest "
-            f"(latest limit={MASSIVE_LATEST_LIMIT[timeframe]})"
-        )
+        parts: list[str] = []
+        if "day" in args.scenarios:
+            parts.append("day")
+        if "range" in args.scenarios:
+            parts.append(f"range({MASSIVE_RANGE_DAYS[timeframe]}d, limit=1000)")
+        if "max" in args.scenarios:
+            parts.append(f"max({MASSIVE_MAX_DAYS[timeframe]}d, limit=50000)")
+        if "latest" in args.scenarios:
+            parts.append(f"latest(latest limit={MASSIVE_LATEST_LIMIT[timeframe]})")
+        say(f"Massive SPY {timeframe}: {' + '.join(parts)}")
         say(f"  endpoint: /v2/aggs/ticker/SPY/range/{multiplier}/{timespan}")
     say("")
     say(
@@ -1704,6 +1718,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--scenarios",
+        help=(
+            "Lista separada por comas de escenarios Massive a ejecutar "
+            "(p. ej. day o day,range). Por defecto: day,range,max,latest."
+        ),
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=3,
@@ -1746,6 +1767,16 @@ def main() -> int:
         args.timeframes = parsed
     else:
         args.timeframes = set()
+
+    if args.scenarios:
+        parsed = {part.strip() for part in args.scenarios.split(",") if part.strip()}
+        unknown = sorted(parsed - MASSIVE_SCENARIO_KINDS)
+        if unknown:
+            say(f"ERROR: escenarios desconocidos: {', '.join(unknown)}")
+            return 2
+        args.scenarios = parsed
+    else:
+        args.scenarios = set(MASSIVE_SCENARIO_KINDS)
 
     env = load_env_file(ENV_FILE)
     massive_key = (
