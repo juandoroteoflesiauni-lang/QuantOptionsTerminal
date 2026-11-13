@@ -1,0 +1,861 @@
+{
+  "meta": {
+    "generator": "tools/gen_options_american_fixture.py",
+    "notes": "Independent Python composite Simpson BVN, textbook Bjerksund-Stensland 2002, CRR discrete tree, Richardson N=2000 CRR benchmark, and bisection IV."
+  },
+  "bvnCases": [
+    {
+      "a": 0.0,
+      "b": 0.0,
+      "rho": 0.5,
+      "expected": 0.33333333333333603
+    },
+    {
+      "a": 0.0,
+      "b": 0.0,
+      "rho": -0.5,
+      "expected": 0.16666666666666397
+    },
+    {
+      "a": 0.3,
+      "b": -0.4,
+      "rho": -0.7861513777574233,
+      "expected": 0.08183142898714246
+    },
+    {
+      "a": 1.2,
+      "b": 0.7,
+      "rho": 0.45,
+      "expected": 0.7033961423551158
+    },
+    {
+      "a": -1.5,
+      "b": -0.8,
+      "rho": 0.9,
+      "expected": 0.06450009434890537
+    },
+    {
+      "a": 0.5,
+      "b": 0.3,
+      "rho": 0.98,
+      "expected": 0.6117584700558116
+    },
+    {
+      "a": 0.5,
+      "b": 0.3,
+      "rho": -0.98,
+      "expected": 0.30937445330138347
+    },
+    {
+      "a": -0.3,
+      "b": -0.5,
+      "rho": -0.99,
+      "expected": 7.250333666775077e-11
+    },
+    {
+      "a": 0.8,
+      "b": 0.8,
+      "rho": 1.0,
+      "expected": 0.7881446014166033
+    },
+    {
+      "a": 0.8,
+      "b": -0.8,
+      "rho": -1.0,
+      "expected": 0.0
+    },
+    {
+      "a": 0.4,
+      "b": -0.2,
+      "rho": 0.0,
+      "expected": 0.2757623340050569
+    }
+  ],
+  "forwardCases": [
+    {
+      "name": "spy_clean_chain",
+      "spot": 550.64,
+      "timeToExpiry": 0.0821917808219178,
+      "rate": 0.045,
+      "discountFactor": 0.9963082013704571,
+      "pairs": [
+        {
+          "strike": 535.0,
+          "callMid": 20.66323,
+          "putMid": 3.636159,
+          "callBid": 20.53823,
+          "callAsk": 20.78823,
+          "putBid": 3.511159,
+          "putAsk": 3.761159
+        },
+        {
+          "strike": 540.0,
+          "callMid": 17.114979,
+          "putMid": 5.069449,
+          "callBid": 16.989979,
+          "callAsk": 17.239979,
+          "putBid": 4.944449,
+          "putAsk": 5.194449
+        },
+        {
+          "strike": 545.0,
+          "callMid": 13.926615,
+          "putMid": 6.862625,
+          "callBid": 13.896615,
+          "callAsk": 13.956615,
+          "putBid": 6.832625,
+          "putAsk": 6.892625
+        },
+        {
+          "strike": 550.0,
+          "callMid": 11.121402,
+          "putMid": 9.038954,
+          "callBid": 11.091402,
+          "callAsk": 11.151402,
+          "putBid": 9.008954,
+          "putAsk": 9.068954
+        },
+        {
+          "strike": 555.0,
+          "callMid": 8.708069,
+          "putMid": 11.607161,
+          "callBid": 8.678069,
+          "callAsk": 8.738069,
+          "putBid": 11.577161,
+          "putAsk": 11.637161
+        },
+        {
+          "strike": 560.0,
+          "callMid": 6.680191,
+          "putMid": 14.560825,
+          "callBid": 6.650191,
+          "callAsk": 6.710191,
+          "putBid": 14.530825,
+          "putAsk": 14.590825
+        },
+        {
+          "strike": 565.0,
+          "callMid": 5.017307,
+          "putMid": 17.879482,
+          "callBid": 4.892307,
+          "callAsk": 5.142307,
+          "putBid": 17.754482,
+          "putAsk": 18.004482
+        }
+      ],
+      "options": {
+        "nearAtmCount": 5,
+        "maxRelativeSpread": 0.25
+      },
+      "expectedMedianForward": 552.0901644800676,
+      "expectedWeightedForward": 552.0901649473518,
+      "expectedImpliedYieldFromMedian": 0.013000008378927674,
+      "expectedImpliedYieldFromWeighted": 0.012999998081170402
+    },
+    {
+      "name": "mixed_with_outliers_filtered",
+      "spot": 99.75,
+      "timeToExpiry": 0.25,
+      "rate": 0.04,
+      "discountFactor": 0.9900498337491681,
+      "pairs": [
+        {
+          "strike": 95.0,
+          "callMid": 8.1,
+          "putMid": 2.4,
+          "callBid": 7.9,
+          "callAsk": 8.3,
+          "putBid": 2.3,
+          "putAsk": 2.5
+        },
+        {
+          "strike": 100.0,
+          "callMid": 4.95,
+          "putMid": 4.2,
+          "callBid": 4.9,
+          "callAsk": 5.0,
+          "putBid": 4.15,
+          "putAsk": 4.25
+        },
+        {
+          "strike": 105.0,
+          "callMid": 2.65,
+          "putMid": 6.85,
+          "callBid": 2.55,
+          "callAsk": 2.75,
+          "putBid": 6.75,
+          "putAsk": 6.95
+        },
+        {
+          "strike": 80.0,
+          "callMid": 21.0,
+          "putMid": 0.05,
+          "callBid": 20.5,
+          "callAsk": 21.5,
+          "putBid": 0.0,
+          "putAsk": 0.1
+        },
+        {
+          "strike": 110.0,
+          "callMid": 1.2,
+          "putMid": 10.5,
+          "callBid": 1.3,
+          "callAsk": 1.1,
+          "putBid": 10.0,
+          "putAsk": 11.0
+        },
+        {
+          "strike": 115.0,
+          "callMid": 0.5,
+          "putMid": 15.0,
+          "callBid": 0.2,
+          "callAsk": 0.8,
+          "putBid": 14.5,
+          "putAsk": 15.5
+        },
+        {
+          "strike": 120.0,
+          "callMid": "NaN",
+          "putMid": 19.5
+        }
+      ],
+      "options": {
+        "nearAtmCount": 5,
+        "maxRelativeSpread": 0.3,
+        "requirePositiveBid": true
+      },
+      "expectedValidCount": 3,
+      "expectedUsedCount": 3,
+      "expectedDiscardedCount": 4,
+      "expectedMedianForward": 100.75753762531312,
+      "expectedWeightedForward": 100.75755038896177,
+      "expectedImpliedYieldFromWeighted": -0.00020033629897768523
+    }
+  ],
+  "bjerksund2002Cases": [
+    {
+      "name": "call_no_div_exact_eu_atm",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "volatility": 0.25,
+        "contractType": "call"
+      },
+      "expectedBs2002": 12.335998930368717,
+      "expectedEuropean": 12.335998930368717,
+      "expectedIntrinsic": 0.0,
+      "crrRichardsonRef": 12.335998775719322,
+      "expectedGreeks": {
+        "price": 12.335998930368717,
+        "delta": 0.627409464153284,
+        "gamma": 0.015136793277352779,
+        "theta": -7.250495273420727,
+        "thetaDaily": -0.01986437061211158,
+        "vega": 37.84198319338194,
+        "vegaPer1Pct": 0.37841983193381945,
+        "rho": 50.404947484959685,
+        "vanna": -0.11352594958014585,
+        "charm": -0.06149322268924566
+      }
+    },
+    {
+      "name": "call_no_div_exact_eu_itm",
+      "input": {
+        "spot": 120.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.06,
+        "dividendYield": 0.0,
+        "volatility": 0.2,
+        "contractType": "call"
+      },
+      "expectedBs2002": 23.4005359741722,
+      "expectedEuropean": 23.4005359741722,
+      "expectedIntrinsic": 20.0,
+      "crrRichardsonRef": 23.400181591980157,
+      "expectedGreeks": {
+        "price": 23.4005359741722,
+        "delta": 0.9420306152822706,
+        "gamma": 0.006832322367607152,
+        "theta": -7.346297113452876,
+        "thetaDaily": -0.02012684140672021,
+        "vega": 9.838544209354302,
+        "vegaPer1Pct": 0.09838544209354301,
+        "rho": 44.82156892985014,
+        "vanna": -0.829395658759462,
+        "charm": 0.11668641070512092
+      }
+    },
+    {
+      "name": "put_no_div_itm_short",
+      "input": {
+        "spot": 40.0,
+        "strike": 40.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.0488,
+        "dividendYield": 0.0,
+        "volatility": 0.3,
+        "contractType": "put"
+      },
+      "expectedBs2002": 2.9552610391662526,
+      "expectedEuropean": 2.8779574915996022,
+      "expectedIntrinsic": 0.0,
+      "crrRichardsonRef": 2.9665929820276493,
+      "expectedGreeks": {
+        "price": 2.9552610391662526,
+        "delta": -0.42968092999329244,
+        "gamma": 0.04943440212734629,
+        "theta": -2.549196073324822,
+        "thetaDaily": -0.00698409883102691,
+        "vega": 11.005689753022333,
+        "vegaPer1Pct": 0.11005689753022332,
+        "rho": -7.7101525056377795,
+        "vanna": 0.0522111465173225,
+        "charm": -0.06104932115391648
+      }
+    },
+    {
+      "name": "put_no_div_deep_itm",
+      "input": {
+        "spot": 80.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.06,
+        "dividendYield": 0.0,
+        "volatility": 0.25,
+        "contractType": "put"
+      },
+      "expectedBs2002": 20.0,
+      "expectedEuropean": 18.12636793721032,
+      "expectedIntrinsic": 20.0,
+      "crrRichardsonRef": 20.0,
+      "expectedGreeks": {
+        "price": 20.0,
+        "delta": -0.9999999999994458,
+        "gamma": 0.0,
+        "theta": 0.0,
+        "thetaDaily": 0.0,
+        "vega": 0.0,
+        "vegaPer1Pct": 0.0,
+        "rho": 0.0,
+        "vanna": 0.0,
+        "charm": 0.0
+      }
+    },
+    {
+      "name": "put_no_div_immediate_exercise",
+      "input": {
+        "spot": 60.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.08,
+        "dividendYield": 0.0,
+        "volatility": 0.2,
+        "contractType": "put"
+      },
+      "expectedBs2002": 40.0,
+      "expectedEuropean": 38.01986799776793,
+      "expectedIntrinsic": 40.0,
+      "crrRichardsonRef": 40.0,
+      "expectedGreeks": {
+        "price": 40.0,
+        "delta": -1.000000000000038,
+        "gamma": 0.0,
+        "theta": 0.0,
+        "thetaDaily": 0.0,
+        "vega": 0.0,
+        "vegaPer1Pct": 0.0,
+        "rho": 0.0,
+        "vanna": 0.0,
+        "charm": 0.0
+      }
+    },
+    {
+      "name": "put_no_div_otm",
+      "input": {
+        "spot": 115.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.75,
+        "rate": 0.045,
+        "dividendYield": 0.0,
+        "volatility": 0.22,
+        "contractType": "put"
+      },
+      "expectedBs2002": 2.031282279983472,
+      "expectedEuropean": 1.9728489932234083,
+      "expectedIntrinsic": 0.0,
+      "crrRichardsonRef": 2.0488997426864115,
+      "expectedGreeks": {
+        "price": 2.031282279983472,
+        "delta": -0.16377618120560802,
+        "gamma": 0.011673658277798381,
+        "theta": -2.7764790603157508,
+        "thetaDaily": -0.00760679194607055,
+        "vega": 24.460228188936316,
+        "vegaPer1Pct": 0.24460228188936317,
+        "rho": -13.51701926921578,
+        "vanna": -0.9089708801193302,
+        "charm": 0.0870303265203265
+      }
+    },
+    {
+      "name": "call_div_itm_haug",
+      "input": {
+        "spot": 42.0,
+        "strike": 40.0,
+        "timeToExpiry": 0.75,
+        "rate": 0.04,
+        "dividendYield": 0.08,
+        "volatility": 0.35,
+        "contractType": "call"
+      },
+      "expectedBs2002": 5.295946902602603,
+      "expectedEuropean": 5.097547717726162,
+      "expectedIntrinsic": 2.0,
+      "crrRichardsonRef": 5.308998872317943,
+      "expectedGreeks": {
+        "price": 5.295946902602603,
+        "delta": 0.5826436047362548,
+        "gamma": 0.03253486439693879,
+        "theta": -2.3075595014265815,
+        "thetaDaily": -0.006322080825826251,
+        "vega": 13.323368372805282,
+        "vegaPer1Pct": 0.13323368372805283,
+        "rho": 10.329427342323783,
+        "vanna": 0.00511292897665019,
+        "charm": 0.03688772144905261
+      }
+    },
+    {
+      "name": "call_div_atm",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.03,
+        "dividendYield": 0.05,
+        "volatility": 0.25,
+        "contractType": "call"
+      },
+      "expectedBs2002": 6.514348514521892,
+      "expectedEuropean": 6.424732353630546,
+      "expectedIntrinsic": 0.0,
+      "crrRichardsonRef": 6.52818022886792,
+      "expectedGreeks": {
+        "price": 6.514348514521892,
+        "delta": 0.5106106229462171,
+        "gamma": 0.022956285192776704,
+        "theta": -5.926388695520757,
+        "thetaDaily": -0.016236681357591116,
+        "vega": 27.548584853036573,
+        "vegaPer1Pct": 0.27548584853036573,
+        "rho": 18.27501597340131,
+        "vanna": 0.19124613004350974,
+        "charm": -0.006184533773989642
+      }
+    },
+    {
+      "name": "call_div_otm_long",
+      "input": {
+        "spot": 90.0,
+        "strike": 100.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.03,
+        "dividendYield": 0.07,
+        "volatility": 0.3,
+        "contractType": "call"
+      },
+      "expectedBs2002": 5.661715910075159,
+      "expectedEuropean": 5.454086330458967,
+      "expectedIntrinsic": 0.0,
+      "crrRichardsonRef": 5.686097856407948,
+      "expectedGreeks": {
+        "price": 5.661715910075159,
+        "delta": 0.3625307028608896,
+        "gamma": 0.014272930009352463,
+        "theta": -3.698416934270199,
+        "thetaDaily": -0.010132649134986847,
+        "vega": 32.37626743460472,
+        "vegaPer1Pct": 0.3237626743460472,
+        "rho": 22.07558748004601,
+        "vanna": 0.7424836449369345,
+        "charm": -0.0626801682163114
+      }
+    },
+    {
+      "name": "put_div_itm",
+      "input": {
+        "spot": 450.0,
+        "strike": 500.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.05,
+        "dividendYield": 0.02,
+        "volatility": 0.22,
+        "contractType": "put"
+      },
+      "expectedBs2002": 63.261356126697564,
+      "expectedEuropean": 59.73189258858628,
+      "expectedIntrinsic": 50.0,
+      "crrRichardsonRef": 63.420136876424706,
+      "expectedGreeks": {
+        "price": 63.261356126697564,
+        "delta": -0.6384417355210164,
+        "gamma": 0.0047356040177862855,
+        "theta": -11.176735714286679,
+        "thetaDaily": -0.030621193737771724,
+        "vega": 159.25702286975508,
+        "vegaPer1Pct": 1.5925702286975507,
+        "rho": -192.82505184492038,
+        "vanna": 1.238451349104482,
+        "charm": -0.12209628784509707
+      }
+    },
+    {
+      "name": "put_neg_rate_merton_eu",
+      "input": {
+        "spot": 95.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": -0.02,
+        "dividendYield": 0.01,
+        "volatility": 0.25,
+        "contractType": "put"
+      },
+      "expectedBs2002": 10.602370689742266,
+      "expectedEuropean": 10.602370689742266,
+      "expectedIntrinsic": 5.0,
+      "crrRichardsonRef": 10.602462752715905,
+      "expectedGreeks": {
+        "price": 10.602370689742266,
+        "delta": -0.6097432085583527,
+        "gamma": 0.022685623291699365,
+        "theta": -8.347870252173237,
+        "thetaDaily": -0.02287087740321435,
+        "vega": 25.59221877594835,
+        "vegaPer1Pct": 0.2559221877594835,
+        "rho": -34.26398775139289,
+        "vanna": 0.7061796755263111,
+        "charm": -0.11798832458581812
+      }
+    },
+    {
+      "name": "call_extreme_high_div_monotone",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 5.0,
+        "rate": 0.01,
+        "dividendYield": 0.2,
+        "volatility": 0.2,
+        "contractType": "call"
+      },
+      "expectedBs2002": 3.6239375326323255,
+      "expectedEuropean": 0.1568263434377708,
+      "expectedIntrinsic": 0.0,
+      "crrRichardsonRef": 3.655622356824969,
+      "expectedGreeks": {
+        "price": 3.6239375326323255,
+        "delta": 0.38324476735240864,
+        "gamma": 0.036614110570099,
+        "theta": -0.004933692032693671,
+        "thetaDaily": -1.3516964473133344e-05,
+        "vega": 34.143925467056135,
+        "vegaPer1Pct": 0.34143925467056135,
+        "rho": 16.1594613982885,
+        "vanna": 0.1898517787424225,
+        "charm": 0.0002881126448528448
+      }
+    }
+  ],
+  "bjerksund2002InvalidCases": [
+    {
+      "name": "call_negative_rate_with_div",
+      "spot": 100.0,
+      "strike": 100.0,
+      "timeToExpiry": 0.5,
+      "rate": -0.02,
+      "dividendYield": 0.03,
+      "volatility": 0.25,
+      "contractType": "call"
+    },
+    {
+      "name": "put_negative_div_with_pos_rate",
+      "spot": 100.0,
+      "strike": 100.0,
+      "timeToExpiry": 0.5,
+      "rate": 0.04,
+      "dividendYield": -0.02,
+      "volatility": 0.25,
+      "contractType": "put"
+    },
+    {
+      "name": "zero_sigma",
+      "spot": 100.0,
+      "strike": 100.0,
+      "timeToExpiry": 0.5,
+      "rate": 0.04,
+      "dividendYield": 0.01,
+      "volatility": 0.0,
+      "contractType": "put"
+    },
+    {
+      "name": "negative_time",
+      "spot": 100.0,
+      "strike": 100.0,
+      "timeToExpiry": -0.1,
+      "rate": 0.04,
+      "dividendYield": 0.01,
+      "volatility": 0.25,
+      "contractType": "call"
+    }
+  ],
+  "crrDiscreteCases": [
+    {
+      "name": "call_single_large_div_pre_expiry",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.04,
+        "dividendYield": 0.0,
+        "volatility": 0.25,
+        "contractType": "call",
+        "steps": 200,
+        "discreteDividends": [
+          {
+            "time": 0.24,
+            "amount": 3.0
+          }
+        ]
+      },
+      "expectedPrice": 5.204654567142988
+    },
+    {
+      "name": "put_single_div_mid_life",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "volatility": 0.3,
+        "contractType": "put",
+        "steps": 250,
+        "discreteDividends": [
+          {
+            "time": 0.25,
+            "amount": 2.0
+          }
+        ]
+      },
+      "expectedPrice": 8.264311548429209
+    },
+    {
+      "name": "call_quarterly_divs_1y",
+      "input": {
+        "spot": 185.0,
+        "strike": 180.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.045,
+        "dividendYield": 0.0,
+        "volatility": 0.28,
+        "contractType": "call",
+        "steps": 300,
+        "discreteDividends": [
+          {
+            "time": 0.15,
+            "amount": 0.85
+          },
+          {
+            "time": 0.4,
+            "amount": 0.85
+          },
+          {
+            "time": 0.65,
+            "amount": 0.85
+          },
+          {
+            "time": 0.9,
+            "amount": 0.85
+          }
+        ]
+      },
+      "expectedPrice": 24.87213150111177
+    },
+    {
+      "name": "put_quarterly_divs_1y_itm",
+      "input": {
+        "spot": 160.0,
+        "strike": 180.0,
+        "timeToExpiry": 1.0,
+        "rate": 0.045,
+        "dividendYield": 0.0,
+        "volatility": 0.28,
+        "contractType": "put",
+        "steps": 300,
+        "discreteDividends": [
+          {
+            "time": 0.15,
+            "amount": 0.85
+          },
+          {
+            "time": 0.4,
+            "amount": 0.85
+          },
+          {
+            "time": 0.65,
+            "amount": 0.85
+          },
+          {
+            "time": 0.9,
+            "amount": 0.85
+          }
+        ]
+      },
+      "expectedPrice": 27.946559225134354
+    },
+    {
+      "name": "call_continuous_plus_discrete",
+      "input": {
+        "spot": 500.0,
+        "strike": 500.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.012,
+        "volatility": 0.18,
+        "contractType": "call",
+        "steps": 150,
+        "discreteDividends": [
+          {
+            "time": 0.3,
+            "amount": 1.5
+          }
+        ]
+      },
+      "expectedPrice": 29.083369207046985
+    },
+    {
+      "name": "put_negative_rate_crr_supported",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": -0.01,
+        "dividendYield": 0.0,
+        "volatility": 0.25,
+        "contractType": "put",
+        "steps": 200,
+        "discreteDividends": [
+          {
+            "time": 0.25,
+            "amount": 1.0
+          }
+        ]
+      },
+      "expectedPrice": 7.810920661462428
+    }
+  ],
+  "impliedVolCases": [
+    {
+      "name": "bs02_put_atm",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "contractType": "put",
+        "marketPrice": 5.717404955121673
+      },
+      "trueVolatility": 0.24,
+      "expectedPythonBisectionVol": 0.23999999999999805
+    },
+    {
+      "name": "bs02_put_itm_high_vol",
+      "input": {
+        "spot": 88.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.75,
+        "rate": 0.045,
+        "dividendYield": 0.01,
+        "contractType": "put",
+        "marketPrice": 23.625937233312726
+      },
+      "trueVolatility": 0.58,
+      "expectedPythonBisectionVol": 0.5800000000000016
+    },
+    {
+      "name": "bs02_call_div_yield_low_vol",
+      "input": {
+        "spot": 104.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.03,
+        "dividendYield": 0.06,
+        "contractType": "call",
+        "marketPrice": 4.364840458160934
+      },
+      "trueVolatility": 0.09,
+      "expectedPythonBisectionVol": 0.08999999999999686
+    },
+    {
+      "name": "bs02_call_european_eq",
+      "input": {
+        "spot": 102.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.04,
+        "dividendYield": 0.0,
+        "contractType": "call",
+        "marketPrice": 8.016424966285115
+      },
+      "trueVolatility": 0.32,
+      "expectedPythonBisectionVol": 0.31999999999999973
+    },
+    {
+      "name": "crr_call_discrete_div",
+      "input": {
+        "spot": 100.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.25,
+        "rate": 0.04,
+        "dividendYield": 0.0,
+        "contractType": "call",
+        "marketPrice": 5.45967024019417,
+        "discreteDividends": [
+          {
+            "time": 0.2,
+            "amount": 2.5
+          }
+        ],
+        "steps": 150
+      },
+      "trueVolatility": 0.28,
+      "expectedPythonBisectionVol": 0.28
+    },
+    {
+      "name": "crr_put_discrete_div",
+      "input": {
+        "spot": 96.0,
+        "strike": 100.0,
+        "timeToExpiry": 0.5,
+        "rate": 0.05,
+        "dividendYield": 0.0,
+        "contractType": "put",
+        "marketPrice": 11.505124557537965,
+        "discreteDividends": [
+          {
+            "time": 0.25,
+            "amount": 1.8
+          }
+        ],
+        "steps": 150
+      },
+      "trueVolatility": 0.35,
+      "expectedPythonBisectionVol": 0.34999999999999987
+    }
+  ]
+}
