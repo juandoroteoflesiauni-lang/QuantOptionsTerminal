@@ -17,5 +17,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.smoke.mts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.smoke.mts"],
+  "exclude": ["web", "dist", "node_modules"]
 }
