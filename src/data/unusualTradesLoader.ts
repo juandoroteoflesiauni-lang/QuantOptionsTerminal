@@ -574,6 +574,27 @@ function validateQueryFlags(
   return unique.join(',');
 }
 
+function buildOccTickerPrefixRange(
+  rawSymbol: string,
+): { readonly gte: string; readonly lt: string } | null {
+  const withoutOcc = rawSymbol.startsWith('O:') ? rawSymbol.slice(2) : rawSymbol;
+  const cleanSymbol = (withoutOcc.startsWith('I:') ? withoutOcc.slice(2) : withoutOcc)
+    .trim()
+    .toUpperCase();
+  if (cleanSymbol === '') {
+    return null;
+  }
+
+  const prefix = `O:${cleanSymbol}`;
+  const lastCode = prefix.charCodeAt(prefix.length - 1);
+  if (!Number.isFinite(lastCode)) {
+    return null;
+  }
+
+  const lt = `${prefix.slice(0, -1)}${String.fromCharCode(lastCode + 1)}`;
+  return { gte: prefix, lt };
+}
+
 function buildQueryParams(options: LoadUnusualTradesOptions): URLSearchParams {
   const limit = options.limit ?? DEFAULT_LIMIT_UNUSUAL_TRADES;
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT_UNUSUAL_TRADES) {
@@ -596,6 +617,18 @@ function buildQueryParams(options: LoadUnusualTradesOptions): URLSearchParams {
   }
   if (root !== undefined) {
     params.set('root', root);
+  }
+  // Massive ignora `?underlying_ticker=` en `/options/v1/unusual-trades`;
+  // cuando no hay `ticker` explícito, acotamos por rango léxico OCC en servidor.
+  if (ticker === undefined) {
+    const targetSymbol = root ?? underlyingTicker;
+    if (targetSymbol !== undefined) {
+      const range = buildOccTickerPrefixRange(targetSymbol);
+      if (range !== null) {
+        params.set('ticker.gte', range.gte);
+        params.set('ticker.lt', range.lt);
+      }
+    }
   }
 
   const queryFlags = validateQueryFlags(options.flags);
@@ -661,6 +694,14 @@ function finalizeProviderError(
   };
 }
 
+function buildInitialUrl(baseUrl: string, options: LoadUnusualTradesOptions): string {
+  const params = buildQueryParams(options);
+  const query = params.toString();
+  return query === ''
+    ? `${baseUrl}/options/v1/unusual-trades`
+    : `${baseUrl}/options/v1/unusual-trades?${query}`;
+}
+
 /**
  * Descarga de forma paginada (`next_url`) y normaliza operaciones inusuales de opciones
  * desde `GET /options/v1/unusual-trades`.
@@ -669,12 +710,7 @@ export async function loadUnusualTrades(
   options: LoadUnusualTradesOptions,
 ): Promise<LoadUnusualTradesResult> {
   const transport = validateTransport(options);
-  const params = buildQueryParams(options);
-  const query = params.toString();
-  const initialUrl =
-    query === ''
-      ? `${transport.baseUrl}/options/v1/unusual-trades`
-      : `${transport.baseUrl}/options/v1/unusual-trades?${query}`;
+  const initialUrl = buildInitialUrl(transport.baseUrl, options);
 
   const fetched = await fetchPaginatedUnusualTrades(transport, initialUrl);
   const normalized = normalizeUnusualTrades(

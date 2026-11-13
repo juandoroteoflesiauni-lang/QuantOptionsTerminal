@@ -409,4 +409,106 @@ describe('normalizeUnusualTrades & loadUnusualTrades (Pieza 8)', () => {
       }),
     ).rejects.toThrow(/50000/);
   });
+
+  it('adds OCC ticker.gte/ticker.lt range for underlyingTicker/root unless explicit ticker is provided', async () => {
+    const requestedUrls: string[] = [];
+    const fetchWithUrls = (rows: readonly unknown[]): FetchFn => {
+      return (url) => {
+        requestedUrls.push(url);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', results: rows }),
+        });
+      };
+    };
+
+    const spxRes = await loadUnusualTrades({
+      apiKey: 'TEST_OCC_RANGE_KEY',
+      underlyingTicker: 'SPX',
+      defaultSharesPerContract: 100,
+      fetchFn: fetchWithUrls([
+        {
+          ticker: 'O:SPX261218C07500000',
+          underlying_ticker: 'SPX',
+          root: 'SPX',
+          price: 50,
+          size: 20,
+          sip_timestamp: '1794580680000000001',
+          flags: ['block_premium'],
+        },
+        {
+          ticker: 'O:SPXW261120P07500000',
+          underlying_ticker: 'SPX',
+          root: 'SPXW',
+          price: 12,
+          size: 30,
+          sip_timestamp: '1794580680000000002',
+          flags: ['iso'],
+        },
+        {
+          ticker: 'O:SPX1261120C07000000',
+          underlying_ticker: 'SPX',
+          root: 'SPX1',
+          price: 40,
+          size: 10,
+          shares_per_contract: 100,
+          sip_timestamp: '1794580680000000003',
+          flags: ['block_size'],
+        },
+        {
+          ticker: 'O:SPXY261120C00100000',
+          underlying_ticker: 'SPXY',
+          root: 'SPXY',
+          price: 2,
+          size: 10,
+          sip_timestamp: '1794580680000000004',
+          flags: ['iso'],
+        },
+      ]),
+    });
+
+    const spxParams = new URL(requestedUrls[0] ?? '').searchParams;
+    expect(spxParams.get('underlying_ticker')).toBe('SPX');
+    expect(spxParams.get('ticker.gte')).toBe('O:SPX');
+    expect(spxParams.get('ticker.lt')).toBe('O:SPY');
+    expect(spxParams.has('ticker')).toBe(false);
+    expect(spxRes.trades.map((t) => t.root)).toEqual(['SPX', 'SPXW', 'SPX1']);
+    expect(spxRes.report.discardCounts.filteredOut).toBe(1);
+
+    await loadUnusualTrades({
+      apiKey: 'TEST_OCC_RANGE_KEY',
+      underlyingTicker: 'SPY',
+      fetchFn: fetchWithUrls([]),
+    });
+    const spyParams = new URL(requestedUrls[1] ?? '').searchParams;
+    expect(spyParams.get('ticker.gte')).toBe('O:SPY');
+    expect(spyParams.get('ticker.lt')).toBe('O:SPZ');
+
+    await loadUnusualTrades({
+      apiKey: 'TEST_OCC_RANGE_KEY',
+      underlyingTicker: 'SPX',
+      root: 'SPXW',
+      fetchFn: fetchWithUrls([]),
+    });
+    const rootParams = new URL(requestedUrls[2] ?? '').searchParams;
+    expect(rootParams.get('underlying_ticker')).toBe('SPX');
+    expect(rootParams.get('root')).toBe('SPXW');
+    expect(rootParams.get('ticker.gte')).toBe('O:SPXW');
+    expect(rootParams.get('ticker.lt')).toBe('O:SPXX');
+
+    await loadUnusualTrades({
+      apiKey: 'TEST_OCC_RANGE_KEY',
+      ticker: 'O:SPX261218C07500000',
+      underlyingTicker: 'SPX',
+      root: 'SPXW',
+      fetchFn: fetchWithUrls([]),
+    });
+    const explicitParams = new URL(requestedUrls[3] ?? '').searchParams;
+    expect(explicitParams.get('ticker')).toBe('O:SPX261218C07500000');
+    expect(explicitParams.get('underlying_ticker')).toBe('SPX');
+    expect(explicitParams.get('root')).toBe('SPXW');
+    expect(explicitParams.has('ticker.gte')).toBe(false);
+    expect(explicitParams.has('ticker.lt')).toBe(false);
+  });
 });
