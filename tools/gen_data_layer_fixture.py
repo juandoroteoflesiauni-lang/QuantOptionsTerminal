@@ -3239,6 +3239,62 @@ def build_massive_loader_cases() -> dict[str, dict[str, Any]]:
         ],
     )
 
+    # --- Respuestas degeneradas del proveedor (piezas del dueño) ---
+
+    cases["lm44_results_absent"] = loader_case(
+        "Massive con results ausente (resultsCount=0 sin la clave results): "
+        "noMorePages y cero barras",
+        options(visibleBars=1, warmupBars=1),
+        [json_response({"status": "OK", "resultsCount": 0})],
+    )
+
+    cases["lm45_status_not_ok"] = loader_case(
+        "Massive HTTP 200 con status distinto de OK: providerError code=0, "
+        "mensaje redactado y sin barras",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {
+                    "status": "ERROR",
+                    "error": "internal server error fixture-api-key",
+                }
+            ),
+        ],
+    )
+
+    cases["lm46_provider_error_http_404"] = loader_case(
+        "Massive HTTP 404 (símbolo inexistente): providerError code=404 con "
+        "el mensaje del cuerpo redactado y una sola petición",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {
+                    "status": "NOT_FOUND",
+                    "message": "symbol not found fixture-api-key",
+                },
+                status=404,
+                ok=False,
+            ),
+        ],
+    )
+
+    cases["lm47_provider_error_http_429"] = loader_case(
+        "Massive HTTP 429 con los reintentos del transporte agotados: el "
+        "cargador no reintenta ni lee cabeceras (Retry-After), lo mapea a "
+        "providerError code=429 y no hace una segunda petición",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {
+                    "status": "TOO_MANY_REQUESTS",
+                    "error": "too many requests fixture-api-key",
+                },
+                status=429,
+                ok=False,
+            ),
+        ],
+    )
+
     return cases
 
 
@@ -3615,6 +3671,26 @@ def build_bingx_loader_cases() -> dict[str, dict[str, Any]]:
                 }
             ),
         ],
+    )
+
+    cases["lb18_provider_error_http_404"] = loader_case(
+        "BingX HTTP 404: la respuesta no-2xx se mapea a providerError "
+        "code=404 con el mensaje del cuerpo y una sola petición",
+        options(visibleBars=1, warmupBars=1),
+        [
+            json_response(
+                {"code": 400, "msg": "invalid symbol"},
+                status=404,
+                ok=False,
+            ),
+        ],
+    )
+
+    cases["lb19_provider_error_http_429_non_json"] = loader_case(
+        "BingX HTTP 429 con cuerpo que no es JSON: providerError code=429 "
+        "con el mensaje por defecto HTTP 429",
+        options(visibleBars=1, warmupBars=1),
+        [text_response("gateway text", status=429, ok=False)],
     )
 
     return cases
