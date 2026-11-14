@@ -1,0 +1,251 @@
+{
+  "asOfUtcSec": 1741620000,
+  "bondCases": [
+    {
+      "name": "AL29_step_down",
+      "spec": {
+        "baseTicker": "AL29",
+        "name": "Bonar 2029 USD Ley Argentina",
+        "legislation": "ARG",
+        "maturity": "2029-07-09",
+        "flows": [
+          {
+            "dateUtcSec": 1736424000,
+            "coupon": 0.5,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1752062400,
+            "coupon": 0.45,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1767960000,
+            "coupon": 0.4,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1783598400,
+            "coupon": 0.35000000000000003,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1799496000,
+            "coupon": 0.3,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1815134400,
+            "coupon": 0.25,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1831032000,
+            "coupon": 0.2,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1846756800,
+            "coupon": 0.15,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1862654400,
+            "coupon": 0.1,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1878292800,
+            "coupon": 0.05,
+            "amortization": 10.0
+          }
+        ]
+      },
+      "marketPriceUsd": 68.5,
+      "asOfUtcSec": 1741620000,
+      "expected": {
+        "tirPct": 14.450564328581095,
+        "parityPct": 75.98487779280126,
+        "duration": 1.829604665777187,
+        "accruedInterest": 0.14951657458563536
+      }
+    },
+    {
+      "name": "CUSTOM_2FLOW",
+      "spec": {
+        "baseTicker": "TEST30",
+        "name": "Test Sovereign 2-Flow",
+        "legislation": "NY",
+        "maturity": "2026-01-09",
+        "flows": [
+          {
+            "dateUtcSec": 1752062400,
+            "coupon": 2.5,
+            "amortization": 20.0
+          },
+          {
+            "dateUtcSec": 1767960000,
+            "coupon": 2.0,
+            "amortization": 80.0
+          }
+        ]
+      },
+      "marketPriceUsd": 82.25,
+      "asOfUtcSec": 1741620000,
+      "expected": {
+        "tirPct": 39.49321387335658,
+        "parityPct": 81.56132201842131,
+        "duration": 0.510221773701501,
+        "accruedInterest": 0.8443683409436833
+      }
+    },
+    {
+      "name": "INVALID_ZERO_PRICE",
+      "spec": {
+        "baseTicker": "AL29",
+        "name": "Bonar 2029 USD Ley Argentina",
+        "legislation": "ARG",
+        "maturity": "2029-07-09",
+        "flows": [
+          {
+            "dateUtcSec": 1736424000,
+            "coupon": 0.5,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1752062400,
+            "coupon": 0.45,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1767960000,
+            "coupon": 0.4,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1783598400,
+            "coupon": 0.35000000000000003,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1799496000,
+            "coupon": 0.3,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1815134400,
+            "coupon": 0.25,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1831032000,
+            "coupon": 0.2,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1846756800,
+            "coupon": 0.15,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1862654400,
+            "coupon": 0.1,
+            "amortization": 10.0
+          },
+          {
+            "dateUtcSec": 1878292800,
+            "coupon": 0.05,
+            "amortization": 10.0
+          }
+        ]
+      },
+      "marketPriceUsd": 0.0,
+      "asOfUtcSec": 1741620000,
+      "expected": {
+        "tirPct": null,
+        "parityPct": null,
+        "duration": null,
+        "accruedInterest": null
+      }
+    }
+  ],
+  "optionSymbolCases": [
+    {
+      "rawSymbol": "GFGC6000DI",
+      "spotHint": 6400.0,
+      "asOfUtcSec": 1741620000,
+      "expected": {
+        "symbol": "GFGC6000DI",
+        "underlying": "GGAL",
+        "contractType": "call",
+        "strike": 6000.0,
+        "expiryCode": "DI",
+        "expiryLabel": "19 dic",
+        "expirationDate": "2025-12-19",
+        "expiryUtcSec": 1766169000,
+        "daysToExpiry": 284
+      }
+    },
+    {
+      "rawSymbol": "GFGV62974AB",
+      "spotHint": 6400.0,
+      "asOfUtcSec": 1741620000,
+      "expected": {
+        "symbol": "GFGV62974AB",
+        "underlying": "GGAL",
+        "contractType": "put",
+        "strike": 6297.4,
+        "expiryCode": "AB",
+        "expiryLabel": "18 abr",
+        "expirationDate": "2025-04-18",
+        "expiryUtcSec": 1745001000,
+        "daysToExpiry": 39
+      }
+    },
+    {
+      "rawSymbol": "YPFC42000OC",
+      "spotHint": 41500.0,
+      "asOfUtcSec": 1741620000,
+      "expected": {
+        "symbol": "YPFC42000OC",
+        "underlying": "YPFD",
+        "contractType": "call",
+        "strike": 42000.0,
+        "expiryCode": "OC",
+        "expiryLabel": "17 oct",
+        "expirationDate": "2025-10-17",
+        "expiryUtcSec": 1760725800,
+        "daysToExpiry": 221
+      }
+    },
+    {
+      "rawSymbol": "INVALID",
+      "spotHint": 6400.0,
+      "asOfUtcSec": 1741620000,
+      "expected": null
+    }
+  ],
+  "feeCases": [
+    {
+      "fairPrice": 142.5,
+      "lotSize": 100,
+      "optionsFeeRate": 0.002,
+      "vatRate": 0.21,
+      "expectedCommissionWithVatArsPerLot": 34.485
+    },
+    {
+      "fairPrice": 385.125,
+      "lotSize": 100,
+      "optionsFeeRate": 0.002,
+      "vatRate": 0.21,
+      "expectedCommissionWithVatArsPerLot": 93.20025000000001
+    },
+    {
+      "fairPrice": 12.75,
+      "lotSize": 100,
+      "optionsFeeRate": 0.002,
+      "vatRate": 0.21,
+      "expectedCommissionWithVatArsPerLot": 3.0855
+    }
+  ]
+}

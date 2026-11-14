@@ -1,12 +1,12 @@
-import React, { useId, useState } from 'react';
-import { AlertTriangle, HelpCircle, RefreshCw, Sparkles } from 'lucide-react';
-import { NULL_DISPLAY, fmtNum, isFiniteNum } from '../api/terminalClient';
+import React, { useState } from 'react';
+import { HelpCircle, Sparkles } from 'lucide-react';
+import { fmtNum } from '../data/marketData';
 
-export const HelpTooltip: React.FC<{
-  readonly title?: string;
-  readonly text: string;
-  readonly formula?: string;
-}> = ({ title, text, formula }) => {
+export const HelpTooltip: React.FC<{ title?: string; text: string; formula?: string }> = ({
+  title,
+  text,
+  formula,
+}) => {
   const [open, setOpen] = useState(false);
   return (
     <div
@@ -49,57 +49,11 @@ export const HelpTooltip: React.FC<{
   );
 };
 
-export const StatusBadge: React.FC<{
-  readonly status: 'OK' | 'PARTIAL' | 'NO_DATA';
-  readonly label?: string;
-}> = ({ status, label }) => {
-  const style =
-    status === 'OK'
-      ? 'bg-[#0E2F20] text-[#2EDC7E] border-[#1C5C3C]'
-      : status === 'PARTIAL'
-        ? 'bg-[#35280F] text-[#F5B544] border-[#F5B544]/35'
-        : 'bg-[#331519] text-[#FF5C63] border-[#6C2931]';
-
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10.5px] font-mono-num font-bold uppercase tracking-wider ${style}`}
-    >
-      {label ?? status}
-    </span>
-  );
-};
-
-export const NoDataPanel: React.FC<{
-  readonly reason: string;
-  readonly detail: string;
-  readonly onRetry?: () => void;
-}> = ({ reason, detail, onRetry }) => {
-  return (
-    <div className="p-6 rounded-[12px] bg-[#131722] border border-[#6C2931]/70 flex flex-col items-center justify-center text-center gap-3">
-      <div className="inline-flex items-center gap-2 text-[#FF5C63]">
-        <AlertTriangle className="w-4 h-4" />
-        <StatusBadge status="NO_DATA" label={`NO_DATA · ${reason}`} />
-      </div>
-      <p className="text-[13px] text-[#A4A4BA] max-w-xl font-mono-num">{detail}</p>
-      {onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-[8px] bg-[#171722] border border-[#30303F] text-[12px] text-[#F3F3F9] hover:border-[#8B7CF6] cursor-pointer"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          Reintentar
-        </button>
-      )}
-    </div>
-  );
-};
-
 export const InsightBanner: React.FC<{
-  readonly children: React.ReactNode;
-  readonly tag?: string;
-  readonly variant?: 'default' | 'pos' | 'neg' | 'warn' | 'call';
-}> = ({ children, tag = 'Lectura cuantitativa', variant = 'default' }) => {
+  children: React.ReactNode;
+  tag?: string;
+  variant?: 'default' | 'pos' | 'neg' | 'warn' | 'call';
+}> = ({ children, tag = 'Lectura en vivo', variant = 'default' }) => {
   const borderMap = {
     default: 'border-l-[var(--accent-primary)] bg-[var(--surface-2)]/70',
     pos: 'border-l-[var(--pos-fg)] bg-[var(--pos-bg)]/35',
@@ -122,37 +76,36 @@ export const InsightBanner: React.FC<{
 };
 
 export const DeltaPill: React.FC<{
-  readonly value: number | null | undefined;
-  readonly decimals?: number;
-  readonly suffix?: string;
-  readonly size?: 'sm' | 'md';
-  readonly showArrow?: boolean;
+  value: number;
+  decimals?: number;
+  suffix?: string;
+  size?: 'sm' | 'md';
+  showArrow?: boolean;
 }> = ({ value, decimals = 2, suffix = '%', size = 'md', showArrow = true }) => {
-  if (!isFiniteNum(value)) {
+  if (!Number.isFinite(value)) {
     return (
       <span
-        className={`inline-flex items-center font-mono-num font-semibold text-[#6D6D84] ${
+        className={`inline-flex items-center font-mono-num font-semibold whitespace-nowrap text-[#787B86] ${
           size === 'sm' ? 'text-[12px] leading-[16px]' : 'text-[13px] leading-[18px]'
         }`}
       >
-        {NULL_DISPLAY}
+        —
       </span>
     );
   }
-
   const abs = Math.abs(value);
-  const isPos = value > 0.0001;
-  const isNeg = value < -0.0001;
+  const isPos = value > 0.001;
+  const isNeg = value < -0.001;
 
   const colorClass = isPos
     ? 'text-[#22C55E]'
     : isNeg
-      ? 'text-[#F23645]'
-      : 'text-[#6D6D84]';
+    ? 'text-[#F23645]'
+    : 'text-[#787B86]';
 
   const sign = isPos ? '+' : isNeg ? '-' : '';
   const arrow = showArrow ? (isPos ? '↗ ' : isNeg ? '↘ ' : '') : '';
-  const formatted = `${sign}${abs.toFixed(decimals)}${suffix === '%' ? '%' : ` ${suffix}`}`;
+  const formatted = `${sign}${abs.toFixed(decimals).replace('.', ',')}${suffix === '%' ? ' %' : ` ${suffix}`}`;
 
   return (
     <span
@@ -167,63 +120,54 @@ export const DeltaPill: React.FC<{
 };
 
 export const PriceCell: React.FC<{
-  readonly value: number | null | undefined;
-  readonly decimals?: number;
-  readonly prefix?: string;
-  readonly suffix?: string;
-  readonly flashDirection?: 'up' | 'down' | null;
-  readonly className?: string;
-}> = ({ value, decimals = 2, prefix = '$', suffix = '', flashDirection = null, className = '' }) => {
-  if (!isFiniteNum(value)) {
-    return (
-      <span className={`inline-flex items-center justify-end font-mono-num text-[#6D6D84] ${className}`}>
-        {NULL_DISPLAY}
-      </span>
-    );
-  }
-
+  value: number;
+  decimals?: number;
+  prefix?: string;
+  suffix?: string;
+  flashDirection?: 'up' | 'down' | null;
+  className?: string;
+}> = ({ value, decimals = 2, prefix = '$ ', suffix = '', flashDirection = null, className = '' }) => {
   const flashClass =
-    flashDirection === 'up'
-      ? 'tick-up text-[var(--pos-fg)]'
-      : flashDirection === 'down'
-        ? 'tick-down text-[var(--neg-fg)]'
-        : '';
+    flashDirection === 'up' ? 'tick-up text-[var(--pos-fg)]' : flashDirection === 'down' ? 'tick-down text-[var(--neg-fg)]' : '';
+
+  const finite = Number.isFinite(value);
 
   return (
     <span
       className={`inline-flex items-center justify-end px-1.5 py-0.5 rounded-[6px] font-mono-num transition-colors ${flashClass} ${className}`}
     >
-      <span>
-        {prefix}
-        {fmtNum(value, decimals)}
-        {suffix}
+      <span key={finite ? value : 'na'} className={flashDirection ? 'num-roll' : ''}>
+        {finite ? `${prefix}${fmtNum(value, decimals)}${suffix}` : '—'}
       </span>
     </span>
   );
 };
 
 export const RangeBar: React.FC<{
-  readonly low: number | null | undefined;
-  readonly high: number | null | undefined;
-  readonly current: number | null | undefined;
-  readonly prevClose?: number | null;
-  readonly widthClass?: string;
+  low: number;
+  high: number;
+  current: number;
+  prevClose?: number;
+  widthClass?: string;
 }> = ({ low, high, current, prevClose, widthClass = 'w-28' }) => {
-  if (!isFiniteNum(low) || !isFiniteNum(high) || !isFiniteNum(current) || high <= low) {
+  if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(current)) {
     return (
-      <div className={`text-[11px] font-mono-num text-[#6D6D84] ${widthClass}`}>
-        {NULL_DISPLAY}
+      <div className={`flex flex-col gap-1 ${widthClass}`}>
+        <div className="relative h-1.5 rounded-full bg-[var(--surface-3)] overflow-visible" />
+        <div className="flex justify-between text-[10px] font-mono-num text-[var(--text-tertiary)] leading-none">
+          <span>—</span>
+          <span>—</span>
+        </div>
       </div>
     );
   }
-
-  const span = high - low;
+  const span = Math.max(high - low, 0.0001);
   const pct = Math.min(100, Math.max(0, ((current - low) / span) * 100));
-  const hasPrev = isFiniteNum(prevClose);
-  const prevPct = hasPrev ? Math.min(100, Math.max(0, ((prevClose - low) / span) * 100)) : null;
-  const isAbovePrev = !hasPrev || current >= prevClose;
-  const barStartPct = prevPct !== null ? Math.min(pct, prevPct) : pct;
-  const barWidthPct = prevPct !== null ? Math.max(4, Math.abs(pct - prevPct)) : 4;
+  const prevPct =
+    prevClose !== undefined && Number.isFinite(prevClose)
+      ? Math.min(100, Math.max(0, ((prevClose - low) / span) * 100))
+      : null;
+  const isAbovePrev = prevClose === undefined || !Number.isFinite(prevClose) || current >= prevClose;
 
   return (
     <div className={`flex flex-col gap-1 ${widthClass}`}>
@@ -231,56 +175,77 @@ export const RangeBar: React.FC<{
         <div
           className="absolute top-0 bottom-0 rounded-full"
           style={{
-            left: `${String(barStartPct)}%`,
-            width: `${String(barWidthPct)}%`,
+            left: `${Math.min(pct, prevPct ?? 0)}%`,
+            width: `${Math.max(6, Math.abs(pct - (prevPct ?? 0)))}%`,
             backgroundColor: isAbovePrev ? 'var(--pos-fg)' : 'var(--neg-fg)',
             opacity: 0.75,
           }}
         />
-        {prevPct !== null && hasPrev && (
+        {prevPct !== null && (
           <div
-            title={`Prev Close: $${fmtNum(prevClose, 2)}`}
+            title={`Cierre previo: $ ${fmtNum(prevClose!, 2)}`}
             className="absolute -top-0.5 w-0.5 h-2.5 bg-[var(--text-tertiary)]"
-            style={{ left: `${String(prevPct)}%` }}
+            style={{ left: `${prevPct}%` }}
           />
         )}
         <div
           className="absolute -top-0.5 w-2 h-2.5 rounded-full border border-[var(--bg-app)]"
           style={{
-            left: `calc(${String(pct)}% - 4px)`,
+            left: `calc(${pct}% - 4px)`,
             backgroundColor: isAbovePrev ? 'var(--pos-fg)' : 'var(--neg-fg)',
           }}
         />
       </div>
       <div className="flex justify-between text-[10px] font-mono-num text-[var(--text-tertiary)] leading-none">
-        <span>{fmtNum(low, 2)}</span>
-        <span>{fmtNum(high, 2)}</span>
+        <span>{fmtNum(low, 0)}</span>
+        <span>{fmtNum(high, 0)}</span>
       </div>
     </div>
   );
 };
 
-export const MiniSparkline: React.FC<{
-  readonly data: readonly (number | null)[];
-  readonly positive?: boolean;
-  readonly color?: string;
-  readonly width?: number;
-  readonly height?: number;
-}> = ({ data, positive = true, color, width = 88, height = 28 }) => {
-  const reactId = useId();
-  const clean = data.filter((v): v is number => isFiniteNum(v));
-  if (clean.length < 2) {
-    return (
-      <span className="text-[11px] font-mono-num text-[#6D6D84]">
-        {NULL_DISPLAY}
+export const ValuationGauge: React.FC<{
+  rank: 'barata' | 'rango' | 'cara';
+  percentile?: number;
+}> = ({ rank, percentile }) => {
+  const config = {
+    barata: { label: 'Barata', color: '#3F9B5F', bg: 'rgba(63, 155, 95, 0.18)', pos: percentile ?? 22 },
+    rango: { label: 'En su rango', color: '#8B7CF6', bg: 'rgba(74, 74, 92, 0.35)', pos: percentile ?? 50 },
+    cara: { label: 'Cara', color: '#F5B544', bg: 'rgba(168, 138, 42, 0.25)', pos: percentile ?? 82 },
+  }[rank];
+
+  return (
+    <div className="inline-flex items-center gap-2">
+      <div className="w-12 h-1.5 rounded-full bg-[var(--surface-3)] overflow-hidden flex">
+        <div className="w-1/3 h-full bg-[#3F9B5F]/50" />
+        <div className="w-1/3 h-full bg-[#4A4A5C]/60" />
+        <div className="w-1/3 h-full bg-[#A88A2A]/60" />
+      </div>
+      <span
+        className="text-[11px] font-medium px-1.5 py-0.5 rounded"
+        style={{ color: config.color, backgroundColor: config.bg }}
+      >
+        {config.label}
+        {percentile !== undefined ? ` · P${percentile}` : ''}
       </span>
-    );
-  }
+    </div>
+  );
+};
+
+export const MiniSparkline: React.FC<{
+  data: number[];
+  positive?: boolean;
+  color?: string;
+  width?: number;
+  height?: number;
+}> = ({ data, positive = true, color, width = 88, height = 28 }) => {
+  const clean = (data ?? []).filter((v) => Number.isFinite(v));
+  if (clean.length < 2) return null;
   const min = Math.min(...clean);
   const max = Math.max(...clean);
-  const range = Math.max(max - min, 1e-6);
+  const range = Math.max(max - min, 0.0001);
   const strokeColor = color ?? (positive ? 'var(--pos-fg)' : 'var(--neg-fg)');
-  const gradId = `spark-${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const gradId = `spark-${clean.length}-${Math.round(min * 100)}`;
 
   const pts = clean.map((v, i) => {
     const x = (i / (clean.length - 1)) * (width - 4) + 2;
@@ -289,7 +254,7 @@ export const MiniSparkline: React.FC<{
   });
 
   const polylineStr = pts.join(' ');
-  const areaStr = `2,${String(height - 2)} ${polylineStr} ${String(width - 2)},${String(height - 2)}`;
+  const areaStr = `2,${height - 2} ${polylineStr} ${width - 2},${height - 2}`;
 
   return (
     <svg width={width} height={height} className="overflow-visible shrink-0">
@@ -313,11 +278,11 @@ export const MiniSparkline: React.FC<{
 };
 
 export const TickerChip: React.FC<{
-  readonly ticker: string;
-  readonly color?: string;
-  readonly selected?: boolean;
-  readonly sub?: string;
-  readonly onClick?: () => void;
+  ticker: string;
+  color?: string;
+  selected?: boolean;
+  sub?: string;
+  onClick?: () => void;
 }> = ({ ticker, color = '#8B7CF6', selected = false, sub, onClick }) => {
   return (
     <button
@@ -334,7 +299,7 @@ export const TickerChip: React.FC<{
         className="w-4 h-4 rounded-full inline-flex items-center justify-center text-[9px] font-bold text-white shrink-0"
         style={{ backgroundColor: color }}
       >
-        {ticker.replace('I:', '').slice(0, 2)}
+        {ticker.slice(0, 2)}
       </span>
       <span className="font-mono-num tracking-tight">{ticker}</span>
       {sub && <span className="text-[10px] text-[var(--text-tertiary)] font-mono-num">{sub}</span>}
@@ -343,19 +308,20 @@ export const TickerChip: React.FC<{
 };
 
 export const KPICard: React.FC<{
-  readonly title: string;
-  readonly heroValue: string;
-  readonly isNullValue?: boolean;
-  readonly deltaPct?: number | null;
-  readonly subtitle?: string;
-  readonly helpText?: string;
-  readonly helpFormula?: string;
-  readonly badge?: string;
-  readonly onClick?: () => void;
+  title: string;
+  heroValue: string;
+  deltaPct?: number;
+  subtitle?: string;
+  helpText?: string;
+  helpFormula?: string;
+  sparkline?: number[];
+  gauge?: 'barata' | 'rango' | 'cara';
+  gaugePercentile?: number;
+  badge?: string;
+  onClick?: () => void;
 }> = ({
   title,
   heroValue,
-  isNullValue = false,
   deltaPct,
   subtitle,
   helpText,
@@ -370,9 +336,12 @@ export const KPICard: React.FC<{
         onClick ? 'cursor-pointer hover:bg-[#161B28]' : ''
       }`}
     >
+      {/* Nivel 1: Header de la card */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">{title}</span>
+          <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
+            {title}
+          </span>
           {helpText && <HelpTooltip title={title} text={helpText} formula={helpFormula} />}
         </div>
         {badge && (
@@ -382,37 +351,38 @@ export const KPICard: React.FC<{
         )}
       </div>
 
+      {/* Nivel 2: Métrica central + Variación limpia inmediata a la derecha */}
       <div className="flex items-baseline gap-2.5 pt-0.5">
-        <div
-          className={`font-mono-num text-[22px] leading-[28px] font-bold tracking-tight ${
-            isNullValue || heroValue === NULL_DISPLAY ? 'text-[#6D6D84]' : 'text-[#FFFFFF]'
-          }`}
-        >
+        <div className="font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight">
           {heroValue}
         </div>
         {deltaPct !== undefined && <DeltaPill value={deltaPct} size="md" />}
       </div>
 
+      {/* Nivel 3: Submétrica secundaria única y concisa */}
       {subtitle && (
-        <div className="text-[11.5px] text-[#787B86] leading-snug truncate">{subtitle}</div>
+        <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
+          {subtitle}
+        </div>
       )}
     </div>
   );
 };
 
 export const HeatTile: React.FC<{
-  readonly ticker: string;
-  readonly deltaPct: number | null | undefined;
-  readonly price?: string;
-  readonly subtitle?: string;
-  readonly color?: string;
-  readonly selected?: boolean;
-  readonly onClick?: () => void;
+  ticker: string;
+  deltaPct: number;
+  price?: string;
+  subtitle?: string;
+  color?: string;
+  selected?: boolean;
+  onClick?: () => void;
 }> = ({ ticker, deltaPct, price, subtitle, color = '#3B82F6', selected = false, onClick }) => {
-  const validDelta = isFiniteNum(deltaPct);
-  const isPos = validDelta && deltaPct > 0.0001;
-  const isNeg = validDelta && deltaPct < -0.0001;
+  const finiteDelta = Number.isFinite(deltaPct);
+  const isPos = finiteDelta && deltaPct > 0.001;
+  const isNeg = finiteDelta && deltaPct < -0.001;
 
+  // Color de fondo condicional según rendimiento (Heatmap sobrio)
   let bgStyle = 'bg-[#1A1E29] border-[#262B3B]';
   if (isPos) {
     bgStyle =
@@ -426,16 +396,14 @@ export const HeatTile: React.FC<{
         : 'bg-[#2D1418]/85 border-[#4D1E26]/60';
   }
 
-  const pctColor = !validDelta
-    ? 'text-[#6D6D84]'
-    : isPos
-      ? 'text-[#22C55E]'
-      : isNeg
-        ? 'text-[#F23645]'
-        : 'text-[#787B86]';
+  const pctColor = isPos
+    ? 'text-[#22C55E]'
+    : isNeg
+    ? 'text-[#F23645]'
+    : 'text-[#787B86]';
 
   const sign = isPos ? '+' : isNeg ? '-' : '';
-  const formattedPct = validDelta ? `${sign}${Math.abs(deltaPct).toFixed(2)}%` : NULL_DISPLAY;
+  const formattedPct = finiteDelta ? `${sign}${Math.abs(deltaPct).toFixed(2).replace('.', ',')} %` : '—';
 
   return (
     <button
@@ -447,29 +415,27 @@ export const HeatTile: React.FC<{
           : 'hover:border-[#3B82F6]/80 hover:brightness-110'
       }`}
     >
+      {/* Fila Superior: Avatar circular 24x24 + Ticker en bold blanco + Precio */}
       <div className="flex items-center justify-between gap-2 w-full">
         <div className="flex items-center gap-2 min-w-0">
           <span
             className="w-[24px] h-[24px] rounded-full inline-flex items-center justify-center text-[9.5px] font-extrabold text-white shrink-0 shadow-sm"
             style={{ backgroundColor: color }}
           >
-            {ticker.replace('I:', '').slice(0, 2)}
+            {ticker.slice(0, 2)}
           </span>
           <span className="font-bold text-[13.5px] text-[#FFFFFF] tracking-tight truncate">
             {ticker}
           </span>
         </div>
         {price && (
-          <span
-            className={`font-mono-num text-[11px] shrink-0 ${
-              price === NULL_DISPLAY ? 'text-[#6D6D84]' : 'text-[#9CA3AF] group-hover:text-[#D1D4DC]'
-            }`}
-          >
+          <span className="font-mono-num text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] transition-colors shrink-0">
             {price}
           </span>
         )}
       </div>
 
+      {/* Fila Inferior: Variación porcentual directa + Micro-indicador de volumen relativo */}
       <div className="mt-1.5 flex items-center justify-between w-full">
         <span className={`font-mono-num text-[12.5px] font-semibold ${pctColor}`}>
           {formattedPct}

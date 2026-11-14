@@ -6,6 +6,12 @@
  *  - `GET /api/snapshot?symbol=SPY`
  *  - `GET /api/bars?symbol=SPY&timeframe=5m&visibleBars=240&rthOnly=0`
  *  - `GET /api/unusual?symbol=SPY&root=...&minPremium=...&limit=100`
+ *  - `GET /api/ar/overview`
+ *  - `GET /api/ar/macro`
+ *  - `GET /api/ar/monitoring?panel=acciones|bonos|cedears|cauciones`
+ *  - `GET /api/ar/stock?symbol=GGAL`
+ *  - `GET /api/ar/options?underlying=GGAL`
+ *  - `GET /api/ar/relations`
  *
  * WebSocket:
  *  - `ws://host:port/ws`
@@ -21,6 +27,10 @@ import type { AddressInfo } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import { toErrorMessage } from '../data/normalizeShared.js';
 import {
+  ArgentinaMarketRuntime,
+  type ArMonitoringResponse,
+} from './argentinaMarketLoader.js';
+import {
   MarketRuntime,
   RuntimeNoDataError,
   loadRuntimeAuth,
@@ -32,6 +42,7 @@ const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?
 
 export interface HttpWsServerOptions {
   readonly runtime?: MarketRuntime;
+  readonly arRuntime?: ArgentinaMarketRuntime;
   readonly host?: string;
   readonly port?: number;
   readonly secrets?: readonly string[];
@@ -42,6 +53,7 @@ export interface HttpWsServerHandle {
   readonly httpServer: Server;
   readonly wss: WebSocketServer;
   readonly runtime: MarketRuntime;
+  readonly arRuntime: ArgentinaMarketRuntime;
   start(): Promise<{ readonly host: string; readonly port: number }>;
   stop(): Promise<void>;
 }
@@ -116,6 +128,30 @@ function parseBooleanFlag(raw: string | null): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
+function parseMonitoringPanel(
+  raw: string | null,
+  secrets: readonly string[],
+): ArMonitoringResponse['panel'] {
+  if (raw === null || raw.trim() === '') {
+    return 'acciones';
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'acciones' ||
+    normalized === 'bonos' ||
+    normalized === 'cedears' ||
+    normalized === 'cauciones'
+  ) {
+    return normalized;
+  }
+  throw new RuntimeNoDataError(
+    'INVALID_PARAMETER',
+    `Unsupported panel "${raw}". Expected one of: acciones, bonos, cedears, cauciones`,
+    secrets,
+    400,
+  );
+}
+
 function shouldSendBroadcast(
   state: ClientSubscriptionState,
   event: RuntimeWsBroadcast,
@@ -147,6 +183,7 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsServerHandle {
   const auth = loadRuntimeAuth();
   const runtime = options.runtime ?? new MarketRuntime();
+  const arRuntime = options.arRuntime ?? new ArgentinaMarketRuntime({ secrets: options.secrets ?? auth.secrets });
   const secrets = options.secrets ?? auth.secrets;
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
@@ -235,6 +272,51 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         return;
       }
 
+      if (pathname === '/api/ar/overview') {
+        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const overview = await arRuntime.getOverview(forceRefresh);
+        sendJson(res, 200, overview);
+        return;
+      }
+
+      if (pathname === '/api/ar/macro') {
+        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const macro = await arRuntime.getMacro(forceRefresh);
+        sendJson(res, 200, macro);
+        return;
+      }
+
+      if (pathname === '/api/ar/monitoring') {
+        const panel = parseMonitoringPanel(params.get('panel'), secrets);
+        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const monitoring = await arRuntime.getMonitoring(panel, forceRefresh);
+        sendJson(res, 200, monitoring);
+        return;
+      }
+
+      if (pathname === '/api/ar/stock') {
+        const symbol = params.get('symbol')?.trim() || 'GGAL';
+        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const stock = await arRuntime.getStockDetail(symbol, forceRefresh);
+        sendJson(res, 200, stock);
+        return;
+      }
+
+      if (pathname === '/api/ar/options') {
+        const underlying = params.get('underlying')?.trim() || 'GGAL';
+        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const optionsChain = await arRuntime.getOptionsChain(underlying, forceRefresh);
+        sendJson(res, 200, optionsChain);
+        return;
+      }
+
+      if (pathname === '/api/ar/relations') {
+        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const relations = await arRuntime.getRelations(forceRefresh);
+        sendJson(res, 200, relations);
+        return;
+      }
+
       sendJson(res, 404, {
         status: 'NO_DATA',
         reason: 'INVALID_PARAMETER',
@@ -314,6 +396,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     httpServer,
     wss,
     runtime,
+    arRuntime,
     async start(): Promise<{ readonly host: string; readonly port: number }> {
       await new Promise<void>((resolveListen, rejectListen) => {
         const onError = (err: Error): void => {

@@ -9,6 +9,7 @@ export default tseslint.config(
       'coverage/**',
       'tools/**',
       'web/**',
+      'Sin título/**',
       'eslint.config.mjs',
     ],
   },

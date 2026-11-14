@@ -176,7 +176,7 @@ const TIMEFRAME_SECONDS: Readonly<Record<Timeframe, number>> = {
 };
 
 const KNOWN_INDEX_ROOTS = new Set<string>(['SPX', 'NDX', 'VIX', 'SKEW', 'RUT', 'DJX', 'OEX']);
-const MAX_SERIALIZED_CONTRACTS = 180;
+const MAX_SERIALIZED_CONTRACTS = 360;
 const MAX_WS_OPTION_CONTRACTS = 40;
 const SYMBOL_PATTERN = /^[A-Z0-9.:_-]{1,24}$/;
 
@@ -904,6 +904,13 @@ function resolveQuoteMid(contract: OptionSnapshotContract): number {
   if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask >= bid) {
     return 0.5 * (bid + ask);
   }
+  const lastPx = contract.lastTrade.price;
+  if (Number.isFinite(lastPx) && lastPx > 0) {
+    return lastPx;
+  }
+  if (Number.isFinite(bid) && Number.isFinite(ask) && bid === 0 && ask > 0) {
+    return 0.5 * ask;
+  }
   return Number.NaN;
 }
 
@@ -991,7 +998,14 @@ function evaluateParityForExpiry(
     });
   }
   if (pairs.length < 3) {
-    return null;
+    return {
+      expirySec,
+      expirationDate: first.expirationDate,
+      timeToExpiry,
+      rate,
+      forward: spot * Math.exp(rate * timeToExpiry),
+      dividendYield: 0,
+    };
   }
 
   const parity = inferForwardFromParityDetailed(pairs, Math.exp(-rate * timeToExpiry), {
@@ -1002,7 +1016,14 @@ function evaluateParityForExpiry(
     minValidPairs: 3,
   });
   if (!Number.isFinite(parity.forward) || parity.forward <= 0) {
-    return null;
+    return {
+      expirySec,
+      expirationDate: first.expirationDate,
+      timeToExpiry,
+      rate,
+      forward: spot * Math.exp(rate * timeToExpiry),
+      dividendYield: 0,
+    };
   }
   const dividendYield = impliedDividendYieldFromForward({
     spot,
@@ -1011,7 +1032,14 @@ function evaluateParityForExpiry(
     rate,
   });
   if (!Number.isFinite(dividendYield)) {
-    return null;
+    return {
+      expirySec,
+      expirationDate: first.expirationDate,
+      timeToExpiry,
+      rate,
+      forward: spot * Math.exp(rate * timeToExpiry),
+      dividendYield: 0,
+    };
   }
 
   return {
@@ -1033,20 +1061,15 @@ function solveContractOwnIv(
   isIndex: boolean,
 ): number {
   const mid = resolveQuoteMid(contract);
-  const { bid, ask } = contract.lastQuote;
-  if (
-    !Number.isFinite(mid) ||
-    mid <= 0 ||
-    !Number.isFinite(bid) ||
-    bid <= 0 ||
-    !Number.isFinite(ask) ||
-    ask < bid
-  ) {
+  if (!Number.isFinite(mid) || mid <= 0) {
     return Number.NaN;
   }
-  const spreadRatio = (ask - bid) / mid;
-  if (!Number.isFinite(spreadRatio) || spreadRatio > 0.5) {
-    return Number.NaN;
+  const { bid, ask } = contract.lastQuote;
+  if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+    const spreadRatio = (ask - bid) / mid;
+    if (!Number.isFinite(spreadRatio) || spreadRatio > 0.85) {
+      return Number.NaN;
+    }
   }
 
   return isIndex
@@ -1928,8 +1951,8 @@ export class MarketRuntime {
     let referenceContracts: readonly OptionContract[] = [];
 
     if (Number.isFinite(spot) && spot > 0) {
-      const minStrike = Math.max(0.01, Math.floor(spot * 0.85 * 100) / 100);
-      const maxStrike = Math.ceil(spot * 1.15 * 100) / 100;
+      const minStrike = Math.max(0.01, Math.floor(spot * 0.75 * 100) / 100);
+      const maxStrike = Math.ceil(spot * 1.25 * 100) / 100;
       try {
         const refRes = await this.loadOptionContractsFn({
           underlying: canonicalSymbol,
@@ -2034,7 +2057,7 @@ export class MarketRuntime {
       for (const c of expiryContracts) {
         const { bid, ask } = c.lastQuote;
         const mid = resolveQuoteMid(c);
-        if (!Number.isFinite(bid) || bid <= 0 || !Number.isFinite(ask) || ask < bid || !Number.isFinite(mid)) {
+        if (!Number.isFinite(mid) || mid <= 0) {
           continue;
         }
         const ownIv = solveContractOwnIv(
@@ -2048,15 +2071,17 @@ export class MarketRuntime {
         if (Number.isFinite(ownIv) && ownIv > 0) {
           contractOwnIvMap.set(c.ticker, ownIv);
         }
-        quotes.push({
-          strike: c.strikePrice,
-          contractType: c.contractType,
-          iv: ownIv,
-          bid,
-          ask,
-          mid,
-          openInterest: Number.isFinite(c.openInterest) ? c.openInterest : 0,
-        });
+        if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+          quotes.push({
+            strike: c.strikePrice,
+            contractType: c.contractType,
+            iv: ownIv,
+            bid,
+            ask,
+            mid,
+            openInterest: Number.isFinite(c.openInterest) ? c.openInterest : 0,
+          });
+        }
       }
 
       const slice = buildVolSlice(
@@ -2098,42 +2123,49 @@ export class MarketRuntime {
     }
 
     const frontSlicePkg = validSlices[0];
+    const firstValidParity = sortedExpiries
+      .map((e) => expiryParityMap.get(e))
+      .find((p): p is ExpiryParityEvaluation => p !== undefined);
+    const activeFrontParity = frontSlicePkg?.parity ?? firstValidParity;
     let exposureResult: DealerExposureResult | undefined;
     let volSurfaceSummary: SerializedVolSurfaceSummary | null = null;
     let iv30d = Number.NaN;
 
-    if (frontSlicePkg !== undefined && Number.isFinite(spot) && spot > 0) {
+    if (activeFrontParity !== undefined && Number.isFinite(spot) && spot > 0 && contracts.length > 0) {
       const surfaceSlices = validSlices.slice(0, 12);
-      const surface = buildVolSurface(
-        surfaceSlices.map((p) => ({
-          timeToExpiry: p.parity.timeToExpiry,
-          expirySec: p.parity.expirySec,
-          forward: p.parity.forward,
-          spot,
-          rate: p.parity.rate,
-          dividendYield: p.parity.dividendYield,
-          quotes: p.slice.nodes.map((n) => ({
-            strike: n.strike,
-            contractType: n.strike >= p.parity.forward ? 'call' : 'put',
-            iv: n.iv,
-            bid: 1,
-            ask: 1 + n.spreadRatio,
-            openInterest: n.openInterest,
-          })),
-        })),
-        { filter: { minPoints: 4, minOpenInterest: 1, maxSpreadRatio: 0.99 } },
-      );
+      const surface =
+        surfaceSlices.length > 0
+          ? buildVolSurface(
+              surfaceSlices.map((p) => ({
+                timeToExpiry: p.parity.timeToExpiry,
+                expirySec: p.parity.expirySec,
+                forward: p.parity.forward,
+                spot,
+                rate: p.parity.rate,
+                dividendYield: p.parity.dividendYield,
+                quotes: p.slice.nodes.map((n) => ({
+                  strike: n.strike,
+                  contractType: n.strike >= p.parity.forward ? 'call' : 'put',
+                  iv: n.iv,
+                  bid: 1,
+                  ask: 1 + n.spreadRatio,
+                  openInterest: n.openInterest,
+                })),
+              })),
+              { filter: { minPoints: 4, minOpenInterest: 1, maxSpreadRatio: 0.99 } },
+            )
+          : null;
 
-      if (surface.slices.length >= 2) {
+      if (surface !== null && surface.slices.length >= 2) {
         const term = buildVolTermStructure(surface.slices, { omitInvalid: true });
         iv30d = interpolateTermIvAtm(term, 30 / 365);
-      } else {
+      } else if (frontSlicePkg !== undefined) {
         iv30d = frontSlicePkg.metrics.ivAtm;
       }
 
       const exposureInputs: ExposureContractInput[] = [];
       for (const c of contracts) {
-        const expParity = expiryParityMap.get(c.expirationTime) ?? frontSlicePkg.parity;
+        const expParity = expiryParityMap.get(c.expirationTime) ?? activeFrontParity;
         const ownIv = contractOwnIvMap.get(c.ticker);
         let ivToUse = Number.NaN;
         if (ownIv !== undefined && Number.isFinite(ownIv) && ownIv > 0) {
@@ -2168,20 +2200,22 @@ export class MarketRuntime {
         {
           spot,
           nowUtcSec: nowSec,
-          rate: frontSlicePkg.parity.rate,
-          dividendYield: frontSlicePkg.parity.dividendYield,
-          forward: frontSlicePkg.parity.forward,
+          rate: activeFrontParity.rate,
+          dividendYield: activeFrontParity.dividendYield,
+          forward: activeFrontParity.forward,
         },
         {
           model: isIndex ? 'bsm' : 'american',
           wallCriterion: 'gex',
           wallScope: 'all',
-          gammaFlipHalfWidth: 0.15,
+          gammaFlipHalfWidth: 0.2,
           gammaFlipGridSteps: 80,
           gammaFlipMultiRootPolicy: 'nearestSpot',
           ivResolutionMode: 'ivThenMidPrice',
-          expectedMoveExpirySec: frontSlicePkg.parity.expirySec,
-          expectedMoveIvAtmOverride: frontSlicePkg.metrics.ivAtm,
+          expectedMoveExpirySec: activeFrontParity.expirySec,
+          ...(frontSlicePkg !== undefined
+            ? { expectedMoveIvAtmOverride: frontSlicePkg.metrics.ivAtm }
+            : {}),
         },
       );
 
@@ -2197,7 +2231,7 @@ export class MarketRuntime {
         })
         .slice(0, MAX_SERIALIZED_CONTRACTS)
         .map((c) => {
-          const parity = expiryParityMap.get(c.expirationTime) ?? frontSlicePkg.parity;
+          const parity = expiryParityMap.get(c.expirationTime) ?? activeFrontParity;
           const tExp = timeToExpiryYears(nowSec, c.expirationTime);
           const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
           const provIv = c.impliedVolatility;
@@ -2261,7 +2295,7 @@ export class MarketRuntime {
           };
         });
 
-      const butterflyReports = surface.butterflyReports;
+      const butterflyReports = surface?.butterflyReports ?? [];
       const serializedSlices = surfaceSlices.map((pkg, idx) => {
         const bf = butterflyReports[idx];
         return serializeSlice({
@@ -2273,9 +2307,9 @@ export class MarketRuntime {
 
       volSurfaceSummary = {
         iv30d: sanitizeFinite(iv30d),
-        butterflyArbitrageFree: surface.butterflyArbitrageFree,
-        calendarArbitrageFree: surface.calendarArbitrageFree,
-        isArbitrageFree: surface.isArbitrageFree,
+        butterflyArbitrageFree: surface?.butterflyArbitrageFree ?? true,
+        calendarArbitrageFree: surface?.calendarArbitrageFree ?? true,
+        isArbitrageFree: surface?.isArbitrageFree ?? true,
         frontSlice: serializedSlices[0] ?? null,
         slices: serializedSlices,
         contracts: serializedContracts,
@@ -2505,7 +2539,8 @@ export class MarketRuntime {
   ): Promise<TerminalBarsResponse> {
     const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
     const timeframe = parseTimeframe(rawTimeframe, this.secrets);
-    const visibleBars = Math.min(Math.max(options.visibleBars ?? 240, 20), 1_000);
+    const defaultVisible = timeframe === '1D' ? 2_016 : 240;
+    const visibleBars = Math.min(Math.max(options.visibleBars ?? defaultVisible, 20), 2_200);
     const requestedRthOnly = options.rthOnly ?? false;
     const effectiveRthOnly = requestedRthOnly && timeframe !== '1D' && timeframe !== '4h';
     const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}`;
@@ -2535,7 +2570,7 @@ export class MarketRuntime {
       visibleBars,
       warmupBars: 220,
       rthOnly,
-      maxPages: 8,
+      maxPages: timeframe === '1D' ? 12 : 8,
       now: nowSec,
       apiKey,
       fetchFn: this.fetchFn,

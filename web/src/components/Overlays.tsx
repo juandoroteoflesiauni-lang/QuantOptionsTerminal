@@ -1,355 +1,491 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Keyboard, Search, Sparkles, TrendingUp, X } from 'lucide-react';
-import { DEFAULT_WATCHLIST_SYMBOLS } from '../data/marketData';
-import type { NavSection } from './MarketModules';
+import React, { useState, useEffect } from 'react';
+import {
+  Search,
+  X,
+  Send,
+  Bell,
+  Keyboard,
+  ArrowRight,
+  CheckCircle2,
+  Sparkles,
+  Layers,
+  TrendingUp,
+} from 'lucide-react';
+import { AR_STOCKS, BONDS_DATA, US_MARKET_DATA, AlertItem, fmtNum } from '../data/marketData';
+import { DeltaPill } from './DesignSystem';
 
-const SECTION_ITEMS: ReadonlyArray<{
-  id: NavSection;
-  label: string;
-  subtitle: string;
-  shortcut: string;
-}> = [
-  {
-    id: 'overview',
-    label: 'Overview Ejecutivo',
-    subtitle: 'Score de confluencia, contexto macro y flujo inusual',
-    shortcut: '1',
-  },
-  {
-    id: 'detail',
-    label: 'Gráfico & Microestructura',
-    subtitle: 'Velas @luxalgo/vela, subasta 04:00–10:30 ET, MTF, CVD y niveles',
-    shortcut: '2',
-  },
-  {
-    id: 'options',
-    label: 'Opciones & GEX',
-    subtitle: 'Cadena, GEX/DEX/Vanna/Charm, Superficie IV, Payoff y Flow',
-    shortcut: '3',
-  },
-  {
-    id: 'macro',
-    label: 'Macro Rates & Volatilidad',
-    subtitle: 'Curva UST, SOFR, VIX, CBOE SKEW y Breadth A/D Line',
-    shortcut: '4',
-  },
-  {
-    id: 'unusual',
-    label: 'Unusual Options Flow',
-    subtitle: 'Sweeps, bloques, ISO y prima inusual desde Massive',
-    shortcut: '5',
-  },
-];
+export interface OrderTicketPreset {
+  ticker: string;
+  side: 'Compra' | 'Venta';
+  price: number;
+  qty: number;
+  instrumentLabel: string;
+}
 
-export const CommandPaletteModal: React.FC<{
+export const OrderTicketDrawer: React.FC<{
   open: boolean;
-  activeSymbol: string;
+  preset: OrderTicketPreset | null;
   onClose: () => void;
-  onSelectSymbol: (symbol: string) => void;
-  onSelectSection: (section: NavSection) => void;
-}> = ({ open, activeSymbol, onClose, onSelectSymbol, onSelectSection }) => {
-  const [query, setQuery] = useState('');
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  onSubmitOrder: (order: {
+    ticker: string;
+    side: 'Compra' | 'Venta';
+    qty: number;
+    price: number;
+    settlement: 'CI' | '24hs';
+    orderType: 'Límite' | 'Mercado';
+  }) => void;
+}> = ({ open, preset, onClose, onSubmitOrder }) => {
+  const [ticker, setTicker] = useState('GGAL');
+  const [side, setSide] = useState<'Compra' | 'Venta'>('Compra');
+  const [price, setPrice] = useState(6480);
+  const [qty, setQty] = useState(100);
+  const [settlement, setSettlement] = useState<'CI' | '24hs'>('24hs');
+  const [orderType, setOrderType] = useState<'Límite' | 'Mercado'>('Límite');
+  const [label, setLabel] = useState('Grupo Financiero Galicia (Contado)');
 
   useEffect(() => {
-    if (!open) return;
-    setQuery('');
-    const id = window.setTimeout(() => {
-      inputRef.current?.focus();
-    }, 10);
-    return () => window.clearTimeout(id);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
-
-  const normalizedQuery = query.trim().toUpperCase();
-
-  const matchingSymbols = useMemo(() => {
-    if (!normalizedQuery) return DEFAULT_WATCHLIST_SYMBOLS;
-    return DEFAULT_WATCHLIST_SYMBOLS.filter(
-      (item) =>
-        item.ticker.toUpperCase().includes(normalizedQuery) ||
-        item.name.toUpperCase().includes(normalizedQuery) ||
-        item.venue.toUpperCase().includes(normalizedQuery),
-    );
-  }, [normalizedQuery]);
-
-  const matchingSections = useMemo(() => {
-    if (!normalizedQuery) return SECTION_ITEMS;
-    return SECTION_ITEMS.filter(
-      (sec) =>
-        sec.label.toUpperCase().includes(normalizedQuery) ||
-        sec.subtitle.toUpperCase().includes(normalizedQuery),
-    );
-  }, [normalizedQuery]);
-
-  const canLaunchCustomTicker =
-    normalizedQuery.length > 0 &&
-    /^[A-Z0-9.:^-]{1,16}$/.test(normalizedQuery) &&
-    !DEFAULT_WATCHLIST_SYMBOLS.some((s) => s.ticker === normalizedQuery);
+    if (preset) {
+      setTicker(preset.ticker);
+      setSide(preset.side);
+      setPrice(preset.price);
+      setQty(preset.qty);
+      setLabel(preset.instrumentLabel);
+    }
+  }, [preset]);
 
   if (!open) return null;
 
+  const isOption = ticker.length >= 8 && (ticker.includes('C') || ticker.includes('V'));
+  const multiplier = isOption ? 100 : 1;
+  const grossAmount = price * qty * multiplier;
+  const fees = grossAmount * 0.0058; // 0.58% comisión + derechos BYMA
+  const totalAmount = side === 'Compra' ? grossAmount + fees : grossAmount - fees;
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-[2px] pt-[12vh] px-4"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/55 backdrop-blur-[2px]">
       <div
-        className="w-full max-w-[580px] rounded-[14px] bg-[var(--bg-sidebar)] border border-[var(--border-strong)] overflow-hidden"
+        className="w-full max-w-[380px] h-full bg-[var(--bg-sidebar)] border-l border-[var(--border-strong)] p-5 flex flex-col justify-between overflow-y-auto"
         style={{ boxShadow: 'var(--elev-3)' }}
-        onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-[var(--border-subtle)] bg-[var(--surface-1)]">
-          <Search className="w-4 h-4 text-[var(--accent-primary)] shrink-0" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                if (canLaunchCustomTicker) {
-                  onSelectSymbol(normalizedQuery);
-                  onClose();
-                } else if (matchingSymbols[0]) {
-                  onSelectSymbol(matchingSymbols[0].ticker);
-                  onClose();
-                } else if (matchingSections[0]) {
-                  onSelectSection(matchingSections[0].id);
-                  onClose();
-                }
-              }
-            }}
-            placeholder="Buscar ticker US (SPY, QQQ, I:SPX, NVDA…) o módulo…"
-            className="flex-1 bg-transparent text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none"
-          />
-          <kbd className="text-[10px] font-mono-num px-1.5 py-0.5 rounded bg-[var(--surface-2)] text-[var(--text-tertiary)] border border-[var(--border-subtle)]">
-            ESC
-          </kbd>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Cerrar paleta de comandos"
-            className="p-1 rounded hover:bg-[var(--surface-2)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="max-h-[420px] overflow-y-auto p-3 space-y-4">
-          {canLaunchCustomTicker && (
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
             <div>
-              <div className="text-[10px] font-mono-num uppercase tracking-wider text-[var(--text-tertiary)] px-2 mb-1.5">
-                Cargar ticker desde servidor local
+              <div className="flex items-center gap-2">
+                <span className="text-[15px] font-bold text-[var(--text-primary)]">
+                  Ticket de Orden Simulada
+                </span>
+                <span className="text-[10px] font-mono-num uppercase px-1.5 py-0.5 rounded bg-[#35280F] text-[#F5B544]">
+                  DMA BYMA
+                </span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  onSelectSymbol(normalizedQuery);
-                  onClose();
-                }}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-[10px] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--accent-primary)]/40 text-left cursor-pointer"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Sparkles className="w-4 h-4 text-[var(--accent-primary)]" />
-                  <span className="font-mono-num font-bold text-[13px] text-[var(--text-primary)]">
-                    {normalizedQuery}
-                  </span>
-                  <span className="text-[12px] text-[var(--text-secondary)]">
-                    Consultar snapshot, barras y cadena de opciones en vivo
-                  </span>
-                </div>
-                <ArrowRight className="w-4 h-4 text-[var(--accent-primary)]" />
-              </button>
+              <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">{label}</div>
             </div>
-          )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded-[8px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
 
-          {matchingSymbols.length > 0 && (
+          {/* Selector Compra / Venta */}
+          <div className="grid grid-cols-2 gap-2 p-1 rounded-[10px] bg-[var(--surface-1)] border border-[var(--border-subtle)]">
+            <button
+              type="button"
+              onClick={() => setSide('Compra')}
+              style={side === 'Compra' ? { boxShadow: 'var(--glow-pos)' } : undefined}
+              className={`py-2 rounded-[8px] font-bold text-[13px] transition-all cursor-pointer ${
+                side === 'Compra'
+                  ? 'bg-[#2EDC7E] text-[#08080D]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              COMPRAR
+            </button>
+            <button
+              type="button"
+              onClick={() => setSide('Venta')}
+              style={side === 'Venta' ? { boxShadow: 'var(--glow-neg)' } : undefined}
+              className={`py-2 rounded-[8px] font-bold text-[13px] transition-all cursor-pointer ${
+                side === 'Venta'
+                  ? 'bg-[#FF5C63] text-white'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              VENDER / LANZAR
+            </button>
+          </div>
+
+          {/* Especie + Liquidación */}
+          <div className="grid grid-cols-2 gap-3 text-[12px]">
             <div>
-              <div className="text-[10px] font-mono-num uppercase tracking-wider text-[var(--text-tertiary)] px-2 mb-1.5">
-                Activos disponibles
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {matchingSymbols.map((item) => {
-                  const isActive = item.ticker === activeSymbol;
-                  return (
-                    <button
-                      key={item.ticker}
-                      type="button"
-                      onClick={() => {
-                        onSelectSymbol(item.ticker);
-                        onClose();
-                      }}
-                      className={`flex items-center justify-between px-3 py-2 rounded-[9px] border text-left transition-colors cursor-pointer ${
-                        isActive
-                          ? 'bg-[#2A2444] border-[#6E56CF] text-[var(--text-primary)]'
-                          : 'bg-[var(--surface-1)] border-[var(--border-subtle)] hover:bg-[var(--surface-2)] text-[var(--text-primary)]'
-                      }`}
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="w-2 h-2 rounded-full shrink-0"
-                            style={{ backgroundColor: item.accentColor }}
-                          />
-                          <span className="font-mono-num font-bold text-[12.5px]">
-                            {item.ticker}
-                          </span>
-                          <span className="text-[10px] font-mono-num uppercase text-[var(--text-tertiary)]">
-                            {item.assetType}
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-[var(--text-secondary)] truncate pl-4">
-                          {item.name}
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono-num text-[var(--text-tertiary)] ml-2 shrink-0">
-                        {item.venue}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+              <label className="block text-[11px] font-semibold text-[var(--text-secondary)] mb-1">
+                Especie / Ticker
+              </label>
+              <input
+                value={ticker}
+                onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                className="w-full px-3 py-2 rounded-[8px] bg-[var(--surface-2)] border border-[var(--border-strong)] font-mono-num font-bold text-[var(--text-primary)]"
+              />
             </div>
-          )}
-
-          {matchingSections.length > 0 && (
             <div>
-              <div className="text-[10px] font-mono-num uppercase tracking-wider text-[var(--text-tertiary)] px-2 mb-1.5">
-                Módulos de terminal
-              </div>
-              <div className="space-y-1">
-                {matchingSections.map((sec) => (
+              <label className="block text-[11px] font-semibold text-[var(--text-secondary)] mb-1">
+                Plazo Liquidación
+              </label>
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-[8px] bg-[var(--surface-2)] border border-[var(--border-subtle)]">
+                {(['CI', '24hs'] as const).map((pl) => (
                   <button
-                    key={sec.id}
+                    key={pl}
                     type="button"
-                    onClick={() => {
-                      onSelectSection(sec.id);
-                      onClose();
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2 rounded-[9px] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] border border-[var(--border-subtle)] text-left cursor-pointer"
+                    onClick={() => setSettlement(pl)}
+                    className={`py-1 rounded text-[11px] font-mono-num font-semibold cursor-pointer ${
+                      settlement === pl
+                        ? 'bg-[var(--accent-primary)] text-white'
+                        : 'text-[var(--text-secondary)]'
+                    }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <TrendingUp className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-[12.5px] font-semibold text-[var(--text-primary)]">
-                          {sec.label}
-                        </div>
-                        <div className="text-[11px] text-[var(--text-secondary)] truncate">
-                          {sec.subtitle}
-                        </div>
-                      </div>
-                    </div>
-                    <kbd className="text-[10px] font-mono-num px-1.5 py-0.5 rounded bg-[var(--surface-2)] text-[var(--text-tertiary)] border border-[var(--border-subtle)]">
-                      {sec.shortcut}
-                    </kbd>
+                    {pl}
                   </button>
                 ))}
               </div>
             </div>
-          )}
+          </div>
 
-          {matchingSymbols.length === 0 &&
-            matchingSections.length === 0 &&
-            !canLaunchCustomTicker && (
-              <div className="py-8 text-center text-[12px] text-[var(--text-tertiary)]">
-                Sin coincidencias para "{query.trim()}".
-              </div>
-            )}
+          {/* Tipo de Orden */}
+          <div className="flex items-center justify-between text-[12px]">
+            <span className="text-[var(--text-secondary)] font-medium">Tipo de Orden:</span>
+            <div className="flex gap-1.5">
+              {(['Límite', 'Mercado'] as const).map((ot) => (
+                <button
+                  key={ot}
+                  type="button"
+                  onClick={() => setOrderType(ot)}
+                  className={`px-3 py-1 rounded-[8px] text-[12px] font-semibold cursor-pointer ${
+                    orderType === ot
+                      ? 'bg-[var(--surface-3)] text-[var(--text-primary)] border border-[var(--accent-primary)]'
+                      : 'bg-[var(--surface-2)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  {ot}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cantidad con Stepper */}
+          <div>
+            <div className="flex justify-between text-[11px] mb-1">
+              <span className="font-semibold text-[var(--text-secondary)]">
+                Cantidad ({isOption ? 'Lotes × 100 acc.' : 'Nominales'})
+              </span>
+              <span className="font-mono-num text-[var(--text-tertiary)]">
+                Poder de compra: $ 45.200.000
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setQty((q) => Math.max(1, q - 10))}
+                className="w-9 h-9 rounded-[8px] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border-strong)] font-mono-num font-bold cursor-pointer"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                value={qty}
+                onChange={(e) => setQty(Math.max(1, Number(e.target.value)))}
+                className="flex-1 h-9 px-3 rounded-[8px] bg-[var(--surface-2)] border border-[var(--border-strong)] text-right font-mono-num font-bold text-[14px] text-[var(--text-primary)]"
+              />
+              <button
+                type="button"
+                onClick={() => setQty((q) => q + 10)}
+                className="w-9 h-9 rounded-[8px] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border-strong)] font-mono-num font-bold cursor-pointer"
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          {/* Precio Límite con Stepper */}
+          <div>
+            <div className="flex justify-between text-[11px] mb-1">
+              <span className="font-semibold text-[var(--text-secondary)]">Precio Límite ($ ARS)</span>
+              <span className="font-mono-num text-[#4BA3FF]">Punta actual: $ {fmtNum(price, 2)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPrice((p) => +(Math.max(0.5, p - 5)).toFixed(2))}
+                className="w-9 h-9 rounded-[8px] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border-strong)] font-mono-num font-bold cursor-pointer"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                step="0.5"
+                value={price}
+                onChange={(e) => setPrice(Math.max(0.1, Number(e.target.value)))}
+                className="flex-1 h-9 px-3 rounded-[8px] bg-[var(--surface-2)] border border-[var(--border-strong)] text-right font-mono-num font-bold text-[14px] text-[var(--text-primary)]"
+              />
+              <button
+                type="button"
+                onClick={() => setPrice((p) => +(p + 5).toFixed(2))}
+                className="w-9 h-9 rounded-[8px] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border-strong)] font-mono-num font-bold cursor-pointer"
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          {/* Desglose de Costos e Impacto */}
+          <div className="p-3.5 rounded-[10px] bg-[var(--surface-1)] border border-[var(--border-subtle)] space-y-2 font-mono-num text-[12px]">
+            <div className="flex justify-between text-[var(--text-secondary)]">
+              <span>Monto Bruto ({isOption ? `${qty} lotes × 100` : `${qty} vn`})</span>
+              <span>$ {fmtNum(grossAmount, 2)}</span>
+            </div>
+            <div className="flex justify-between text-[var(--text-tertiary)] text-[11px]">
+              <span>Arancel + Derechos BYMA (0,58 %)</span>
+              <span>$ {fmtNum(fees, 2)}</span>
+            </div>
+            <div className="pt-2 border-t border-[var(--border-subtle)] flex justify-between font-bold text-[14px] text-[var(--text-primary)]">
+              <span>Total Estimado ({settlement})</span>
+              <span className={side === 'Compra' ? 'text-[#2EDC7E]' : 'text-[#FF5C63]'}>
+                $ {fmtNum(totalAmount, 2)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Botón Confirmar */}
+        <div className="pt-4 border-t border-[var(--border-subtle)] space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              onSubmitOrder({ ticker, side, qty, price, settlement, orderType });
+              onClose();
+            }}
+            style={
+              side === 'Compra'
+                ? { boxShadow: 'var(--glow-pos)' }
+                : { boxShadow: 'var(--glow-neg)' }
+            }
+            className={`w-full py-2.5 rounded-[10px] font-bold text-[13px] inline-flex items-center justify-center gap-2 cursor-pointer transition-all ${
+              side === 'Compra'
+                ? 'bg-[#2EDC7E] text-[#08080D] hover:brightness-110'
+                : 'bg-[#FF5C63] text-white hover:brightness-110'
+            }`}
+          >
+            <Send className="w-4 h-4" />
+            {side === 'Compra' ? 'Enviar Orden de Compra' : 'Enviar Orden de Venta'} ({ticker})
+          </button>
+          <p className="text-[10px] text-center text-[var(--text-tertiary)]">
+            Simulador de ejecución v1 · Sin ruteo real al mercado · Atajo rápido: tecla N
+          </p>
         </div>
       </div>
     </div>
   );
 };
 
-export const ShortcutsModal: React.FC<{
+/* PALETA DE COMANDOS (CTRL + K) */
+export const CommandPaletteModal: React.FC<{
   open: boolean;
   onClose: () => void;
-}> = ({ open, onClose }) => {
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+  onSelectStock: (ticker: string) => void;
+  onNavigate: (page: string) => void;
+  onOpenNewOrder: () => void;
+  onToggleTheme: () => void;
+}> = ({ open, onClose, onSelectStock, onNavigate, onOpenNewOrder, onToggleTheme }) => {
+  const [query, setQuery] = useState('');
 
   if (!open) return null;
 
-  const shortcuts: ReadonlyArray<{ keys: string; desc: string }> = [
-    { keys: 'Ctrl / Cmd + K', desc: 'Abrir paleta de búsqueda y cambio rápido de símbolo' },
-    { keys: '1 – 5', desc: 'Cambiar de módulo (Overview, Gráfico, Opciones, Macro, Flow)' },
-    { keys: 'R', desc: 'Refrescar snapshot, barras y unusual flow desde servidor' },
-    { keys: '?', desc: 'Mostrar u ocultar esta ayuda de atajos' },
-    { keys: 'ESC', desc: 'Cerrar modales activos' },
-  ];
+  const q = query.trim().toLowerCase();
+  const matchedStocks = AR_STOCKS.filter(
+    (s) => s.ticker.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+  ).slice(0, 5);
+
+  const quickPages = [
+    { id: 'inicio', label: 'Ir a Inicio / Resumen General', shortcut: 'G I' },
+    { id: 'opciones', label: 'Ir a Opciones (Cadena Completa y Volatilidad)', shortcut: 'G O' },
+    { id: 'monitoreo', label: 'Ir a Monitoreo en Vivo (Acciones, Bonos, Cauciones)', shortcut: 'G M' },
+    { id: 'macro', label: 'Ir a Macro Argentina (Brecha, Reservas, Inflación)', shortcut: 'G A' },
+    { id: 'eeuu', label: 'Ir a Mercado EE.UU. y CEDEARs', shortcut: 'G U' },
+    { id: 'bonos', label: 'Ir a Curva de Bonos Soberanos', shortcut: 'G B' },
+    { id: 'relaciones', label: 'Ir a Relaciones y Arbitrajes (Z-Score)', shortcut: 'G R' },
+  ].filter((p) => p.label.toLowerCase().includes(q));
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-[2px] px-4"
       onClick={onClose}
+      className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4 bg-black/65 backdrop-blur-[4px]"
     >
       <div
-        className="w-full max-w-[460px] rounded-[14px] bg-[var(--bg-sidebar)] border border-[var(--border-strong)] p-5 space-y-4"
-        style={{ boxShadow: 'var(--elev-3)' }}
         onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl rounded-[16px] bg-[var(--surface-1)] border border-[var(--border-strong)] overflow-hidden"
+        style={{ boxShadow: 'var(--elev-4)' }}
       >
-        <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--border-subtle)] bg-[var(--surface-2)]">
+          <Search className="w-4 h-4 text-[var(--accent-primary)]" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar ticker (GGAL, YPFD, AL30...), ir a módulo o ejecutar comando..."
+            className="flex-1 bg-transparent text-[13px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)]"
+          />
+          <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono-num bg-[var(--surface-3)] text-[var(--text-tertiary)]">
+            ESC
+          </kbd>
+        </div>
+
+        <div className="max-h-96 overflow-y-auto p-2 space-y-3">
+          {/* Tickers */}
+          {matchedStocks.length > 0 && (
+            <div>
+              <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
+                Especies / Papeles
+              </div>
+              {matchedStocks.map((s) => (
+                <button
+                  key={s.ticker}
+                  type="button"
+                  onClick={() => {
+                    onSelectStock(s.ticker);
+                    onClose();
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-[10px] hover:bg-[var(--surface-2)] text-left cursor-pointer"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className="w-5 h-5 rounded-full inline-flex items-center justify-center text-[9px] font-bold text-white"
+                      style={{ backgroundColor: s.color }}
+                    >
+                      {s.ticker.slice(0, 2)}
+                    </span>
+                    <span className="font-mono-num font-bold text-[13px] text-[var(--text-primary)]">
+                      {s.ticker}
+                    </span>
+                    <span className="text-[12px] text-[var(--text-secondary)]">{s.name}</span>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono-num">
+                    <span className="text-[12px] text-[var(--text-primary)]">$ {fmtNum(s.last, 2)}</span>
+                    <DeltaPill value={s.deltaPct} size="sm" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Navegación rápida */}
+          <div>
+            <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
+              Páginas y Módulos
+            </div>
+            {quickPages.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => {
+                  onNavigate(p.id);
+                  onClose();
+                }}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-[10px] hover:bg-[var(--surface-2)] text-left text-[12px] text-[var(--text-primary)] cursor-pointer"
+              >
+                <span className="flex items-center gap-2">
+                  <ArrowRight className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                  {p.label}
+                </span>
+                <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono-num bg-[var(--surface-3)] text-[var(--text-tertiary)]">
+                  {p.shortcut}
+                </kbd>
+              </button>
+            ))}
+          </div>
+
+          {/* Acciones */}
+          <div>
+            <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
+              Acciones Directas
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenNewOrder();
+              }}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-[10px] hover:bg-[var(--surface-2)] text-left text-[12px] text-[#2EDC7E] font-semibold cursor-pointer"
+            >
+              <span>+ Nueva Operación Simulada (Ticket DMA)</span>
+              <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono-num bg-[var(--surface-3)] text-[var(--text-tertiary)]">
+                N
+              </kbd>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onToggleTheme();
+                onClose();
+              }}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-[10px] hover:bg-[var(--surface-2)] text-left text-[12px] text-[var(--text-secondary)] cursor-pointer"
+            >
+              <span>Alternar modo de color Dark / Light</span>
+              <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono-num bg-[var(--surface-3)] text-[var(--text-tertiary)]">
+                T
+              </kbd>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* MODAL DE ATAJOS DE TECLADO (?) */
+export const ShortcutsModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
+  if (!open) return null;
+  const list = [
+    { key: 'Ctrl K / /', desc: 'Abrir paleta de comandos y buscador universal' },
+    { key: 'N', desc: 'Abrir Ticket de Nueva Operación (380 px)' },
+    { key: '[', desc: 'Colapsar o expandir barra lateral (232 px ↔ 64 px)' },
+    { key: '?', desc: 'Mostrar / ocultar ayuda de atajos de teclado' },
+    { key: '1 – 6', desc: 'Cambiar rápidamente entre las 6 vistas de Opciones' },
+  ];
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-[3px]"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-[14px] bg-[var(--surface-1)] border border-[var(--border-strong)] p-5 space-y-4"
+        style={{ boxShadow: 'var(--elev-4)' }}
+      >
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Keyboard className="w-4 h-4 text-[var(--accent-primary)]" />
-            <h3 className="text-[14px] font-bold text-[var(--text-primary)]">
-              Atajos e Integridad de Datos
+            <h3 className="text-[15px] font-bold text-[var(--text-primary)]">
+              Atajos de Teclado de Quant Core Terminal
             </h3>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Cerrar ventana de atajos"
-            className="p-1 rounded hover:bg-[var(--surface-2)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
-          >
+          <button onClick={onClose} className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer">
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        <div className="space-y-2">
-          {shortcuts.map((row) => (
+        <div className="space-y-2 text-[12px]">
+          {list.map((it) => (
             <div
-              key={row.keys}
-              className="flex items-center justify-between gap-3 py-1.5 border-b border-[var(--border-subtle)] last:border-b-0"
+              key={it.key}
+              className="flex items-center justify-between py-2 px-3 rounded-[8px] bg-[var(--surface-2)]"
             >
-              <span className="text-[12px] text-[var(--text-secondary)]">{row.desc}</span>
-              <kbd className="text-[11px] font-mono-num px-2 py-0.5 rounded bg-[var(--surface-2)] text-[var(--text-primary)] border border-[var(--border-subtle)] shrink-0">
-                {row.keys}
+              <span className="text-[var(--text-secondary)]">{it.desc}</span>
+              <kbd className="px-2 py-0.5 rounded font-mono-num text-[11px] bg-[var(--surface-3)] text-[var(--text-primary)] border border-[var(--border-strong)]">
+                {it.key}
               </kbd>
             </div>
           ))}
-        </div>
-
-        <div className="rounded-[10px] bg-[var(--surface-1)] border border-[var(--border-subtle)] p-3 text-[11px] text-[var(--text-secondary)] space-y-1">
-          <div className="font-semibold text-[var(--text-primary)]">
-            Política Zero Silent Fallbacks
-          </div>
-          <div>
-            Todos los cálculos cuantitativos corren en servidor puro TypeScript sobre feeds
-            Massive en segundos UTC enteros. Cualquier métrica no calculable se renderiza como{' '}
-            <span className="font-mono-num text-[#6D6D84]">—</span> sin valores sintéticos de respaldo.
-          </div>
         </div>
       </div>
     </div>
