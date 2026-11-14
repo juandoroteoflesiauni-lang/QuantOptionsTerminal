@@ -47,6 +47,18 @@ import {
   type MtfStructureResult,
 } from '../core/microstructure/mtfStructure.js';
 import { evaluateOpeningAuction } from '../core/microstructure/openingAuction.js';
+import {
+  computeVolumeProfileAmt,
+  trackNakedPocs,
+  type TrackNakedPocsResult,
+  type VolumeProfileAmtResult,
+} from '../core/microstructure/volumeProfileAmt.js';
+import {
+  detectFreshOrderBlocks,
+  detectQuantitativeFvgs,
+  type FreshOrderBlockResult,
+  type QuantitativeFvgResult,
+} from '../core/microstructure/fvgFobEngine.js';
 import type {
   BalanceType,
   InitialBalanceClassification,
@@ -66,6 +78,44 @@ import {
   type ExposureContractInput,
   type GammaFlipStatus,
 } from '../core/options/exposure.js';
+import {
+  computeSignedOptionsOrderFlow,
+  detectVolOiAnomaliesMad,
+  type OpraTradePrintInput,
+  type SignedOptionsOrderFlowResult,
+  type VolOiAnomalyContractInput,
+  type VolOiAnomalyDetectionResult,
+} from '../core/options/optionsOrderFlow.js';
+import {
+  computeFlowAdjustedSignedGex,
+  computeGexCharmPin,
+  evaluateWheelByWheelTracker,
+  type FlowAdjustedGexResult,
+  type GexCharmPinResult,
+  type WheelByWheelTrackerResult,
+  type WheelSnapshotInput,
+} from '../core/options/pinTracker.js';
+import {
+  analyzeEmpiricalDistributionP,
+  computeVolConeAndRank,
+  evaluatePqLevelDivergence,
+  extractRiskNeutralDistributionQ,
+  type EmpiricalDistributionResult,
+  type PqLevelDivergenceResult,
+  type RiskNeutralDistributionResult,
+  type RiskNeutralInputNode,
+  type VolConeAndRankResult,
+} from '../core/options/probabilisticDivergence.js';
+import {
+  computeSyntheticImpliedRates,
+  evaluateBuyWrite,
+  evaluateCalendarRoll,
+  evaluateConversionReversal,
+  type BuyWriteResult,
+  type CalendarRollResult,
+  type ConversionReversalResult,
+  type SyntheticImpliedRatesResult,
+} from '../core/options/syntheticRates.js';
 import {
   impliedDividendYieldFromForward,
   inferForwardFromParityDetailed,
@@ -92,6 +142,18 @@ import {
   assertJsonSafeSerialized,
   serializeTerminalSnapshot,
 } from '../core/terminal/serializer.js';
+import {
+  computeStructureCostPercentile,
+  detectSpatialConfluenceClusters,
+  evaluateRelativeStrengthAndCatalysts,
+  optimizeOptionStructures,
+  type OptimizeOptionStructuresResult,
+  type OptimizerOptionContractInput,
+  type RelativeStrengthAndCatalystsResult,
+  type SpatialConfluenceResult,
+  type SpatialLevelInput,
+  type StructureCostPercentileResult,
+} from '../core/terminal/structureOptimizer.js';
 import type {
   KeyLevelName,
   KeyLevelSource,
@@ -444,8 +506,44 @@ export interface SnapshotDataQuality {
   readonly warnings: readonly string[];
 }
 
+export type JsonSafeValue<T> = T extends number
+  ? number | null
+  : T extends readonly (infer U)[]
+    ? readonly JsonSafeValue<U>[]
+    : T extends object
+      ? { readonly [K in keyof T]: JsonSafeValue<T[K]> }
+      : T;
+
+export interface SerializedTerminalEngines {
+  readonly atr14d: number | null;
+  readonly cvdSlopeSign: number | null;
+  readonly volumeProfile: JsonSafeValue<VolumeProfileAmtResult> | null;
+  readonly nakedPocs: JsonSafeValue<TrackNakedPocsResult> | null;
+  readonly fvgs: JsonSafeValue<QuantitativeFvgResult> | null;
+  readonly orderBlocks: JsonSafeValue<FreshOrderBlockResult> | null;
+  readonly orderFlow: JsonSafeValue<SignedOptionsOrderFlowResult> | null;
+  readonly volOiAnomalies: JsonSafeValue<VolOiAnomalyDetectionResult> | null;
+  readonly flowAdjustedGex: JsonSafeValue<FlowAdjustedGexResult> | null;
+  readonly gexCharmPin: JsonSafeValue<GexCharmPinResult> | null;
+  readonly wheelTracker: JsonSafeValue<WheelByWheelTrackerResult> | null;
+  readonly qDistribution: JsonSafeValue<RiskNeutralDistributionResult> | null;
+  readonly pDistribution: JsonSafeValue<EmpiricalDistributionResult> | null;
+  readonly pqDivergence: JsonSafeValue<PqLevelDivergenceResult> | null;
+  readonly volCone: JsonSafeValue<VolConeAndRankResult> | null;
+  readonly syntheticRates: JsonSafeValue<SyntheticImpliedRatesResult> | null;
+  readonly conversionReversal: JsonSafeValue<ConversionReversalResult> | null;
+  readonly buyWrite: JsonSafeValue<BuyWriteResult> | null;
+  readonly calendarRoll: JsonSafeValue<CalendarRollResult> | null;
+  readonly relativeStrength: JsonSafeValue<RelativeStrengthAndCatalystsResult> | null;
+  readonly confluenceClusters: JsonSafeValue<SpatialConfluenceResult> | null;
+  readonly structureOptimizerBullish: JsonSafeValue<OptimizeOptionStructuresResult> | null;
+  readonly structureOptimizerBearish: JsonSafeValue<OptimizeOptionStructuresResult> | null;
+  readonly structureCostPercentile: JsonSafeValue<StructureCostPercentileResult> | null;
+}
+
 export interface TerminalSnapshotResponse {
   readonly status: 'OK' | 'PARTIAL';
+  readonly feedMode?: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA';
   readonly symbol: string;
   readonly correlatedSymbol: string;
   readonly isIndex: boolean;
@@ -456,6 +554,7 @@ export interface TerminalSnapshotResponse {
   readonly openingAuction: SerializedOpeningAuctionSummary | null;
   readonly microstructure: SerializedMicrostructureSummary;
   readonly marketContext: SerializedMarketContext;
+  readonly terminalEngines?: SerializedTerminalEngines | null;
   readonly dataQuality: SnapshotDataQuality;
 }
 
@@ -1244,6 +1343,118 @@ function serializeOpeningAuction(
   };
 }
 
+function sanitizeJsonUnknownUs(value: unknown): unknown {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeJsonUnknownUs(item === undefined ? null : item));
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) {
+        out[k] = sanitizeJsonUnknownUs(v);
+      }
+    }
+    return out;
+  }
+  return null;
+}
+
+function sanitizeJsonValue<T>(value: T): JsonSafeValue<T> {
+  return sanitizeJsonUnknownUs(value) as JsonSafeValue<T>;
+}
+
+function normalizeClosedDailyBarsUs(bars: readonly Bar[], asOfUtcSec: number): readonly Bar[] {
+  const evalSec = Math.floor(asOfUtcSec);
+  const byDay = new Map<number, Bar>();
+  for (const b of bars) {
+    if (
+      !Number.isFinite(b.time) ||
+      !Number.isFinite(b.open) ||
+      !Number.isFinite(b.high) ||
+      !Number.isFinite(b.low) ||
+      !Number.isFinite(b.close) ||
+      !Number.isFinite(b.volume) ||
+      b.close <= 0 ||
+      b.high < b.low ||
+      b.volume < 0
+    ) {
+      continue;
+    }
+    const rawTime = Math.floor(b.time);
+    if (rawTime > evalSec) {
+      continue;
+    }
+    const dayOpenSec = Math.floor(rawTime / 86_400) * 86_400;
+    if (dayOpenSec + 86_400 <= evalSec) {
+      byDay.set(dayOpenSec, {
+        ...b,
+        time: dayOpenSec,
+      });
+    }
+  }
+  return [...byDay.values()].sort((a, b) => a.time - b.time);
+}
+
+function computeWilderAtr14Us(bars: readonly Bar[]): number | null {
+  if (bars.length < 15) {
+    return null;
+  }
+  const trs: number[] = [];
+  for (let i = 1; i < bars.length; i += 1) {
+    const prev = bars[i - 1];
+    const curr = bars[i];
+    if (prev !== undefined && curr !== undefined) {
+      const tr = Math.max(
+        curr.high - curr.low,
+        Math.abs(curr.high - prev.close),
+        Math.abs(curr.low - prev.close),
+      );
+      if (Number.isFinite(tr) && tr >= 0) {
+        trs.push(tr);
+      }
+    }
+  }
+  if (trs.length < 14) {
+    return null;
+  }
+  let atr = trs.slice(0, 14).reduce((acc, v) => acc + v, 0) / 14;
+  for (let i = 14; i < trs.length; i += 1) {
+    const val = trs[i];
+    if (val !== undefined) {
+      atr = (atr * 13 + val) / 14;
+    }
+  }
+  return Number.isFinite(atr) && atr > 0 ? atr : null;
+}
+
+function computeDailyRealizedVolUs(bars: readonly Bar[], windowDays: number): number | null {
+  if (bars.length < windowDays + 1) {
+    return null;
+  }
+  const recent = bars.slice(-(windowDays + 1));
+  const rets: number[] = [];
+  for (let i = 1; i < recent.length; i += 1) {
+    const p = recent[i - 1];
+    const c = recent[i];
+    if (p !== undefined && c !== undefined && p.close > 0 && c.close > 0) {
+      rets.push(Math.log(c.close / p.close));
+    }
+  }
+  if (rets.length < 2) {
+    return null;
+  }
+  const mean = rets.reduce((acc, v) => acc + v, 0) / rets.length;
+  const variance = rets.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / (rets.length - 1);
+  const rv = Math.sqrt(Math.max(0, variance)) * Math.sqrt(252);
+  return Number.isFinite(rv) && rv > 0 ? rv : null;
+}
+
 function serializeAbsorptionEvents(
   cvd: CvdAbsorptionResult,
 ): readonly SerializedAbsorptionMarker[] {
@@ -1381,6 +1592,7 @@ export class MarketRuntime {
   >();
   private readonly subscribedOptionContracts = new Set<string>();
   private readonly wsListeners = new Set<(event: RuntimeWsBroadcast) => void>();
+  private readonly wheelHistoryBySymbol = new Map<string, WheelSnapshotInput[]>();
 
   public constructor(deps: MarketRuntimeDeps = {}) {
     const auth = loadRuntimeAuth();
@@ -1489,6 +1701,18 @@ export class MarketRuntime {
         unusual: this.unusualCache.stats(),
       },
     };
+  }
+
+  public async warmup(
+    symbols: readonly string[] = ['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT'],
+  ): Promise<void> {
+    if (this.apiKey.trim() === '') {
+      return;
+    }
+    await Promise.allSettled([
+      ...symbols.map((sym) => this.getSnapshot(sym)),
+      this.getUnusualTrades({ symbol: 'SPY', limit: 60 }),
+    ]);
   }
 
   public async startWs(): Promise<void> {
@@ -1826,6 +2050,7 @@ export class MarketRuntime {
       bars5mRes,
       corrBars5mRes,
       vixBars1dRes,
+      spyBars1dRes,
     ] = await Promise.all([
       this.loadTreasuryYieldsFn({ ...baseTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
       this.loadFundingConditionsFn({ ...baseTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
@@ -1893,6 +2118,18 @@ export class MarketRuntime {
         now: nowSec,
         ...baseTransport,
       }).catch(() => null),
+      canonicalSymbol === 'SPY'
+        ? Promise.resolve(null)
+        : this.loadBarsFn({
+            provider: 'massive',
+            symbol: 'SPY',
+            timeframe: '1D',
+            visibleBars: 60,
+            warmupBars: 60,
+            maxPages: 1,
+            now: nowSec,
+            ...baseTransport,
+          }).catch(() => null),
     ]);
 
     if (bars5mRes.report.providerError !== null) {
@@ -2128,6 +2365,7 @@ export class MarketRuntime {
       .find((p): p is ExpiryParityEvaluation => p !== undefined);
     const activeFrontParity = frontSlicePkg?.parity ?? firstValidParity;
     let exposureResult: DealerExposureResult | undefined;
+    let terminalExposureInputs: ExposureContractInput[] = [];
     let volSurfaceSummary: SerializedVolSurfaceSummary | null = null;
     let iv30d = Number.NaN;
 
@@ -2194,6 +2432,7 @@ export class MarketRuntime {
           ...(Number.isFinite(ask) && ask > 0 ? { ask } : {}),
         });
       }
+      terminalExposureInputs = exposureInputs;
 
       exposureResult = computeDealerExposure(
         exposureInputs,
@@ -2478,8 +2717,650 @@ export class MarketRuntime {
 
     const r30d = interpolateLiveRate(latestTreasury, sofrRate, 30 / 365);
 
+    // Motores Cuantitativos Institucionales Piezas 15–18 (Terminal US)
+    const evalSecUs = Math.floor(nowSec);
+    const closedDailyUs = normalizeClosedDailyBarsUs(bars1dRes.bars, evalSecUs);
+    const closedBenchUs = normalizeClosedDailyBarsUs(
+      spyBars1dRes !== null ? spyBars1dRes.bars : bars1dRes.bars,
+      evalSecUs,
+    );
+    const atrDaily14 =
+      computeWilderAtr14Us(closedDailyUs) ??
+      (atr14d !== undefined && Number.isFinite(atr14d) && atr14d > 0 ? atr14d : null);
+    const cvdWindow = bars5mRes.bars.slice(-24);
+    let cvdDelta = 0;
+    for (const b of cvdWindow) {
+      cvdDelta += b.close >= b.open ? b.volume : -b.volume;
+    }
+    const cvdSlopeSign = cvdDelta > 0 ? 1 : cvdDelta < 0 ? -1 : 0;
+
+    const tickSizeUs =
+      Number.isFinite(spot) && spot > 0
+        ? Math.max(0.01, Math.round((spot / 500) * 100) / 100)
+        : 0.01;
+
+    const volumeProfileUs =
+      closedDailyUs.length >= 2
+        ? computeVolumeProfileAmt(closedDailyUs, {
+            asOfUtcSec: evalSecUs,
+            barSeconds: 86_400,
+            tickSize: tickSizeUs,
+          })
+        : null;
+    const nakedPocsUs =
+      closedDailyUs.length >= 2
+        ? trackNakedPocs(closedDailyUs, {
+            asOfUtcSec: evalSecUs,
+            barSeconds: 86_400,
+            tickSize: tickSizeUs,
+          })
+        : null;
+    const fvgsUs =
+      closedDailyUs.length >= 5
+        ? detectQuantitativeFvgs(closedDailyUs, {
+            asOfUtcSec: evalSecUs,
+            barSeconds: 86_400,
+            tickSize: tickSizeUs,
+            minRangeZScore: 1.0,
+            maxLvnPercentile: 50,
+            minDeltaImbalanceRatio: 0,
+          })
+        : null;
+    const orderBlocksUs =
+      closedDailyUs.length >= 8
+        ? detectFreshOrderBlocks(closedDailyUs, {
+            asOfUtcSec: evalSecUs,
+            barSeconds: 86_400,
+            minDisplacementZScore: 1.0,
+            minAbsorptionVolumePercentile: 60,
+            minDarkPoolShare: 0,
+            anchorMode: 'HLC3',
+          })
+        : null;
+
+    const relativeStrengthUs =
+      closedDailyUs.length >= 2 && closedBenchUs.length >= 2
+        ? evaluateRelativeStrengthAndCatalysts({
+            asOfUtcSec: evalSecUs,
+            assetBars: closedDailyUs.map((b) => ({ time: b.time, close: b.close })),
+            benchmarkBars: closedBenchUs.map((b) => ({ time: b.time, close: b.close })),
+            lookbackBars: Math.min(20, Math.max(1, closedDailyUs.length - 1)),
+          })
+        : null;
+
+    let orderFlowUs: SignedOptionsOrderFlowResult | null = null;
+    let volOiAnomaliesUs: VolOiAnomalyDetectionResult | null = null;
+    let flowAdjustedGexUs: FlowAdjustedGexResult | null = null;
+    let gexCharmPinUs: GexCharmPinResult | null = null;
+    let wheelTrackerUs: WheelByWheelTrackerResult | null = null;
+    let qDistributionUs: RiskNeutralDistributionResult | null = null;
+    let pDistributionUs: EmpiricalDistributionResult | null = null;
+    let pqDivergenceUs: PqLevelDivergenceResult | null = null;
+    let volConeUs: VolConeAndRankResult | null = null;
+    let syntheticRatesUs: SyntheticImpliedRatesResult | null = null;
+    let conversionReversalUs: ConversionReversalResult | null = null;
+    let buyWriteUs: BuyWriteResult | null = null;
+    let calendarRollUs: CalendarRollResult | null = null;
+    let confluenceClustersUs: SpatialConfluenceResult | null = null;
+    let structureOptimizerBullishUs: OptimizeOptionStructuresResult | null = null;
+    let structureOptimizerBearishUs: OptimizeOptionStructuresResult | null = null;
+    let structureCostPercentileUs: StructureCostPercentileResult | null = null;
+
+    const evalRateUs =
+      activeFrontParity !== undefined && Number.isFinite(activeFrontParity.rate)
+        ? activeFrontParity.rate
+        : Number.isFinite(r30d)
+          ? r30d
+          : 0;
+    const evalDivUs =
+      activeFrontParity !== undefined && Number.isFinite(activeFrontParity.dividendYield)
+        ? activeFrontParity.dividendYield
+        : 0;
+
+    if (Number.isFinite(spot) && spot > 0) {
+      const printsUs: OpraTradePrintInput[] = [];
+      const volOiInputsUs: VolOiAnomalyContractInput[] = [];
+      for (const c of contracts) {
+        if (c.expirationTime <= evalSecUs) {
+          continue;
+        }
+        const tradePx =
+          Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0
+            ? c.lastTrade.price
+            : resolveQuoteMid(c);
+        if (
+          Number.isFinite(c.day.volume) &&
+          c.day.volume > 0 &&
+          Number.isFinite(tradePx) &&
+          tradePx > 0 &&
+          Number.isFinite(c.lastQuote.bid) &&
+          c.lastQuote.bid >= 0 &&
+          Number.isFinite(c.lastQuote.ask) &&
+          c.lastQuote.ask > 0
+        ) {
+          printsUs.push({
+            contractTicker: c.ticker,
+            underlyingTicker: canonicalSymbol,
+            strike: c.strikePrice,
+            expiryUtcSec: Math.floor(c.expirationTime),
+            contractType: c.contractType,
+            price: tradePx,
+            size: c.day.volume,
+            bid: c.lastQuote.bid,
+            ask: c.lastQuote.ask,
+            ...(Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
+              ? { impliedVolatility: c.impliedVolatility }
+              : {}),
+            timestampUtcSec: evalSecUs,
+            sharesPerContract: c.sharesPerContract,
+          });
+        }
+        if (
+          Number.isFinite(c.day.volume) &&
+          c.day.volume >= 0 &&
+          Number.isFinite(c.openInterest) &&
+          c.openInterest > 0
+        ) {
+          const ownOrProvIv = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+          if (Number.isFinite(ownOrProvIv) && ownOrProvIv > 0) {
+            volOiInputsUs.push({
+              contractTicker: c.ticker,
+              strike: c.strikePrice,
+              expiryUtcSec: Math.floor(c.expirationTime),
+              contractType: c.contractType,
+              dayVolume: c.day.volume,
+              openInterest: c.openInterest,
+              impliedVolatility: ownOrProvIv,
+              sharesPerContract: c.sharesPerContract,
+            });
+          }
+        }
+      }
+
+      const flowCtxUs = {
+        asOfUtcSec: evalSecUs,
+        spot,
+        rate: evalRateUs,
+        dividendYield: evalDivUs,
+        model: isIndex ? ('bsm' as const) : ('american' as const),
+      };
+
+      if (printsUs.length > 0) {
+        orderFlowUs = computeSignedOptionsOrderFlow(printsUs, flowCtxUs);
+      }
+      if (volOiInputsUs.length >= 2) {
+        volOiAnomaliesUs = detectVolOiAnomaliesMad(
+          volOiInputsUs,
+          flowCtxUs,
+          { minVolume: 1, minOpenInterest: 1, minBucketSize: 2 },
+        );
+      }
+
+      if (terminalExposureInputs.length > 0 && activeFrontParity !== undefined) {
+        const expMarketUs = {
+          spot,
+          nowUtcSec: evalSecUs,
+          rate: evalRateUs,
+          dividendYield: evalDivUs,
+          forward: activeFrontParity.forward,
+        };
+        flowAdjustedGexUs = computeFlowAdjustedSignedGex(
+          terminalExposureInputs,
+          expMarketUs,
+          orderFlowUs?.byStrikeFlow ?? [],
+        );
+        gexCharmPinUs = computeGexCharmPin(terminalExposureInputs, expMarketUs, { maxPinDte: 14 });
+        const gammaFlipVal =
+          exposureResult !== undefined && Number.isFinite(exposureResult.gammaFlipSpot)
+            ? exposureResult.gammaFlipSpot
+            : spot;
+        const pinVal = Number.isFinite(gexCharmPinUs.gexCharmPinStrike)
+          ? gexCharmPinUs.gexCharmPinStrike
+          : spot;
+        const histList = this.wheelHistoryBySymbol.get(canonicalSymbol) ?? [];
+        const prevSnap = histList[histList.length - 1];
+        if (prevSnap === undefined || prevSnap.timestampUtcSec !== evalSecUs) {
+          histList.push({
+            timestampUtcSec: evalSecUs,
+            spot,
+            gammaFlip: gammaFlipVal,
+            gexCharmPin: pinVal,
+            netDeltaShares: orderFlowUs?.netDeltaShares ?? 0,
+          });
+          if (histList.length > 120) {
+            histList.splice(0, histList.length - 120);
+          }
+          this.wheelHistoryBySymbol.set(canonicalSymbol, histList);
+        }
+        wheelTrackerUs = evaluateWheelByWheelTracker(histList, evalSecUs);
+      }
+
+      // Q vs P + Cono de Volatilidad
+      const frontSlice = validSlices[0];
+      const frontContractsUs =
+        frontSlice !== undefined
+          ? contracts.filter((c) => c.expirationTime === frontSlice.parity.expirySec)
+          : [];
+      const qNodeMap = new Map<number, RiskNeutralInputNode>();
+      for (const c of frontContractsUs) {
+        const ivVal = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+        if (Number.isFinite(ivVal) && ivVal > 0) {
+          if (!qNodeMap.has(c.strikePrice) || (c.strikePrice >= spot && c.contractType === 'call') || (c.strikePrice < spot && c.contractType === 'put')) {
+            qNodeMap.set(c.strikePrice, { strike: c.strikePrice, iv: ivVal });
+          }
+        }
+      }
+      const qNodesUs = [...qNodeMap.values()].sort((a, b) => a.strike - b.strike);
+      if (frontSlice !== undefined && qNodesUs.length >= 5) {
+        qDistributionUs = extractRiskNeutralDistributionQ({
+          spot,
+          rate: evalRateUs,
+          dividendYield: evalDivUs,
+          timeToExpiry: Math.max(1 / 365, frontSlice.parity.timeToExpiry),
+          nodes: qNodesUs,
+        });
+      }
+
+      const frontDteUs =
+        frontSlice !== undefined
+          ? Math.max(1, Math.round((frontSlice.parity.expirySec - evalSecUs) / 86_400))
+          : 21;
+      if (closedDailyUs.length >= frontDteUs + 5) {
+        pDistributionUs = analyzeEmpiricalDistributionP(
+          closedDailyUs.map((b) => ({ time: b.time, open: b.open, close: b.close })),
+          {
+            asOfUtcSec: evalSecUs,
+            spot,
+            horizonDays: frontDteUs,
+            dailyRiskFreeRate: evalRateUs / 252,
+            minHistoryBars: frontDteUs + 2,
+          },
+        );
+      }
+
+      if (
+        qDistributionUs !== null &&
+        qDistributionUs.status === 'OK' &&
+        pDistributionUs !== null &&
+        pDistributionUs.status === 'OK'
+      ) {
+        const targetsUs = [
+          ...(exposureResult !== undefined && Number.isFinite(exposureResult.callWallStrike)
+            ? [{ label: 'Call Wall', price: exposureResult.callWallStrike, direction: 'ABOVE' as const }]
+            : []),
+          ...(exposureResult !== undefined && Number.isFinite(exposureResult.putWallStrike)
+            ? [{ label: 'Put Wall', price: exposureResult.putWallStrike, direction: 'BELOW' as const }]
+            : []),
+          { label: '+5% Upside', price: spot * 1.05, direction: 'ABOVE' as const },
+          { label: '-5% Downside', price: spot * 0.95, direction: 'BELOW' as const },
+        ];
+        pqDivergenceUs = evaluatePqLevelDivergence({
+          spot,
+          qDistribution: qDistributionUs,
+          pDistribution: pDistributionUs,
+          targetLevels: targetsUs,
+        });
+      }
+
+      const rollingRvUs: number[] = [];
+      for (let i = 21; i <= closedDailyUs.length; i += 1) {
+        const rv = computeDailyRealizedVolUs(closedDailyUs.slice(i - 21, i), 20);
+        if (rv !== null && Number.isFinite(rv) && rv > 0) {
+          rollingRvUs.push(rv);
+        }
+      }
+      const resolvedFrontIvUs =
+        Number.isFinite(iv30d) && iv30d > 0
+          ? iv30d
+          : frontSlice !== undefined && Number.isFinite(frontSlice.metrics.ivAtm)
+            ? frontSlice.metrics.ivAtm
+            : Number.NaN;
+      if (Number.isFinite(resolvedFrontIvUs) && resolvedFrontIvUs > 0) {
+        volConeUs = computeVolConeAndRank({
+          spot,
+          ivAtm: resolvedFrontIvUs,
+          horizonsDays: [5, 10, 20, 30, 60],
+          ivHistory: rollingRvUs,
+          minIvHistoryCount: 5,
+        });
+      }
+
+      // Tasas Sintéticas, Conversion/Reversal, Buy-Write, Calendar Roll
+      if (frontSlice !== undefined && frontContractsUs.length > 0) {
+        const frontT = Math.max(1 / 365, frontSlice.parity.timeToExpiry);
+        const callMap = new Map<number, OptionSnapshotContract>();
+        const putMap = new Map<number, OptionSnapshotContract>();
+        for (const c of frontContractsUs) {
+          if (c.contractType === 'call') callMap.set(c.strikePrice, c);
+          else putMap.set(c.strikePrice, c);
+        }
+        const synthPairs: { strike: number; callMid: number; putMid: number }[] = [];
+        for (const [k, cRow] of callMap.entries()) {
+          const pRow = putMap.get(k);
+          if (pRow !== undefined) {
+            const cM = resolveQuoteMid(cRow);
+            const pM = resolveQuoteMid(pRow);
+            if (Number.isFinite(cM) && cM > 0 && Number.isFinite(pM) && pM > 0) {
+              synthPairs.push({ strike: k, callMid: cM, putMid: pM });
+            }
+          }
+        }
+        if (synthPairs.length > 0) {
+          syntheticRatesUs = computeSyntheticImpliedRates({
+            spot,
+            riskFreeRate: evalRateUs,
+            dividendYield: evalDivUs,
+            timeToExpiry: frontT,
+            pairs: synthPairs,
+          });
+        }
+
+        const atmStrike = [...callMap.keys()].sort((a, b) => Math.abs(a - spot) - Math.abs(b - spot))[0];
+        if (atmStrike !== undefined) {
+          const cAtm = callMap.get(atmStrike);
+          const pAtm = putMap.get(atmStrike);
+          if (
+            cAtm !== undefined &&
+            pAtm !== undefined &&
+            cAtm.lastQuote.bid > 0 &&
+            cAtm.lastQuote.ask >= cAtm.lastQuote.bid &&
+            pAtm.lastQuote.bid > 0 &&
+            pAtm.lastQuote.ask >= pAtm.lastQuote.bid
+          ) {
+            conversionReversalUs = evaluateConversionReversal({
+              strike: atmStrike,
+              timeToExpiry: frontT,
+              riskFreeTna: Math.max(0, Math.exp(evalRateUs) - 1),
+              spotBid: spot,
+              spotAsk: spot,
+              callBid: cAtm.lastQuote.bid,
+              callAsk: cAtm.lastQuote.ask,
+              putBid: pAtm.lastQuote.bid,
+              putAsk: pAtm.lastQuote.ask,
+              stockFeeRate: 0.0005,
+              optionFeeRate: 0.002,
+              vatRate: 0,
+            });
+          }
+        }
+
+        const otmCallUs = [...callMap.values()]
+          .filter((c) => c.strikePrice >= spot && c.lastQuote.bid > 0)
+          .sort((a, b) => a.strikePrice - b.strikePrice)[0];
+        if (otmCallUs !== undefined) {
+          buyWriteUs = evaluateBuyWrite({
+            spotAsk: spot,
+            strike: otmCallUs.strikePrice,
+            callBid: otmCallUs.lastQuote.bid,
+            timeToExpiry: frontT,
+            stockFeeRate: 0.0005,
+            optionFeeRate: 0.002,
+            vatRate: 0,
+          });
+        }
+
+        const secondSlice = validSlices[1];
+        if (secondSlice !== undefined && secondSlice.parity.timeToExpiry > frontT) {
+          const farContracts = contracts.filter(
+            (c) => c.expirationTime === secondSlice.parity.expirySec && c.contractType === 'call',
+          );
+          const farByStrike = new Map(farContracts.map((c) => [c.strikePrice, c]));
+          const nearMatch = [...callMap.values()]
+            .filter((c) => {
+              const far = farByStrike.get(c.strikePrice);
+              return (
+                c.lastQuote.ask > 0 &&
+                far !== undefined &&
+                far.lastQuote.bid > 0
+              );
+            })
+            .sort((a, b) => Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot))[0];
+          if (nearMatch !== undefined) {
+            const farMatch = farByStrike.get(nearMatch.strikePrice);
+            const nearS = volSurfaceSummary?.contracts.find((sc) => sc.ticker === nearMatch.ticker);
+            const farS = farMatch !== undefined ? volSurfaceSummary?.contracts.find((sc) => sc.ticker === farMatch.ticker) : undefined;
+            if (
+              farMatch !== undefined &&
+              nearS?.thetaDaily !== null &&
+              nearS?.thetaDaily !== undefined &&
+              nearS.vegaPer1Pct !== null &&
+              farS?.thetaDaily !== null &&
+              farS?.thetaDaily !== undefined &&
+              farS.vegaPer1Pct !== null
+            ) {
+              calendarRollUs = evaluateCalendarRoll({
+                spot,
+                strike: nearMatch.strikePrice,
+                nearAsk: nearMatch.lastQuote.ask,
+                farBid: farMatch.lastQuote.bid,
+                nearTimeToExpiry: frontT,
+                farTimeToExpiry: secondSlice.parity.timeToExpiry,
+                nearThetaDaily: nearS.thetaDaily,
+                farThetaDaily: farS.thetaDaily,
+                nearVegaPer1Pct: nearS.vegaPer1Pct,
+                farVegaPer1Pct: farS.vegaPer1Pct,
+                optionFeeRate: 0.002,
+                vatRate: 0,
+              });
+            }
+          }
+        }
+      }
+
+      // Confluencias Espaciales < 0.15 ATR + Optimizador "Las 3 Maneras de Jugarla" (Pieza 18)
+      const confLevels: SpatialLevelInput[] = [];
+      if (volumeProfileUs !== null && volumeProfileUs.status === 'OK') {
+        confLevels.push(
+          { name: 'POC', category: 'AMT_VOLUME_PROFILE', price: volumeProfileUs.poc, expectedReaction: 'MAGNET_NEUTRAL' },
+          { name: 'VAH', category: 'AMT_VOLUME_PROFILE', price: volumeProfileUs.vah, expectedReaction: 'RESISTANCE_BEARISH' },
+          { name: 'VAL', category: 'AMT_VOLUME_PROFILE', price: volumeProfileUs.val, expectedReaction: 'SUPPORT_BULLISH' },
+          { name: 'AVWAP', category: 'AMT_VOLUME_PROFILE', price: volumeProfileUs.profileVwap, expectedReaction: 'MAGNET_NEUTRAL' },
+        );
+      }
+      if (nakedPocsUs !== null && nakedPocsUs.status === 'OK') {
+        for (const np of nakedPocsUs.activeNakedPocs.slice(-3)) {
+          confLevels.push({
+            name: `Naked POC (${np.sessionDate})`,
+            category: 'AMT_VOLUME_PROFILE',
+            price: np.sessionPoc,
+            expectedReaction: np.sessionPoc >= spot ? 'RESISTANCE_BEARISH' : 'SUPPORT_BULLISH',
+          });
+        }
+      }
+      if (fvgsUs !== null && fvgsUs.status === 'OK') {
+        for (const fvg of fvgsUs.activeFvgs.slice(-4)) {
+          confLevels.push({
+            name: fvg.type === 'BULLISH_FVG' ? 'FVG Bull CE' : 'FVG Bear CE',
+            category: 'MICROSTRUCTURE_FVG_FOB',
+            price: fvg.consequentEncroachment,
+            expectedReaction: fvg.type === 'BULLISH_FVG' ? 'SUPPORT_BULLISH' : 'RESISTANCE_BEARISH',
+          });
+        }
+      }
+      if (orderBlocksUs !== null && orderBlocksUs.status === 'OK') {
+        for (const fob of orderBlocksUs.freshOrderBlocks.slice(-4)) {
+          confLevels.push({
+            name: fob.type === 'BULLISH_FOB' ? 'Fresh OB Bull' : 'Fresh OB Bear',
+            category: 'MICROSTRUCTURE_FVG_FOB',
+            price: fob.anchorPrice,
+            expectedReaction: fob.type === 'BULLISH_FOB' ? 'SUPPORT_BULLISH' : 'RESISTANCE_BEARISH',
+          });
+        }
+      }
+      if (exposureResult !== undefined && Number.isFinite(exposureResult.callWallStrike)) {
+        confLevels.push({ name: 'Call Wall', category: 'OPTIONS_DEALER', price: exposureResult.callWallStrike, expectedReaction: 'RESISTANCE_BEARISH' });
+      }
+      if (exposureResult !== undefined && Number.isFinite(exposureResult.putWallStrike)) {
+        confLevels.push({ name: 'Put Wall', category: 'OPTIONS_DEALER', price: exposureResult.putWallStrike, expectedReaction: 'SUPPORT_BULLISH' });
+      }
+      if (exposureResult !== undefined && Number.isFinite(exposureResult.gammaFlipSpot)) {
+        confLevels.push({ name: 'Gamma Flip', category: 'OPTIONS_DEALER', price: exposureResult.gammaFlipSpot, expectedReaction: 'MAGNET_NEUTRAL' });
+      }
+      if (gexCharmPinUs !== null && Number.isFinite(gexCharmPinUs.gexCharmPinStrike)) {
+        confLevels.push({ name: 'GEX/Charm Pin', category: 'OPTIONS_DEALER', price: gexCharmPinUs.gexCharmPinStrike, expectedReaction: 'MAGNET_NEUTRAL' });
+      }
+
+      const flowSignUs =
+        orderFlowUs !== null
+          ? orderFlowUs.netDeltaShares > 0
+            ? 1
+            : orderFlowUs.netDeltaShares < 0
+              ? -1
+              : 0
+          : 0;
+      if (atrDaily14 !== null && atrDaily14 > 0 && confLevels.length > 0) {
+        confluenceClustersUs = detectSpatialConfluenceClusters({
+          spot,
+          atr: atrDaily14,
+          levels: confLevels,
+          trigger: {
+            cvdSlopeSign,
+            optionsDeltaFlowSign: flowSignUs,
+          },
+        });
+      }
+
+      if (
+        frontSlice !== undefined &&
+        pDistributionUs !== null &&
+        pDistributionUs.status === 'OK' &&
+        pDistributionUs.projectedTerminalPrices.length >= 2 &&
+        volSurfaceSummary !== null
+      ) {
+        const frontContractRows = volSurfaceSummary.contracts.filter(
+          (sc) => sc.expiryUtcSec === frontSlice.parity.expirySec,
+        );
+        const optInputs: OptimizerOptionContractInput[] = [];
+        for (const sc of frontContractRows) {
+          const ivVal = sc.ownIv ?? sc.providerIv;
+          if (
+            sc.bid !== null &&
+            sc.bid > 0 &&
+            sc.ask !== null &&
+            sc.ask >= sc.bid &&
+            sc.delta !== null &&
+            Number.isFinite(sc.delta) &&
+            ivVal !== null &&
+            ivVal > 0
+          ) {
+            optInputs.push({
+              strike: sc.strike,
+              contractType: sc.contractType,
+              bid: sc.bid,
+              ask: sc.ask,
+              delta: sc.delta,
+              iv: ivVal,
+            });
+          }
+        }
+        if (optInputs.length >= 2) {
+          const proj = [...pDistributionUs.projectedTerminalPrices].sort((a, b) => a - b);
+          const minP = proj[0];
+          const maxP = proj[proj.length - 1];
+          if (minP !== undefined && maxP !== undefined && maxP > minP) {
+            const binsCount = Math.min(20, Math.max(8, Math.floor(Math.sqrt(proj.length))));
+            const step = (maxP - minP) / binsCount;
+            const terminalPrices: number[] = [];
+            const empiricalProbs: number[] = [];
+            for (let bIdx = 0; bIdx < binsCount; bIdx += 1) {
+              const loE = minP + bIdx * step;
+              const hiE = bIdx === binsCount - 1 ? maxP + 1e-9 : loE + step;
+              const cnt = proj.filter((v) => v >= loE && v < hiE).length;
+              if (cnt > 0) {
+                terminalPrices.push(loE + 0.5 * step);
+                empiricalProbs.push(cnt / proj.length);
+              }
+            }
+            if (terminalPrices.length >= 2) {
+              const lotUs = frontContractsUs[0]?.sharesPerContract ?? 100;
+              structureOptimizerBullishUs = optimizeOptionStructures({
+                spot,
+                targetPrice: spot * 1.06,
+                direction: 'BULLISH',
+                dte: frontDteUs,
+                lotSize: lotUs,
+                contracts: optInputs,
+                terminalPrices,
+                empiricalProbs,
+                feeRate: 0.002,
+                vatRate: 0,
+              });
+              structureOptimizerBearishUs = optimizeOptionStructures({
+                spot,
+                targetPrice: spot * 0.94,
+                direction: 'BEARISH',
+                dte: frontDteUs,
+                lotSize: lotUs,
+                contracts: optInputs,
+                terminalPrices,
+                empiricalProbs,
+                feeRate: 0.002,
+                vatRate: 0,
+              });
+              const refBest =
+                structureOptimizerBullishUs.bestByExpectedValue ??
+                structureOptimizerBullishUs.bestByPop ??
+                structureOptimizerBullishUs.candidates[0] ??
+                null;
+              if (
+                refBest !== null &&
+                Number.isFinite(refBest.costPctOfWidth) &&
+                rollingRvUs.length >= 10 &&
+                Number.isFinite(resolvedFrontIvUs) &&
+                resolvedFrontIvUs > 0
+              ) {
+                structureCostPercentileUs = computeStructureCostPercentile({
+                  currentCostPctOfWidth: refBest.costPctOfWidth,
+                  historicalCostPctSeries: rollingRvUs.map((rv) => refBest.costPctOfWidth * (rv / resolvedFrontIvUs)),
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const terminalEngines: SerializedTerminalEngines = sanitizeJsonValue({
+      atr14d: sanitizeFinite(atrDaily14),
+      cvdSlopeSign,
+      volumeProfile: volumeProfileUs,
+      nakedPocs: nakedPocsUs,
+      fvgs: fvgsUs,
+      orderBlocks: orderBlocksUs,
+      orderFlow: orderFlowUs,
+      volOiAnomalies: volOiAnomaliesUs,
+      flowAdjustedGex: flowAdjustedGexUs,
+      gexCharmPin: gexCharmPinUs,
+      wheelTracker: wheelTrackerUs,
+      qDistribution: qDistributionUs,
+      pDistribution: pDistributionUs,
+      pqDivergence: pqDivergenceUs,
+      volCone: volConeUs,
+      syntheticRates: syntheticRatesUs,
+      conversionReversal: conversionReversalUs,
+      buyWrite: buyWriteUs,
+      calendarRoll: calendarRollUs,
+      relativeStrength: relativeStrengthUs,
+      confluenceClusters: confluenceClustersUs,
+      structureOptimizerBullish: structureOptimizerBullishUs,
+      structureOptimizerBearish: structureOptimizerBearishUs,
+      structureCostPercentile: structureCostPercentileUs,
+    });
+
+    const anyClosedMarket =
+      unifiedRes.stocks.some((s) => s.marketStatus?.toLowerCase() === 'closed') ||
+      unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed');
+    const feedMode: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA' =
+      anyClosedMarket ||
+      (bars1dRes.bars.length > 0 && unifiedRes.stocks.length === 0 && unifiedRes.indices.length === 0)
+        ? 'EOD_CIERRE'
+        : envelope.envelopeStatus === 'OK' && warnings.length === 0
+          ? 'LIVE'
+          : 'PARTIAL';
+
     const response: TerminalSnapshotResponse = {
       status: envelope.envelopeStatus === 'OK' && warnings.length === 0 ? 'OK' : 'PARTIAL',
+      feedMode,
       symbol: canonicalSymbol,
       correlatedSymbol,
       isIndex,
@@ -2514,6 +3395,7 @@ export class MarketRuntime {
         skewLevel: sanitizeFinite(skewLevel),
         tailRiskAlert: macroVol?.tailRiskAlert ?? null,
       },
+      terminalEngines,
       dataQuality: {
         ownSolvedIvContracts,
         providerFallbackIvContracts,

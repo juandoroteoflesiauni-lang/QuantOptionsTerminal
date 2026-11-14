@@ -338,6 +338,7 @@ export const OptionsModule: React.FC<{
   const [targetPrice, setTargetPrice] = useState<number>(Number.NaN);
   const [maxRiskInput, setMaxRiskInput] = useState<string>('sin tope');
   const [probabilityWeight, setProbabilityWeight] = useState<number>(55);
+  const [optimizerDir, setOptimizerDir] = useState<'BULLISH' | 'BEARISH'>('BULLISH');
 
   // Estado del Módulo 2: Spreads
   const [spreadFilter, setSpreadFilter] = useState<'donde_estoy' | 'cerca' | 'tenencia' | 'todas'>('cerca');
@@ -541,7 +542,7 @@ export const OptionsModule: React.FC<{
   );
 
   const underlyingChoices = useMemo(() => {
-    const base = ['GGAL', 'YPFD', 'PAMP', 'BMA', 'COME', 'ALUA', 'TXAR', 'SUPV'];
+    const base = ['GGAL', 'YPFD', 'PAMP', 'BMA', 'COME', 'ALUA', 'TXAR', 'SUPV', 'SPY', 'QQQ'];
     return base.includes(upperUnderlying) ? base : [upperUnderlying, ...base];
   }, [upperUnderlying]);
 
@@ -661,7 +662,16 @@ export const OptionsModule: React.FC<{
                 >
                   {fmtNum(displaySpot, 2)}
                 </span>
-                <span className="text-[12px] font-mono-num text-[#787B86]">ARS</span>
+                <span className="text-[12px] font-mono-num text-[#787B86]">
+                  {upperUnderlying === 'SPY' ||
+                  upperUnderlying === 'QQQ' ||
+                  upperUnderlying === 'NVDA' ||
+                  upperUnderlying === 'AAPL' ||
+                  upperUnderlying === 'MSFT' ||
+                  upperUnderlying === 'I:SPX'
+                    ? 'USD'
+                    : 'ARS'}
+                </span>
                 <span
                   className={`font-mono-num text-[13px] font-semibold ${
                     !Number.isFinite(displayDeltaPct)
@@ -1045,6 +1055,125 @@ export const OptionsModule: React.FC<{
               ))}
             </div>
           )}
+
+          {/* OPTIMITZADOR CUANTITATIVO — LAS 3 MANERAS DE JUGARLA (PIEZA 18) */}
+          {(() => {
+            const qe = liveOptions?.quantEngines ?? null;
+            const optRes =
+              optimizerDir === 'BEARISH'
+                ? qe?.structureOptimizerBearish ?? null
+                : qe?.structureOptimizerBullish ?? null;
+            const costPct = qe?.structureCostPercentile ?? null;
+            const picked = optRes
+              ? [
+                  { role: 'Mayor Probabilidad (PoP ℙ)', tone: '#22C55E', item: optRes.bestByPop },
+                  { role: 'Mayor Valor Esperado (+EV)', tone: '#38BDF8', item: optRes.bestByExpectedValue },
+                  { role: 'Mayor Asimetría / Convexidad', tone: '#C084FC', item: optRes.bestByConvexity },
+                ]
+              : [];
+            return (
+              <div className="rounded-[12px] bg-[#12141A] border border-[#232733] p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-[15px] font-extrabold text-[#FFFFFF] tracking-tight">
+                        Las 3 Maneras de Jugarla — Optimizador Neto Bid/Ask + Fricciones (Motor 10)
+                      </h3>
+                      {costPct && costPct.status === 'OK' && (
+                        <span className="px-2 py-0.5 rounded bg-[#0B0E14] border border-[#232733] font-mono-num text-[10.5px] text-[#EAB308]">
+                          Costo P{costPct.percentile != null ? fmtNum(costPct.percentile, 0) : '—'} ({costPct.regime})
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[12px] text-[#9CA3AF]">
+                      Rankeado sobre distribución empírica ℙ, descontando puntas Bid/Ask reales, aranceles BYMA/OPRA e IVA.
+                    </p>
+                  </div>
+
+                  <div className="inline-flex items-center bg-[#0B0D12] border border-[#232733] rounded-full p-1 text-[12px]">
+                    {(['BULLISH', 'BEARISH'] as const).map((dir) => (
+                      <button
+                        key={dir}
+                        type="button"
+                        onClick={() => setOptimizerDir(dir)}
+                        className={`px-3 py-1 rounded-full font-bold cursor-pointer transition-colors ${
+                          optimizerDir === dir ? 'bg-[#EAECEF] text-[#0B0E14]' : 'text-[#9CA3AF] hover:text-white'
+                        }`}
+                      >
+                        {dir === 'BULLISH' ? 'Alcista' : 'Bajista'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {!optRes || optRes.status !== 'OK' || picked.every((p) => p.item === null) ? (
+                  <div className="text-[12px] font-mono-num text-[#787B86] p-3 rounded bg-[#0B0E14] border border-[#1E222D]">
+                    NO_DATA — Se requieren puntas Bid/Ask ejecutables y distribución empírica ℙ válida para {upperUnderlying}.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                    {picked.map((slot) => {
+                      const s = slot.item;
+                      return (
+                        <div
+                          key={slot.role}
+                          className="p-4 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] flex flex-col justify-between gap-3"
+                        >
+                          <div className="space-y-2">
+                            <div className="text-[10.5px] font-mono-num font-bold uppercase tracking-wider" style={{ color: slot.tone }}>
+                              {slot.role}
+                            </div>
+                            <div className="text-[14px] font-bold text-[#FFFFFF]">
+                              {s ? s.label : '—'}
+                            </div>
+                            {s && (
+                              <div className="space-y-1 text-[11px] font-mono-num text-[#9CA3AF]">
+                                {s.legs.map((lg, i) => (
+                                  <div key={`${lg.strike ?? i}-${lg.contractType}-${lg.side}`} className="flex justify-between">
+                                    <span>
+                                      {lg.side === 'BUY' ? '+1x' : '-1x'} {lg.contractType.toUpperCase()} {lg.strike ?? '—'} (×{lg.quantity})
+                                    </span>
+                                    <span className="text-[#FFFFFF]">
+                                      @ {lg.executionPrice != null ? `$${fmtNum(lg.executionPrice, 2)}` : '—'}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {s ? (
+                            <div className="pt-2.5 border-t border-[#1E222D] grid grid-cols-2 gap-y-1.5 gap-x-2 text-[11.5px] font-mono-num">
+                              <div className="text-[#9CA3AF]">Caja Neta</div>
+                              <div className={`text-right font-bold ${(s.netDebitOrCredit ?? 0) >= 0 ? 'text-[#22C55E]' : 'text-[#EF4444]'}`}>
+                                {s.netDebitOrCredit != null ? `$${fmtNum(s.netDebitOrCredit, 0)}` : '—'}
+                              </div>
+                              <div className="text-[#9CA3AF]">PoP (ℙ) / +EV</div>
+                              <div className="text-right text-[#FFFFFF]">
+                                {s.pop != null ? `${fmtNum(s.pop * 100, 1)}%` : '—'} ·{' '}
+                                {s.expectedValue != null ? `$${fmtNum(s.expectedValue, 0)}` : '—'}
+                              </div>
+                              <div className="text-[#9CA3AF]">Fricciones (Ar.+IVA)</div>
+                              <div className="text-right text-[#D1D4DC]">
+                                {s.totalFriction != null ? `$${fmtNum(s.totalFriction, 0)}` : '—'}
+                              </div>
+                              <div className="text-[#9CA3AF]">Convexidad / BE</div>
+                              <div className="text-right text-[#38BDF8]">
+                                {s.convexityScore != null ? fmtNum(s.convexityScore, 2) : '—'} ·{' '}
+                                {s.breakevenPrices[0] != null ? `$${fmtNum(s.breakevenPrices[0], 1)}` : '—'}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-[11.5px] text-[#787B86] font-mono-num">Sin candidato líquido (—).</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* TABLA COMPARATIVA */}
           <div className="rounded-[12px] bg-[#101218] border border-[#232733] overflow-hidden">
@@ -1441,6 +1570,56 @@ export const OptionsModule: React.FC<{
               <div className="w-full h-2.5 rounded-full overflow-hidden flex bg-[#232733]">
                 <div style={{ width: `${flowSummary.callSharePct}%` }} className="h-full bg-[#EAB308]" />
                 <div style={{ width: `${100 - flowSummary.callSharePct}%` }} className="h-full bg-[#A855F7]" />
+              </div>
+            )}
+
+            {liveOptions?.quantEngines && (
+              <div className="pt-3 border-t border-[#1E222D] grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11.5px] font-mono-num">
+                <div>
+                  <div className="text-[10px] uppercase text-[#787B86]">LA PLATA NETA (CVD)</div>
+                  <div
+                    className={`font-bold text-[14px] ${
+                      (liveOptions.quantEngines.orderFlowArs?.netDirectionalPremiumUsd ?? 0) >= 0
+                        ? 'text-[#22C55E]'
+                        : 'text-[#F23645]'
+                    }`}
+                  >
+                    {liveOptions.quantEngines.orderFlowArs?.netDirectionalPremiumUsd != null
+                      ? `$ ${fmtNum(liveOptions.quantEngines.orderFlowArs.netDirectionalPremiumUsd, 0)}`
+                      : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-[#787B86]">EN USD-CCL</div>
+                  <div className="font-bold text-[14px] text-[#38BDF8]">
+                    {liveOptions.quantEngines.netDirectionalPremiumUsdCcl != null
+                      ? `US$ ${fmtNum(liveOptions.quantEngines.netDirectionalPremiumUsdCcl, 0)}`
+                      : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-[#787B86]">GEX/CHARM PIN &amp; WALLS</div>
+                  <div className="font-bold text-[14px] text-[#C084FC]">
+                    {liveOptions.quantEngines.gexCharmPin?.gexCharmPinStrike != null
+                      ? `Pin $${fmtNum(liveOptions.quantEngines.gexCharmPin.gexCharmPinStrike, 1)}`
+                      : '—'}
+                  </div>
+                  <div className="text-[10px] text-[#9CA3AF]">
+                    CW: {liveOptions.quantEngines.flowAdjustedGex?.callWallStrike ?? '—'} · PW:{' '}
+                    {liveOptions.quantEngines.flowAdjustedGex?.putWallStrike ?? '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-[#787B86]">ANOMALÍAS MAD VOL/OI</div>
+                  <div className="font-bold text-[14px] text-[#EAB308]">
+                    {liveOptions.quantEngines.volOiAnomalies?.anomalies?.length ?? 0} bases
+                  </div>
+                  <div className="text-[10px] text-[#9CA3AF] truncate">
+                    {liveOptions.quantEngines.volOiAnomalies?.anomalies?.[0]
+                      ? `${liveOptions.quantEngines.volOiAnomalies.anomalies[0].contractType.toUpperCase()} ${liveOptions.quantEngines.volOiAnomalies.anomalies[0].strike ?? ''} (z=${fmtNum(liveOptions.quantEngines.volOiAnomalies.anomalies[0].madLogScore, 1)})`
+                      : 'Sin outliers MAD'}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -2176,7 +2355,124 @@ export const OptionsModule: React.FC<{
                 onGoToSheet={() => onSelectSubView('cadena')}
               />
             )}
-            {activeSubView === 'volatilidad' && <VolatilitySurface mkt={labMarket} />}
+            {activeSubView === 'volatilidad' && (
+              <div className="space-y-4">
+                <VolatilitySurface mkt={labMarket} />
+                {(() => {
+                  const qe = liveOptions?.quantEngines ?? null;
+                  const vc = qe?.volCone;
+                  const pq = qe?.pqDivergence;
+                  const sr = qe?.syntheticRates;
+                  const cr = qe?.conversionReversal;
+                  const bw = qe?.buyWrite;
+                  const cal = qe?.calendarRoll;
+                  const conf = qe?.confluenceClusters;
+                  return (
+                    <div className="rounded-[14px] bg-[#101218] border border-[#232733] p-5 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-[15px] font-extrabold text-[#FFFFFF]">
+                          Cono de Volatilidad, Divergencia ℙ vs. ℚ &amp; Arbitraje Sintético / Calendars ({upperUnderlying})
+                        </h3>
+                        <span className="font-mono-num text-[11px] text-[#9CA3AF]">
+                          IV Rank: <strong className="text-[#FFFFFF]">{vc?.ivRank != null ? `${fmtNum(vc.ivRank, 1)}%` : '—'}</strong> ·
+                          IV Pct: <strong className="text-[#38BDF8]">{vc?.ivPercentile != null ? `${fmtNum(vc.ivPercentile, 1)}%` : '—'}</strong>
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px] font-mono-num">
+                        <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1.5">
+                          <div className="text-[10.5px] font-bold uppercase text-[#38BDF8]">
+                            DIVERGENCIA ℙ vs. ℚ (BREEDEN-LITZENBERGER)
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Media ℚ / Desv. ℚ</span>
+                            <span className="text-[#FFFFFF]">
+                              {qe?.qDistribution?.meanQ != null ? `$${fmtNum(qe.qDistribution.meanQ, 1)}` : '—'} ·{' '}
+                              {qe?.qDistribution?.stdDevQ != null ? `±$${fmtNum(qe.qDistribution.stdDevQ, 1)}` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Colas &gt; 3σ (ℙ Empírica)</span>
+                            <span className="text-[#EAB308]">
+                              {qe?.pDistribution?.tailEventsCount ?? '—'} eventos (
+                              {qe?.pDistribution?.tailFrequencyPct != null ? `${fmtNum(qe.pDistribution.tailFrequencyPct, 1)}%` : '—'})
+                            </span>
+                          </div>
+                          {(pq?.levels ?? []).slice(0, 2).map((lv) => (
+                            <div key={lv.label} className="flex justify-between text-[11px] pt-1 border-t border-[#1E222D]">
+                              <span className="text-[#D1D4DC]">{lv.label}</span>
+                              <span className="text-[#22C55E]">
+                                P {lv.probP != null ? `${fmtNum(lv.probP * 100, 1)}%` : '—'} vs Q{' '}
+                                {lv.probQ != null ? `${fmtNum(lv.probQ * 100, 1)}%` : '—'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1.5">
+                          <div className="text-[10.5px] font-bold uppercase text-[#C084FC]">
+                            TASA SINTÉTICA, BORROW &amp; CONV/REV
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Tasa Implícita TNA</span>
+                            <span className="text-[#FFFFFF]">
+                              {sr?.medianImpliedTna != null ? `${fmtNum(sr.medianImpliedTna * 100, 2)}%` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Régimen Borrow</span>
+                            <span className="text-[#EAB308]">{sr?.borrowRegime ?? '—'}</span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Conv/Rev Edge (bps)</span>
+                            <span className="text-[#FFFFFF]">
+                              {cr?.netEdgeVsRiskFreeBps != null ? `${fmtNum(cr.netEdgeVsRiskFreeBps, 0)} pb (${cr.arbitrageSignal})` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF] pt-1 border-t border-[#1E222D]">
+                            <span>Clusters &lt; 0,15 ATR</span>
+                            <span className="text-[#38BDF8]">
+                              {conf?.strongestClusterCentroid != null ? `$${fmtNum(conf.strongestClusterCentroid, 1)}` : '—'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1.5">
+                          <div className="text-[10.5px] font-bold uppercase text-[#22C55E]">
+                            BUY-WRITE (LANZAMIENTO) &amp; CALENDAR ROLL
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Buy-Write BE / Estática</span>
+                            <span className="text-[#FFFFFF]">
+                              {bw?.breakevenPrice != null ? `$${fmtNum(bw.breakevenPrice, 1)}` : '—'} ·{' '}
+                              {bw?.staticAnnualizedTna != null ? `${fmtNum(bw.staticAnnualizedTna * 100, 1)}%` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>TNA Ejercida</span>
+                            <span className="text-[#22C55E]">
+                              {bw?.assignedAnnualizedTna != null ? `${fmtNum(bw.assignedAnnualizedTna * 100, 1)}%` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF] pt-1 border-t border-[#1E222D]">
+                            <span>Calendar Roll Créd.</span>
+                            <span className="text-[#FFFFFF]">
+                              {cal?.netRollCredit != null ? `$${fmtNum(cal.netRollCredit, 2)}` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#9CA3AF]">
+                            <span>Roll Yield Anual</span>
+                            <span className="text-[#38BDF8]">
+                              {cal?.annualizedRollYieldOnSpot != null ? `${fmtNum(cal.annualizedRollYieldOnSpot * 100, 1)}%` : '—'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

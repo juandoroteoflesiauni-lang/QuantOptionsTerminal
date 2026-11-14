@@ -713,4 +713,80 @@ describe('serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offl
     expect(barUpdateMsg?.['time']).toBeLessThanOrEqual(MAX_TIME_SECONDS);
     expect(JSON.stringify(receivedMessages)).not.toContain(secretKey);
   });
+
+  it('computes Piezas 15-18 terminalEngines, supports EOD_CIERRE when closed, warmup() & /api/health warmupStatus (Pieza 19)', async () => {
+    const secretKey = 'SECRET_PIEZA19_KEY';
+    const fixedNowMs = etDateTimeToUtcMs(2025, 3, 10, 15, 0, 0);
+    const fixedNowSec = Math.floor(fixedNowMs / 1_000);
+    const baseFetch = createOfflineMassiveFetch({ asOfUtcSec: fixedNowSec, secretKey });
+
+    const closedMarketFetch: FetchFn = async (url) => {
+      const res = await baseFetch(url);
+      const { pathname } = new URL(url);
+      if (pathname === '/v3/snapshot' && typeof res.text === 'string') {
+        return {
+          ...res,
+          text: res.text.replaceAll('"market_status":"open"', '"market_status":"closed"'),
+        };
+      }
+      return res;
+    };
+
+    const runtime = new MarketRuntime({
+      apiKey: secretKey,
+      secrets: [secretKey],
+      nowMsFn: () => fixedNowMs,
+      enableWs: false,
+      fetchFn: closedMarketFetch,
+    });
+
+    await runtime.warmup(['SPY']);
+    const snap = await runtime.getSnapshot('SPY');
+    expect(snap.feedMode).toBe('EOD_CIERRE');
+    expect(snap.terminalEngines).toBeDefined();
+    expect(snap.terminalEngines).not.toBeNull();
+    expect(snap.terminalEngines?.atr14d).toBeGreaterThan(0);
+    expect(snap.terminalEngines?.volumeProfile?.status).toBe('OK');
+    expect(snap.terminalEngines?.nakedPocs).not.toBeNull();
+    expect(snap.terminalEngines?.fvgs).not.toBeNull();
+    expect(snap.terminalEngines?.orderBlocks).not.toBeNull();
+    expect(snap.terminalEngines?.orderFlow).not.toBeNull();
+    expect(snap.terminalEngines?.volOiAnomalies).not.toBeNull();
+    expect(snap.terminalEngines?.flowAdjustedGex).not.toBeNull();
+    expect(snap.terminalEngines?.gexCharmPin).not.toBeNull();
+    expect(snap.terminalEngines?.wheelTracker).not.toBeNull();
+    expect(snap.terminalEngines?.qDistribution?.status).toBe('OK');
+    expect(snap.terminalEngines?.pDistribution?.status).toBe('OK');
+    expect(snap.terminalEngines?.pqDivergence?.status).toBe('OK');
+    expect(snap.terminalEngines?.volCone?.status).toBe('OK');
+    expect(snap.terminalEngines?.syntheticRates).not.toBeNull();
+    expect(snap.terminalEngines?.buyWrite?.status).toBe('OK');
+    expect(snap.terminalEngines?.confluenceClusters).not.toBeNull();
+    expect(snap.terminalEngines?.structureOptimizerBullish?.status).toBe('OK');
+    expect(snap.terminalEngines?.structureOptimizerBearish).not.toBeNull();
+
+    const server = createHttpWsServer({
+      runtime,
+      host: '127.0.0.1',
+      port: 0,
+      secrets: [secretKey],
+      startRuntimeWs: false,
+      enableBackgroundWarmup: false,
+    });
+    activeServers.push(server);
+    const { host, port } = await server.start();
+
+    const healthRes = await fetch(`http://${host}:${String(port)}/api/health`);
+    expect(healthRes.status).toBe(200);
+    const healthText = await healthRes.text();
+    expect(healthText).not.toContain(secretKey);
+    const healthJson = JSON.parse(healthText) as {
+      ok: boolean;
+      hasApiKey: boolean;
+      warmupStatus: string;
+    };
+    expect(healthJson.ok).toBe(true);
+    expect(healthJson.hasApiKey).toBe(true);
+    expect(['IDLE', 'WARMING_UP', 'READY']).toContain(healthJson.warmupStatus);
+  });
 });

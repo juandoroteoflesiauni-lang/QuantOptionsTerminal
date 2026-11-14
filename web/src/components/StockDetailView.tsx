@@ -794,6 +794,189 @@ export const StockDetailView: React.FC<{
           </div>
         </div>
       </div>
+
+      {/* =====================================================================
+          4. MICROESTRUCTURA AMT, FVG/FOB, FUERZA RELATIVA Y CONFLUENCIA (< 0.15 ATR)
+          ===================================================================== */}
+      {(() => {
+        const eng = stockDetail?.institutionalEngines ?? null;
+        const vp = eng?.volumeProfile;
+        const nakedList = eng?.nakedPocs?.activeNakedPocs ?? [];
+        const fvgList = eng?.fvgs?.activeFvgs ?? [];
+        const fobList = eng?.orderBlocks?.freshOrderBlocks ?? [];
+        const clusters = eng?.confluenceClusters?.clusters ?? [];
+        const rs = eng?.relativeStrength ?? null;
+        const atr14 = eng?.atr14 ?? null;
+        const cvdSign = eng?.cvdSlopeSign ?? null;
+        return (
+          <div className="rounded-[12px] bg-[#131722] border border-[#232733] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[14.5px] font-bold text-[#FFFFFF]">
+                  Motores Institucionales AMT · FVG/FOB · Confluencia (&lt; 0,15 ATR)
+                </h3>
+                <span className="px-2 py-0.5 rounded bg-[#0B0E14] border border-[#232733] font-mono-num text-[10.5px] text-[#38BDF8]">
+                  ATR14: {atr14 != null && Number.isFinite(atr14) ? `$ ${fmtNum(atr14, 2)}` : '—'}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded font-mono-num text-[10.5px] font-semibold ${
+                    cvdSign != null && cvdSign > 0
+                      ? 'bg-[#0D221E] text-[#22C55E] border border-[#164E3F]'
+                      : cvdSign != null && cvdSign < 0
+                        ? 'bg-[#1A1318] text-[#F23645] border border-[#4A2229]'
+                        : 'bg-[#0B0E14] text-[#9CA3AF] border border-[#232733]'
+                  }`}
+                >
+                  CVD Flujo: {cvdSign != null && cvdSign > 0 ? 'Comprador (+1)' : cvdSign != null && cvdSign < 0 ? 'Vendedor (-1)' : 'Neutral'}
+                </span>
+              </div>
+
+              {rs && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono-num">
+                  <span className="text-[#9CA3AF]">
+                    RS vs SPY:{' '}
+                    <strong className="text-[#FFFFFF]">
+                      {rs.rsSpread != null && Number.isFinite(rs.rsSpread) ? fmtPct(rs.rsSpread * 100, 2) : '—'}
+                    </strong>{' '}
+                    ({rs.rsClassification})
+                  </span>
+                  {rs.entryBlocked && (
+                    <span className="px-2 py-0.5 rounded bg-[#2A151B] border border-[#5B2532] text-[#F23645] font-bold">
+                      BLOQUEADO: {rs.blockReason}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px]">
+              {/* AMT Volume Profile & Naked POCs */}
+              <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-2">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-[#38BDF8]">
+                  Auction Market Theory (AMT)
+                </div>
+                {vp && vp.status === 'OK' ? (
+                  <div className="space-y-1.5 font-mono-num">
+                    <div className="flex justify-between">
+                      <span className="text-[#9CA3AF]">POC Composite</span>
+                      <span className="font-bold text-[#EAB308]">
+                        {vp.poc != null && Number.isFinite(vp.poc) ? `$ ${fmtNum(vp.poc, 2)}` : '—'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#9CA3AF]">Área de Valor (VAL – VAH)</span>
+                      <span className="text-[#FFFFFF]">
+                        {vp.val != null && vp.vah != null
+                          ? `$ ${fmtNum(vp.val, 2)} – $ ${fmtNum(vp.vah, 2)}`
+                          : '—'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#9CA3AF]">AVWAP Perfil / HVNs</span>
+                      <span className="text-[#D1D4DC]">
+                        {vp.profileVwap != null ? `$ ${fmtNum(vp.profileVwap, 2)}` : '—'} · {vp.hvnBins.length} HVN
+                      </span>
+                    </div>
+                    <div className="pt-1 border-t border-[#1E222D] text-[10.5px] text-[#9CA3AF]">
+                      Naked POCs activos:{' '}
+                      {nakedList.length > 0
+                        ? nakedList
+                            .slice(-2)
+                            .map((np) => `${np.sessionDate} ($${np.sessionPoc != null ? fmtNum(np.sessionPoc, 2) : '—'})`)
+                            .join(' · ')
+                        : 'Ninguno'}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[11.5px] text-[#787B86]">Sin perfil de volumen suficiente (—).</div>
+                )}
+              </div>
+
+              {/* Microestructura: FVG + Fresh Order Blocks */}
+              <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-2">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-[#C084FC]">
+                  Microestructura (FVG &amp; FOB)
+                </div>
+                <div className="space-y-1.5 font-mono-num text-[11.5px]">
+                  <div className="text-[#9CA3AF] text-[10.5px]">FVGs Activos ({fvgList.length})</div>
+                  {fvgList.slice(-2).map((f) => (
+                    <div key={f.id} className="flex justify-between items-center">
+                      <span className={f.type === 'BULLISH_FVG' ? 'text-[#22C55E]' : 'text-[#F23645]'}>
+                        {f.type === 'BULLISH_FVG' ? '▲ FVG Alcista' : '▼ FVG Bajista'}
+                      </span>
+                      <span className="text-[#FFFFFF]">
+                        {f.gapLow != null && f.gapHigh != null
+                          ? `$${fmtNum(f.gapLow, 1)}–$${fmtNum(f.gapHigh, 1)} (CE $${fmtNum(f.consequentEncroachment, 1)})`
+                          : '—'}
+                      </span>
+                    </div>
+                  ))}
+                  {fvgList.length === 0 && <div className="text-[#787B86]">Sin gaps cuantitativos activos (—)</div>}
+
+                  <div className="pt-1 border-t border-[#1E222D] text-[#9CA3AF] text-[10.5px]">
+                    Fresh Order Blocks ({fobList.length})
+                  </div>
+                  {fobList.slice(-2).map((ob) => (
+                    <div key={ob.id} className="flex justify-between items-center">
+                      <span className={ob.type === 'BULLISH_FOB' ? 'text-[#22C55E]' : 'text-[#F23645]'}>
+                        {ob.type === 'BULLISH_FOB' ? '■ FOB Demanda' : '■ FOB Oferta'}
+                      </span>
+                      <span className="text-[#FFFFFF]">
+                        {ob.anchorPrice != null ? `Ancla $${fmtNum(ob.anchorPrice, 2)}` : '—'}
+                      </span>
+                    </div>
+                  ))}
+                  {fobList.length === 0 && <div className="text-[#787B86]">Sin bloques institucionales frescos (—)</div>}
+                </div>
+              </div>
+
+              {/* Clusters de Confluencia Espacial < 0.15 ATR */}
+              <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#22C55E]">
+                    Confluencia Espacial ({clusters.length})
+                  </span>
+                  <span className="font-mono-num text-[10.5px] text-[#9CA3AF]">
+                    Triples: {eng?.confluenceClusters?.tripleConfluenceCount ?? 0}
+                  </span>
+                </div>
+                {clusters.length === 0 ? (
+                  <div className="text-[11.5px] text-[#787B86]">
+                    Sin clusters multicapa (&lt; 0,15 ATR) activos para {stockTicker}.
+                  </div>
+                ) : (
+                  <div className="space-y-2 font-mono-num text-[11px]">
+                    {clusters.slice(0, 3).map((cl, idx) => (
+                      <div
+                        key={`${cl.centroidPrice ?? idx}`}
+                        className="p-2 rounded bg-[#131722] border border-[#232733] space-y-0.5"
+                      >
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-[#FFFFFF]">
+                            {cl.centroidPrice != null ? `$ ${fmtNum(cl.centroidPrice, 2)}` : '—'}
+                          </span>
+                          <span className="text-[#22C55E] font-bold">
+                            Fuerza {cl.clusterStrength != null ? fmtNum(cl.clusterStrength, 0) : '—'}/100
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                          <span>
+                            {cl.isTripleConfluence ? 'TRIPLE CAPA' : `${cl.distinctCategoriesCount} capas`} ·{' '}
+                            {cl.distanceToSpotAtr != null ? `${fmtNum(cl.distanceToSpotAtr, 2)} ATR` : '—'}
+                          </span>
+                          <span className={cl.triggerAligned ? 'text-[#38BDF8]' : 'text-[#787B86]'}>
+                            {cl.triggerAligned ? 'Disparador alineado' : cl.expectedReaction}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

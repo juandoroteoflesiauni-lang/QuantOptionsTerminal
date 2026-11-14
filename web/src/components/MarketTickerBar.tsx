@@ -298,6 +298,8 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   const feedTag =
     feedStatus === 'LIVE'
       ? 'EN VIVO'
+      : feedStatus === 'EOD_CIERRE'
+      ? 'EOD CIERRE'
       : feedStatus === 'DIFERIDO_20M'
       ? 'DIFERIDO 20M'
       : feedStatus === 'PARTIAL'
@@ -305,7 +307,12 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
       : 'SIN FEED';
 
   const isOpen = marketStatus === 'Abierto' && feedStatus !== 'NO_DATA';
-  const isExtended = marketStatus === 'Pre-Market' || marketStatus === 'After-Hours' || feedStatus === 'DIFERIDO_20M' || feedStatus === 'PARTIAL';
+  const isExtended =
+    marketStatus === 'Pre-Market' ||
+    marketStatus === 'After-Hours' ||
+    feedStatus === 'EOD_CIERRE' ||
+    feedStatus === 'DIFERIDO_20M' ||
+    feedStatus === 'PARTIAL';
 
   return (
     <header className="sticky top-0 z-40 h-[50px] w-full bg-[#0B0E14] border-b border-[#1E222D] px-3 flex items-center justify-between gap-3 select-none">

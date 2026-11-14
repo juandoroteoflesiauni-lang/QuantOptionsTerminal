@@ -39,6 +39,18 @@ import {
 } from '../core/microstructure/mtfStructure.js';
 import { computeWilderRsiSeries } from '../core/microstructure/divergences.js';
 import {
+  computeVolumeProfileAmt,
+  trackNakedPocs,
+  type TrackNakedPocsResult,
+  type VolumeProfileAmtResult,
+} from '../core/microstructure/volumeProfileAmt.js';
+import {
+  detectFreshOrderBlocks,
+  detectQuantitativeFvgs,
+  type FreshOrderBlockResult,
+  type QuantitativeFvgResult,
+} from '../core/microstructure/fvgFobEngine.js';
+import {
   greeksAmericanFiniteDiffOrAnalytical,
   priceAmericanBjerksund2002,
   solveImpliedVolAmerican,
@@ -47,13 +59,60 @@ import {
   computeDealerExposure,
   type ExposureContractInput,
 } from '../core/options/exposure.js';
+import {
+  computeSignedOptionsOrderFlow,
+  detectVolOiAnomaliesMad,
+  type OpraTradePrintInput,
+  type SignedOptionsOrderFlowResult,
+  type VolOiAnomalyContractInput,
+  type VolOiAnomalyDetectionResult,
+} from '../core/options/optionsOrderFlow.js';
+import {
+  computeFlowAdjustedSignedGex,
+  computeGexCharmPin,
+  type FlowAdjustedGexResult,
+  type GexCharmPinResult,
+} from '../core/options/pinTracker.js';
+import {
+  analyzeEmpiricalDistributionP,
+  computeVolConeAndRank,
+  evaluatePqLevelDivergence,
+  extractRiskNeutralDistributionQ,
+  type EmpiricalDistributionResult,
+  type PqLevelDivergenceResult,
+  type RiskNeutralDistributionResult,
+  type RiskNeutralInputNode,
+  type VolConeAndRankResult,
+} from '../core/options/probabilisticDivergence.js';
+import {
+  computeSyntheticImpliedRates,
+  evaluateBuyWrite,
+  evaluateCalendarRoll,
+  evaluateConversionReversal,
+  type BuyWriteResult,
+  type CalendarRollResult,
+  type ConversionReversalResult,
+  type SyntheticImpliedRatesResult,
+} from '../core/options/syntheticRates.js';
 import { computeSliceVolMetrics } from '../core/options/volMetrics.js';
 import { buildVolSlice, type VolQuoteInput } from '../core/options/volSurface.js';
+import {
+  computeStructureCostPercentile,
+  detectSpatialConfluenceClusters,
+  evaluateRelativeStrengthAndCatalysts,
+  optimizeOptionStructures,
+  type OptimizeOptionStructuresResult,
+  type OptimizerOptionContractInput,
+  type RelativeStrengthAndCatalystsResult,
+  type SpatialConfluenceResult,
+  type SpatialLevelInput,
+  type StructureCostPercentileResult,
+} from '../core/terminal/structureOptimizer.js';
 import type { Bar } from '../core/types.js';
 import type { FetchResponse } from '../data/types.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 
-export type FeedStatus = 'LIVE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
+export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
 export interface ArHttpRequestInit {
   readonly method?: 'GET' | 'POST';
@@ -203,6 +262,7 @@ export interface ArMacroResponse {
     readonly badlarTna: number | null;
     readonly tamarTna: number | null;
     readonly tpmTna: number | null;
+    readonly plazoFijoTna: number | null;
     readonly cer: number | null;
     readonly uva: number | null;
     readonly reservasUsdM: number | null;
@@ -253,6 +313,47 @@ export interface ArHistoricalBarDto {
   readonly dailyReturnPct: number | null;
 }
 
+export type JsonSafe<T> = T extends number
+  ? number | null
+  : T extends readonly (infer U)[]
+    ? readonly JsonSafe<U>[]
+    : T extends object
+      ? { readonly [K in keyof T]: JsonSafe<T[K]> }
+      : T;
+
+export interface ArStockInstitutionalEnginesDto {
+  readonly atr14: number | null;
+  readonly cvdSlopeSign: number | null;
+  readonly volumeProfile: JsonSafe<VolumeProfileAmtResult> | null;
+  readonly nakedPocs: JsonSafe<TrackNakedPocsResult> | null;
+  readonly fvgs: JsonSafe<QuantitativeFvgResult> | null;
+  readonly orderBlocks: JsonSafe<FreshOrderBlockResult> | null;
+  readonly relativeStrength: JsonSafe<RelativeStrengthAndCatalystsResult> | null;
+  readonly confluenceClusters: JsonSafe<SpatialConfluenceResult> | null;
+}
+
+export interface ArOptionsQuantEnginesDto {
+  readonly orderFlowArs: JsonSafe<SignedOptionsOrderFlowResult> | null;
+  readonly netDirectionalPremiumUsdCcl: number | null;
+  readonly callNetPremiumCvdUsdCcl: number | null;
+  readonly putNetPremiumCvdUsdCcl: number | null;
+  readonly volOiAnomalies: JsonSafe<VolOiAnomalyDetectionResult> | null;
+  readonly flowAdjustedGex: JsonSafe<FlowAdjustedGexResult> | null;
+  readonly gexCharmPin: JsonSafe<GexCharmPinResult> | null;
+  readonly qDistribution: JsonSafe<RiskNeutralDistributionResult> | null;
+  readonly pDistribution: JsonSafe<EmpiricalDistributionResult> | null;
+  readonly pqDivergence: JsonSafe<PqLevelDivergenceResult> | null;
+  readonly volCone: JsonSafe<VolConeAndRankResult> | null;
+  readonly syntheticRates: JsonSafe<SyntheticImpliedRatesResult> | null;
+  readonly conversionReversal: JsonSafe<ConversionReversalResult> | null;
+  readonly buyWrite: JsonSafe<BuyWriteResult> | null;
+  readonly calendarRoll: JsonSafe<CalendarRollResult> | null;
+  readonly structureOptimizerBullish: JsonSafe<OptimizeOptionStructuresResult> | null;
+  readonly structureOptimizerBearish: JsonSafe<OptimizeOptionStructuresResult> | null;
+  readonly structureCostPercentile: JsonSafe<StructureCostPercentileResult> | null;
+  readonly confluenceClusters: JsonSafe<SpatialConfluenceResult> | null;
+}
+
 export interface ArStockDetailResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
@@ -270,6 +371,7 @@ export interface ArStockDetailResponse {
   readonly ema21: number | null;
   readonly mtfRegime: string;
   readonly relatedOptionsCount: number;
+  readonly institutionalEngines?: ArStockInstitutionalEnginesDto | null;
   readonly providerErrors: readonly string[];
 }
 
@@ -382,6 +484,7 @@ export interface ArOptionsResponse {
     readonly vatRate: number;
     readonly bondsVatExempt: true;
   };
+  readonly quantEngines?: ArOptionsQuantEnginesDto | null;
   readonly providerErrors: readonly string[];
 }
 
@@ -405,6 +508,7 @@ export interface ArRelationsResponse {
   readonly feedStatus: FeedStatus;
   readonly providerErrors: readonly string[];
   readonly pairs: readonly ArRelationPairDto[];
+  readonly extendedPairs?: readonly ArRelationPairDto[];
   readonly mepCclArbitrage: readonly MepCclArbitrageRow[];
 }
 
@@ -455,11 +559,11 @@ const AR_STOCK_META: readonly StockMetadata[] = [
   { ticker: 'CRES', name: 'Cresud', sector: 'Agro', panel: 'Líder', color: '#FF8A4C', adrTicker: 'CRESY', adrRatio: 10, dividendYield: 0 },
   { ticker: 'BYMA', name: 'Bolsas y Mercados Argentinos', sector: 'Bancos', panel: 'Líder', color: '#8B7CF6', dividendYield: 0.01 },
   { ticker: 'TRAN', name: 'Transener', sector: 'Reguladas', panel: 'Líder', color: '#F5B544', dividendYield: 0 },
-  { ticker: 'VALO', name: 'Banco de Valores', sector: 'Bancos', panel: 'General', color: '#8B5CF6', dividendYield: 0 },
+  { ticker: 'VALO', name: 'Banco de Valores', sector: 'Bancos', panel: 'Líder', color: '#8B5CF6', dividendYield: 0 },
   { ticker: 'IRSA', name: 'IRSA Inversiones y Representaciones', sector: 'Agro', panel: 'General', color: '#6366F1', adrTicker: 'IRS', adrRatio: 10, dividendYield: 0 },
-  { ticker: 'TGNO4', name: 'Transportadora de Gas del Norte', sector: 'Reguladas', panel: 'General', color: '#0EA5E9', dividendYield: 0 },
-  { ticker: 'METR', name: 'Metrogas S.A.', sector: 'Reguladas', panel: 'General', color: '#3B82F6', dividendYield: 0 },
-  { ticker: 'MIRG', name: 'Mirgor S.A.', sector: 'Materiales', panel: 'General', color: '#EC4899', dividendYield: 0 },
+  { ticker: 'TGNO4', name: 'Transportadora de Gas del Norte', sector: 'Reguladas', panel: 'Líder', color: '#0EA5E9', dividendYield: 0 },
+  { ticker: 'METR', name: 'Metrogas S.A.', sector: 'Reguladas', panel: 'Líder', color: '#3B82F6', dividendYield: 0 },
+  { ticker: 'MIRG', name: 'Mirgor S.A.', sector: 'Materiales', panel: 'Líder', color: '#EC4899', dividendYield: 0 },
   { ticker: 'BHIP', name: 'Banco Hipotecario', sector: 'Bancos', panel: 'General', color: '#F59E0B', dividendYield: 0 },
   { ticker: 'CECO2', name: 'Central Costanera', sector: 'Energía', panel: 'General', color: '#10B981', dividendYield: 0 },
   { ticker: 'CVH', name: 'Cablevisión Holding', sector: 'Telecom', panel: 'General', color: '#06B6D4', dividendYield: 0 },
@@ -496,6 +600,7 @@ const CEDEAR_RATIOS: Readonly<Record<string, { readonly usTicker: string; readon
   BABA: { usTicker: 'BABA', ratio: 9, name: 'Alibaba Group' },
   WMT: { usTicker: 'WMT', ratio: 18, name: 'Walmart Inc.' },
   DIS: { usTicker: 'DIS', ratio: 12, name: 'Walt Disney Co.' },
+  XLE: { usTicker: 'XLE', ratio: 2, name: 'Energy Select Sector SPDR Fund' },
   EWZ: { usTicker: 'EWZ', ratio: 2, name: 'iShares MSCI Brazil ETF' },
   IWM: { usTicker: 'IWM', ratio: 10, name: 'iShares Russell 2000 ETF' },
   DIA: { usTicker: 'DIA', ratio: 20, name: 'SPDR Dow Jones Industrial' },
@@ -582,8 +687,10 @@ interface BondFlow {
 interface SovereignBondSpec {
   readonly baseTicker: string;
   readonly name: string;
-  readonly legislation: 'ARG' | 'NY';
+  readonly legislation: 'ARG' | 'NY' | 'TESORO';
   readonly maturity: string;
+  readonly currency?: 'USD' | 'ARS' | 'CER';
+  readonly cerBase?: number;
   readonly flows: readonly BondFlow[];
 }
 
@@ -748,10 +855,166 @@ const SOVEREIGN_BONDS: readonly SovereignBondSpec[] = [
       amortAt: (d) => (d >= '2028-01-09' ? 100 / 28 : 0),
     }),
   },
+  {
+    baseTicker: 'TX26',
+    name: 'Boncer 2026 CER + 2.00%',
+    legislation: 'TESORO',
+    maturity: '2026-11-09',
+    currency: 'CER',
+    cerBase: 22.8491,
+    flows: generateSemiannualFlows({
+      startDate: '2024-11-09',
+      endDate: '2026-11-09',
+      couponRateAt: () => 0.02,
+      amortAt: () => 20,
+    }),
+  },
+  {
+    baseTicker: 'TX28',
+    name: 'Boncer 2028 CER + 2.25%',
+    legislation: 'TESORO',
+    maturity: '2028-11-09',
+    currency: 'CER',
+    cerBase: 22.8491,
+    flows: generateSemiannualFlows({
+      startDate: '2024-05-09',
+      endDate: '2028-11-09',
+      couponRateAt: () => 0.0225,
+      amortAt: () => 10,
+    }),
+  },
+  {
+    baseTicker: 'TZX26',
+    name: 'Boncer Cero Cupón 2026 CER',
+    legislation: 'TESORO',
+    maturity: '2026-06-30',
+    currency: 'CER',
+    cerBase: 162.5,
+    flows: [
+      {
+        dateUtcSec: isoUtcSec('2026-06-30'),
+        coupon: 0,
+        amortization: 100,
+      },
+    ],
+  },
 ];
 
 function sanitizeFinite(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function sanitizeJsonUnknown(value: unknown): unknown {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeJsonUnknown(item === undefined ? null : item));
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) {
+        out[key] = sanitizeJsonUnknown(v);
+      }
+    }
+    return out;
+  }
+  return null;
+}
+
+function sanitizeJsonPayload<T>(value: T): JsonSafe<T> {
+  return sanitizeJsonUnknown(value) as JsonSafe<T>;
+}
+
+function hasPositiveLast(rows: readonly NormalizedQuoteRow[]): boolean {
+  return rows.some((r) => r.last !== null && Number.isFinite(r.last) && r.last > 0);
+}
+
+function normalizeClosedDailyBarsForEngines(bars: readonly Bar[], asOfUtcSec: number): readonly Bar[] {
+  const byDay = new Map<number, Bar>();
+  const evalSec = Math.floor(asOfUtcSec);
+  for (const b of bars) {
+    if (
+      !Number.isFinite(b.time) ||
+      !Number.isFinite(b.open) ||
+      !Number.isFinite(b.high) ||
+      !Number.isFinite(b.low) ||
+      !Number.isFinite(b.close) ||
+      !Number.isFinite(b.volume) ||
+      b.close <= 0 ||
+      b.high < b.low ||
+      b.volume < 0
+    ) {
+      continue;
+    }
+    const rawTime = Math.floor(b.time);
+    // Estricto no look-ahead: solo barras cuyo cierre conocido es <= asOfUtcSec
+    if (rawTime > evalSec) {
+      continue;
+    }
+    // Normalizamos al inicio del día UTC para motores cuyo contrato exige open + barSeconds <= asOfUtcSec
+    const dayOpenSec = Math.floor(rawTime / 86_400) * 86_400;
+    if (dayOpenSec + 86_400 <= evalSec) {
+      byDay.set(dayOpenSec, {
+        ...b,
+        time: dayOpenSec,
+      });
+    }
+  }
+  return [...byDay.values()].sort((a, b) => a.time - b.time);
+}
+
+function computeWilderAtr14(bars: readonly Bar[]): number | null {
+  if (bars.length < 15) {
+    return null;
+  }
+  const trs: number[] = [];
+  for (let i = 1; i < bars.length; i += 1) {
+    const prev = bars[i - 1];
+    const curr = bars[i];
+    if (prev !== undefined && curr !== undefined) {
+      const tr = Math.max(
+        curr.high - curr.low,
+        Math.abs(curr.high - prev.close),
+        Math.abs(curr.low - prev.close),
+      );
+      if (Number.isFinite(tr) && tr >= 0) {
+        trs.push(tr);
+      }
+    }
+  }
+  if (trs.length < 14) {
+    return null;
+  }
+  let atr = trs.slice(0, 14).reduce((acc, v) => acc + v, 0) / 14;
+  for (let i = 14; i < trs.length; i += 1) {
+    const val = trs[i];
+    if (val !== undefined) {
+      atr = (atr * 13 + val) / 14;
+    }
+  }
+  return Number.isFinite(atr) && atr > 0 ? atr : null;
+}
+
+function computeCausalCvdSlopeSign(bars: readonly Bar[]): number {
+  const window = bars.slice(-10);
+  if (window.length < 2) {
+    return 0;
+  }
+  let netDelta = 0;
+  for (const b of window) {
+    if (b.volume <= 0) {
+      continue;
+    }
+    netDelta += b.close >= b.open ? b.volume : -b.volume;
+  }
+  if (netDelta > 0) return 1;
+  if (netDelta < 0) return -1;
+  return 0;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -1429,12 +1692,13 @@ export class ArgentinaMarketRuntime {
       'macro:bcra_argdatos',
       async () => {
         const errors: string[] = [];
-        const [bcraRes, dolaresRes, infMRes, infYRes, riesgoRes] = await Promise.all([
+        const [bcraRes, dolaresRes, infMRes, infYRes, riesgoRes, plazoFijoRes] = await Promise.all([
           this.fetchJsonSafe(`${this.bcraBaseUrl}/estadisticas/v4.0/Monetarias`),
           this.fetchJsonSafe(`${this.argDatosBaseUrl}/v1/cotizaciones/dolares`),
           this.fetchJsonSafe(`${this.argDatosBaseUrl}/v1/finanzas/indices/inflacion`),
           this.fetchJsonSafe(`${this.argDatosBaseUrl}/v1/finanzas/indices/inflacionInteranual`),
           this.fetchJsonSafe(`${this.argDatosBaseUrl}/v1/finanzas/indices/riesgo-pais`),
+          this.fetchJsonSafe(`${this.argDatosBaseUrl}/v1/finanzas/tasas/plazoFijo`),
         ]);
 
         let a3500: number | null = null;
@@ -1527,12 +1791,29 @@ export class ArgentinaMarketRuntime {
         const inflacionInteranualPct = extractLatestIndex(infYRes, 'inflacionInteranual');
         const riesgoPaisPb = extractLatestIndex(riesgoRes, 'riesgo-pais');
 
+        // Plazo Fijo (ArgentinaDatos auxiliar; si no está disponible o da 404, no degrada macro)
+        let plazoFijoTna: number | null = null;
+        if (plazoFijoRes.ok && Array.isArray(plazoFijoRes.data)) {
+          const pfRates: number[] = [];
+          for (const item of plazoFijoRes.data) {
+            if (!isPlainRecord(item)) {
+              continue;
+            }
+            const rawRate = readNum(item, ['tnaClientes', 'tnaNoClientes', 'tna', 'valor', 'tasa']);
+            if (rawRate !== null && rawRate > 0) {
+              pfRates.push(rawRate <= 2 ? rawRate * 100 : rawRate);
+            }
+          }
+          plazoFijoTna = computeMedian(pfRates);
+        }
+
         return {
           variables: {
             a3500,
             badlarTna,
             tamarTna,
             tpmTna,
+            plazoFijoTna,
             cer,
             uva,
             reservasUsdM,
@@ -1862,9 +2143,11 @@ export class ArgentinaMarketRuntime {
     mepMedian: number | null,
     cclMedian: number | null,
     asOfUtcSec: number,
+    cerIndex: number | null = null,
   ): readonly ArBondDto[] {
     const bondMap = new Map(argBonds.map((r) => [r.symbol, r]));
     return SOVEREIGN_BONDS.map((spec) => {
+      const currency = spec.currency ?? 'USD';
       const rowArs = bondMap.get(spec.baseTicker);
       const rowD = bondMap.get(`${spec.baseTicker}D`);
       const rowC = bondMap.get(`${spec.baseTicker}C`);
@@ -1872,30 +2155,50 @@ export class ArgentinaMarketRuntime {
       const priceArs = rowArs?.last ?? null;
       let priceUsd = rowD?.last ?? rowC?.last ?? null;
       if (priceUsd === null && priceArs !== null && mepMedian !== null && mepMedian > 0) {
-        // Data912 arg_bonds puede cotizar bonos en ARS por cada 100 VN o por 1 VN: los soberanos locales operan base 100 VN (~$60.000-$100.000 ARS)
         priceUsd = priceArs / mepMedian;
       }
 
-      const math =
-        priceUsd !== null && priceUsd > 0
-          ? evaluateSovereignBondMath(spec, priceUsd, asOfUtcSec)
-          : { tirPct: null, parityPct: null, duration: null, accruedInterest: null };
+      let math: {
+        readonly tirPct: number | null;
+        readonly parityPct: number | null;
+        readonly duration: number | null;
+        readonly accruedInterest: number | null;
+      } = { tirPct: null, parityPct: null, duration: null, accruedInterest: null };
+
+      if (currency === 'CER') {
+        if (
+          cerIndex !== null &&
+          cerIndex > 0 &&
+          spec.cerBase !== undefined &&
+          spec.cerBase > 0 &&
+          priceArs !== null &&
+          priceArs > 0
+        ) {
+          const cerFactor = cerIndex / spec.cerBase;
+          const deflatedBase100 = priceArs / cerFactor;
+          math = evaluateSovereignBondMath(spec, deflatedBase100, asOfUtcSec);
+        }
+      } else if (priceUsd !== null && priceUsd > 0) {
+        math = evaluateSovereignBondMath(spec, priceUsd, asOfUtcSec);
+      }
 
       const mepImplicit =
-        priceArs !== null && priceArs > 0 && rowD?.last !== null && rowD?.last !== undefined && rowD.last > 0
+        currency === 'USD' && priceArs !== null && priceArs > 0 && rowD?.last !== null && rowD?.last !== undefined && rowD.last > 0
           ? priceArs / rowD.last
           : null;
       const cclImplicit =
-        priceArs !== null && priceArs > 0 && rowC?.last !== null && rowC?.last !== undefined && rowC.last > 0
+        currency === 'USD' && priceArs !== null && priceArs > 0 && rowC?.last !== null && rowC?.last !== undefined && rowC.last > 0
           ? priceArs / rowC.last
-          : null;
+          : cclMedian !== null && cclMedian > 0 && priceUsd !== null && priceUsd > 0 && priceArs !== null && priceArs > 0
+            ? priceArs / priceUsd
+            : null;
 
       return {
         ticker: spec.baseTicker,
         name: spec.name,
         legislation: spec.legislation,
         maturity: spec.maturity,
-        currency: 'USD',
+        currency,
         priceUsd: sanitizeFinite(priceUsd),
         priceArs: sanitizeFinite(priceArs),
         deltaPct: sanitizeFinite(rowD?.deltaPct ?? rowArs?.deltaPct),
@@ -1912,6 +2215,61 @@ export class ArgentinaMarketRuntime {
         source: rowD !== undefined || rowArs !== undefined ? 'DATA912' : 'NONE',
       };
     });
+  }
+
+  private historyBarsToQuoteRow(symbol: string, bars: readonly Bar[]): NormalizedQuoteRow | null {
+    const lastBar = bars[bars.length - 1];
+    if (lastBar === undefined || !Number.isFinite(lastBar.close) || lastBar.close <= 0) {
+      return null;
+    }
+    const prevBar = bars[bars.length - 2];
+    const deltaPct =
+      prevBar !== undefined && Number.isFinite(prevBar.close) && prevBar.close > 0
+        ? ((lastBar.close - prevBar.close) / prevBar.close) * 100
+        : null;
+    return {
+      symbol: symbol.toUpperCase(),
+      last: lastBar.close,
+      bid: null,
+      ask: null,
+      prevClose: sanitizeFinite(prevBar?.close),
+      deltaPct: sanitizeFinite(deltaPct),
+      low: sanitizeFinite(lastBar.low),
+      high: sanitizeFinite(lastBar.high),
+      vwap: sanitizeFinite(lastBar.vw ?? lastBar.close),
+      volumeArs: Number.isFinite(lastBar.volume) ? sanitizeFinite(lastBar.volume * lastBar.close) : null,
+      nominalVol: Number.isFinite(lastBar.volume) ? sanitizeFinite(lastBar.volume) : null,
+      mark: lastBar.close,
+      impliedUsdArs: null,
+      arsBid: null,
+      arsAsk: null,
+      usdBid: null,
+      usdAsk: null,
+    };
+  }
+
+  private async populateEodRowsFromHistorical(
+    kind: 'stocks' | 'cedears' | 'bonds',
+    tickers: readonly string[],
+    forceRefresh = false,
+  ): Promise<readonly NormalizedQuoteRow[]> {
+    const results = await Promise.all(
+      tickers.map(async (ticker) => {
+        const hist = await this.getData912History(kind, ticker, forceRefresh);
+        return this.historyBarsToQuoteRow(ticker, hist.bars);
+      }),
+    );
+    return results.filter((r): r is NormalizedQuoteRow => r !== null);
+  }
+
+  public async warmup(forceRefresh = false): Promise<void> {
+    await Promise.allSettled([
+      this.getOverview(forceRefresh),
+      this.getMacro(forceRefresh),
+      this.getMonitoring('bonos', forceRefresh),
+      this.getRelations(forceRefresh),
+      this.getOptionsChain('GGAL', forceRefresh),
+    ]);
   }
 
   public async getOverview(forceRefresh = false): Promise<ArOverviewResponse> {
@@ -1943,6 +2301,53 @@ export class ArgentinaMarketRuntime {
           this.fetchBcraAndArgDatos(forceRefresh),
         ]);
 
+        const bymaMerged = [...bymaBlueRes.rows, ...bymaGeneralRes.rows];
+        const liveData912Ok =
+          hasPositiveLast(stocksRes.rows) ||
+          hasPositiveLast(bondsRes.rows) ||
+          hasPositiveLast(cedearsRes.rows);
+        const openBymaOk = hasPositiveLast(bymaMerged) || bymaMerged.length > 0;
+
+        // Respaldo EOD 24/7 (fines de semana / feriados / pre-apertura cuando /live/* devuelve vacío o precios 0 sin error HTTP)
+        const needStocksEod =
+          !hasPositiveLast(stocksRes.rows) &&
+          !hasPositiveLast(bymaMerged) &&
+          stocksRes.error === null;
+        const needCedearsEod =
+          !hasPositiveLast(cedearsRes.rows) &&
+          cedearsRes.error === null;
+        const needBondsEod =
+          !hasPositiveLast(bondsRes.rows) &&
+          bondsRes.error === null;
+
+        const [eodStocks, eodCedears, eodBonds] = await Promise.all([
+          needStocksEod
+            ? this.populateEodRowsFromHistorical(
+                'stocks',
+                AR_STOCK_META.filter((m) => m.panel === 'Líder').map((m) => m.ticker),
+                forceRefresh,
+              )
+            : Promise.resolve([] as readonly NormalizedQuoteRow[]),
+          needCedearsEod
+            ? this.populateEodRowsFromHistorical('cedears', Object.keys(CEDEAR_RATIOS), forceRefresh)
+            : Promise.resolve([] as readonly NormalizedQuoteRow[]),
+          needBondsEod
+            ? this.populateEodRowsFromHistorical(
+                'bonds',
+                SOVEREIGN_BONDS.flatMap((b) =>
+                  (b.currency ?? 'USD') === 'USD' ? [b.baseTicker, `${b.baseTicker}D`] : [b.baseTicker],
+                ),
+                forceRefresh,
+              )
+            : Promise.resolve([] as readonly NormalizedQuoteRow[]),
+        ]);
+
+        const effectiveStocks = eodStocks.length > 0 ? eodStocks : stocksRes.rows;
+        const effectiveCedears = eodCedears.length > 0 ? eodCedears : cedearsRes.rows;
+        const effectiveBonds = eodBonds.length > 0 ? eodBonds : bondsRes.rows;
+        const usedEodFallback =
+          eodStocks.length > 0 || eodCedears.length > 0 || eodBonds.length > 0;
+
         const providerErrors: string[] = [
           ...macroData.errors,
           ...[
@@ -1961,19 +2366,18 @@ export class ArgentinaMarketRuntime {
         const matrix = this.computeMepCclMatrix({
           mepRows: mepRes.rows,
           cclRows: cclRes.rows,
-          argStocks: stocksRes.rows,
+          argStocks: effectiveStocks,
           usaAdrs: adrsRes.rows,
-          argCedears: cedearsRes.rows,
+          argCedears: effectiveCedears,
           usaStocks: usaStocksRes.rows,
-          argBonds: bondsRes.rows,
+          argBonds: effectiveBonds,
           fallbackMep: macroData.variables.mep,
           fallbackCcl: macroData.variables.ccl,
         });
 
-        const bymaMerged = [...bymaBlueRes.rows, ...bymaGeneralRes.rows];
         const useBymaFallback = bymaMerged.length === 0;
         const allStocks = this.buildStockDtos({
-          argStocks: stocksRes.rows,
+          argStocks: effectiveStocks,
           bymaRows: bymaMerged,
           usaAdrs: adrsRes.rows,
           usaStocks: usaStocksRes.rows,
@@ -1984,7 +2388,7 @@ export class ArgentinaMarketRuntime {
         const mervalStocks = allStocks.filter((s) => s.panel === 'Líder');
         const generalPanelStocks = allStocks.filter((s) => s.panel === 'General');
         const cedears = this.buildCedearDtos({
-          argCedears: cedearsRes.rows,
+          argCedears: effectiveCedears,
           usaStocks: usaStocksRes.rows,
           usaAdrs: adrsRes.rows,
         });
@@ -2059,15 +2463,22 @@ export class ArgentinaMarketRuntime {
           },
         ];
 
-        const data912Ok = stocksRes.rows.length > 0 || bondsRes.rows.length > 0 || cedearsRes.rows.length > 0;
-        const openBymaOk = bymaMerged.length > 0;
+        const data912Ok =
+          liveData912Ok ||
+          eodStocks.length > 0 ||
+          eodCedears.length > 0 ||
+          eodBonds.length > 0;
         const feedStatus: FeedStatus = !data912Ok && !openBymaOk
           ? 'NO_DATA'
-          : openBymaOk && data912Ok
+          : openBymaOk && liveData912Ok
             ? 'LIVE'
-            : data912Ok
+            : liveData912Ok
               ? 'DIFERIDO_20M'
-              : 'PARTIAL';
+              : openBymaOk
+                ? 'PARTIAL'
+                : usedEodFallback
+                  ? 'EOD_CIERRE'
+                  : 'NO_DATA';
 
         const mktState = getArgentinaMarketState(nowSec);
 
@@ -2218,9 +2629,43 @@ export class ArgentinaMarketRuntime {
             source: 'DATA912',
             updatedAt: macroData.updatedAt,
           },
+          ...(vars.plazoFijoTna != null
+            ? [
+                {
+                  id: 'plazo_fijo',
+                  label: 'Plazo Fijo Minorista',
+                  value: fmtVal(vars.plazoFijoTna, 2, '', '% TNA'),
+                  numericValue: vars.plazoFijoTna,
+                  delta: 'Mediana bancos',
+                  deltaPct: null,
+                  help: 'Mediana TNA Plazo Fijo minorista 30 días en bancos argentinos (ArgentinaDatos).',
+                  source: 'ARGENTINADATOS',
+                  updatedAt: macroData.updatedAt,
+                },
+              ]
+            : []),
         ];
 
-        const sovereignCurve = this.buildSovereignBonds(bondsRes.rows, vars.mep, vars.ccl, nowSec);
+        let effectiveBondRows = bondsRes.rows;
+        if (!hasPositiveLast(effectiveBondRows) && bondsRes.error === null) {
+          const eodBonds = await this.populateEodRowsFromHistorical(
+            'bonds',
+            SOVEREIGN_BONDS.flatMap((b) =>
+              (b.currency ?? 'USD') === 'USD' ? [b.baseTicker, `${b.baseTicker}D`] : [b.baseTicker],
+            ),
+            forceRefresh,
+          );
+          if (eodBonds.length > 0) {
+            effectiveBondRows = eodBonds;
+          }
+        }
+        const sovereignCurve = this.buildSovereignBonds(
+          effectiveBondRows,
+          vars.mep,
+          vars.ccl,
+          nowSec,
+          vars.cer,
+        );
         const providerErrors = [...macroData.errors, ...overview.providerErrors];
         const hasAnyMacro = cards.some((c) => c.numericValue !== null);
         const feedStatus: FeedStatus = !hasAnyMacro ? 'NO_DATA' : providerErrors.length > 0 ? 'PARTIAL' : 'LIVE';
@@ -2254,7 +2699,27 @@ export class ArgentinaMarketRuntime {
       this.fetchBcraAndArgDatos(forceRefresh),
     ]);
 
-    const bonds = this.buildSovereignBonds(bondsRes.rows, overview.mepMedian, overview.cclMedian, nowSec);
+    let effectiveBondRows = bondsRes.rows;
+    if (!hasPositiveLast(effectiveBondRows) && bondsRes.error === null) {
+      const eodBonds = await this.populateEodRowsFromHistorical(
+        'bonds',
+        SOVEREIGN_BONDS.flatMap((b) =>
+          (b.currency ?? 'USD') === 'USD' ? [b.baseTicker, `${b.baseTicker}D`] : [b.baseTicker],
+        ),
+        forceRefresh,
+      );
+      if (eodBonds.length > 0) {
+        effectiveBondRows = eodBonds;
+      }
+    }
+
+    const bonds = this.buildSovereignBonds(
+      effectiveBondRows,
+      overview.mepMedian,
+      overview.cclMedian,
+      nowSec,
+      macroData.variables.cer,
+    );
     const mapNoteOrCorp = (rows: readonly NormalizedQuoteRow[], kind: ArNoteOrCorpDto['kind']): readonly ArNoteOrCorpDto[] =>
       rows.slice(0, 60).map((r) => ({
         ticker: r.symbol,
@@ -2292,6 +2757,148 @@ export class ArgentinaMarketRuntime {
     };
   }
 
+  private computeStockInstitutionalEngines(params: {
+    readonly asOfUtcSec: number;
+    readonly spot: number | null;
+    readonly bars: readonly Bar[];
+    readonly benchmarkBars: readonly Bar[];
+    readonly dealerLevels?: readonly SpatialLevelInput[];
+    readonly optionsDeltaFlowSign?: number;
+  }): ArStockInstitutionalEnginesDto {
+    const evalSec = Math.floor(params.asOfUtcSec);
+    const closedBars = normalizeClosedDailyBarsForEngines(params.bars, evalSec);
+    const closedBench = normalizeClosedDailyBarsForEngines(params.benchmarkBars, evalSec);
+    const spot = params.spot ?? closedBars[closedBars.length - 1]?.close ?? null;
+    const atr14 = computeWilderAtr14(closedBars);
+    const cvdSlopeSign = computeCausalCvdSlopeSign(closedBars);
+
+    const tickSize =
+      spot !== null && spot > 0
+        ? Math.max(0.01, Math.round((spot / 120) * 100) / 100)
+        : 0.05;
+
+    const volumeProfile =
+      closedBars.length >= 2
+        ? computeVolumeProfileAmt(closedBars, {
+            asOfUtcSec: evalSec,
+            barSeconds: 86_400,
+            tickSize,
+          })
+        : null;
+
+    const nakedPocs =
+      closedBars.length >= 2
+        ? trackNakedPocs(closedBars, {
+            asOfUtcSec: evalSec,
+            barSeconds: 86_400,
+            tickSize,
+          })
+        : null;
+
+    const fvgs =
+      closedBars.length >= 5
+        ? detectQuantitativeFvgs(closedBars, {
+            asOfUtcSec: evalSec,
+            barSeconds: 86_400,
+            tickSize,
+            minRangeZScore: 1.0,
+            maxLvnPercentile: 50,
+            minDeltaImbalanceRatio: 0,
+          })
+        : null;
+
+    const orderBlocks =
+      closedBars.length >= 8
+        ? detectFreshOrderBlocks(closedBars, {
+            asOfUtcSec: evalSec,
+            barSeconds: 86_400,
+            minDisplacementZScore: 1.0,
+            minAbsorptionVolumePercentile: 60,
+            minDarkPoolShare: 0,
+            anchorMode: 'HLC3',
+          })
+        : null;
+
+    const relativeStrength =
+      closedBars.length >= 2 && closedBench.length >= 2
+        ? evaluateRelativeStrengthAndCatalysts({
+            asOfUtcSec: evalSec,
+            assetBars: closedBars.map((b) => ({ time: b.time, close: b.close })),
+            benchmarkBars: closedBench.map((b) => ({ time: b.time, close: b.close })),
+            lookbackBars: Math.min(20, Math.max(1, closedBars.length - 1)),
+          })
+        : null;
+
+    const levels: SpatialLevelInput[] = [];
+    if (volumeProfile !== null && volumeProfile.status === 'OK') {
+      levels.push(
+        { name: 'POC', category: 'AMT_VOLUME_PROFILE', price: volumeProfile.poc, expectedReaction: 'MAGNET_NEUTRAL' },
+        { name: 'VAH', category: 'AMT_VOLUME_PROFILE', price: volumeProfile.vah, expectedReaction: 'RESISTANCE_BEARISH' },
+        { name: 'VAL', category: 'AMT_VOLUME_PROFILE', price: volumeProfile.val, expectedReaction: 'SUPPORT_BULLISH' },
+        { name: 'AVWAP', category: 'AMT_VOLUME_PROFILE', price: volumeProfile.profileVwap, expectedReaction: 'MAGNET_NEUTRAL' },
+      );
+    }
+    if (nakedPocs !== null && nakedPocs.status === 'OK') {
+      for (const np of nakedPocs.activeNakedPocs.slice(-3)) {
+        levels.push({
+          name: `Naked POC (${np.sessionDate})`,
+          category: 'AMT_VOLUME_PROFILE',
+          price: np.sessionPoc,
+          expectedReaction: spot !== null && np.sessionPoc >= spot ? 'RESISTANCE_BEARISH' : 'SUPPORT_BULLISH',
+        });
+      }
+    }
+    if (fvgs !== null && fvgs.status === 'OK') {
+      for (const fvg of fvgs.activeFvgs.slice(-4)) {
+        levels.push({
+          name: fvg.type === 'BULLISH_FVG' ? 'FVG Alcista CE' : 'FVG Bajista CE',
+          category: 'MICROSTRUCTURE_FVG_FOB',
+          price: fvg.consequentEncroachment,
+          expectedReaction: fvg.type === 'BULLISH_FVG' ? 'SUPPORT_BULLISH' : 'RESISTANCE_BEARISH',
+        });
+      }
+    }
+    if (orderBlocks !== null && orderBlocks.status === 'OK') {
+      for (const fob of orderBlocks.freshOrderBlocks.slice(-4)) {
+        levels.push({
+          name: fob.type === 'BULLISH_FOB' ? 'Fresh OB Demanda' : 'Fresh OB Oferta',
+          category: 'MICROSTRUCTURE_FVG_FOB',
+          price: fob.anchorPrice,
+          expectedReaction: fob.type === 'BULLISH_FOB' ? 'SUPPORT_BULLISH' : 'RESISTANCE_BEARISH',
+        });
+      }
+    }
+    if (params.dealerLevels !== undefined) {
+      for (const lvl of params.dealerLevels) {
+        levels.push(lvl);
+      }
+    }
+
+    const confluenceClusters =
+      spot !== null && spot > 0 && atr14 !== null && atr14 > 0 && levels.length > 0
+        ? detectSpatialConfluenceClusters({
+            spot,
+            atr: atr14,
+            levels,
+            trigger: {
+              cvdSlopeSign,
+              optionsDeltaFlowSign: params.optionsDeltaFlowSign ?? 0,
+            },
+          })
+        : null;
+
+    return sanitizeJsonPayload({
+      atr14: sanitizeFinite(atr14),
+      cvdSlopeSign,
+      volumeProfile,
+      nakedPocs,
+      fvgs,
+      orderBlocks,
+      relativeStrength,
+      confluenceClusters,
+    });
+  }
+
   public async getStockDetail(rawSymbol: string, forceRefresh = false): Promise<ArStockDetailResponse> {
     const symbol = rawSymbol.trim().toUpperCase();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
@@ -2299,11 +2906,17 @@ export class ArgentinaMarketRuntime {
     const isCedear = symbol in CEDEAR_RATIOS && !STOCK_META_MAP.has(symbol);
     const kind: 'stocks' | 'cedears' | 'bonds' = isBond ? 'bonds' : isCedear ? 'cedears' : 'stocks';
 
-    const [histRes, overview, optionsRes, bondsLive] = await Promise.all([
+    const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData] = await Promise.all([
       this.getData912History(kind, symbol, forceRefresh),
       this.getOverview(forceRefresh),
       this.getData912Live('/live/arg_options', forceRefresh),
       isBond ? this.getData912Live('/live/arg_bonds', forceRefresh) : Promise.resolve({ rows: [] as readonly NormalizedQuoteRow[], error: null }),
+      symbol === 'SPY'
+        ? Promise.resolve({ bars: [] as readonly Bar[], error: null })
+        : this.getData912History('cedears', 'SPY', forceRefresh),
+      isBond
+        ? this.fetchBcraAndArgDatos(forceRefresh)
+        : Promise.resolve(null),
     ]);
 
     const stock =
@@ -2312,10 +2925,22 @@ export class ArgentinaMarketRuntime {
       overview.cedears.find((s) => s.ticker === symbol) ??
       null;
 
+    let effectiveBondRows = bondsLive.rows;
+    if (isBond && !hasPositiveLast(effectiveBondRows)) {
+      const eodRow = this.historyBarsToQuoteRow(symbol, histRes.bars);
+      if (eodRow !== null) {
+        effectiveBondRows = [eodRow];
+      }
+    }
+
     const bond = isBond
-      ? this.buildSovereignBonds(bondsLive.rows, overview.mepMedian, overview.cclMedian, nowSec).find((b) =>
-          symbol.startsWith(b.ticker),
-        ) ?? null
+      ? this.buildSovereignBonds(
+          effectiveBondRows,
+          overview.mepMedian,
+          overview.cclMedian,
+          nowSec,
+          macroData?.variables.cer ?? null,
+        ).find((b) => symbol.startsWith(b.ticker)) ?? null
       : null;
 
     const bars = histRes.bars;
@@ -2348,6 +2973,14 @@ export class ArgentinaMarketRuntime {
       const parsed = parseBymaOptionSymbol(o.symbol, stock?.last ?? null, nowSec);
       return parsed !== null && parsed.underlying === symbol;
     }).length;
+
+    const benchBars = symbol === 'SPY' ? bars : spyHistRes.bars;
+    const institutionalEngines = this.computeStockInstitutionalEngines({
+      asOfUtcSec: nowSec,
+      spot: stock?.last ?? bond?.priceArs ?? (bars[bars.length - 1]?.close ?? null),
+      bars,
+      benchmarkBars: benchBars,
+    });
 
     const historicalBars: ArHistoricalBarDto[] = bars.map((b, idx) => {
       const prev = bars[idx - 1];
@@ -2391,6 +3024,7 @@ export class ArgentinaMarketRuntime {
       ema21: sanitizeFinite(ema21Series[ema21Series.length - 1]),
       mtfRegime: mtf?.regime1d ?? 'NO_DATA',
       relatedOptionsCount,
+      institutionalEngines,
       providerErrors,
     };
   }
@@ -2722,6 +3356,525 @@ export class ArgentinaMarketRuntime {
 
         const frontIvAtm = termStructure[0]?.atm ?? null;
         const vrpSpread = frontIvAtm !== null && rv20 !== null ? frontIvAtm - rv20 : null;
+
+        // Motores Cuantitativos Institucionales (Piezas 15–18) para Opciones BYMA
+        let quantEngines: ArOptionsQuantEnginesDto | null = null;
+        if (spot !== null && spot > 0 && Number.isFinite(evalRate)) {
+          const frontExp = expiries[0];
+          const evalSec = Math.floor(nowSec);
+          const closedBars = normalizeClosedDailyBarsForEngines(bars, evalSec);
+          const cclDiv = overview.cclMedian ?? overview.mepMedian ?? null;
+
+          // 1) Order Flow Neto BYMA en ARS + USD-CCL y Anomalías Vol/OI MAD (Pieza 16)
+          const printsArs: OpraTradePrintInput[] = [];
+          const volOiInputs: VolOiAnomalyContractInput[] = [];
+          for (const exp of expiries) {
+            for (const c of [...exp.calls, ...exp.puts]) {
+              const tradePx = c.last ?? c.mark;
+              const vol = c.volume;
+              if (
+                vol !== null &&
+                vol > 0 &&
+                tradePx !== null &&
+                tradePx > 0 &&
+                c.bid !== null &&
+                c.bid >= 0 &&
+                c.ask !== null &&
+                c.ask > 0
+              ) {
+                printsArs.push({
+                  contractTicker: c.symbol,
+                  underlyingTicker: underlying,
+                  strike: c.strike,
+                  expiryUtcSec: Math.floor(c.expiryUtcSec),
+                  contractType: c.contractType,
+                  price: tradePx,
+                  size: vol,
+                  bid: c.bid,
+                  ask: c.ask,
+                  ...(c.iv !== null && c.iv > 0 ? { impliedVolatility: c.iv } : {}),
+                  timestampUtcSec: evalSec,
+                  sharesPerContract: 1,
+                });
+              }
+              if (
+                c.volume !== null &&
+                c.volume >= 0 &&
+                c.openInterest !== null &&
+                c.openInterest > 0 &&
+                c.iv !== null &&
+                c.iv > 0
+              ) {
+                volOiInputs.push({
+                  contractTicker: c.symbol,
+                  strike: c.strike,
+                  expiryUtcSec: Math.floor(c.expiryUtcSec),
+                  contractType: c.contractType,
+                  dayVolume: c.volume,
+                  openInterest: c.openInterest,
+                  impliedVolatility: c.iv,
+                  sharesPerContract: OPTION_LOT_SIZE,
+                });
+              }
+            }
+          }
+
+          const flowContext = {
+            asOfUtcSec: evalSec,
+            spot,
+            rate: evalRate,
+            dividendYield,
+            model: 'american' as const,
+          };
+
+          const orderFlowArs =
+            printsArs.length > 0
+              ? computeSignedOptionsOrderFlow(printsArs, flowContext)
+              : null;
+
+          const netDirectionalPremiumUsdCcl =
+            orderFlowArs !== null && cclDiv !== null && cclDiv > 0
+              ? sanitizeFinite(orderFlowArs.netDirectionalPremiumUsd / cclDiv)
+              : null;
+          const callNetPremiumCvdUsdCcl =
+            orderFlowArs !== null && cclDiv !== null && cclDiv > 0
+              ? sanitizeFinite(orderFlowArs.callNetPremiumCvdUsd / cclDiv)
+              : null;
+          const putNetPremiumCvdUsdCcl =
+            orderFlowArs !== null && cclDiv !== null && cclDiv > 0
+              ? sanitizeFinite(orderFlowArs.putNetPremiumCvdUsd / cclDiv)
+              : null;
+
+          const volOiAnomalies =
+            volOiInputs.length >= 2
+              ? detectVolOiAnomaliesMad(
+                  volOiInputs,
+                  flowContext,
+                  { minVolume: 1, minOpenInterest: 1, minBucketSize: 2 },
+                )
+              : null;
+
+          // 2) Flow-Adjusted GEX + GEX/Charm Pin (Pieza 16)
+          const marketExp = {
+            spot,
+            nowUtcSec: evalSec,
+            rate: evalRate,
+            dividendYield,
+            forward:
+              frontExp !== undefined
+                ? spot * Math.exp((evalRate - dividendYield) * Math.max(1 / 365, frontExp.days / 365))
+                : spot,
+          };
+
+          const flowAdjustedGex =
+            allExposureInputs.length > 0
+              ? computeFlowAdjustedSignedGex(
+                  allExposureInputs,
+                  marketExp,
+                  orderFlowArs?.byStrikeFlow ?? [],
+                )
+              : null;
+
+          const gexCharmPin =
+            allExposureInputs.length > 0
+              ? computeGexCharmPin(allExposureInputs, marketExp, { maxPinDte: 60 })
+              : null;
+
+          // 3) Divergencia Probabilística Q vs P & Cono Vol (Pieza 17)
+          let qDistribution: RiskNeutralDistributionResult | null = null;
+          if (frontExp !== undefined) {
+            const frontTExp = Math.max(1 / 365, frontExp.days / 365);
+            const nodeMap = new Map<number, RiskNeutralInputNode>();
+            for (const c of [...frontExp.calls, ...frontExp.puts]) {
+              if (c.iv !== null && c.iv > 0) {
+                if (!nodeMap.has(c.strike) || (c.strike >= spot && c.contractType === 'call') || (c.strike < spot && c.contractType === 'put')) {
+                  nodeMap.set(c.strike, { strike: c.strike, iv: c.iv });
+                }
+              }
+            }
+            const nodes = [...nodeMap.values()].sort((a, b) => a.strike - b.strike);
+            if (nodes.length >= 5) {
+              qDistribution = extractRiskNeutralDistributionQ({
+                spot,
+                rate: evalRate,
+                dividendYield,
+                timeToExpiry: frontTExp,
+                nodes,
+              });
+            }
+          }
+
+          const horizonDays = Math.max(1, frontExp?.days ?? 21);
+          const pDistribution =
+            closedBars.length >= horizonDays + 5
+              ? analyzeEmpiricalDistributionP(
+                  closedBars.map((b) => ({ time: b.time, open: b.open, close: b.close })),
+                  {
+                    asOfUtcSec: evalSec,
+                    spot,
+                    horizonDays,
+                    dailyRiskFreeRate: evalRate / 252,
+                    minHistoryBars: horizonDays + 2,
+                  },
+                )
+              : null;
+
+          const targetLevels = [
+            ...(exposureSummary?.callWallStrike !== null && exposureSummary?.callWallStrike !== undefined
+              ? [{ label: 'Call Wall', price: exposureSummary.callWallStrike, direction: 'ABOVE' as const }]
+              : []),
+            ...(exposureSummary?.putWallStrike !== null && exposureSummary?.putWallStrike !== undefined
+              ? [{ label: 'Put Wall', price: exposureSummary.putWallStrike, direction: 'BELOW' as const }]
+              : []),
+            { label: '+10% Upside', price: spot * 1.1, direction: 'ABOVE' as const },
+            { label: '-10% Downside', price: spot * 0.9, direction: 'BELOW' as const },
+          ];
+
+          const pqDivergence =
+            qDistribution !== null &&
+            qDistribution.status === 'OK' &&
+            pDistribution !== null &&
+            pDistribution.status === 'OK' &&
+            targetLevels.length > 0
+              ? evaluatePqLevelDivergence({
+                  spot,
+                  qDistribution,
+                  pDistribution,
+                  targetLevels,
+                })
+              : null;
+
+          const rollingRv20Series: number[] = [];
+          for (let idx = 21; idx <= closedBars.length; idx += 1) {
+            const rvSlice = computeDailyRealizedVol(closedBars.slice(idx - 21, idx), 20);
+            if (rvSlice !== null && Number.isFinite(rvSlice) && rvSlice > 0) {
+              rollingRv20Series.push(rvSlice);
+            }
+          }
+          const volCone =
+            frontIvAtm !== null && frontIvAtm > 0
+              ? computeVolConeAndRank({
+                  spot,
+                  ivAtm: frontIvAtm,
+                  horizonsDays: [10, 20, 40, 60],
+                  ivHistory: rollingRv20Series,
+                  minIvHistoryCount: 5,
+                })
+              : null;
+
+          // 4) Tasas Sintéticas, Conversion/Reversal, Buy-Write, Calendar Roll (Pieza 17)
+          let syntheticRates: SyntheticImpliedRatesResult | null = null;
+          let conversionReversal: ConversionReversalResult | null = null;
+          let buyWrite: BuyWriteResult | null = null;
+          let calendarRoll: CalendarRollResult | null = null;
+
+          if (frontExp !== undefined && frontExp.days > 0) {
+            const frontTExp = Math.max(1 / 365, frontExp.days / 365);
+            const callByStrike = new Map(frontExp.calls.map((c) => [c.strike, c]));
+            const putByStrike = new Map(frontExp.puts.map((p) => [p.strike, p]));
+            const pairs: { strike: number; callMid: number; putMid: number }[] = [];
+            for (const strike of frontExp.strikes) {
+              const c = callByStrike.get(strike);
+              const p = putByStrike.get(strike);
+              const cMid = c?.mark ?? c?.last ?? null;
+              const pMid = p?.mark ?? p?.last ?? null;
+              if (cMid !== null && cMid > 0 && pMid !== null && pMid > 0) {
+                pairs.push({ strike, callMid: cMid, putMid: pMid });
+              }
+            }
+            if (pairs.length > 0) {
+              syntheticRates = computeSyntheticImpliedRates({
+                spot,
+                riskFreeRate: evalRate,
+                dividendYield,
+                timeToExpiry: frontTExp,
+                pairs,
+              });
+            }
+
+            // ATM executable Conversion/Reversal
+            const sortedStrikes = [...frontExp.strikes].sort(
+              (a, b) => Math.abs(a - spot) - Math.abs(b - spot),
+            );
+            const atmStrike = sortedStrikes[0];
+            if (atmStrike !== undefined && rateTnaPct !== null) {
+              const cAtm = callByStrike.get(atmStrike);
+              const pAtm = putByStrike.get(atmStrike);
+              const sBid = stock?.bid ?? spot;
+              const sAsk = stock?.ask ?? spot;
+              if (
+                cAtm !== undefined &&
+                pAtm !== undefined &&
+                cAtm.bid !== null &&
+                cAtm.bid > 0 &&
+                cAtm.ask !== null &&
+                cAtm.ask >= cAtm.bid &&
+                pAtm.bid !== null &&
+                pAtm.bid > 0 &&
+                pAtm.ask !== null &&
+                pAtm.ask >= pAtm.bid
+              ) {
+                conversionReversal = evaluateConversionReversal({
+                  strike: atmStrike,
+                  timeToExpiry: frontTExp,
+                  riskFreeTna: rateTnaPct / 100,
+                  spotBid: sBid,
+                  spotAsk: sAsk,
+                  callBid: cAtm.bid,
+                  callAsk: cAtm.ask,
+                  putBid: pAtm.bid,
+                  putAsk: pAtm.ask,
+                  stockFeeRate: BYMA_RV_FEE,
+                  optionFeeRate: BYMA_OPTION_FEE,
+                  vatRate: BYMA_VAT_RATE,
+                });
+              }
+            }
+
+            // Covered Call (Buy-Write) sobre primer call OTM >= spot con Bid vivo
+            const otmCall = [...frontExp.calls]
+              .filter((c) => c.strike >= spot && c.bid !== null && c.bid > 0)
+              .sort((a, b) => a.strike - b.strike)[0];
+            if (otmCall !== undefined && otmCall.bid !== null) {
+              buyWrite = evaluateBuyWrite({
+                spotAsk: stock?.ask ?? spot,
+                strike: otmCall.strike,
+                callBid: otmCall.bid,
+                timeToExpiry: frontTExp,
+                stockFeeRate: BYMA_RV_FEE,
+                optionFeeRate: BYMA_OPTION_FEE,
+                vatRate: BYMA_VAT_RATE,
+              });
+            }
+
+            // Calendar Roll si hay >= 2 vencimientos
+            const secondExp = expiries[1];
+            if (secondExp !== undefined && secondExp.days > frontExp.days) {
+              const farCallByStrike = new Map(secondExp.calls.map((c) => [c.strike, c]));
+              const sharedCall = [...frontExp.calls]
+                .filter((c) => {
+                  const farC = farCallByStrike.get(c.strike);
+                  return (
+                    c.ask !== null &&
+                    c.ask > 0 &&
+                    c.thetaDaily !== null &&
+                    c.vegaPer1Pct !== null &&
+                    farC !== undefined &&
+                    farC.bid !== null &&
+                    farC.bid > 0 &&
+                    farC.thetaDaily !== null &&
+                    farC.vegaPer1Pct !== null
+                  );
+                })
+                .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
+              if (sharedCall !== undefined) {
+                const farC = farCallByStrike.get(sharedCall.strike);
+                if (
+                  farC !== undefined &&
+                  sharedCall.ask !== null &&
+                  farC.bid !== null &&
+                  sharedCall.thetaDaily !== null &&
+                  farC.thetaDaily !== null &&
+                  sharedCall.vegaPer1Pct !== null &&
+                  farC.vegaPer1Pct !== null
+                ) {
+                  calendarRoll = evaluateCalendarRoll({
+                    spot,
+                    strike: sharedCall.strike,
+                    nearAsk: sharedCall.ask,
+                    farBid: farC.bid,
+                    nearTimeToExpiry: Math.max(1 / 365, frontExp.days / 365),
+                    farTimeToExpiry: Math.max(1 / 365, secondExp.days / 365),
+                    nearThetaDaily: sharedCall.thetaDaily,
+                    farThetaDaily: farC.thetaDaily,
+                    nearVegaPer1Pct: sharedCall.vegaPer1Pct,
+                    farVegaPer1Pct: farC.vegaPer1Pct,
+                    optionFeeRate: BYMA_OPTION_FEE,
+                    vatRate: BYMA_VAT_RATE,
+                  });
+                }
+              }
+            }
+          }
+
+          // 5) Confluencias Espaciales (< 0.15 ATR) + Optimizador "Las 3 Maneras de Jugarla" (Pieza 18)
+          const dealerLevels: SpatialLevelInput[] = [];
+          if (exposureSummary?.callWallStrike !== null && exposureSummary?.callWallStrike !== undefined) {
+            dealerLevels.push({
+              name: 'Call Wall',
+              category: 'OPTIONS_DEALER',
+              price: exposureSummary.callWallStrike,
+              expectedReaction: 'RESISTANCE_BEARISH',
+            });
+          }
+          if (exposureSummary?.putWallStrike !== null && exposureSummary?.putWallStrike !== undefined) {
+            dealerLevels.push({
+              name: 'Put Wall',
+              category: 'OPTIONS_DEALER',
+              price: exposureSummary.putWallStrike,
+              expectedReaction: 'SUPPORT_BULLISH',
+            });
+          }
+          if (exposureSummary?.gammaFlipSpot !== null && exposureSummary?.gammaFlipSpot !== undefined) {
+            dealerLevels.push({
+              name: 'Gamma Flip',
+              category: 'OPTIONS_DEALER',
+              price: exposureSummary.gammaFlipSpot,
+              expectedReaction: 'MAGNET_NEUTRAL',
+            });
+          }
+          if (gexCharmPin !== null && Number.isFinite(gexCharmPin.gexCharmPinStrike)) {
+            dealerLevels.push({
+              name: 'GEX/Charm Pin',
+              category: 'OPTIONS_DEALER',
+              price: gexCharmPin.gexCharmPinStrike,
+              expectedReaction: 'MAGNET_NEUTRAL',
+            });
+          }
+          const optionsDeltaFlowSign =
+            orderFlowArs !== null
+              ? orderFlowArs.netDeltaShares > 0
+                ? 1
+                : orderFlowArs.netDeltaShares < 0
+                  ? -1
+                  : 0
+              : 0;
+          const stockInst = this.computeStockInstitutionalEngines({
+            asOfUtcSec: evalSec,
+            spot,
+            bars,
+            benchmarkBars: bars,
+            dealerLevels,
+            optionsDeltaFlowSign,
+          });
+          const confluenceClusters = stockInst.confluenceClusters;
+
+          let structureOptimizerBullish: OptimizeOptionStructuresResult | null = null;
+          let structureOptimizerBearish: OptimizeOptionStructuresResult | null = null;
+          let structureCostPercentile: StructureCostPercentileResult | null = null;
+
+          if (
+            frontExp !== undefined &&
+            pDistribution !== null &&
+            pDistribution.status === 'OK' &&
+            pDistribution.projectedTerminalPrices.length >= 2
+          ) {
+            const optimizerContracts: OptimizerOptionContractInput[] = [];
+            for (const c of [...frontExp.calls, ...frontExp.puts]) {
+              if (
+                c.bid !== null &&
+                c.bid > 0 &&
+                c.ask !== null &&
+                c.ask >= c.bid &&
+                c.delta !== null &&
+                Number.isFinite(c.delta) &&
+                c.iv !== null &&
+                c.iv > 0
+              ) {
+                optimizerContracts.push({
+                  strike: c.strike,
+                  contractType: c.contractType,
+                  bid: c.bid,
+                  ask: c.ask,
+                  delta: c.delta,
+                  iv: c.iv,
+                });
+              }
+            }
+
+            if (optimizerContracts.length >= 2) {
+              // Histograma empírico ordenado sobre projectedTerminalPrices
+              const proj = [...pDistribution.projectedTerminalPrices].sort((a, b) => a - b);
+              const minP = proj[0];
+              const maxP = proj[proj.length - 1];
+              if (minP !== undefined && maxP !== undefined && maxP > minP) {
+                const binsCount = Math.min(20, Math.max(8, Math.floor(Math.sqrt(proj.length))));
+                const step = (maxP - minP) / binsCount;
+                const terminalPrices: number[] = [];
+                const empiricalProbs: number[] = [];
+                for (let bIdx = 0; bIdx < binsCount; bIdx += 1) {
+                  const lowEdge = minP + bIdx * step;
+                  const highEdge = bIdx === binsCount - 1 ? maxP + 1e-9 : lowEdge + step;
+                  const count = proj.filter((v) => v >= lowEdge && v < highEdge).length;
+                  if (count > 0) {
+                    terminalPrices.push(lowEdge + 0.5 * step);
+                    empiricalProbs.push(count / proj.length);
+                  }
+                }
+                if (terminalPrices.length >= 2) {
+                  structureOptimizerBullish = optimizeOptionStructures({
+                    spot,
+                    targetPrice: spot * 1.12,
+                    direction: 'BULLISH',
+                    dte: frontExp.days,
+                    lotSize: OPTION_LOT_SIZE,
+                    contracts: optimizerContracts,
+                    terminalPrices,
+                    empiricalProbs,
+                    feeRate: BYMA_OPTION_FEE,
+                    vatRate: BYMA_VAT_RATE,
+                  });
+                  structureOptimizerBearish = optimizeOptionStructures({
+                    spot,
+                    targetPrice: spot * 0.88,
+                    direction: 'BEARISH',
+                    dte: frontExp.days,
+                    lotSize: OPTION_LOT_SIZE,
+                    contracts: optimizerContracts,
+                    terminalPrices,
+                    empiricalProbs,
+                    feeRate: BYMA_OPTION_FEE,
+                    vatRate: BYMA_VAT_RATE,
+                  });
+
+                  const bestDebit =
+                    structureOptimizerBullish.bestByExpectedValue ??
+                    structureOptimizerBullish.bestByPop ??
+                    structureOptimizerBullish.candidates[0] ??
+                    null;
+                  if (
+                    bestDebit !== null &&
+                    Number.isFinite(bestDebit.costPctOfWidth) &&
+                    rollingRv20Series.length >= 10 &&
+                    frontIvAtm !== null &&
+                    frontIvAtm > 0
+                  ) {
+                    const costSeries = rollingRv20Series.map(
+                      (rv) => bestDebit.costPctOfWidth * (rv / frontIvAtm),
+                    );
+                    structureCostPercentile = computeStructureCostPercentile({
+                      currentCostPctOfWidth: bestDebit.costPctOfWidth,
+                      historicalCostPctSeries: costSeries,
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          quantEngines = sanitizeJsonPayload({
+            orderFlowArs,
+            netDirectionalPremiumUsdCcl,
+            callNetPremiumCvdUsdCcl,
+            putNetPremiumCvdUsdCcl,
+            volOiAnomalies,
+            flowAdjustedGex,
+            gexCharmPin,
+            qDistribution,
+            pDistribution,
+            pqDivergence,
+            volCone,
+            syntheticRates,
+            conversionReversal,
+            buyWrite,
+            calendarRoll,
+            structureOptimizerBullish,
+            structureOptimizerBearish,
+            structureCostPercentile,
+            confluenceClusters,
+          });
+        }
+
         const feedStatus: FeedStatus =
           spot === null && expiries.length === 0
             ? 'NO_DATA'
@@ -2755,6 +3908,7 @@ export class ArgentinaMarketRuntime {
             vatRate: BYMA_VAT_RATE,
             bondsVatExempt: true as const,
           },
+          quantEngines,
           providerErrors,
         };
       },
@@ -2769,7 +3923,7 @@ export class ArgentinaMarketRuntime {
       'ar:relations',
       async () => {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
-        const [overview, gd30H, al30H, ggalH, bmaH, ypfdH, vistaH] = await Promise.all([
+        const [overview, gd30H, al30H, ggalH, bmaH, ypfdH, vistaH, pampH, spyH, qqqH] = await Promise.all([
           this.getOverview(forceRefresh),
           this.getData912History('bonds', 'GD30D', forceRefresh),
           this.getData912History('bonds', 'AL30D', forceRefresh),
@@ -2777,6 +3931,9 @@ export class ArgentinaMarketRuntime {
           this.getData912History('stocks', 'BMA', forceRefresh),
           this.getData912History('stocks', 'YPFD', forceRefresh),
           this.getData912History('cedears', 'VISTA', forceRefresh),
+          this.getData912History('stocks', 'PAMP', forceRefresh),
+          this.getData912History('cedears', 'SPY', forceRefresh),
+          this.getData912History('cedears', 'QQQ', forceRefresh),
         ]);
 
         const buildPair = (
@@ -2859,6 +4016,12 @@ export class ArgentinaMarketRuntime {
           buildPair('ypfd-vista', 'Ratio Energía YPFD / VISTA', 'YPFD', 'VISTA', 'x', ypfdH.bars, vistaH.bars, 'RATIO'),
         ];
 
+        const extendedPairs: ArRelationPairDto[] = [
+          ...pairs,
+          buildPair('ypfd-pamp', 'Ratio Energía Local YPFD / PAMP', 'YPFD', 'PAMP', 'x', ypfdH.bars, pampH.bars, 'RATIO'),
+          buildPair('spy-qqq', 'Ratio Índices CEDEAR SPY / QQQ', 'SPY', 'QQQ', 'x', spyH.bars, qqqH.bars, 'RATIO'),
+        ];
+
         const providerErrors = [
           ...overview.providerErrors,
           ...[gd30H.error, al30H.error, ggalH.error, bmaH.error, ypfdH.error, vistaH.error].filter(
@@ -2871,6 +4034,7 @@ export class ArgentinaMarketRuntime {
           feedStatus: pairs.some((p) => p.currentValue !== null) ? overview.feedStatus : 'PARTIAL',
           providerErrors,
           pairs,
+          extendedPairs,
           mepCclArbitrage: overview.mepCclMatrix,
         };
       },

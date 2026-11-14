@@ -47,6 +47,7 @@ export interface HttpWsServerOptions {
   readonly port?: number;
   readonly secrets?: readonly string[];
   readonly startRuntimeWs?: boolean;
+  readonly enableBackgroundWarmup?: boolean;
 }
 
 export interface HttpWsServerHandle {
@@ -188,6 +189,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
   const startRuntimeWs = options.startRuntimeWs ?? false;
+  const enableBackgroundWarmup = options.enableBackgroundWarmup ?? false;
+  let warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY' = 'IDLE';
 
   const clientStates = new WeakMap<WebSocket, ClientSubscriptionState>();
 
@@ -215,7 +218,10 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
     try {
       if (pathname === '/api/health') {
-        sendJson(res, 200, runtime.getHealth());
+        sendJson(res, 200, {
+          ...runtime.getHealth(),
+          warmupStatus,
+        });
         return;
       }
 
@@ -411,6 +417,13 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (startRuntimeWs) {
         await runtime.startWs();
+      }
+
+      if (enableBackgroundWarmup) {
+        warmupStatus = 'WARMING_UP';
+        void Promise.allSettled([arRuntime.warmup(), runtime.warmup()]).finally(() => {
+          warmupStatus = 'READY';
+        });
       }
 
       const address = httpServer.address();

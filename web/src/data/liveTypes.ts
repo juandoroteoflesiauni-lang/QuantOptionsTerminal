@@ -1,4 +1,4 @@
-export type FeedStatus = 'LIVE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
+export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
 export interface GlobalIndicatorDto {
   readonly id: string;
@@ -126,6 +126,7 @@ export interface ArMacroResponse {
     readonly badlarTna: number | null;
     readonly tamarTna: number | null;
     readonly tpmTna: number | null;
+    readonly plazoFijoTna?: number | null;
     readonly cer: number | null;
     readonly uva: number | null;
     readonly reservasUsdM: number | null;
@@ -193,7 +194,386 @@ export interface ArStockDetailResponse {
   readonly ema21: number | null;
   readonly mtfRegime: string;
   readonly relatedOptionsCount: number;
+  readonly institutionalEngines?: ArStockInstitutionalEnginesDto | null;
   readonly providerErrors: readonly string[];
+}
+
+export interface VolumeProfileBinDto {
+  readonly price: number | null;
+  readonly volume: number | null;
+  readonly volumeShare: number | null;
+  readonly volumePercentile: number | null;
+  readonly classification: string;
+}
+
+export interface VolumeProfileAmtDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly asOfUtcSec: number;
+  readonly poc: number | null;
+  readonly vah: number | null;
+  readonly val: number | null;
+  readonly profileVwap: number | null;
+  readonly totalVolume: number | null;
+  readonly valueAreaCoverage: number | null;
+  readonly bins: readonly VolumeProfileBinDto[];
+  readonly hvnBins: readonly VolumeProfileBinDto[];
+  readonly lvnBins: readonly VolumeProfileBinDto[];
+}
+
+export interface NakedPocRecordDto {
+  readonly sessionDate: string;
+  readonly sessionPoc: number | null;
+}
+
+export interface TrackNakedPocsDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly activeNakedPocs: readonly NakedPocRecordDto[];
+}
+
+export interface QuantitativeFvgRecordDto {
+  readonly id: string;
+  readonly type: 'BULLISH_FVG' | 'BEARISH_FVG';
+  readonly formedAtTime: number;
+  readonly gapLow: number | null;
+  readonly gapHigh: number | null;
+  readonly gapWidth: number | null;
+  readonly consequentEncroachment: number | null;
+  readonly rangeZScore: number | null;
+  readonly fillPct: number | null;
+  readonly isMitigated: boolean;
+}
+
+export interface QuantitativeFvgDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly fvgs: readonly QuantitativeFvgRecordDto[];
+  readonly activeFvgs: readonly QuantitativeFvgRecordDto[];
+}
+
+export interface FreshOrderBlockRecordDto {
+  readonly id: string;
+  readonly type: 'BULLISH_FOB' | 'BEARISH_FOB';
+  readonly formedAtTime: number;
+  readonly zoneLow: number | null;
+  readonly zoneHigh: number | null;
+  readonly anchorPrice: number | null;
+  readonly anchorSource: string;
+  readonly displacementZScore: number | null;
+  readonly darkPoolShare: number | null;
+  readonly isFresh: boolean;
+  readonly isMitigated: boolean;
+}
+
+export interface FreshOrderBlockDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly orderBlocks: readonly FreshOrderBlockRecordDto[];
+  readonly freshOrderBlocks: readonly FreshOrderBlockRecordDto[];
+}
+
+export interface SpatialConfluenceClusterDto {
+  readonly centroidPrice: number | null;
+  readonly bandLow: number | null;
+  readonly bandHigh: number | null;
+  readonly bandWidthAtr: number | null;
+  readonly distanceToSpotAtr: number | null;
+  readonly levels: readonly {
+    readonly name: string;
+    readonly category: string;
+    readonly price: number | null;
+    readonly expectedReaction: string;
+  }[];
+  readonly distinctCategories: readonly string[];
+  readonly distinctCategoriesCount: number;
+  readonly isTripleConfluence: boolean;
+  readonly expectedReaction: string;
+  readonly triggerAligned: boolean;
+  readonly clusterStrength: number | null;
+}
+
+export interface SpatialConfluenceDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly spot: number | null;
+  readonly atr: number | null;
+  readonly clusterRadiusAtr: number | null;
+  readonly clusters: readonly SpatialConfluenceClusterDto[];
+  readonly tripleConfluenceCount: number;
+  readonly strongestClusterCentroid: number | null;
+  readonly strongestClusterStrength: number | null;
+}
+
+export interface RelativeStrengthAndCatalystsDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly assetReturn: number | null;
+  readonly benchmarkReturn: number | null;
+  readonly rsSpread: number | null;
+  readonly rsRatioChange: number | null;
+  readonly rsClassification: string;
+  readonly hoursToEarnings: number | null;
+  readonly entryBlocked: boolean;
+  readonly blockReason: string;
+}
+
+export interface SignedOptionsOrderFlowDto {
+  readonly evaluatedPrints: number;
+  readonly callBuyPremiumUsd: number | null;
+  readonly callSellPremiumUsd: number | null;
+  readonly callNetPremiumCvdUsd: number | null;
+  readonly putBuyPremiumUsd: number | null;
+  readonly putSellPremiumUsd: number | null;
+  readonly putNetPremiumCvdUsd: number | null;
+  readonly netDirectionalPremiumUsd: number | null;
+  readonly netDeltaShares: number | null;
+  readonly netVegaUsd: number | null;
+}
+
+export interface VolOiAnomalyContractDto {
+  readonly contractTicker: string;
+  readonly strike: number | null;
+  readonly expiryUtcSec: number;
+  readonly contractType: 'call' | 'put';
+  readonly dteDays: number | null;
+  readonly dayVolume: number | null;
+  readonly openInterest: number | null;
+  readonly volOiRatio: number | null;
+  readonly madLogScore: number | null;
+  readonly isAnomaly: boolean;
+  readonly delta: number | null;
+}
+
+export interface VolOiAnomalyDetectionDto {
+  readonly evaluatedContracts: number;
+  readonly anomalies: readonly VolOiAnomalyContractDto[];
+}
+
+export interface FlowAdjustedGexDto {
+  readonly spot: number | null;
+  readonly totalSignedDollarGex: number | null;
+  readonly totalCharmExposure: number | null;
+  readonly callWallStrike: number | null;
+  readonly putWallStrike: number | null;
+}
+
+export interface GexCharmPinDto {
+  readonly gexCharmPinStrike: number | null;
+  readonly peakPinStrike: number | null;
+  readonly pinMagnetStrength: number | null;
+  readonly eligibleContractsCount: number;
+}
+
+export interface WheelByWheelTrackerDto {
+  readonly regime: string;
+  readonly spotReturnPct: number | null;
+  readonly gammaFlipChange: number | null;
+  readonly gexCharmPinChange: number | null;
+  readonly distanceToPinPct: number | null;
+  readonly isLateSessionEt: boolean;
+  readonly snapshotsCount: number;
+}
+
+export interface RiskNeutralDistributionDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly meanQ: number | null;
+  readonly stdDevQ: number | null;
+  readonly skewnessQ: number | null;
+  readonly excessKurtosisQ: number | null;
+}
+
+export interface EmpiricalDistributionDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly usedBarsCount: number;
+  readonly horizonSamplesCount: number;
+  readonly meanLogReturn: number | null;
+  readonly stdDevLogReturn: number | null;
+  readonly skewness: number | null;
+  readonly excessKurtosis: number | null;
+  readonly overnightVarianceShare: number | null;
+  readonly rthVarianceShare: number | null;
+  readonly tailEventsCount: number;
+  readonly tailFrequencyPct: number | null;
+}
+
+export interface PqLevelDivergenceDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly levels: readonly {
+    readonly label: string;
+    readonly price: number | null;
+    readonly direction: 'ABOVE' | 'BELOW';
+    readonly probP: number | null;
+    readonly probQ: number | null;
+    readonly pqSpread: number | null;
+    readonly pqRatio: number | null;
+    readonly classification: string;
+  }[];
+}
+
+export interface VolConeAndRankDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly ivAtm: number | null;
+  readonly ivMin: number | null;
+  readonly ivMax: number | null;
+  readonly ivRank: number | null;
+  readonly ivPercentile: number | null;
+  readonly cones: readonly {
+    readonly horizonDays: number | null;
+    readonly sigmaMovePct: number | null;
+    readonly upper1Sigma: number | null;
+    readonly lower1Sigma: number | null;
+    readonly upper2Sigma: number | null;
+    readonly lower2Sigma: number | null;
+  }[];
+}
+
+export interface SyntheticImpliedRatesDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly medianImpliedRate: number | null;
+  readonly medianImpliedTna: number | null;
+  readonly impliedBorrowRate: number | null;
+  readonly borrowRegime: string;
+}
+
+export interface ConversionReversalDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly conversionAnnualizedTna: number | null;
+  readonly reversalAnnualizedTna: number | null;
+  readonly netEdgeVsRiskFreeBps: number | null;
+  readonly arbitrageSignal: string;
+}
+
+export interface BuyWriteDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly netCostBasis: number | null;
+  readonly breakevenPrice: number | null;
+  readonly downsideProtectionPct: number | null;
+  readonly staticReturnPct: number | null;
+  readonly staticAnnualizedTna: number | null;
+  readonly maxAssignedReturnPct: number | null;
+  readonly assignedAnnualizedTna: number | null;
+}
+
+export interface CalendarRollDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly netRollCredit: number | null;
+  readonly annualizedRollYield: number | null;
+  readonly annualizedRollYieldOnSpot: number | null;
+  readonly netThetaDiff: number | null;
+  readonly netVegaDiff: number | null;
+}
+
+export interface EvaluatedStructureLegDto {
+  readonly strike: number | null;
+  readonly contractType: 'call' | 'put';
+  readonly side: 'BUY' | 'SELL';
+  readonly quantity: number;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly executionPrice: number | null;
+  readonly feeAmount: number | null;
+  readonly vatAmount: number | null;
+}
+
+export interface EvaluatedOptionStructureDto {
+  readonly id: string;
+  readonly kind: string;
+  readonly label: string;
+  readonly direction: 'BULLISH' | 'BEARISH';
+  readonly legs: readonly EvaluatedStructureLegDto[];
+  readonly isDefinedRisk: boolean;
+  readonly grossDebitOrCredit: number | null;
+  readonly totalFees: number | null;
+  readonly totalVat: number | null;
+  readonly totalFriction: number | null;
+  readonly netDebitOrCredit: number | null;
+  readonly spreadWidth: number | null;
+  readonly costPctOfWidth: number | null;
+  readonly maxLoss: number | null;
+  readonly capitalAtRisk: number | null;
+  readonly maxProfit: number | null;
+  readonly breakevenPrices: readonly number[];
+  readonly pop: number | null;
+  readonly expectedValue: number | null;
+  readonly expectedReturnOnRisk: number | null;
+  readonly convexityScore: number | null;
+}
+
+export interface OptimizeOptionStructuresDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly direction: 'BULLISH' | 'BEARISH';
+  readonly spot: number | null;
+  readonly targetPrice: number | null;
+  readonly dte: number | null;
+  readonly lotSize: number | null;
+  readonly liquidContractsCount: number;
+  readonly candidates: readonly EvaluatedOptionStructureDto[];
+  readonly bestByPop: EvaluatedOptionStructureDto | null;
+  readonly bestByExpectedValue: EvaluatedOptionStructureDto | null;
+  readonly bestByConvexity: EvaluatedOptionStructureDto | null;
+}
+
+export interface StructureCostPercentileDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly currentCostPctOfWidth: number | null;
+  readonly percentile: number | null;
+  readonly regime: string;
+  readonly observationsUsed: number;
+}
+
+export interface ArStockInstitutionalEnginesDto {
+  readonly atr14: number | null;
+  readonly cvdSlopeSign: number | null;
+  readonly volumeProfile: VolumeProfileAmtDto | null;
+  readonly nakedPocs: TrackNakedPocsDto | null;
+  readonly fvgs: QuantitativeFvgDto | null;
+  readonly orderBlocks: FreshOrderBlockDto | null;
+  readonly relativeStrength: RelativeStrengthAndCatalystsDto | null;
+  readonly confluenceClusters: SpatialConfluenceDto | null;
+}
+
+export interface ArOptionsQuantEnginesDto {
+  readonly orderFlowArs: SignedOptionsOrderFlowDto | null;
+  readonly netDirectionalPremiumUsdCcl: number | null;
+  readonly callNetPremiumCvdUsdCcl: number | null;
+  readonly putNetPremiumCvdUsdCcl: number | null;
+  readonly volOiAnomalies: VolOiAnomalyDetectionDto | null;
+  readonly flowAdjustedGex: FlowAdjustedGexDto | null;
+  readonly gexCharmPin: GexCharmPinDto | null;
+  readonly qDistribution: RiskNeutralDistributionDto | null;
+  readonly pDistribution: EmpiricalDistributionDto | null;
+  readonly pqDivergence: PqLevelDivergenceDto | null;
+  readonly volCone: VolConeAndRankDto | null;
+  readonly syntheticRates: SyntheticImpliedRatesDto | null;
+  readonly conversionReversal: ConversionReversalDto | null;
+  readonly buyWrite: BuyWriteDto | null;
+  readonly calendarRoll: CalendarRollDto | null;
+  readonly structureOptimizerBullish: OptimizeOptionStructuresDto | null;
+  readonly structureOptimizerBearish: OptimizeOptionStructuresDto | null;
+  readonly structureCostPercentile: StructureCostPercentileDto | null;
+  readonly confluenceClusters: SpatialConfluenceDto | null;
+}
+
+export interface SerializedTerminalEnginesDto {
+  readonly atr14d: number | null;
+  readonly cvdSlopeSign: number | null;
+  readonly volumeProfile: VolumeProfileAmtDto | null;
+  readonly nakedPocs: TrackNakedPocsDto | null;
+  readonly fvgs: QuantitativeFvgDto | null;
+  readonly orderBlocks: FreshOrderBlockDto | null;
+  readonly orderFlow: SignedOptionsOrderFlowDto | null;
+  readonly volOiAnomalies: VolOiAnomalyDetectionDto | null;
+  readonly flowAdjustedGex: FlowAdjustedGexDto | null;
+  readonly gexCharmPin: GexCharmPinDto | null;
+  readonly wheelTracker: WheelByWheelTrackerDto | null;
+  readonly qDistribution: RiskNeutralDistributionDto | null;
+  readonly pDistribution: EmpiricalDistributionDto | null;
+  readonly pqDivergence: PqLevelDivergenceDto | null;
+  readonly volCone: VolConeAndRankDto | null;
+  readonly syntheticRates: SyntheticImpliedRatesDto | null;
+  readonly conversionReversal: ConversionReversalDto | null;
+  readonly buyWrite: BuyWriteDto | null;
+  readonly calendarRoll: CalendarRollDto | null;
+  readonly relativeStrength: RelativeStrengthAndCatalystsDto | null;
+  readonly confluenceClusters: SpatialConfluenceDto | null;
+  readonly structureOptimizerBullish: OptimizeOptionStructuresDto | null;
+  readonly structureOptimizerBearish: OptimizeOptionStructuresDto | null;
+  readonly structureCostPercentile: StructureCostPercentileDto | null;
 }
 
 export interface ArOptionContractDto {
@@ -279,6 +659,7 @@ export interface ArOptionsResponse {
     readonly vatRate: number;
     readonly bondsVatExempt: true;
   };
+  readonly quantEngines?: ArOptionsQuantEnginesDto | null;
   readonly providerErrors: readonly string[];
 }
 
@@ -302,6 +683,7 @@ export interface ArRelationsResponse {
   readonly feedStatus: FeedStatus;
   readonly providerErrors: readonly string[];
   readonly pairs: readonly ArRelationPairDto[];
+  readonly extendedPairs?: readonly ArRelationPairDto[];
   readonly mepCclArbitrage: readonly MepCclArbitrageRow[];
 }
 
@@ -316,24 +698,99 @@ export interface UsUnifiedQuoteDto {
   readonly volume: number | null;
 }
 
+export interface UsOptionContractRowDto {
+  readonly ticker: string;
+  readonly contractType: 'call' | 'put';
+  readonly strike: number;
+  readonly expirationDate: string;
+  readonly expiryUtcSec: number;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly mid: number | null;
+  readonly lastPrice: number | null;
+  readonly openInterest: number | null;
+  readonly volume: number | null;
+  readonly ownIv: number | null;
+  readonly providerIv: number | null;
+  readonly ivSource: 'OWN' | 'PROVIDER' | 'NONE';
+  readonly delta: number | null;
+  readonly gamma: number | null;
+  readonly thetaDaily: number | null;
+  readonly vegaPer1Pct: number | null;
+  readonly vanna: number | null;
+  readonly charm: number | null;
+}
+
+export interface UsVolSliceSummaryDto {
+  readonly expirySec: number;
+  readonly expirationDate: string;
+  readonly timeToExpiryYears: number;
+  readonly timeToExpiryDays: number;
+  readonly forward: number | null;
+  readonly rate: number | null;
+  readonly dividendYield: number | null;
+  readonly ivAtm: number | null;
+  readonly riskReversal25: number | null;
+  readonly butterfly25: number | null;
+  readonly isButterflyArbitrageFree: boolean;
+}
+
 export interface UsSnapshotResponseDto {
   readonly status: 'OK' | 'PARTIAL';
+  readonly feedMode?: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA';
   readonly symbol: string;
+  readonly correlatedSymbol?: string;
+  readonly isIndex?: boolean;
   readonly asOfUtcSec: number;
   readonly marketContext?: {
     readonly unifiedQuotes?: readonly UsUnifiedQuoteDto[];
     readonly treasury?: {
+      readonly date?: string | null;
+      readonly yield1M?: number | null;
+      readonly yield3M?: number | null;
+      readonly yield1Y?: number | null;
       readonly yield2Y?: number | null;
       readonly yield10Y?: number | null;
+      readonly sofr?: number | null;
+      readonly rate30d?: number | null;
+      readonly dividendYieldFront?: number | null;
     };
     readonly vixLevel?: number | null;
+    readonly vixSlope?: number | null;
+    readonly vixRegime?: string;
+    readonly skewLevel?: number | null;
+    readonly tailRiskAlert?: boolean | null;
   };
+  readonly exposureSummary?: {
+    readonly netGex: number | null;
+    readonly netDex: number | null;
+    readonly callWallStrike: number | null;
+    readonly putWallStrike: number | null;
+    readonly gammaFlipSpot: number | null;
+    readonly gammaFlipStatus: string;
+    readonly expectedMove?: {
+      readonly expiryUtcSec: number | null;
+      readonly formulaMove: number | null;
+      readonly formulaMovePct: number | null;
+      readonly straddleMove: number | null;
+      readonly straddleMovePct: number | null;
+    };
+  } | null;
   readonly volSurfaceSummary?: {
     readonly iv30d?: number | null;
+    readonly butterflyArbitrageFree?: boolean;
+    readonly calendarArbitrageFree?: boolean;
+    readonly isArbitrageFree?: boolean;
+    readonly frontSlice?: UsVolSliceSummaryDto | null;
+    readonly slices?: readonly UsVolSliceSummaryDto[];
+    readonly contracts?: readonly UsOptionContractRowDto[];
   } | null;
   readonly envelope?: {
     readonly metrics?: {
       readonly spot?: { readonly value: number | null };
+      readonly realizedVol20d?: { readonly value: number | null };
+      readonly realizedVol60d?: { readonly value: number | null };
     };
   };
+  readonly terminalEngines?: SerializedTerminalEnginesDto | null;
 }

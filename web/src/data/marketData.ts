@@ -870,7 +870,8 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
 }
 
 export function hydrateFromArRelations(rel: ArRelationsResponse): void {
-  const mapped: RatioArbitragePair[] = rel.pairs.map((p) => {
+  const sourcePairs = rel.extendedPairs && rel.extendedPairs.length > 0 ? rel.extendedPairs : rel.pairs;
+  const mapped: RatioArbitragePair[] = sourcePairs.map((p) => {
     const lower = p.id.toLowerCase();
     const category: RatioArbitragePair['category'] =
       lower.includes('gd30') || lower.includes('al30')
@@ -910,10 +911,24 @@ export function hydrateFromArRelations(rel: ArRelationsResponse): void {
 export function hydrateFromUsSnapshot(snap: UsSnapshotResponseDto): void {
   const spot = snap.envelope?.metrics?.spot?.value ?? null;
   const iv30 = snap.volSurfaceSummary?.iv30d ?? null;
-  const target = US_MARKET_DATA.find((u) => u.ticker === snap.symbol);
+  const target = US_MARKET_DATA.find((u) => u.ticker === snap.symbol.toUpperCase());
   if (target) {
-    if (spot !== null && Number.isFinite(spot)) target.price = spot;
+    if (spot !== null && Number.isFinite(spot)) {
+      target.price = spot;
+      if (Number.isFinite(target.cedearArsPrice) && spot > 0 && target.cedearRatioNum > 0) {
+        target.cclImplicit = (target.cedearArsPrice * target.cedearRatioNum) / spot;
+      }
+    }
     if (iv30 !== null && Number.isFinite(iv30)) target.iv30d = iv30 * 100;
+  }
+  if (snap.symbol.toUpperCase() === 'SPY' && spot !== null && Number.isFinite(spot)) {
+    const sp = GLOBAL_INDICATORS.find((g) => g.id === 'sp500');
+    if (sp) sp.value = spot;
+  }
+  const vixCtx = snap.marketContext?.vixLevel ?? null;
+  if (vixCtx !== null && Number.isFinite(vixCtx)) {
+    const vx = GLOBAL_INDICATORS.find((g) => g.id === 'vix');
+    if (vx) vx.value = vixCtx;
   }
 
   for (const q of snap.marketContext?.unifiedQuotes ?? []) {

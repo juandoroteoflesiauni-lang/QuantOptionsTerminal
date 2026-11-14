@@ -582,17 +582,32 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
+                {(!liveMarket.isBackendConnected || liveMarket.warmupStatus === 'WARMING_UP') && (
+                  <span
+                    title={
+                      !liveMarket.isBackendConnected
+                        ? 'Reconectando con el servidor backend...'
+                        : 'Precargando universo 24/7 EOD e indicadores...'
+                    }
+                    className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-[8px] border border-[#2A3347] bg-[#121722] text-[#9CA3AF] text-[10.5px] font-mono-num"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#EAB308] animate-pulse" />
+                    {!liveMarket.isBackendConnected ? 'CONECTANDO...' : 'PRECARGANDO EOD...'}
+                  </span>
+                )}
                 <span
                   title={liveMarket.marketStateLabel}
                   className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[11px] font-mono-num font-semibold ${
                     liveMarket.feedStatus === 'LIVE'
                       ? 'bg-[#0D221E] text-[#22C55E] border-[#164E3F]'
+                      : liveMarket.feedStatus === 'EOD_CIERRE'
+                      ? 'bg-[#132033] text-[#38BDF8] border-[#1E3A5F]'
                       : liveMarket.feedStatus === 'DIFERIDO_20M' || liveMarket.feedStatus === 'PARTIAL'
                       ? 'bg-[#281E0E] text-[#F5B544] border-[#59411A]'
                       : 'bg-[#1A1318] text-[#F23645] border-[#4A2229]'
                   }`}
                 >
-                  {liveMarket.feedStatus}
+                  {liveMarket.feedStatus === 'EOD_CIERRE' ? 'EOD · ÚLTIMO CIERRE' : liveMarket.feedStatus}
                 </span>
                 <div className="hidden sm:flex items-center gap-1 p-1 rounded-[8px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)] text-[11px]">
                   <span className="px-2 text-[var(--text-tertiary)]">Densidad:</span>

@@ -8,7 +8,9 @@
  *  - `DISABLE_WS=1` (desactiva conexión WebSocket saliente a Massive si se requiere modo REST-only)
  */
 
-import { fileURLToPath } from 'node:url';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createHttpWsServer } from './httpWsServer.js';
 import {
   DEFAULT_TERMINAL_SYMBOLS,
@@ -53,6 +55,7 @@ export async function startServerFromEnv(env: NodeJS.ProcessEnv = process.env): 
     port,
     secrets: auth.secrets,
     startRuntimeWs: enableWs,
+    enableBackgroundWarmup: env['DISABLE_WARMUP'] !== '1',
   });
 
   const addr = await handle.start();
@@ -67,13 +70,30 @@ export async function startServerFromEnv(env: NodeJS.ProcessEnv = process.env): 
   };
 }
 
+const argvEntry = process.argv[1];
 const isEntrypoint =
-  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1];
+  argvEntry !== undefined &&
+  pathToFileURL(resolve(argvEntry)).href.toLowerCase() === import.meta.url.toLowerCase();
 
 if (isEntrypoint) {
+  const withWeb =
+    process.argv.includes('--with-web') || process.env['WITH_WEB'] === '1';
+
   startServerFromEnv()
     .then((serverHandle) => {
+      let webProc: ChildProcess | null = null;
+      if (withWeb) {
+        console.info('[QuantOptionsTerminal] starting Vite UI on http://localhost:5173 ...');
+        webProc = spawn('npm', ['--prefix', 'web', 'run', 'dev'], {
+          stdio: 'inherit',
+          shell: process.platform === 'win32',
+        });
+      }
+
       const shutdown = (): void => {
+        if (webProc !== null && !webProc.killed) {
+          webProc.kill('SIGTERM');
+        }
         void serverHandle.stop().finally(() => {
           process.exit(0);
         });

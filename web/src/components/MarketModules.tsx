@@ -687,6 +687,8 @@ export const MacroModule: React.FC = () => {
           </strong>{' '}
           · BADLAR:{' '}
           <strong className="text-[var(--text-primary)] font-mono-num">{fmtPct(vars?.badlarTna, 2, false)}</strong> ·
+          Plazo Fijo:{' '}
+          <strong className="text-[var(--text-primary)] font-mono-num">{fmtPct(vars?.plazoFijoTna, 2, false)}</strong> ·
           Reservas BCRA:{' '}
           <strong className="text-[#2EDC7E] font-mono-num">
             {vars?.reservasUsdM != null ? `US$ ${fmtNum(vars.reservasUsdM, 0)} M` : '—'}
@@ -878,6 +880,123 @@ export const USMarketModule: React.FC<{
           }
         />
       </div>
+
+      {/* Curva Treasury EE.UU. + Motores Cuantitativos SPY (Piezas 15–18) */}
+      {(() => {
+        const spySnap = liveMarket.usSnapshotsBySymbol['SPY'];
+        const te = spySnap?.terminalEngines ?? null;
+        const tr = spyCtx?.treasury;
+        const cone0 = te?.volCone?.cones?.[0];
+        const strongCent = te?.confluenceClusters?.strongestClusterCentroid ?? null;
+        const strongScore = te?.confluenceClusters?.strongestClusterStrength ?? null;
+        const pinStrike = te?.gexCharmPin?.gexCharmPinStrike ?? null;
+        const netPremUsd = te?.orderFlow?.netDirectionalPremiumUsd ?? null;
+        const netDeltaSh = te?.orderFlow?.netDeltaShares ?? null;
+        const ivRank = te?.volCone?.ivRank ?? null;
+        const rsSpread = te?.relativeStrength?.rsSpread ?? null;
+        const rsClass = te?.relativeStrength?.rsClassification ?? 'NO_DATA';
+        const anomCount = te?.volOiAnomalies?.anomalies?.length ?? null;
+        const ust2Y = tr?.yield2Y ?? null;
+        const ust10Y = tr?.yield10Y ?? null;
+        const sofr = tr?.sofr ?? null;
+        const skew = spyCtx?.skewLevel ?? null;
+        return (
+          <div className="rounded-[10px] bg-[#131722] border border-[#232733] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[13px] font-bold text-[#FFFFFF]">
+                Curva Tasas EE.UU. &amp; Lectura Cuantitativa SPY (Piezas 15–18)
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono-num text-[#9CA3AF]">
+                <span>
+                  UST 2Y: <strong className="text-[#FFFFFF]">{ust2Y != null && Number.isFinite(ust2Y) ? `${fmtNum(ust2Y, 2)}%` : '—'}</strong>
+                </span>
+                <span>
+                  UST 10Y: <strong className="text-[#FFFFFF]">{ust10Y != null && Number.isFinite(ust10Y) ? `${fmtNum(ust10Y, 2)}%` : '—'}</strong>
+                </span>
+                <span>
+                  SOFR: <strong className="text-[#38BDF8]">{sofr != null && Number.isFinite(sofr) ? `${fmtNum(sofr, 2)}%` : '—'}</strong>
+                </span>
+                <span>
+                  SKEW: <strong className={spyCtx?.tailRiskAlert ? 'text-[#F5B544]' : 'text-[#FFFFFF]'}>{skew != null && Number.isFinite(skew) ? fmtNum(skew, 1) : '—'}</strong>
+                </span>
+                <span className="px-2 py-0.5 rounded bg-[#0B0E14] border border-[#232733] text-[#D1D4DC]">
+                  {spySnap?.feedMode ?? 'SIN FEED'}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-[12px]">
+              <div className="p-3 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] space-y-1">
+                <div className="text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
+                  CONO 1σ &amp; IV RANK (SPY)
+                </div>
+                <div className="font-mono-num text-[15px] font-bold text-[#FFFFFF]">
+                  {cone0?.sigmaMovePct != null && Number.isFinite(cone0.sigmaMovePct)
+                    ? `±${fmtNum(cone0.sigmaMovePct * 100, 2)} %`
+                    : '—'}
+                </div>
+                <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                  IV Rank: {ivRank != null && Number.isFinite(ivRank) ? `${fmtNum(ivRank, 1)}%` : '—'} ·{' '}
+                  {cone0?.lower1Sigma != null && cone0?.upper1Sigma != null
+                    ? `$${fmtNum(cone0.lower1Sigma, 1)}–$${fmtNum(cone0.upper1Sigma, 1)}`
+                    : '—'}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] space-y-1">
+                <div className="text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
+                  OPRA ORDER FLOW &amp; MAD
+                </div>
+                <div
+                  className={`font-mono-num text-[15px] font-bold ${
+                    netPremUsd != null && Number.isFinite(netPremUsd)
+                      ? netPremUsd >= 0
+                        ? 'text-[#22C55E]'
+                        : 'text-[#F23645]'
+                      : 'text-[#FFFFFF]'
+                  }`}
+                >
+                  {netPremUsd != null && Number.isFinite(netPremUsd)
+                    ? `${netPremUsd >= 0 ? '+' : ''}US$ ${fmtNum(netPremUsd / 1_000_000, 2)} M`
+                    : '—'}
+                </div>
+                <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                  Δ Neto: {netDeltaSh != null && Number.isFinite(netDeltaSh) ? `${fmtNum(netDeltaSh, 0)} acc` : '—'} · Anom: {anomCount ?? '—'}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] space-y-1">
+                <div className="text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
+                  GEX/CHARM PIN &amp; WHEEL
+                </div>
+                <div className="font-mono-num text-[15px] font-bold text-[#C084FC]">
+                  {pinStrike != null && Number.isFinite(pinStrike) ? `$ ${fmtNum(pinStrike, 2)}` : '—'}
+                </div>
+                <div className="text-[11px] font-mono-num text-[#9CA3AF] truncate">
+                  {te?.wheelTracker?.regime ?? 'SIN WHEEL'} · Dist:{' '}
+                  {te?.wheelTracker?.distanceToPinPct != null && Number.isFinite(te.wheelTracker.distanceToPinPct)
+                    ? `${fmtNum(te.wheelTracker.distanceToPinPct * 100, 2)}%`
+                    : '—'}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] space-y-1">
+                <div className="text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
+                  CONFLUENCIA &lt; 0.15 ATR
+                </div>
+                <div className="font-mono-num text-[15px] font-bold text-[#38BDF8]">
+                  {strongCent != null && Number.isFinite(strongCent)
+                    ? `$ ${fmtNum(strongCent, 2)} (${strongScore != null ? fmtNum(strongScore, 0) : '—'})`
+                    : '—'}
+                </div>
+                <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                  RS ({rsClass}): {rsSpread != null && Number.isFinite(rsSpread) ? fmtPct(rsSpread * 100, 2) : '—'}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Universo de Acciones más líquidas (Heat Tiles apaisadas segmentables por sector) */}
       <div className="rounded-[10px] bg-[#131722] border border-[#232733] p-5 space-y-4">

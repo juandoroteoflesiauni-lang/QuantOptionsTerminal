@@ -828,4 +828,124 @@ describe('Argentina server math, BYMA options, /api/ar/* routes & US options upg
     // Deep OTM Put Wall (-20% strike = 480, within ±25%) is detected cleanly
     expect(snap.exposureSummary?.putWallStrike).toBe(480);
   });
+
+  it('activates 24/7 EOD_CIERRE fallback on empty live feeds, expands 20/14/13 universe & wires Piezas 15-18 engines (Pieza 19)', async () => {
+    const fixedNowMs = FIXTURE.asOfUtcSec * 1_000;
+    const baseFetch = createOfflineArgentinaHttp({ asOfUtcSec: FIXTURE.asOfUtcSec });
+
+    const weekendEodFetch: FetchFn = (url) => {
+      const { hostname, pathname } = new URL(url);
+      const okJson = (payload: unknown) =>
+        Promise.resolve({ ok: true, status: 200, text: JSON.stringify(payload), headers: {} });
+      if (hostname.includes('argentinadatos') && pathname === '/v1/finanzas/tasas/plazoFijo') {
+        return okJson([{ entidad: 'BNA', tnaClientes: 33.5 }]);
+      }
+      if (
+        hostname.includes('data912') &&
+        (pathname === '/live/arg_stocks' ||
+          pathname === '/live/arg_cedears' ||
+          pathname === '/live/arg_bonds')
+      ) {
+        return okJson([]);
+      }
+      if (
+        hostname.includes('open.bymadata') &&
+        (pathname.endsWith('/leading-equity') || pathname.endsWith('/general-equity'))
+      ) {
+        return okJson({ data: [] });
+      }
+      return baseFetch(url);
+    };
+
+    const eodRt = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => fixedNowMs,
+      fetchFn: weekendEodFetch,
+    });
+    await eodRt.warmup(true);
+
+    const eodOverview = await eodRt.getOverview();
+    expect(eodOverview.feedStatus).toBe('EOD_CIERRE');
+    expect(eodOverview.mervalStocks.length).toBeGreaterThanOrEqual(20);
+    for (const reqTicker of [
+      'GGAL', 'YPFD', 'PAMP', 'BMA', 'TXAR', 'ALUA', 'CEPU', 'TGSU2', 'TRAN', 'EDN',
+      'COME', 'CRES', 'LOMA', 'MIRG', 'SUPV', 'BBAR', 'VALO', 'BYMA', 'METR', 'TGNO4',
+    ]) {
+      expect(eodOverview.mervalStocks.some((s) => s.ticker === reqTicker)).toBe(true);
+    }
+    expect(eodOverview.cedears.length).toBeGreaterThanOrEqual(14);
+    for (const reqCedear of [
+      'SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'KO', 'MELI', 'BABA', 'XLE', 'EWZ',
+    ]) {
+      expect(eodOverview.cedears.some((c) => c.ticker === reqCedear)).toBe(true);
+    }
+    expect(eodOverview.mervalStocks.find((s) => s.ticker === 'GGAL')?.last).not.toBeNull();
+    expect(eodOverview.mervalStocks.find((s) => s.ticker === 'GGAL')?.source).toBe('DATA912');
+
+    const eodMonitoringBonos = await eodRt.getMonitoring('bonos', true);
+    expect(eodMonitoringBonos.bonds.length).toBeGreaterThanOrEqual(9);
+    for (const reqBond of ['AL29', 'AL30', 'GD30', 'AL35', 'GD35', 'AE38', 'TX26', 'TX28', 'TZX26']) {
+      expect(eodMonitoringBonos.bonds.some((b) => b.ticker === reqBond)).toBe(true);
+    }
+
+    const eodMacro = await eodRt.getMacro(true);
+    expect(eodMacro.variables.plazoFijoTna).toBeCloseTo(33.5, 6);
+
+    const liveFetch = createOfflineArgentinaHttp({ asOfUtcSec: FIXTURE.asOfUtcSec });
+    const fullRt = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => fixedNowMs,
+      fetchFn: fullWrapFetch(liveFetch),
+    });
+
+    function fullWrapFetch(inner: FetchFn): FetchFn {
+      return (url) => {
+        const { hostname, pathname } = new URL(url);
+        if (hostname.includes('argentinadatos') && pathname === '/v1/finanzas/tasas/plazoFijo') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify([{ entidad: 'BNA', tnaClientes: 33.5 }]),
+            headers: {},
+          });
+        }
+        return inner(url);
+      };
+    }
+
+    const relations = await fullRt.getRelations(true);
+    expect(relations.pairs.length).toBe(3);
+    expect(relations.extendedPairs?.length).toBe(5);
+    expect(relations.extendedPairs?.some((p) => p.id === 'ypfd-pamp')).toBe(true);
+    expect(relations.extendedPairs?.some((p) => p.id === 'spy-qqq')).toBe(true);
+
+    const ggalDetail = await fullRt.getStockDetail('GGAL', true);
+    expect(ggalDetail.institutionalEngines).toBeDefined();
+    expect(ggalDetail.institutionalEngines).not.toBeNull();
+    expect(ggalDetail.institutionalEngines?.volumeProfile?.status).toBe('OK');
+    expect(ggalDetail.institutionalEngines?.atr14).toBeGreaterThan(0);
+    expect(ggalDetail.institutionalEngines?.relativeStrength?.status).toBe('OK');
+    expect(ggalDetail.institutionalEngines?.nakedPocs).not.toBeNull();
+    expect(ggalDetail.institutionalEngines?.fvgs).not.toBeNull();
+    expect(ggalDetail.institutionalEngines?.orderBlocks).not.toBeNull();
+    expect(ggalDetail.institutionalEngines?.confluenceClusters).not.toBeNull();
+
+    const ggalOpts = await fullRt.getOptionsChain('GGAL', true);
+    expect(ggalOpts.quantEngines).toBeDefined();
+    expect(ggalOpts.quantEngines).not.toBeNull();
+    expect(ggalOpts.quantEngines?.orderFlowArs).not.toBeNull();
+    expect(ggalOpts.quantEngines?.netDirectionalPremiumUsdCcl).not.toBeNull();
+    expect(ggalOpts.quantEngines?.flowAdjustedGex).not.toBeNull();
+    expect(ggalOpts.quantEngines?.gexCharmPin).not.toBeNull();
+    expect(ggalOpts.quantEngines?.qDistribution?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.pDistribution?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.pqDivergence?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.volCone?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.syntheticRates).not.toBeNull();
+    expect(ggalOpts.quantEngines?.buyWrite?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.calendarRoll?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.structureOptimizerBullish?.status).toBe('OK');
+    expect(ggalOpts.quantEngines?.structureOptimizerBearish).not.toBeNull();
+    expect(ggalOpts.quantEngines?.confluenceClusters).not.toBeNull();
+  });
 });

@@ -45,6 +45,8 @@ export interface LiveMarketState {
   readonly optionsByUnderlying: Readonly<Record<string, ArOptionsResponse>>;
   readonly usSnapshotsBySymbol: Readonly<Record<string, UsSnapshotResponseDto>>;
   readonly tickFlashes: Readonly<Record<string, 'up' | 'down' | null>>;
+  readonly isBackendConnected: boolean;
+  readonly warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY';
 }
 
 type StoreListener = () => void;
@@ -65,6 +67,8 @@ let state: LiveMarketState = {
   optionsByUnderlying: {},
   usSnapshotsBySymbol: {},
   tickFlashes: {},
+  isBackendConnected: false,
+  warmupStatus: 'IDLE',
 };
 
 const listeners = new Set<StoreListener>();
@@ -166,6 +170,7 @@ function combineFeedStatus(a: FeedStatus, b: FeedStatus): FeedStatus {
   if (b === 'NO_DATA') return a;
   if (a === 'LIVE' || b === 'LIVE') return 'LIVE';
   if (a === 'DIFERIDO_20M' || b === 'DIFERIDO_20M') return 'DIFERIDO_20M';
+  if (a === 'EOD_CIERRE' || b === 'EOD_CIERRE') return 'EOD_CIERRE';
   return 'PARTIAL';
 }
 
@@ -271,9 +276,231 @@ export async function requestStockDetail(symbol: string, force = false): Promise
   notify();
 }
 
+const US_OPTION_UNDERLYINGS = new Set(['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT']);
+
+interface HealthResponseDto {
+  readonly ok?: boolean;
+  readonly warmupStatus?: 'IDLE' | 'WARMING_UP' | 'READY';
+}
+
+export async function refreshBackendHealth(): Promise<boolean> {
+  const health = await fetchJsonGuarded<HealthResponseDto>('health', '/api/health');
+  if (!health || health.ok !== true) {
+    if (state.isBackendConnected) {
+      state = { ...state, isBackendConnected: false };
+      notify();
+    }
+    return false;
+  }
+  const nextWarmup = health.warmupStatus ?? 'READY';
+  if (!state.isBackendConnected || state.warmupStatus !== nextWarmup) {
+    state = {
+      ...state,
+      isBackendConnected: true,
+      warmupStatus: nextWarmup,
+    };
+    notify();
+  }
+  return true;
+}
+
+function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): ArOptionsResponse {
+  const quote = snap.marketContext?.unifiedQuotes?.find((q) => q.ticker.toUpperCase() === clean);
+  const spot = snap.envelope?.metrics?.spot?.value ?? quote?.price ?? null;
+  const frontSlice = snap.volSurfaceSummary?.frontSlice ?? snap.volSurfaceSummary?.slices?.[0] ?? null;
+  const rateDec = frontSlice?.rate ?? snap.marketContext?.treasury?.rate30d ?? null;
+  const rateTna = rateDec !== null && Number.isFinite(rateDec) ? (Math.exp(rateDec) - 1) * 100 : null;
+  const rv20 = snap.envelope?.metrics?.realizedVol20d?.value ?? null;
+  const rv60 = snap.envelope?.metrics?.realizedVol60d?.value ?? null;
+  const iv30 = snap.volSurfaceSummary?.iv30d ?? frontSlice?.ivAtm ?? null;
+
+  type UsContractList = NonNullable<NonNullable<UsSnapshotResponseDto['volSurfaceSummary']>['contracts']>[number];
+  const contractsByExp = new Map<string, UsContractList[]>();
+  const sliceMap = new Map((snap.volSurfaceSummary?.slices ?? []).map((s) => [s.expirationDate, s]));
+  for (const row of snap.volSurfaceSummary?.contracts ?? []) {
+    const arr = contractsByExp.get(row.expirationDate) ?? [];
+    arr.push(row);
+    contractsByExp.set(row.expirationDate, arr);
+  }
+
+  const expiries = Array.from(contractsByExp.entries())
+    .map(([expDate, rows]) => {
+      const slice = sliceMap.get(expDate);
+      const firstRow = rows[0];
+      const expSec = slice?.expirySec ?? firstRow?.expiryUtcSec ?? snap.asOfUtcSec;
+      const days = slice?.timeToExpiryDays ?? Math.max(1, Math.round((expSec - snap.asOfUtcSec) / 86_400));
+      const strikeSet = new Set<number>();
+      const calls: ArOptionsResponse['expiries'][number]['calls'][number][] = [];
+      const puts: ArOptionsResponse['expiries'][number]['puts'][number][] = [];
+      for (const r of rows) {
+        strikeSet.add(r.strike);
+        const iv = r.ownIv ?? r.providerIv ?? null;
+        const intrinsic =
+          spot !== null && spot > 0
+            ? r.contractType === 'call'
+              ? Math.max(0, spot - r.strike)
+              : Math.max(0, r.strike - spot)
+            : 0;
+        const mark = r.mid ?? r.lastPrice ?? null;
+        const mapped = {
+          symbol: r.ticker,
+          underlying: clean,
+          contractType: r.contractType,
+          strike: r.strike,
+          expiryCode: expDate,
+          expirationDate: expDate,
+          expiryUtcSec: r.expiryUtcSec,
+          daysToExpiry: Math.max(1, Math.round(days)),
+          bid: r.bid,
+          ask: r.ask,
+          last: r.lastPrice,
+          mark,
+          volume: r.volume,
+          openInterest: r.openInterest,
+          iv,
+          delta: r.delta,
+          gamma: r.gamma,
+          thetaDaily: r.thetaDaily,
+          vegaPer1Pct: r.vegaPer1Pct,
+          rho: null,
+          vanna: r.vanna,
+          charm: r.charm,
+          intrinsic,
+          extrinsic: mark !== null ? Math.max(0, mark - intrinsic) : null,
+          source: 'DATA912' as const,
+        };
+        if (r.contractType === 'call') calls.push(mapped);
+        else puts.push(mapped);
+      }
+      calls.sort((a, b) => a.strike - b.strike);
+      puts.sort((a, b) => a.strike - b.strike);
+      const strikes = Array.from(strikeSet).sort((a, b) => a - b);
+      return {
+        expiryCode: expDate,
+        expiryLabel: `${expDate} (${Math.max(1, Math.round(days))}d)`,
+        expirationDate: expDate,
+        expiryUtcSec: expSec,
+        days: Math.max(1, Math.round(days)),
+        ivAtm: slice?.ivAtm ?? null,
+        riskReversal25: slice?.riskReversal25 ?? null,
+        butterfly25: slice?.butterfly25 ?? null,
+        butterflyArbitrageFree: slice?.isButterflyArbitrageFree ?? true,
+        strikes,
+        calls,
+        puts,
+      };
+    })
+    .sort((a, b) => a.days - b.days);
+
+  const termStructure = (snap.volSurfaceSummary?.slices ?? [])
+    .filter((s) => s.ivAtm !== null && s.ivAtm > 0)
+    .map((s) => ({
+      days: Math.max(1, Math.round(s.timeToExpiryDays)),
+      label: s.expirationDate,
+      expiryCode: s.expirationDate,
+      atm: s.ivAtm as number,
+    }));
+
+  const te = snap.terminalEngines ?? null;
+  const quantEngines: ArOptionsResponse['quantEngines'] = te
+    ? {
+        orderFlowArs: te.orderFlow,
+        netDirectionalPremiumUsdCcl: te.orderFlow?.netDirectionalPremiumUsd ?? null,
+        callNetPremiumCvdUsdCcl: te.orderFlow?.callNetPremiumCvdUsd ?? null,
+        putNetPremiumCvdUsdCcl: te.orderFlow?.putNetPremiumCvdUsd ?? null,
+        volOiAnomalies: te.volOiAnomalies,
+        flowAdjustedGex: te.flowAdjustedGex,
+        gexCharmPin: te.gexCharmPin,
+        qDistribution: te.qDistribution,
+        pDistribution: te.pDistribution,
+        pqDivergence: te.pqDivergence,
+        volCone: te.volCone,
+        syntheticRates: te.syntheticRates,
+        conversionReversal: te.conversionReversal,
+        buyWrite: te.buyWrite,
+        calendarRoll: te.calendarRoll,
+        structureOptimizerBullish: te.structureOptimizerBullish,
+        structureOptimizerBearish: te.structureOptimizerBearish,
+        structureCostPercentile: te.structureCostPercentile,
+        confluenceClusters: te.confluenceClusters,
+      }
+    : null;
+
+  const feedStatus: FeedStatus =
+    snap.feedMode ?? (snap.status === 'OK' ? 'LIVE' : 'PARTIAL');
+
+  return {
+    asOfUtcSec: snap.asOfUtcSec,
+    feedStatus,
+    underlying: clean,
+    spot,
+    rateTna,
+    continuousRate: rateDec,
+    dividendYield: frontSlice?.dividendYield ?? snap.marketContext?.treasury?.dividendYieldFront ?? 0,
+    lotSize: 100,
+    settlement: 'T+0',
+    exerciseCutoffArt: '15:30 ART',
+    realizedVol20d: rv20,
+    realizedVol60d: rv60,
+    histMedianIv: iv30,
+    vrpSpread: iv30 !== null && rv20 !== null ? iv30 - rv20 : null,
+    historicalCloses: [],
+    termStructure,
+    expiries,
+    exposureSummary: snap.exposureSummary
+      ? {
+          netGex: snap.exposureSummary.netGex,
+          netDex: snap.exposureSummary.netDex,
+          callWallStrike: snap.exposureSummary.callWallStrike,
+          putWallStrike: snap.exposureSummary.putWallStrike,
+          gammaFlipSpot: snap.exposureSummary.gammaFlipSpot,
+          gammaFlipStatus: snap.exposureSummary.gammaFlipStatus,
+          expectedMoveAbs:
+            snap.exposureSummary.expectedMove?.straddleMove ??
+            snap.exposureSummary.expectedMove?.formulaMove ??
+            null,
+          expectedMovePct:
+            snap.exposureSummary.expectedMove?.straddleMovePct ??
+            snap.exposureSummary.expectedMove?.formulaMovePct ??
+            null,
+        }
+      : null,
+    costSchedule: {
+      rvMarketFeeRate: 0.002,
+      optionsFeeRate: 0.002,
+      shortLoanFeeRate: 0,
+      vatRate: 0,
+      bondsVatExempt: true,
+    },
+    quantEngines,
+    providerErrors: [],
+  };
+}
+
 export async function requestOptionsChain(underlying: string, force = false): Promise<void> {
   const clean = underlying.trim().toUpperCase();
   if (!clean) return;
+  if (US_OPTION_UNDERLYINGS.has(clean)) {
+    const snap = await fetchJsonGuarded<UsSnapshotResponseDto>(
+      `us:opt:${clean}`,
+      `/api/snapshot?symbol=${encodeURIComponent(clean)}`
+    );
+    if (!snap) return;
+    hydrateFromUsSnapshot(snap);
+    const mapped = mapUsSnapshotToArOptions(clean, snap);
+    hydrateFromArOptions(mapped);
+    syncOptionEngineMarket(mapped);
+    state = {
+      ...state,
+      isBackendConnected: true,
+      usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: snap },
+      optionsByUnderlying: { ...state.optionsByUnderlying, [clean]: mapped },
+      feedStatus: combineFeedStatus(state.feedStatus, mapped.feedStatus),
+      lastSyncUtcSec: snap.asOfUtcSec,
+    };
+    notify();
+    return;
+  }
   const res = await fetchJsonGuarded<ArOptionsResponse>(
     `options:${clean}`,
     `/api/ar/options?underlying=${encodeURIComponent(clean)}${force ? '&force=1' : ''}`
@@ -283,6 +510,7 @@ export async function requestOptionsChain(underlying: string, force = false): Pr
   syncOptionEngineMarket(res);
   state = {
     ...state,
+    isBackendConnected: true,
     optionsByUnderlying: { ...state.optionsByUnderlying, [clean]: res },
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
@@ -301,7 +529,9 @@ export async function requestUsSnapshot(symbol: string): Promise<void> {
   hydrateFromUsSnapshot(res);
   state = {
     ...state,
+    isBackendConnected: true,
     usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: res },
+    ...(res.feedMode ? { feedStatus: combineFeedStatus(state.feedStatus, res.feedMode) } : {}),
     lastSyncUtcSec: res.asOfUtcSec,
   };
   publishTickerUpdatesFromMemory();
@@ -350,15 +580,19 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
 
   const runInitialAndCycle = async () => {
     if (disposed) return;
+    await refreshBackendHealth();
     await Promise.all([
       refreshOverview(),
       refreshMacro(),
       requestMonitoringPanel('bonos'),
       requestRelations(),
       requestUsSnapshot('SPY'),
+      requestUsSnapshot('QQQ'),
       requestUsSnapshot('NVDA'),
       requestUsSnapshot('AAPL'),
+      requestUsSnapshot('MSFT'),
     ]);
+    await refreshBackendHealth();
   };
 
   void runInitialAndCycle();
@@ -369,8 +603,27 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
     };
   }
 
+  let prevWarmupStatus = state.warmupStatus;
+  let prevConnected = state.isBackendConnected;
+
+  const fastRetryId = setInterval(() => {
+    if (disposed) return;
+    const needReconnectOrWarmup = !state.isBackendConnected || state.warmupStatus === 'WARMING_UP';
+    if (needReconnectOrWarmup) {
+      void (async () => {
+        const ok = await refreshBackendHealth();
+        if (ok && (!prevConnected || (prevWarmupStatus === 'WARMING_UP' && state.warmupStatus === 'READY'))) {
+          await runInitialAndCycle();
+        }
+        prevConnected = state.isBackendConnected;
+        prevWarmupStatus = state.warmupStatus;
+      })();
+    }
+  }, 5_000);
+
   const intervalId = setInterval(() => {
     if (disposed) return;
+    void refreshBackendHealth();
     void refreshOverview();
   }, 20_000);
 
@@ -379,7 +632,12 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${window.location.host}/ws`);
       ws.addEventListener('open', () => {
-        ws?.send(JSON.stringify({ type: 'subscribe', symbol: 'SPY' }));
+        ws?.send(
+          JSON.stringify({
+            action: 'subscribe',
+            symbols: ['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT'],
+          })
+        );
       });
       ws.addEventListener('message', (ev) => {
         if (!disposed && typeof ev.data === 'string') {
@@ -393,6 +651,7 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
 
   return () => {
     disposed = true;
+    clearInterval(fastRetryId);
     clearInterval(intervalId);
     if (ws) {
       try {
