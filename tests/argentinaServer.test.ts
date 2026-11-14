@@ -25,6 +25,7 @@ import {
   type ArRelationsResponse,
   type ArStockDetailResponse,
   ArgentinaMarketRuntime,
+  computeSyntheticUsdFuturesCurve,
   evaluateSovereignBondMath,
   parseBymaOptionSymbol,
 } from '../src/server/argentinaMarketLoader.js';
@@ -947,5 +948,195 @@ describe('Argentina server math, BYMA options, /api/ar/* routes & US options upg
     expect(ggalOpts.quantEngines?.structureOptimizerBullish?.status).toBe('OK');
     expect(ggalOpts.quantEngines?.structureOptimizerBearish).not.toBeNull();
     expect(ggalOpts.quantEngines?.confluenceClusters).not.toBeNull();
+  });
+
+  it('cubre los 7 arreglos BYMA/USD: cascada IV Puts ITM, vencimiento líquido, volumeArs, alias VIST y sintéticos CIP', async () => {
+    // 1) Matemática exacta de Futuros Sintéticos USD (tolerancia 1e-9) y sin fallback si falta SOFR
+    const fixedNow = Date.UTC(2026, 10, 14, 15, 0, 0) / 1_000;
+    expect(
+      computeSyntheticUsdFuturesCurve({
+        nowSec: fixedNow,
+        a3500: 1000,
+        arsRateTnaPct: 36,
+        arsRateSource: 'BCRA TAMAR',
+        usdRatePct: null,
+        usdRateSource: 'NY Fed SOFR',
+        ccl: 1150,
+      }),
+    ).toEqual([]);
+
+    const synthCurve = computeSyntheticUsdFuturesCurve({
+      nowSec: fixedNow,
+      a3500: 1005.5,
+      arsRateTnaPct: 34.5,
+      arsRateSource: 'BCRA TAMAR',
+      usdRatePct: 3.9,
+      usdRateSource: 'NY Fed SOFR',
+      ccl: 1180,
+    });
+    expect(synthCurve.length).toBe(6);
+    expect(synthCurve.map((c) => c.contract)).toEqual([
+      'DLR-NOV26-SINT',
+      'DLR-DIC26-SINT',
+      'DLR-ENE27-SINT',
+      'DLR-FEB27-SINT',
+      'DLR-MAR27-SINT',
+      'DLR-ABR27-SINT',
+    ]);
+    const rArsCont = (365 / 30) * Math.log(1 + (34.5 / 100) * (30 / 365));
+    const rUsdCont = Math.log(1 + 3.9 / 100);
+    for (const row of synthCurve) {
+      const expectedFwd = 1005.5 * Math.exp((rArsCont - rUsdCont) * (row.days / 365));
+      expect(Math.abs(row.forwardPrice - expectedFwd)).toBeLessThan(1e-9);
+      expect(row.badge).toBe('SINTÉTICO IMPLÍCITO');
+    }
+
+    // 2) Cascada IV Put ITM (mid < K - S), herencia por paridad, selección de vencimiento líquido, volumeArs y alias VIST
+    const ggalSpot = 5005;
+    const baseFetch = createOfflineArgentinaHttp({ asOfUtcSec: FIXTURE.asOfUtcSec });
+    const abDays = parseBymaOptionSymbol('GFGC5000AB', ggalSpot, FIXTURE.asOfUtcSec)?.daysToExpiry ?? 39;
+    const juDays = parseBymaOptionSymbol('GFGC5000JU', ggalSpot, FIXTURE.asOfUtcSec)?.daysToExpiry ?? 102;
+    const juTime = Math.max(1 / 365, juDays / 365);
+
+    const seenPaths: string[] = [];
+    const customFetch: FetchFn = (url) => {
+      const parsed = new URL(url);
+      seenPaths.push(`${parsed.hostname}${parsed.pathname}`);
+      const okJson = (payload: unknown) =>
+        Promise.resolve({ ok: true, status: 200, text: JSON.stringify(payload), headers: {} });
+
+      if (parsed.hostname.includes('newyorkfed')) {
+        return okJson({
+          refRates: [{ effectiveDate: '2026-11-12', type: 'SOFR', percentRate: 3.9 }],
+        });
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/live/arg_stocks') {
+        return okJson([
+          { symbol: 'GGAL', c: ggalSpot, px_bid: 5000, px_ask: 5010, prev_close: 4950, v: 900_000, v_ars: 4_500_000_000 },
+          { symbol: 'YPFD', c: 41200, px_bid: 41100, px_ask: 41250, prev_close: 40500, v: 148_000, v_ars: 6_100_000_000 },
+        ]);
+      }
+      if (parsed.hostname.includes('open.bymadata') && parsed.pathname.endsWith('/leading-equity')) {
+        return okJson({
+          data: [
+            {
+              symbol: 'GGAL',
+              trade: ggalSpot,
+              bidPrice: 5000,
+              askPrice: 5010,
+              closingPrice: 4950,
+              volumeAmount: 4_500_000_000,
+              nominalVolume: 900_000,
+            },
+            {
+              symbol: 'YPFD',
+              trade: 41200,
+              bidPrice: 41100,
+              askPrice: 41250,
+              closingPrice: 40500,
+              volumeAmount: 6_100_000_000,
+              nominalVolume: 148_000,
+            },
+          ],
+        });
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/live/arg_options') {
+        const makeFair = (k: number, isCall: boolean, days: number, volPct: number) =>
+          priceBsm({
+            spot: ggalSpot,
+            strike: k,
+            timeToExpiry: Math.max(1 / 365, days / 365),
+            rate: 0.28,
+            dividendYield: 0.012,
+            volatility: volPct,
+            contractType: isCall ? 'call' : 'put',
+          });
+
+        const sparseFrontCall = makeFair(6600, true, abDays, 1.45);
+        const deepCall6000 = makeFair(6000, true, juDays, 0.52);
+        return okJson([
+          // Vencimiento cercano (AB) con un único strike ilíquido y vol 0 -> NO debe ser primaryLiquidExpiryCode
+          { symbol: 'GFGC6600AB', c: sparseFrontCall, px_bid: sparseFrontCall * 0.95, px_ask: sparseFrontCall * 1.05, v: 0, q_op: 0 },
+          // Vencimiento líquido (JU) con >= 5 strikes, volumen real y Put ITM 6000 con mid < K - S (973.5 < 995)
+          { symbol: 'GFGC4400JU', c: makeFair(4400, true, juDays, 0.56), px_bid: makeFair(4400, true, juDays, 0.56) * 0.98, px_ask: makeFair(4400, true, juDays, 0.56) * 1.02, v: 50, q_op: 2 },
+          { symbol: 'GFGV4400JU', c: makeFair(4400, false, juDays, 0.56), px_bid: makeFair(4400, false, juDays, 0.56) * 0.98, px_ask: makeFair(4400, false, juDays, 0.56) * 1.02, v: 80, q_op: 3 },
+          { symbol: 'GFGC4800JU', c: makeFair(4800, true, juDays, 0.53), px_bid: makeFair(4800, true, juDays, 0.53) * 0.98, px_ask: makeFair(4800, true, juDays, 0.53) * 1.02, v: 420, q_op: 15 },
+          { symbol: 'GFGV4800JU', c: makeFair(4800, false, juDays, 0.53), px_bid: makeFair(4800, false, juDays, 0.53) * 0.98, px_ask: makeFair(4800, false, juDays, 0.53) * 1.02, v: 210, q_op: 9 },
+          { symbol: 'GFGC5000JU', c: makeFair(5000, true, juDays, 0.50), px_bid: makeFair(5000, true, juDays, 0.50) * 0.98, px_ask: makeFair(5000, true, juDays, 0.50) * 1.02, v: 1200, q_op: 45 },
+          { symbol: 'GFGV5000JU', c: makeFair(5000, false, juDays, 0.50), px_bid: makeFair(5000, false, juDays, 0.50) * 0.98, px_ask: makeFair(5000, false, juDays, 0.50) * 1.02, v: 900, q_op: 32 },
+          { symbol: 'GFGC5400JU', c: makeFair(5400, true, juDays, 0.51), px_bid: makeFair(5400, true, juDays, 0.51) * 0.98, px_ask: makeFair(5400, true, juDays, 0.51) * 1.02, v: 640, q_op: 21 },
+          { symbol: 'GFGV5400JU', c: makeFair(5400, false, juDays, 0.51), px_bid: makeFair(5400, false, juDays, 0.51) * 0.98, px_ask: makeFair(5400, false, juDays, 0.51) * 1.02, v: 130, q_op: 4 },
+          { symbol: 'GFGC6000JU', c: deepCall6000, px_bid: deepCall6000 * 0.98, px_ask: deepCall6000 * 1.02, v: 300, q_op: 11 },
+          // Put ITM 6000 con mid = 973.5 (< 6000 - 5005 = 995, sobre cota europea K·e^{-rT}-S): resuelve vía cascada BSM
+          { symbol: 'GFGV6000JU', c: 973.5, px_bid: 960, px_ask: 987, v: 45, q_op: 2 },
+          // Put 6200 muy por debajo de la cota intrínseca americana y europea (400 < K·e^{-rT}-S): hereda IV de superficie [6000..6600] y calcula Delta propia
+          { symbol: 'GFGV6200JU', c: 400, px_bid: 390, px_ask: 410, v: 10, q_op: 1 },
+          { symbol: 'GFGC6600JU', c: makeFair(6600, true, juDays, 0.54), px_bid: makeFair(6600, true, juDays, 0.54) * 0.98, px_ask: makeFair(6600, true, juDays, 0.54) * 1.02, v: 180, q_op: 6 },
+        ]);
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/historical/cedears/VISTA') {
+        return okJson({ Error: 'Nahh no tengo ese ticker loko' });
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/historical/cedears/VIST') {
+        return okJson(
+          Array.from({ length: 70 }, (_, idx) => ({
+            date: new Date((FIXTURE.asOfUtcSec - (70 - idx) * 86_400) * 1_000).toISOString().slice(0, 10),
+            o: 20_000 + idx * 15,
+            h: 20_100 + idx * 15,
+            l: 19_900 + idx * 15,
+            c: 20_050 + idx * 15,
+            v: 50_000,
+          })),
+        );
+      }
+      return baseFetch(url);
+    };
+
+    expect(juTime).toBeGreaterThan(0);
+    const rt = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => FIXTURE.asOfUtcSec * 1_000,
+      fetchFn: customFetch,
+    });
+
+    const macro = await rt.getMacro(true);
+    expect(macro.variables.sofrUsdTna).toBeCloseTo(3.9, 6);
+    expect(macro.syntheticFutures?.length).toBe(6);
+    expect(macro.syntheticFutures?.[0]?.badge).toBe('SINTÉTICO IMPLÍCITO');
+
+    const opts = await rt.getOptionsChain('GGAL', true);
+    expect(opts.spot).toBeCloseTo(5005, 6);
+    expect(opts.primaryLiquidExpiryCode).toBe('JU');
+    expect(opts.quantEnginesByExpiry?.['JU']).not.toBeNull();
+    const ivRank = opts.quantEngines?.volCone?.ivRank ?? null;
+    expect(ivRank).not.toBeNull();
+    if (ivRank !== null) {
+      expect(ivRank).toBeGreaterThanOrEqual(0);
+      expect(ivRank).toBeLessThanOrEqual(100);
+    }
+
+    const juExp = opts.expiries.find((e) => e.expiryCode === 'JU');
+    expect(juExp).toBeDefined();
+    const put6000 = juExp?.puts.find((p) => p.strike === 6000);
+    expect(put6000?.iv).not.toBeNull();
+    expect(put6000?.delta).not.toBeNull();
+    expect(put6000?.ivOrigin).toBe('SOLVED');
+    const put6200 = juExp?.puts.find((p) => p.strike === 6200);
+    expect(put6200?.iv).not.toBeNull();
+    expect(put6200?.delta).not.toBeNull();
+    if (put6200?.delta != null) {
+      expect(put6200.delta).toBeLessThan(0);
+    }
+    expect(put6200?.ivOrigin).toBe('INHERITED');
+    expect(put6200?.source).toBe('MODEL');
+    const call5000 = juExp?.calls.find((c) => c.strike === 5000);
+    expect(call5000?.volumeArs).toBeCloseTo((call5000?.volume ?? 0) * (call5000?.last ?? 0) * 100, 4);
+
+    const rel = await rt.getRelations(true);
+    expect(seenPaths.some((p) => p.endsWith('/historical/cedears/VIST'))).toBe(true);
+    const ypfdVist = rel.pairs.find((p) => p.id === 'ypfd-vista');
+    expect(ypfdVist?.legB).toBe('VIST');
+    expect(ypfdVist?.currentValue).not.toBeNull();
+    expect(ypfdVist?.mean60d).not.toBeNull();
   });
 });

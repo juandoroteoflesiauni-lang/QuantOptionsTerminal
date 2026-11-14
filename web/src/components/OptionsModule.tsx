@@ -363,6 +363,20 @@ export const OptionsModule: React.FC<{
   const [simTlr, setSimTlr] = useState<number>(Number.NaN);
 
   const liveOptions = liveMarket.optionsByUnderlying[upperUnderlying];
+  const liveOptionsExt = liveOptions as
+    | (typeof liveOptions & {
+        readonly primaryLiquidExpiryCode?: string | null;
+        readonly quantEnginesByExpiry?: Readonly<
+          Record<string, NonNullable<typeof liveOptions>['quantEngines']>
+        >;
+      })
+    | undefined;
+  const primaryLiquidCode = liveOptionsExt?.primaryLiquidExpiryCode ?? null;
+
+  useEffect(() => {
+    setSelectedExpiryId('');
+  }, [upperUnderlying]);
+
   const catalogStock = AR_STOCKS.find((s) => s.ticker === upperUnderlying) ?? AR_STOCKS[0];
   const overviewStock =
     liveMarket.overview?.mervalStocks.find((s) => s.ticker === upperUnderlying) ??
@@ -378,10 +392,23 @@ export const OptionsModule: React.FC<{
     if (GGAL_OPTION_EXPIRIES.length === 0) return null;
     return (
       GGAL_OPTION_EXPIRIES.find((e) => e.id === selectedExpiryId) ??
+      (primaryLiquidCode ? GGAL_OPTION_EXPIRIES.find((e) => e.id === primaryLiquidCode) : undefined) ??
       GGAL_OPTION_EXPIRIES[0] ??
       null
     );
-  }, [selectedExpiryId, liveMarket.version]);
+  }, [selectedExpiryId, primaryLiquidCode, liveMarket.version]);
+
+  const activeQuantEngines = useMemo(() => {
+    if (!liveOptionsExt) return null;
+    if (
+      activeExpiry?.id &&
+      liveOptionsExt.quantEnginesByExpiry &&
+      Object.prototype.hasOwnProperty.call(liveOptionsExt.quantEnginesByExpiry, activeExpiry.id)
+    ) {
+      return liveOptionsExt.quantEnginesByExpiry[activeExpiry.id] ?? liveOptionsExt.quantEngines ?? null;
+    }
+    return liveOptionsExt.quantEngines ?? null;
+  }, [liveOptionsExt, activeExpiry?.id]);
 
   const liveTlrPct =
     liveOptions?.rateTna ??
@@ -476,22 +503,26 @@ export const OptionsModule: React.FC<{
     onSelectSubView('armado');
   };
 
-  // Header 1-sigma real
+  // Header 1-sigma real sincronizado al vencimiento seleccionado
   const activeDays = activeExpiry?.daysToExpiry ?? 0;
-  const activeAtmIvDec = activeDays > 0 ? atmIv(activeDays) : Number.NaN;
+  const activeAtmIvDec =
+    activeExpiry && Number.isFinite(activeExpiry.atmIV) && activeExpiry.atmIV > 0
+      ? activeExpiry.atmIV / 100
+      : activeDays > 0
+        ? atmIv(activeDays)
+        : Number.NaN;
   const headerOneSigmaAbs =
-    liveOptions?.exposureSummary?.expectedMoveAbs ??
-    (Number.isFinite(displaySpot) &&
+    Number.isFinite(displaySpot) &&
     displaySpot > 0 &&
     Number.isFinite(activeAtmIvDec) &&
+    activeAtmIvDec > 0 &&
     activeDays > 0
       ? displaySpot * activeAtmIvDec * Math.sqrt(activeDays / 365)
-      : Number.NaN);
+      : (liveOptions?.exposureSummary?.expectedMoveAbs ?? Number.NaN);
   const headerOneSigmaPct =
-    liveOptions?.exposureSummary?.expectedMovePct ??
-    (Number.isFinite(activeAtmIvDec) && activeDays > 0
-      ? activeAtmIvDec * Math.sqrt(activeDays / 365) * 100
-      : Number.NaN);
+    Number.isFinite(headerOneSigmaAbs) && Number.isFinite(displaySpot) && displaySpot > 0
+      ? (headerOneSigmaAbs / displaySpot) * 100
+      : Number.NaN;
 
   const targetSuggestedPct =
     Number.isFinite(targetPrice) && Number.isFinite(displaySpot) && displaySpot > 0
@@ -1058,7 +1089,7 @@ export const OptionsModule: React.FC<{
 
           {/* OPTIMITZADOR CUANTITATIVO — LAS 3 MANERAS DE JUGARLA (PIEZA 18) */}
           {(() => {
-            const qe = liveOptions?.quantEngines ?? null;
+            const qe = activeQuantEngines;
             const optRes =
               optimizerDir === 'BEARISH'
                 ? qe?.structureOptimizerBearish ?? null
@@ -1573,50 +1604,50 @@ export const OptionsModule: React.FC<{
               </div>
             )}
 
-            {liveOptions?.quantEngines && (
+            {activeQuantEngines && (
               <div className="pt-3 border-t border-[#1E222D] grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11.5px] font-mono-num">
                 <div>
                   <div className="text-[10px] uppercase text-[#787B86]">LA PLATA NETA (CVD)</div>
                   <div
                     className={`font-bold text-[14px] ${
-                      (liveOptions.quantEngines.orderFlowArs?.netDirectionalPremiumUsd ?? 0) >= 0
+                      (activeQuantEngines.orderFlowArs?.netDirectionalPremiumUsd ?? 0) >= 0
                         ? 'text-[#22C55E]'
                         : 'text-[#F23645]'
                     }`}
                   >
-                    {liveOptions.quantEngines.orderFlowArs?.netDirectionalPremiumUsd != null
-                      ? `$ ${fmtNum(liveOptions.quantEngines.orderFlowArs.netDirectionalPremiumUsd, 0)}`
+                    {activeQuantEngines.orderFlowArs?.netDirectionalPremiumUsd != null
+                      ? `$ ${fmtNum(activeQuantEngines.orderFlowArs.netDirectionalPremiumUsd, 0)}`
                       : '—'}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase text-[#787B86]">EN USD-CCL</div>
                   <div className="font-bold text-[14px] text-[#38BDF8]">
-                    {liveOptions.quantEngines.netDirectionalPremiumUsdCcl != null
-                      ? `US$ ${fmtNum(liveOptions.quantEngines.netDirectionalPremiumUsdCcl, 0)}`
+                    {activeQuantEngines.netDirectionalPremiumUsdCcl != null
+                      ? `US$ ${fmtNum(activeQuantEngines.netDirectionalPremiumUsdCcl, 0)}`
                       : '—'}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase text-[#787B86]">GEX/CHARM PIN &amp; WALLS</div>
                   <div className="font-bold text-[14px] text-[#C084FC]">
-                    {liveOptions.quantEngines.gexCharmPin?.gexCharmPinStrike != null
-                      ? `Pin $${fmtNum(liveOptions.quantEngines.gexCharmPin.gexCharmPinStrike, 1)}`
+                    {activeQuantEngines.gexCharmPin?.gexCharmPinStrike != null
+                      ? `Pin $${fmtNum(activeQuantEngines.gexCharmPin.gexCharmPinStrike, 1)}`
                       : '—'}
                   </div>
                   <div className="text-[10px] text-[#9CA3AF]">
-                    CW: {liveOptions.quantEngines.flowAdjustedGex?.callWallStrike ?? '—'} · PW:{' '}
-                    {liveOptions.quantEngines.flowAdjustedGex?.putWallStrike ?? '—'}
+                    CW: {activeQuantEngines.flowAdjustedGex?.callWallStrike ?? '—'} · PW:{' '}
+                    {activeQuantEngines.flowAdjustedGex?.putWallStrike ?? '—'}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase text-[#787B86]">ANOMALÍAS MAD VOL/OI</div>
                   <div className="font-bold text-[14px] text-[#EAB308]">
-                    {liveOptions.quantEngines.volOiAnomalies?.anomalies?.length ?? 0} bases
+                    {activeQuantEngines.volOiAnomalies?.anomalies?.length ?? 0} bases
                   </div>
                   <div className="text-[10px] text-[#9CA3AF] truncate">
-                    {liveOptions.quantEngines.volOiAnomalies?.anomalies?.[0]
-                      ? `${liveOptions.quantEngines.volOiAnomalies.anomalies[0].contractType.toUpperCase()} ${liveOptions.quantEngines.volOiAnomalies.anomalies[0].strike ?? ''} (z=${fmtNum(liveOptions.quantEngines.volOiAnomalies.anomalies[0].madLogScore, 1)})`
+                    {activeQuantEngines.volOiAnomalies?.anomalies?.[0]
+                      ? `${activeQuantEngines.volOiAnomalies.anomalies[0].contractType.toUpperCase()} ${activeQuantEngines.volOiAnomalies.anomalies[0].strike ?? ''} (z=${fmtNum(activeQuantEngines.volOiAnomalies.anomalies[0].madLogScore, 1)})`
                       : 'Sin outliers MAD'}
                   </div>
                 </div>
@@ -2357,9 +2388,9 @@ export const OptionsModule: React.FC<{
             )}
             {activeSubView === 'volatilidad' && (
               <div className="space-y-4">
-                <VolatilitySurface mkt={labMarket} />
+                <VolatilitySurface mkt={labMarket} expiries={GGAL_OPTION_EXPIRIES} />
                 {(() => {
-                  const qe = liveOptions?.quantEngines ?? null;
+                  const qe = activeQuantEngines;
                   const vc = qe?.volCone;
                   const pq = qe?.pqDivergence;
                   const sr = qe?.syntheticRates;

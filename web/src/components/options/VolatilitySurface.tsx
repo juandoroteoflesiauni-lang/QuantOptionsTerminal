@@ -11,16 +11,33 @@ import {
   monotonePath,
   fk,
 } from './engine';
-import { fmtNum } from '../../data/marketData';
+import { fmtNum, type OptionChainRow, type OptionExpiryGroup } from '../../data/marketData';
 
-const EXP_COLORS = ['#38BDF8', '#A855F7', '#F59E0B'] as const;
+const EXP_COLORS = ['#38BDF8', '#A855F7', '#F59E0B', '#10B981'] as const;
 const SW = 760;
 const SH = 320;
 const SL = 52;
 const SR = 740;
 const ST = 22;
 const SB = 262;
-const M_RANGE = 0.16;
+const M_LIMIT = 0.205;
+const M_RANGE = 0.22;
+
+function resolveContractIv(
+  rows: readonly OptionChainRow[] | null,
+  spot: number,
+  k: number,
+  days: number
+): number {
+  if (rows === null) return smileIv(spot, k, days);
+  const row = rows.find((r) => Math.abs(r.strike - k) < 1e-6);
+  if (!row) return Number.NaN;
+  const primaryPct = k < spot ? row.putIV : row.callIV;
+  if (Number.isFinite(primaryPct) && primaryPct > 0) return primaryPct / 100;
+  const secondaryPct = k < spot ? row.callIV : row.putIV;
+  if (Number.isFinite(secondaryPct) && secondaryPct > 0) return secondaryPct / 100;
+  return Number.NaN;
+}
 
 const diagStyle = {
   Barata: { fg: '#00D592', bg: 'rgba(16,185,129,0.14)' },
@@ -35,17 +52,58 @@ function cellBg(p: number): string {
   return `rgba(148,163,184,${(0.05 + (Math.abs(p - 50) / 25) * 0.06).toFixed(2)})`;
 }
 
-export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
-  const [visible, setVisible] = useState<boolean[]>([true, true, false]);
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+export const VolatilitySurface: React.FC<{
+  mkt: Market;
+  expiries?: readonly OptionExpiryGroup[];
+}> = ({ mkt, expiries }) => {
+  const [visible, setVisible] = useState<boolean[]>([true, true, true]);
+  const [hoverStrike, setHoverStrike] = useState<number | null>(null);
   const [hoverCell, setHoverCell] = useState<{ r: number; c: number } | null>(null);
 
-  const term = TERM_STRUCTURE;
+  const term = useMemo(() => {
+    if (expiries && expiries.length > 0) {
+      return [...expiries]
+        .sort((a, b) => a.daysToExpiry - b.daysToExpiry)
+        .map((e) => ({
+          days: e.daysToExpiry,
+          label: e.id,
+          atm: Number.isFinite(e.atmIV) && e.atmIV > 0 ? e.atmIV / 100 : Number.NaN,
+          rows: e.rows as readonly OptionChainRow[] | null,
+        }));
+    }
+    return TERM_STRUCTURE.map((t) => ({
+      days: t.days,
+      label: t.label,
+      atm: t.atm,
+      rows: null as readonly OptionChainRow[] | null,
+    }));
+  }, [expiries]);
 
   const strikes = useMemo(() => {
     if (!Number.isFinite(mkt.spot) || mkt.spot <= 0) return [];
-    return mkt.strikes.filter((k) => Number.isFinite(k) && Math.abs(k / mkt.spot - 1) <= M_RANGE);
-  }, [mkt.strikes, mkt.spot]);
+    const unionSet = new Set<number>();
+    let usedExpiryUnion = false;
+    for (const t of term) {
+      if (t.rows !== null && t.rows.length > 0) {
+        usedExpiryUnion = true;
+        for (const r of t.rows) {
+          if (
+            Number.isFinite(r.strike) &&
+            Math.abs(r.strike / mkt.spot - 1) <= M_LIMIT &&
+            ((Number.isFinite(r.callIV) && r.callIV > 0) || (Number.isFinite(r.putIV) && r.putIV > 0))
+          ) {
+            unionSet.add(r.strike);
+          }
+        }
+      }
+    }
+    if (usedExpiryUnion && unionSet.size > 0) {
+      return [...unionSet].sort((a, b) => a - b);
+    }
+    return mkt.strikes
+      .filter((k) => Number.isFinite(k) && Math.abs(k / mkt.spot - 1) <= M_LIMIT)
+      .sort((a, b) => a - b);
+  }, [mkt.strikes, mkt.spot, term]);
 
   const rawSeries = useMemo(() => {
     if (!Number.isFinite(mkt.spot) || mkt.spot <= 0 || strikes.length === 0 || term.length === 0) {
@@ -54,21 +112,26 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
     return term.map((t) =>
       strikes.map((k) => {
         const m = k / mkt.spot - 1;
-        const iv = smileIv(mkt.spot, k, t.days);
+        const iv = resolveContractIv(t.rows, mkt.spot, k, t.days);
         return { k, m, iv };
       })
     );
   }, [strikes, mkt.spot, term]);
 
+  const isVisible = (idx: number): boolean => visible[idx] ?? true;
+
   const { ivMin, ivMax, yTicks } = useMemo(() => {
     const ivVals: number[] = [];
-    for (const row of rawSeries) {
+    rawSeries.forEach((row, idx) => {
+      if (!(visible[idx] ?? true)) return;
       for (const pt of row) {
         if (Number.isFinite(pt.iv) && pt.iv > 0) ivVals.push(pt.iv);
       }
-    }
-    for (const t of term) {
-      if (Number.isFinite(t.atm) && t.atm > 0) ivVals.push(t.atm);
+    });
+    if (ivVals.length === 0) {
+      for (const t of term) {
+        if (Number.isFinite(t.atm) && t.atm > 0) ivVals.push(t.atm);
+      }
     }
     if (Number.isFinite(HIST_MEDIAN_IV) && HIST_MEDIAN_IV > 0) {
       ivVals.push(HIST_MEDIAN_IV);
@@ -85,7 +148,7 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
       ticks.push(lo + ((safeHi - lo) * i) / steps);
     }
     return { ivMin: lo, ivMax: safeHi, yTicks: ticks };
-  }, [rawSeries, term]);
+  }, [rawSeries, term, visible]);
 
   const mx = (m: number) => SL + ((m + M_RANGE) / (2 * M_RANGE)) * (SR - SL);
   const iy = (iv: number) => SB - ((iv - ivMin) / Math.max(1e-6, ivMax - ivMin)) * (SB - ST);
@@ -101,7 +164,28 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
     [rawSeries, ivMin, ivMax]
   );
 
-  const near = series[0] ?? [];
+  // Curva principal de lectura (vencimiento visible con mayor cobertura de bases en ±20%)
+  const refCurveIdx = useMemo(() => {
+    let bestIdx = 0;
+    let bestLen = -1;
+    series.forEach((s, idx) => {
+      if ((visible[idx] ?? true) && s.length > bestLen) {
+        bestLen = s.length;
+        bestIdx = idx;
+      }
+    });
+    if (bestLen <= 0) {
+      series.forEach((s, idx) => {
+        if (s.length > bestLen) {
+          bestLen = s.length;
+          bestIdx = idx;
+        }
+      });
+    }
+    return bestIdx;
+  }, [series, visible]);
+
+  const near = series[refCurveIdx] ?? [];
   const near0 = near[0];
   const hasSurfaceData =
     Number.isFinite(mkt.spot) &&
@@ -119,25 +203,25 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
     );
   }
 
-  // Lectura de skew sobre la curva del primer vencimiento con datos finitos
+  // Lectura de skew sobre la curva líquida principal
   const atmPt = near.reduce((a, b) => (Math.abs(b.m) < Math.abs(a.m) ? b : a), near0);
   const otmCall = near.reduce((a, b) => (Math.abs(b.m - 0.1) < Math.abs(a.m - 0.1) ? b : a), near0);
   const otmPut = near.reduce((a, b) => (Math.abs(b.m + 0.1) < Math.abs(a.m + 0.1) ? b : a), near0);
   const callSkew = (otmCall.iv - atmPt.iv) * 100;
   const putSkew = (otmPut.iv - atmPt.iv) * 100;
 
-  const t0 = term[0];
-  const t1 = term[1];
-  const t2 = term[2];
-  const spread1 = t0 && t1 && Number.isFinite(t0.atm) && Number.isFinite(t1.atm) ? (t1.atm - t0.atm) * 100 : Number.NaN;
-  const spread2 = t1 && t2 && Number.isFinite(t1.atm) && Number.isFinite(t2.atm) ? (t2.atm - t1.atm) * 100 : Number.NaN;
+  const validAtmTerms = term.filter((t) => Number.isFinite(t.atm) && t.atm > 0);
+  const t0 = validAtmTerms[0];
+  const t1 = validAtmTerms[1];
+  const t2 = validAtmTerms[2];
+  const spread1 = t0 && t1 ? (t1.atm - t0.atm) * 100 : Number.NaN;
+  const spread2 = t1 && t2 ? (t2.atm - t1.atm) * 100 : Number.NaN;
   const regime = !Number.isFinite(spread1) ? '—' : spread1 >= 0 ? 'Contango' : 'Backwardation';
 
-  const hovered = hoverIdx != null ? strikes[hoverIdx] ?? null : null;
-  const hoveredPt = hoverIdx != null ? near[hoverIdx] : undefined;
-
+  const hoveredX = hoverStrike != null ? mx(hoverStrike / mkt.spot - 1) : null;
   const colorAt = (idx: number): string => EXP_COLORS[idx % EXP_COLORS.length] ?? '#38BDF8';
-  const isVisible = (idx: number): boolean => visible[idx] ?? idx < 2;
+  const axisLabelStep = strikes.length > 12 ? Math.ceil(strikes.length / 10) : 1;
+  const axisStrikes = strikes.filter((_, idx) => idx % axisLabelStep === 0 || idx === strikes.length - 1);
 
   return (
     <div className="space-y-4">
@@ -200,7 +284,7 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
             viewBox={`0 0 ${SW} ${SH}`}
             className="w-full h-auto select-none"
             onPointerMove={(e) => {
-              if (near.length === 0) return;
+              if (strikes.length === 0) return;
               const svg = e.currentTarget;
               const pt = svg.createSVGPoint();
               pt.x = e.clientX;
@@ -208,19 +292,19 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
               const ctm = svg.getScreenCTM();
               if (!ctm) return;
               const p = pt.matrixTransform(ctm.inverse());
-              if (p.x < SL - 10 || p.x > SR + 10) return setHoverIdx(null);
-              let best = 0;
+              if (p.x < SL - 10 || p.x > SR + 10) return setHoverStrike(null);
+              let bestK: number | null = null;
               let bestDist = Infinity;
-              near.forEach((q, i) => {
-                const dist = Math.abs(q.x - p.x);
+              for (const k of strikes) {
+                const dist = Math.abs(mx(k / mkt.spot - 1) - p.x);
                 if (dist < bestDist) {
                   bestDist = dist;
-                  best = i;
+                  bestK = k;
                 }
-              });
-              setHoverIdx(best);
+              }
+              setHoverStrike(bestK);
             }}
-            onPointerLeave={() => setHoverIdx(null)}
+            onPointerLeave={() => setHoverStrike(null)}
           >
             {yTicks.map((v, idx) => (
               <g key={idx}>
@@ -246,7 +330,18 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
                   strokeDasharray="6 5"
                   strokeOpacity="0.7"
                 />
-                <text x={SR - 4} y={iy(HIST_MEDIAN_IV) - 7} textAnchor="end" fill="#94A3B8" fontSize="11" fontWeight="600">
+                <rect
+                  x={SL + 4}
+                  y={iy(HIST_MEDIAN_IV) - 18}
+                  width={158}
+                  height={15}
+                  rx={4}
+                  fill="#090B0E"
+                  fillOpacity="0.88"
+                  stroke="#334155"
+                  strokeWidth="0.6"
+                />
+                <text x={SL + 10} y={iy(HIST_MEDIAN_IV) - 7} textAnchor="start" fill="#CBD5E1" fontSize="10.5" fontWeight="600">
                   Mediana histórica {fmtNum(HIST_MEDIAN_IV * 100, 1)}%
                 </text>
               </>
@@ -264,24 +359,24 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
                       d={monotonePath(s)}
                       fill="none"
                       stroke={strokeColor}
-                      strokeWidth={i === 0 ? 2.6 : 2}
+                      strokeWidth={i === refCurveIdx ? 2.6 : 2}
                       strokeDasharray={i === 2 ? '6 4' : undefined}
                       initial={{ pathLength: 0, opacity: 0 }}
                       animate={{ pathLength: 1, opacity: 1 }}
                       transition={{ duration: 0.9, ease: FX_EASE }}
                     />
                   )}
-                  {s.map((q, j) => (
+                  {s.map((q) => (
                     <g key={q.k}>
                       <circle
                         cx={q.x}
                         cy={q.y}
-                        r={hoverIdx === j ? 5.5 : 3.8}
+                        r={hoverStrike === q.k ? 5.5 : 3.8}
                         fill="#090B0E"
                         stroke={strokeColor}
                         strokeWidth="2"
                       />
-                      {i === 0 && (
+                      {i === refCurveIdx && (s.length <= 14 || Math.abs(q.m) < 0.03 || hoverStrike === q.k) && (
                         <text x={q.x} y={q.y - 10} textAnchor="middle" fill="#E5E7EB" fontSize="10" className="font-mono-num">
                           {fmtNum(q.iv * 100, 1)}%
                         </text>
@@ -292,24 +387,24 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
               );
             })}
 
-            {hoveredPt && (
+            {hoveredX != null && (
               <line
-                x1={hoveredPt.x}
+                x1={hoveredX}
                 y1={ST}
-                x2={hoveredPt.x}
+                x2={hoveredX}
                 y2={SB}
                 stroke="rgba(255,255,255,0.25)"
                 strokeDasharray="2 3"
               />
             )}
 
-            {/* Eje de moneyness */}
+            {/* Eje de moneyness (-20% a +20%) */}
             {[
-              { m: -0.15, label: 'Deep OTM Put', sub: '−15%' },
-              { m: -0.075, label: 'OTM Put', sub: '−7,5%' },
+              { m: -0.2, label: 'Deep OTM Put', sub: '−20%' },
+              { m: -0.1, label: 'OTM Put', sub: '−10%' },
               { m: 0, label: 'ATM', sub: '0%' },
-              { m: 0.075, label: 'OTM Call', sub: '+7,5%' },
-              { m: 0.15, label: 'Deep OTM Call', sub: '+15%' },
+              { m: 0.1, label: 'OTM Call', sub: '+10%' },
+              { m: 0.2, label: 'Deep OTM Call', sub: '+20%' },
             ].map((t) => (
               <g key={t.m}>
                 <line x1={mx(t.m)} y1={SB} x2={mx(t.m)} y2={SB + 5} stroke="#4B5563" />
@@ -321,29 +416,33 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
                 </text>
               </g>
             ))}
-            {near.map((q) => (
-              <text key={`k-${q.k}`} x={q.x} y={SB - 6} textAnchor="middle" fill="#4B5563" fontSize="9" className="font-mono-num">
-                {fk(q.k)}
+            {axisStrikes.map((k) => (
+              <text key={`k-${k}`} x={mx(k / mkt.spot - 1)} y={SB - 6} textAnchor="middle" fill="#4B5563" fontSize="9" className="font-mono-num">
+                {fk(k)}
               </text>
             ))}
           </svg>
 
           <AnimatePresence>
-            {hoverIdx != null && hovered != null && hoveredPt && (
+            {hoverStrike != null && hoveredX != null && (
               <motion.div
                 key="smile-tip"
                 initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.98 }}
                 transition={{ duration: 0.18, ease: FX_EASE }}
-                className="pointer-events-none absolute top-3 z-10 px-3 py-2.5 rounded-[10px] bg-[#0D1017]/70 backdrop-blur-md border border-[var(--fx-line-strong)] shadow-xl text-[12px] font-mono-num"
-                style={{ left: `calc(${(hoveredPt.x / SW) * 100}% + 12px)` }}
+                className="pointer-events-none absolute top-3 z-10 px-3 py-2.5 rounded-[10px] bg-[#0D1017]/80 backdrop-blur-md border border-[var(--fx-line-strong)] shadow-xl text-[12px] font-mono-num"
+                style={
+                  hoveredX > SW * 0.68
+                    ? { right: `calc(${((SW - hoveredX) / SW) * 100}% + 12px)` }
+                    : { left: `calc(${(hoveredX / SW) * 100}% + 12px)` }
+                }
               >
                 <div className="text-white font-bold mb-1">
-                  Base {fk(hovered)} · {fmtNum((hovered / mkt.spot - 1) * 100, 1)}%
+                  Base {fk(hoverStrike)} · {fmtNum((hoverStrike / mkt.spot - 1) * 100, 1)}%
                 </div>
                 {series.map((s, i) => {
-                  const pt = s.find((q) => q.k === hovered);
+                  const pt = s.find((q) => Math.abs(q.k - hoverStrike) < 1e-6);
                   const tItem = term[i];
                   if (!isVisible(i) || !pt || !tItem) return null;
                   return (
@@ -397,7 +496,7 @@ export const VolatilitySurface: React.FC<{ mkt: Market }> = ({ mkt }) => {
                 {strikes.map((k, r) => {
                   const m = k / mkt.spot - 1;
                   const cells = term.map((t) => {
-                    const iv = smileIv(mkt.spot, k, t.days);
+                    const iv = resolveContractIv(t.rows, mkt.spot, k, t.days);
                     const p = Number.isFinite(iv) ? ivPercentile(iv) : Number.NaN;
                     return { iv, p };
                   });

@@ -539,11 +539,19 @@ export function buildBidirectionalFlow(
   let netDeltaEqShares = 0;
   let hasDelta = false;
 
+  const pickRefPx = (last: number, bid: number, ask: number): number => {
+    if (Number.isFinite(last) && last > 0) return last;
+    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask > 0) return (bid + ask) / 2;
+    if (Number.isFinite(ask) && ask > 0) return ask;
+    if (Number.isFinite(bid) && bid > 0) return bid;
+    return 0;
+  };
+
   const perStrike = sorted.map((r) => {
     const cLots = Number.isFinite(r.callVolumeLots) ? Math.max(0, r.callVolumeLots) : 0;
     const pLots = Number.isFinite(r.putVolumeLots) ? Math.max(0, r.putVolumeLots) : 0;
-    const cPx = Number.isFinite(r.callLast) ? Math.max(0, r.callLast) : 0;
-    const pPx = Number.isFinite(r.putLast) ? Math.max(0, r.putLast) : 0;
+    const cPx = pickRefPx(r.callLast, r.callBid, r.callAsk);
+    const pPx = pickRefPx(r.putLast, r.putBid, r.putAsk);
     const cVal = cLots * LOT * cPx;
     const pVal = pLots * LOT * pPx;
 

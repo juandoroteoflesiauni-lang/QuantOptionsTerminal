@@ -1248,16 +1248,183 @@ export const BondsCurveModule: React.FC = () => {
 };
 
 /* MÓDULO FUTUROS ROFEX Y TASA SINTÉTICA USD */
+interface SyntheticUsdFutureRow {
+  readonly contract: string;
+  readonly maturity: string;
+  readonly expiryUtcSec: number;
+  readonly days: number;
+  readonly spotA3500: number;
+  readonly forwardPrice: number;
+  readonly impliedDevalPct: number;
+  readonly temPct: number;
+  readonly tnaPct: number;
+  readonly teaPct: number;
+  readonly arsRateTnaPct: number;
+  readonly arsRateSource: string;
+  readonly usdRatePct: number;
+  readonly usdRateSource: string;
+  readonly spreadVsCclPct: number | null;
+  readonly badge: 'SINTÉTICO IMPLÍCITO';
+}
+
+const SYNTHETIC_MONTH_ABBR = [
+  'ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC',
+] as const;
+
+function buildFallbackSyntheticUsdFutures(params: {
+  readonly nowSec: number;
+  readonly a3500: number | null | undefined;
+  readonly arsRateTnaPct: number | null | undefined;
+  readonly arsRateSource: string;
+  readonly usdRatePct: number | null | undefined;
+  readonly usdRateSource: string;
+  readonly ccl: number | null | undefined;
+}): readonly SyntheticUsdFutureRow[] {
+  const { a3500, arsRateTnaPct, usdRatePct } = params;
+  if (
+    a3500 == null ||
+    !Number.isFinite(a3500) ||
+    a3500 <= 0 ||
+    arsRateTnaPct == null ||
+    !Number.isFinite(arsRateTnaPct) ||
+    arsRateTnaPct <= 0 ||
+    usdRatePct == null ||
+    !Number.isFinite(usdRatePct) ||
+    usdRatePct < 0
+  ) {
+    return [];
+  }
+  const rArsCont = (365 / 30) * Math.log(1 + (arsRateTnaPct / 100) * (30 / 365));
+  const rUsdCont = Math.log(1 + usdRatePct / 100);
+  const nowDate = new Date(params.nowSec * 1_000);
+  let startYear = nowDate.getUTCFullYear();
+  let startMonth = nowDate.getUTCMonth();
+  const firstEomSec = Math.floor(Date.UTC(startYear, startMonth + 1, 0, 18, 0, 0) / 1_000);
+  if (firstEomSec - params.nowSec < 86_400) {
+    startMonth += 1;
+    if (startMonth >= 12) {
+      startMonth -= 12;
+      startYear += 1;
+    }
+  }
+  const rows: SyntheticUsdFutureRow[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    const totalMonths = startMonth + i;
+    const y = startYear + Math.floor(totalMonths / 12);
+    const m = totalMonths % 12;
+    const eom = new Date(Date.UTC(y, m + 1, 0, 18, 0, 0));
+    const expiryUtcSec = Math.floor(eom.getTime() / 1_000);
+    const days = Math.max(1, Math.round((expiryUtcSec - params.nowSec) / 86_400));
+    const tYears = days / 365;
+    const forwardPrice = a3500 * Math.exp((rArsCont - rUsdCont) * tYears);
+    const ratio = forwardPrice / a3500;
+    const impliedDevalPct = (ratio - 1) * 100;
+    const temPct = (Math.pow(ratio, 30 / days) - 1) * 100;
+    const tnaPct = (ratio - 1) * (365 / days) * 100;
+    const teaPct = (Math.pow(ratio, 365 / days) - 1) * 100;
+    const monthAbbr = SYNTHETIC_MONTH_ABBR[m] ?? 'MES';
+    rows.push({
+      contract: `DLR-${monthAbbr}${String(y).slice(-2)}-SINT`,
+      maturity: eom.toISOString().slice(0, 10),
+      expiryUtcSec,
+      days,
+      spotA3500: a3500,
+      forwardPrice,
+      impliedDevalPct,
+      temPct,
+      tnaPct,
+      teaPct,
+      arsRateTnaPct,
+      arsRateSource: params.arsRateSource,
+      usdRatePct,
+      usdRateSource: params.usdRateSource,
+      spreadVsCclPct:
+        params.ccl != null && Number.isFinite(params.ccl) && params.ccl > 0
+          ? (forwardPrice / params.ccl - 1) * 100
+          : null,
+      badge: 'SINTÉTICO IMPLÍCITO',
+    });
+  }
+  return rows;
+}
+
 export const FuturesModule: React.FC = () => {
   const liveMarket = useLiveMarketState();
+
+  useEffect(() => {
+    void requestUsSnapshot('SPY');
+  }, []);
+
+  const macroExt = liveMarket.macro as
+    | (NonNullable<typeof liveMarket.macro> & {
+        readonly variables: NonNullable<typeof liveMarket.macro>['variables'] & {
+          readonly sofrUsdTna?: number | null;
+        };
+        readonly syntheticFutures?: readonly SyntheticUsdFutureRow[];
+      })
+    | null;
+
+  const syntheticRows: readonly SyntheticUsdFutureRow[] = (() => {
+    if (ROFEX_FUTURES.length > 0) return [];
+    const serverCurve = macroExt?.syntheticFutures;
+    if (serverCurve && serverCurve.length > 0) return serverCurve;
+    const vars = macroExt?.variables;
+    const spyTreasury = liveMarket.usSnapshotsBySymbol['SPY']?.marketContext?.treasury;
+    const usdRatePct =
+      vars?.sofrUsdTna ??
+      spyTreasury?.sofr ??
+      spyTreasury?.yield3M ??
+      spyTreasury?.yield1M ??
+      null;
+    const usdRateSource =
+      vars?.sofrUsdTna != null
+        ? 'NY Fed SOFR'
+        : spyTreasury?.sofr != null
+          ? 'US SOFR'
+          : 'US Treasury';
+    const arsRateSource =
+      vars?.tamarTna != null
+        ? 'BCRA TAMAR'
+        : vars?.badlarTna != null
+          ? 'BCRA BADLAR'
+          : vars?.tpmTna != null
+            ? 'BCRA TPM'
+            : 'ArgentinaDatos PF';
+    const arsRateTnaPct =
+      vars?.tamarTna ?? vars?.badlarTna ?? vars?.tpmTna ?? vars?.plazoFijoTna ?? null;
+    return buildFallbackSyntheticUsdFutures({
+      nowSec: macroExt?.asOfUtcSec ?? Math.floor(Date.now() / 1_000),
+      a3500: vars?.a3500,
+      arsRateTnaPct,
+      arsRateSource,
+      usdRatePct,
+      usdRateSource,
+      ccl: vars?.ccl ?? liveMarket.overview?.cclMedian,
+    });
+  })();
+
+  const firstSynth = syntheticRows[0] ?? null;
+
   return (
     <div className="space-y-4 animate-module">
-      <InsightBanner variant="warn" tag="Curva Rofex / Sintético USD">
-        {ROFEX_FUTURES.length > 0
-          ? `Contratos activos de dólar futuro (${ROFEX_FUTURES.length} vencimientos).`
-          : `Sin feed gratuito directo de MATBA-ROFEX en el runtime (${liveMarket.feedStatus}). Referencia TC Mayorista A3500 BCRA: ${
-              liveMarket.macro?.variables.a3500 != null ? `$ ${fmtNum(liveMarket.macro.variables.a3500, 2)}` : '—'
-            }.`}
+      <InsightBanner variant={ROFEX_FUTURES.length > 0 ? 'pos' : 'warn'} tag="Curva Rofex / Sintético USD">
+        {ROFEX_FUTURES.length > 0 ? (
+          `Contratos activos de dólar futuro (${ROFEX_FUTURES.length} vencimientos).`
+        ) : firstSynth ? (
+          <>
+            Sin feed directo de MATBA-ROFEX — Curva forward implícita{' '}
+            <strong className="text-[#EAB308]">SINTÉTICO IMPLÍCITO</strong> ({syntheticRows.length} contratos CIP) · A3500 BCRA:{' '}
+            <strong className="font-mono-num text-[var(--text-primary)]">$ {fmtNum(firstSynth.spotA3500, 2)}</strong> ·{' '}
+            {firstSynth.arsRateSource}:{' '}
+            <strong className="font-mono-num text-[var(--text-primary)]">{fmtNum(firstSynth.arsRateTnaPct, 2)}%</strong> ·{' '}
+            {firstSynth.usdRateSource}:{' '}
+            <strong className="font-mono-num text-[#2EDC7E]">{fmtNum(firstSynth.usdRatePct, 2)}%</strong>. Cero ticks simulados de Rofex.
+          </>
+        ) : (
+          `Sin feed gratuito directo de MATBA-ROFEX ni curva completa de tasas USD/ARS (${liveMarket.feedStatus}). Referencia TC Mayorista A3500 BCRA: ${
+            liveMarket.macro?.variables.a3500 != null ? `$ ${fmtNum(liveMarket.macro.variables.a3500, 2)}` : '—'
+          }.`
+        )}
       </InsightBanner>
 
       <div className="qc-card overflow-hidden">
@@ -1265,26 +1432,20 @@ export const FuturesModule: React.FC = () => {
           <table className="w-full border-collapse text-right font-mono-num text-[12px]">
             <thead>
               <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
-                <th className="py-2.5 px-3 text-left">Contrato Rofex</th>
+                <th className="py-2.5 px-3 text-left">Contrato Rofex / Sintético</th>
                 <th className="py-2.5 px-2.5">Vencimiento</th>
                 <th className="py-2.5 px-2.5">Días</th>
-                <th className="py-2.5 px-2.5">Ajuste ($)</th>
+                <th className="py-2.5 px-2.5">Forward Teórico ($)</th>
                 <th className="py-2.5 px-2.5">Var. Día</th>
                 <th className="py-2.5 px-2.5">Deval. Directa</th>
                 <th className="py-2.5 px-2.5">TNA Implícita</th>
                 <th className="py-2.5 px-2.5">TEA Implícita</th>
-                <th className="py-2.5 px-2.5">LECAP Ref.</th>
-                <th className="py-2.5 px-3 text-[#2EDC7E]">Tasa Sintética USD</th>
+                <th className="py-2.5 px-2.5">Tasa ARS Ref.</th>
+                <th className="py-2.5 px-3 text-[#2EDC7E]">Tasa USD Ref.</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)]">
-              {ROFEX_FUTURES.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
-                    No hay contratos Rofex en los conectores públicos gratuitos (Data912 / Open BYMA / BCRA). Todos los campos muestran — sin valores simulados.
-                  </td>
-                </tr>
-              ) : (
+              {ROFEX_FUTURES.length > 0 ? (
                 ROFEX_FUTURES.map((f) => (
                   <tr key={f.contract} className="h-9 hover:bg-[var(--surface-2)]">
                     <td className="px-3 text-left font-bold text-[var(--text-primary)]">{f.contract}</td>
@@ -1303,6 +1464,38 @@ export const FuturesModule: React.FC = () => {
                     <td className="px-3 font-bold text-[#2EDC7E]">{fmtPct(f.syntheticUsdRatePct, 2)} TNA</td>
                   </tr>
                 ))
+              ) : syntheticRows.length > 0 ? (
+                syntheticRows.map((s) => (
+                  <tr key={s.contract} className="h-9 hover:bg-[var(--surface-2)]">
+                    <td className="px-3 text-left font-bold text-[var(--text-primary)]">
+                      <span className="inline-flex items-center gap-2">
+                        <span>{s.contract}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40 text-[9.5px] font-sans font-bold tracking-wider">
+                          {s.badge}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="px-2.5 text-[var(--text-secondary)]">{s.maturity}</td>
+                    <td className="px-2.5 text-[var(--text-secondary)]">{s.days}d</td>
+                    <td className="px-2.5 font-bold text-[var(--text-primary)]">$ {fmtNum(s.forwardPrice, 2)}</td>
+                    <td className="px-2.5 text-[var(--text-tertiary)]">—</td>
+                    <td className="px-2.5 text-[var(--text-secondary)]">{fmtPct(s.impliedDevalPct, 2)}</td>
+                    <td className="px-2.5 font-semibold text-[#8B7CF6]">{fmtNum(s.tnaPct, 2)} %</td>
+                    <td className="px-2.5 text-[var(--text-secondary)]">{fmtNum(s.teaPct, 2)} %</td>
+                    <td className="px-2.5 text-[var(--text-secondary)]">
+                      {s.arsRateSource} ({fmtNum(s.arsRateTnaPct, 1)}%)
+                    </td>
+                    <td className="px-3 font-bold text-[#2EDC7E]">
+                      {fmtNum(s.usdRatePct, 2)}% ({s.usdRateSource})
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                    No hay contratos Rofex en los conectores públicos gratuitos (Data912 / Open BYMA / BCRA). Todos los campos muestran — sin valores simulados.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
