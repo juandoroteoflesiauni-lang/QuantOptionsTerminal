@@ -1,0 +1,1025 @@
+{
+  "inputs": {
+    "tBase": 1781710200,
+    "t0dteExp": 1781726400,
+    "t3dteExp": 1781985600,
+    "t15dteExp": 1783022400,
+    "t45dteExp": 1785614400,
+    "tOpen1000": 1781704800,
+    "tMid1130": 1781710200,
+    "tLate1510": 1781723400,
+    "classificationCases": [
+      {
+        "name": "ask_exact",
+        "price": 2.5,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": null
+      },
+      {
+        "name": "ask_side_mid",
+        "price": 2.48,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": null
+      },
+      {
+        "name": "bid_exact",
+        "price": 2.4,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": null
+      },
+      {
+        "name": "bid_side_mid",
+        "price": 2.42,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": null
+      },
+      {
+        "name": "mid_uptick",
+        "price": 2.45,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": 2.43
+      },
+      {
+        "name": "mid_downtick",
+        "price": 2.45,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": 2.47
+      },
+      {
+        "name": "mid_neutral",
+        "price": 2.45,
+        "bid": 2.4,
+        "ask": 2.5,
+        "prevPrice": null
+      },
+      {
+        "name": "invalid_crossed",
+        "price": 2.45,
+        "bid": 2.6,
+        "ask": 2.5,
+        "prevPrice": null
+      },
+      {
+        "name": "invalid_zero_bid",
+        "price": 2.45,
+        "bid": 0.0,
+        "ask": 2.5,
+        "prevPrice": null
+      }
+    ],
+    "flowContext": {
+      "asOfUtcSec": 1781710320,
+      "spot": 500.0,
+      "rate": 0.045,
+      "dividendYield": 0.013
+    },
+    "flowPrints": [
+      {
+        "timestampUtcSec": 1781710210,
+        "sipTimestampNs": 100,
+        "contractTicker": "O:SPY260620C00500000",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "call",
+        "price": 4.2,
+        "size": 120,
+        "bid": 4.1,
+        "ask": 4.2,
+        "impliedVolatility": 0.21
+      },
+      {
+        "timestampUtcSec": 1781710220,
+        "sipTimestampNs": 200,
+        "contractTicker": "O:SPY260620C00505000",
+        "strike": 505.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "call",
+        "price": 2.05,
+        "size": 40,
+        "bid": 2.05,
+        "ask": 2.15,
+        "impliedVolatility": 0.2
+      },
+      {
+        "timestampUtcSec": 1781710230,
+        "sipTimestampNs": 300,
+        "contractTicker": "O:SPY260620P00495000",
+        "strike": 495.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "put",
+        "price": 1.85,
+        "size": 50,
+        "bid": 1.75,
+        "ask": 1.85,
+        "impliedVolatility": 0.22
+      },
+      {
+        "timestampUtcSec": 1781710240,
+        "sipTimestampNs": 400,
+        "contractTicker": "O:SPY260620P00490000",
+        "strike": 490.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "put",
+        "price": 1.05,
+        "size": 100,
+        "bid": 1.05,
+        "ask": 1.15,
+        "impliedVolatility": 0.24
+      },
+      {
+        "timestampUtcSec": 1781710250,
+        "sipTimestampNs": 500,
+        "contractTicker": "O:SPY260620C00500000",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "call",
+        "price": 4.25,
+        "size": 30,
+        "bid": 4.2,
+        "ask": 4.3,
+        "impliedVolatility": 0.21
+      },
+      {
+        "timestampUtcSec": 1781710260,
+        "sipTimestampNs": 600,
+        "contractTicker": "O:SPY260620C00510000",
+        "strike": 510.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "call",
+        "price": 1.1,
+        "size": 25,
+        "bid": 0.0,
+        "ask": 1.15,
+        "impliedVolatility": 0.19
+      },
+      {
+        "timestampUtcSec": 1781710380,
+        "sipTimestampNs": 700,
+        "contractTicker": "O:SPY260620C00500000",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "call",
+        "price": 4.4,
+        "size": 500,
+        "bid": 4.3,
+        "ask": 4.4,
+        "impliedVolatility": 0.21
+      }
+    ],
+    "madContracts": [
+      {
+        "contractTicker": "C0_510",
+        "strike": 510.0,
+        "expiryUtcSec": 1781726400,
+        "contractType": "call",
+        "dayVolume": 400,
+        "openInterest": 1000,
+        "impliedVolatility": 0.22
+      },
+      {
+        "contractTicker": "C0_515",
+        "strike": 515.0,
+        "expiryUtcSec": 1781726400,
+        "contractType": "call",
+        "dayVolume": 500,
+        "openInterest": 1000,
+        "impliedVolatility": 0.23
+      },
+      {
+        "contractTicker": "C0_520",
+        "strike": 520.0,
+        "expiryUtcSec": 1781726400,
+        "contractType": "call",
+        "dayVolume": 450,
+        "openInterest": 1000,
+        "impliedVolatility": 0.24
+      },
+      {
+        "contractTicker": "C0_525_ANOM",
+        "strike": 525.0,
+        "expiryUtcSec": 1781726400,
+        "contractType": "call",
+        "dayVolume": 18000,
+        "openInterest": 1000,
+        "impliedVolatility": 0.25
+      },
+      {
+        "contractTicker": "P3_498",
+        "strike": 498.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "put",
+        "dayVolume": 500,
+        "openInterest": 1000,
+        "impliedVolatility": 0.2
+      },
+      {
+        "contractTicker": "P3_500",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "put",
+        "dayVolume": 1000,
+        "openInterest": 2000,
+        "impliedVolatility": 0.2
+      },
+      {
+        "contractTicker": "P3_502",
+        "strike": 502.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "put",
+        "dayVolume": 750,
+        "openInterest": 1500,
+        "impliedVolatility": 0.2
+      },
+      {
+        "contractTicker": "P45_440",
+        "strike": 440.0,
+        "expiryUtcSec": 1785614400,
+        "contractType": "put",
+        "dayVolume": 600,
+        "openInterest": 1200,
+        "impliedVolatility": 0.26
+      },
+      {
+        "contractTicker": "P45_450",
+        "strike": 450.0,
+        "expiryUtcSec": 1785614400,
+        "contractType": "put",
+        "dayVolume": 900,
+        "openInterest": 1000,
+        "impliedVolatility": 0.25
+      },
+      {
+        "contractTicker": "C15_460",
+        "strike": 460.0,
+        "expiryUtcSec": 1783022400,
+        "contractType": "call",
+        "dayVolume": 200,
+        "openInterest": 500,
+        "impliedVolatility": 0.24
+      },
+      {
+        "contractTicker": "C15_470",
+        "strike": 470.0,
+        "expiryUtcSec": 1783022400,
+        "contractType": "call",
+        "dayVolume": 350,
+        "openInterest": 500,
+        "impliedVolatility": 0.23
+      },
+      {
+        "contractTicker": "C15_480",
+        "strike": 480.0,
+        "expiryUtcSec": 1783022400,
+        "contractType": "call",
+        "dayVolume": 550,
+        "openInterest": 500,
+        "impliedVolatility": 0.22
+      },
+      {
+        "contractTicker": "LOW_VOL",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "contractType": "call",
+        "dayVolume": 50,
+        "openInterest": 1000,
+        "impliedVolatility": 0.2
+      }
+    ],
+    "gexMarket": {
+      "spot": 500.0,
+      "nowUtcSec": 1781710200,
+      "rate": 0.045,
+      "dividendYield": 0.013
+    },
+    "gexContracts": [
+      {
+        "contractType": "put",
+        "strike": 490.0,
+        "expiryUtcSec": 1781985600,
+        "openInterest": 12000,
+        "sharesPerContract": 100,
+        "iv": 0.22
+      },
+      {
+        "contractType": "call",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "openInterest": 10000,
+        "sharesPerContract": 100,
+        "iv": 0.2
+      },
+      {
+        "contractType": "put",
+        "strike": 500.0,
+        "expiryUtcSec": 1781985600,
+        "openInterest": 4000,
+        "sharesPerContract": 100,
+        "iv": 0.2
+      },
+      {
+        "contractType": "call",
+        "strike": 505.0,
+        "expiryUtcSec": 1781726400,
+        "openInterest": 8000,
+        "sharesPerContract": 100,
+        "iv": 0.19
+      },
+      {
+        "contractType": "call",
+        "strike": 520.0,
+        "expiryUtcSec": 1781985600,
+        "openInterest": 7000,
+        "sharesPerContract": 100,
+        "iv": 0.2
+      },
+      {
+        "contractType": "call",
+        "strike": 550.0,
+        "expiryUtcSec": 1785614400,
+        "openInterest": 15000,
+        "sharesPerContract": 100,
+        "iv": 0.21
+      }
+    ]
+  },
+  "expected": {
+    "classifications": {
+      "ask_exact": {
+        "side": "ASK_SIDE_BUY",
+        "aggressorSign": 1,
+        "midpoint": 2.45
+      },
+      "ask_side_mid": {
+        "side": "ASK_SIDE_BUY",
+        "aggressorSign": 1,
+        "midpoint": 2.45
+      },
+      "bid_exact": {
+        "side": "BID_SIDE_SELL",
+        "aggressorSign": -1,
+        "midpoint": 2.45
+      },
+      "bid_side_mid": {
+        "side": "BID_SIDE_SELL",
+        "aggressorSign": -1,
+        "midpoint": 2.45
+      },
+      "mid_uptick": {
+        "side": "ASK_SIDE_BUY",
+        "aggressorSign": 1,
+        "midpoint": 2.45
+      },
+      "mid_downtick": {
+        "side": "BID_SIDE_SELL",
+        "aggressorSign": -1,
+        "midpoint": 2.45
+      },
+      "mid_neutral": {
+        "side": "MID_NEUTRAL",
+        "aggressorSign": 0,
+        "midpoint": 2.45
+      },
+      "invalid_crossed": {
+        "side": "INVALID_QUOTE",
+        "aggressorSign": 0,
+        "midpoint": null
+      },
+      "invalid_zero_bid": {
+        "side": "INVALID_QUOTE",
+        "aggressorSign": 0,
+        "midpoint": null
+      }
+    },
+    "orderFlow": {
+      "asOfUtcSec": 1781710320,
+      "evaluatedPrints": 5,
+      "skippedPrints": 1,
+      "callBuyPremiumUsd": 63150.0,
+      "callSellPremiumUsd": 8200.0,
+      "callNetPremiumCvdUsd": 54950.0,
+      "putBuyPremiumUsd": 9250.0,
+      "putSellPremiumUsd": 10500.0,
+      "putNetPremiumCvdUsd": -1250.0,
+      "netDirectionalPremiumUsd": 56200.0,
+      "netDeltaShares": 6676.172076536356,
+      "netVegaUsd": 1741.165724835611,
+      "byStrikeFlow": [
+        {
+          "strike": 490.0,
+          "callBuyVolume": 0.0,
+          "callSellVolume": 0.0,
+          "putBuyVolume": 0.0,
+          "putSellVolume": 100.0,
+          "callBuyPremiumUsd": 0.0,
+          "callSellPremiumUsd": 0.0,
+          "putBuyPremiumUsd": 0.0,
+          "putSellPremiumUsd": 10500.0,
+          "netDeltaShares": 1775.8776648522182,
+          "netVegaUsd": -1215.553911850549,
+          "netCallAggressiveContracts": 0.0,
+          "netPutAggressiveContracts": -100.0
+        },
+        {
+          "strike": 495.0,
+          "callBuyVolume": 0.0,
+          "callSellVolume": 0.0,
+          "putBuyVolume": 50.0,
+          "putSellVolume": 0.0,
+          "callBuyPremiumUsd": 0.0,
+          "callSellPremiumUsd": 0.0,
+          "putBuyPremiumUsd": 9250.0,
+          "putSellPremiumUsd": 0.0,
+          "netDeltaShares": -1520.1401850865998,
+          "netVegaUsd": 817.0802143867166,
+          "netCallAggressiveContracts": 0.0,
+          "netPutAggressiveContracts": 50.0
+        },
+        {
+          "strike": 500.0,
+          "callBuyVolume": 150.0,
+          "callSellVolume": 0.0,
+          "putBuyVolume": 0.0,
+          "putSellVolume": 0.0,
+          "callBuyPremiumUsd": 63150.0,
+          "callSellPremiumUsd": 0.0,
+          "putBuyPremiumUsd": 0.0,
+          "putSellPremiumUsd": 0.0,
+          "netDeltaShares": 7643.04541300428,
+          "netVegaUsd": 2794.865327186532,
+          "netCallAggressiveContracts": 150.0,
+          "netPutAggressiveContracts": 0.0
+        },
+        {
+          "strike": 505.0,
+          "callBuyVolume": 0.0,
+          "callSellVolume": 40.0,
+          "putBuyVolume": 0.0,
+          "putSellVolume": 0.0,
+          "callBuyPremiumUsd": 0.0,
+          "callSellPremiumUsd": 8200.0,
+          "putBuyPremiumUsd": 0.0,
+          "putSellPremiumUsd": 0.0,
+          "netDeltaShares": -1222.6108162335424,
+          "netVegaUsd": -655.2259048870889,
+          "netCallAggressiveContracts": -40.0,
+          "netPutAggressiveContracts": 0.0
+        }
+      ]
+    },
+    "madAnomalies": {
+      "asOfUtcSec": 1781710320,
+      "evaluatedContracts": 12,
+      "skippedContracts": 1,
+      "contracts": [
+        {
+          "contractTicker": "C0_510",
+          "strike": 510.0,
+          "expiryUtcSec": 1781726400,
+          "contractType": "call",
+          "dteDays": 0,
+          "dteBucket": "0DTE",
+          "logMoneynessAbs": 0.01980262729617973,
+          "moneynessBucket": "OTM",
+          "dayVolume": 400,
+          "openInterest": 1000,
+          "volOiRatio": 0.4,
+          "logVolOiRatio": -0.916290731874155,
+          "bucketMedianLogRatio": -0.7458274383888585,
+          "bucketMadLogRatio": 0.11157177565710485,
+          "madLogScore": -1.0305107685938113,
+          "isAnomaly": false,
+          "delta": 3.439313109082861e-05,
+          "vegaPer1Pct": 1.633618180642161e-05
+        },
+        {
+          "contractTicker": "C0_515",
+          "strike": 515.0,
+          "expiryUtcSec": 1781726400,
+          "contractType": "call",
+          "dteDays": 0,
+          "dteBucket": "0DTE",
+          "logMoneynessAbs": 0.02955880224154443,
+          "moneynessBucket": "OTM",
+          "dayVolume": 500,
+          "openInterest": 1000,
+          "volOiRatio": 0.5,
+          "logVolOiRatio": -0.6931471805599453,
+          "bucketMedianLogRatio": -0.7458274383888585,
+          "bucketMadLogRatio": 0.11157177565710485,
+          "madLogScore": 0.3184707503593791,
+          "isAnomaly": false,
+          "delta": 6.515235740344995e-09,
+          "vegaPer1Pct": 4.304746356336854e-09
+        },
+        {
+          "contractTicker": "C0_520",
+          "strike": 520.0,
+          "expiryUtcSec": 1781726400,
+          "contractType": "call",
+          "dteDays": 0,
+          "dteBucket": "0DTE",
+          "logMoneynessAbs": 0.03922071315328133,
+          "moneynessBucket": "OTM",
+          "dayVolume": 450,
+          "openInterest": 1000,
+          "volOiRatio": 0.45,
+          "logVolOiRatio": -0.7985076962177716,
+          "bucketMedianLogRatio": -0.7458274383888585,
+          "bucketMadLogRatio": 0.11157177565710485,
+          "madLogScore": -0.3184707503593791,
+          "isAnomaly": false,
+          "delta": 2.3902943276248144e-13,
+          "vegaPer1Pct": 1.987793882723768e-13
+        },
+        {
+          "contractTicker": "C0_525_ANOM",
+          "strike": 525.0,
+          "expiryUtcSec": 1781726400,
+          "contractType": "call",
+          "dteDays": 0,
+          "dteBucket": "0DTE",
+          "logMoneynessAbs": 0.04879016416943204,
+          "moneynessBucket": "OTM",
+          "dayVolume": 18000,
+          "openInterest": 1000,
+          "volOiRatio": 18.0,
+          "logVolOiRatio": 2.8903717578961645,
+          "bucketMedianLogRatio": -0.7458274383888585,
+          "bucketMadLogRatio": 0.11157177565710485,
+          "madLogScore": 21.98210741978355,
+          "isAnomaly": true,
+          "delta": 0.0,
+          "vegaPer1Pct": 2.8492681669519067e-18
+        },
+        {
+          "contractTicker": "P3_498",
+          "strike": 498.0,
+          "expiryUtcSec": 1781985600,
+          "contractType": "put",
+          "dteDays": 3,
+          "dteBucket": "1_7DTE",
+          "logMoneynessAbs": 0.004008021397538822,
+          "moneynessBucket": "ATM",
+          "dayVolume": 500,
+          "openInterest": 1000,
+          "volOiRatio": 0.5,
+          "logVolOiRatio": -0.6931471805599453,
+          "bucketMedianLogRatio": -0.6931471805599453,
+          "bucketMadLogRatio": 0.0,
+          "madLogScore": null,
+          "isAnomaly": false,
+          "delta": -0.405589698229452,
+          "vegaPer1Pct": 0.1811062085328721
+        },
+        {
+          "contractTicker": "P3_500",
+          "strike": 500.0,
+          "expiryUtcSec": 1781985600,
+          "contractType": "put",
+          "dteDays": 3,
+          "dteBucket": "1_7DTE",
+          "logMoneynessAbs": 0.0,
+          "moneynessBucket": "ATM",
+          "dayVolume": 1000,
+          "openInterest": 2000,
+          "volOiRatio": 0.5,
+          "logVolOiRatio": -0.6931471805599453,
+          "bucketMedianLogRatio": -0.6931471805599453,
+          "bucketMadLogRatio": 0.0,
+          "madLogScore": null,
+          "isAnomaly": false,
+          "delta": -0.4902543425327073,
+          "vegaPer1Pct": 0.1862887713116587
+        },
+        {
+          "contractTicker": "P3_502",
+          "strike": 502.0,
+          "expiryUtcSec": 1781985600,
+          "contractType": "put",
+          "dteDays": 3,
+          "dteBucket": "1_7DTE",
+          "logMoneynessAbs": 0.003992021269537457,
+          "moneynessBucket": "ATM",
+          "dayVolume": 750,
+          "openInterest": 1500,
+          "volOiRatio": 0.5,
+          "logVolOiRatio": -0.6931471805599453,
+          "bucketMedianLogRatio": -0.6931471805599453,
+          "bucketMadLogRatio": 0.0,
+          "madLogScore": null,
+          "isAnomaly": false,
+          "delta": -0.5750241126173856,
+          "vegaPer1Pct": 0.1830330980433803
+        },
+        {
+          "contractTicker": "P45_440",
+          "strike": 440.0,
+          "expiryUtcSec": 1785614400,
+          "contractType": "put",
+          "dteDays": 45,
+          "dteBucket": "31_PLUS_DTE",
+          "logMoneynessAbs": 0.12783337150988489,
+          "moneynessBucket": "DEEP_OTM",
+          "dayVolume": 600,
+          "openInterest": 1200,
+          "volOiRatio": 0.5,
+          "logVolOiRatio": -0.6931471805599453,
+          "bucketMedianLogRatio": null,
+          "bucketMadLogRatio": null,
+          "madLogScore": null,
+          "isAnomaly": false,
+          "delta": -0.06847297247583672,
+          "vegaPer1Pct": 0.23214463498845067
+        },
+        {
+          "contractTicker": "P45_450",
+          "strike": 450.0,
+          "expiryUtcSec": 1785614400,
+          "contractType": "put",
+          "dteDays": 45,
+          "dteBucket": "31_PLUS_DTE",
+          "logMoneynessAbs": 0.10536051565782628,
+          "moneynessBucket": "DEEP_OTM",
+          "dayVolume": 900,
+          "openInterest": 1000,
+          "volOiRatio": 0.9,
+          "logVolOiRatio": -0.10536051565782628,
+          "bucketMedianLogRatio": null,
+          "bucketMadLogRatio": null,
+          "madLogScore": null,
+          "isAnomaly": false,
+          "delta": -0.09892077528879682,
+          "vegaPer1Pct": 0.306173014398621
+        },
+        {
+          "contractTicker": "C15_460",
+          "strike": 460.0,
+          "expiryUtcSec": 1783022400,
+          "contractType": "call",
+          "dteDays": 15,
+          "dteBucket": "8_30DTE",
+          "logMoneynessAbs": 0.08338160893905101,
+          "moneynessBucket": "ITM",
+          "dayVolume": 200,
+          "openInterest": 500,
+          "volOiRatio": 0.4,
+          "logVolOiRatio": -0.916290731874155,
+          "bucketMedianLogRatio": -0.35667494393873245,
+          "bucketMadLogRatio": 0.4519851237430574,
+          "madLogScore": -0.8351064183126319,
+          "isAnomaly": false,
+          "delta": 0.9598457863805648,
+          "vegaPer1Pct": 0.08718664990387676
+        },
+        {
+          "contractTicker": "C15_470",
+          "strike": 470.0,
+          "expiryUtcSec": 1783022400,
+          "contractType": "call",
+          "dteDays": 15,
+          "dteBucket": "8_30DTE",
+          "logMoneynessAbs": 0.06187540371808753,
+          "moneynessBucket": "ITM",
+          "dayVolume": 350,
+          "openInterest": 500,
+          "volOiRatio": 0.7,
+          "logVolOiRatio": -0.35667494393873245,
+          "bucketMedianLogRatio": -0.35667494393873245,
+          "bucketMadLogRatio": 0.4519851237430574,
+          "madLogScore": 0.0,
+          "isAnomaly": false,
+          "delta": 0.9142774644824282,
+          "vegaPer1Pct": 0.1589342545503465
+        },
+        {
+          "contractTicker": "C15_480",
+          "strike": 480.0,
+          "expiryUtcSec": 1783022400,
+          "contractType": "call",
+          "dteDays": 15,
+          "dteBucket": "8_30DTE",
+          "logMoneynessAbs": 0.040821994520255166,
+          "moneynessBucket": "ITM",
+          "dayVolume": 550,
+          "openInterest": 500,
+          "volOiRatio": 1.1,
+          "logVolOiRatio": 0.09531017980432493,
+          "bucketMedianLogRatio": -0.35667494393873245,
+          "bucketMadLogRatio": 0.4519851237430574,
+          "madLogScore": 0.6744907594765952,
+          "isAnomaly": false,
+          "delta": 0.8314748586237691,
+          "vegaPer1Pct": 0.25606392038479997
+        }
+      ],
+      "anomalies": [
+        {
+          "contractTicker": "C0_525_ANOM",
+          "strike": 525.0,
+          "expiryUtcSec": 1781726400,
+          "contractType": "call",
+          "dteDays": 0,
+          "dteBucket": "0DTE",
+          "logMoneynessAbs": 0.04879016416943204,
+          "moneynessBucket": "OTM",
+          "dayVolume": 18000,
+          "openInterest": 1000,
+          "volOiRatio": 18.0,
+          "logVolOiRatio": 2.8903717578961645,
+          "bucketMedianLogRatio": -0.7458274383888585,
+          "bucketMadLogRatio": 0.11157177565710485,
+          "madLogScore": 21.98210741978355,
+          "isAnomaly": true,
+          "delta": 0.0,
+          "vegaPer1Pct": 2.8492681669519067e-18
+        }
+      ]
+    },
+    "flowAdjustedGexStructural": {
+      "spot": 500.0,
+      "priorWeight": 1.0,
+      "evaluatedContractsCount": 6,
+      "skippedContractsCount": 0,
+      "totalSignedDollarGex": 48279098.10132079,
+      "totalCharmExposure": -99008941.70841727,
+      "callWallStrike": 500.0,
+      "putWallStrike": 490.0,
+      "byStrike": [
+        {
+          "strike": 490.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": null,
+          "putDealerFlowSign": 1.0,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 0.0,
+          "putSignedDollarGex": -70147527.88136005,
+          "netCharmExposure": -21686721.04453255,
+          "netSignedDollarGex": -70147527.88136005
+        },
+        {
+          "strike": 500.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": -1.0,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 106682679.33049496,
+          "putSignedDollarGex": -42673071.73219799,
+          "netCharmExposure": -443390.96232760814,
+          "netSignedDollarGex": 64009607.59829696
+        },
+        {
+          "strike": 505.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": 1.0,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 26031252.270028237,
+          "putSignedDollarGex": 0.0,
+          "netCharmExposure": -69250209.66184486,
+          "netSignedDollarGex": 26031252.270028237
+        },
+        {
+          "strike": 520.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": null,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 8691464.463927623,
+          "putSignedDollarGex": 0.0,
+          "netCharmExposure": -5408897.100311535,
+          "netSignedDollarGex": 8691464.463927623
+        },
+        {
+          "strike": 550.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": null,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 19694301.650428016,
+          "putSignedDollarGex": 0.0,
+          "netCharmExposure": -2219722.9394007158,
+          "netSignedDollarGex": 19694301.650428016
+        }
+      ]
+    },
+    "flowAdjustedGexFlipped": {
+      "spot": 500.0,
+      "priorWeight": 0.2,
+      "evaluatedContractsCount": 6,
+      "skippedContractsCount": 0,
+      "totalSignedDollarGex": -10177144.21729505,
+      "totalCharmExposure": -63108818.8602147,
+      "callWallStrike": 505.0,
+      "putWallStrike": 500.0,
+      "byStrike": [
+        {
+          "strike": 490.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": null,
+          "putDealerFlowSign": 1.0,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": 0.6000000000000001,
+          "callSignedDollarGex": 0.0,
+          "putSignedDollarGex": 42088516.72881604,
+          "netCharmExposure": 13012032.62671953,
+          "netSignedDollarGex": 42088516.72881604
+        },
+        {
+          "strike": 500.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": -1.0,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": -0.6000000000000001,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": -64009607.598296985,
+          "putSignedDollarGex": -42673071.73219799,
+          "netCharmExposure": 757978.2146228831,
+          "netSignedDollarGex": -106682679.33049497
+        },
+        {
+          "strike": 505.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": 1.0,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 26031252.270028237,
+          "putSignedDollarGex": 0.0,
+          "netCharmExposure": -69250209.66184486,
+          "netSignedDollarGex": 26031252.270028237
+        },
+        {
+          "strike": 520.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": null,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 8691464.463927623,
+          "putSignedDollarGex": 0.0,
+          "netCharmExposure": -5408897.100311535,
+          "netSignedDollarGex": 8691464.463927623
+        },
+        {
+          "strike": 550.0,
+          "callStructuralSign": 1.0,
+          "putStructuralSign": -1.0,
+          "callDealerFlowSign": null,
+          "putDealerFlowSign": null,
+          "callEffectiveSign": 1.0,
+          "putEffectiveSign": -1.0,
+          "callSignedDollarGex": 19694301.650428016,
+          "putSignedDollarGex": 0.0,
+          "netCharmExposure": -2219722.9394007158,
+          "netSignedDollarGex": 19694301.650428016
+        }
+      ]
+    },
+    "gexCharmPin": {
+      "gexCharmPinStrike": 499.5695594700528,
+      "peakPinStrike": 505.0,
+      "pinMagnetStrength": 0.3786741633195549,
+      "eligibleContractsCount": 5,
+      "strikeWeights": [
+        {
+          "strike": 490.0,
+          "absDollarGex": 70147527.88136005,
+          "absCharmExposure": 21686721.04453255,
+          "normalizedGexShare": 0.41536942957903467,
+          "normalizedCharmShare": 0.2240613295607541,
+          "combinedWeight": 0.3388461895717224
+        },
+        {
+          "strike": 500.0,
+          "absDollarGex": 64009607.59829696,
+          "absCharmExposure": 443390.96232760814,
+          "normalizedGexShare": 0.3790245358418033,
+          "normalizedCharmShare": 0.0045809953625696904,
+          "combinedWeight": 0.22924711965010983
+        },
+        {
+          "strike": 505.0,
+          "absDollarGex": 26031252.270028237,
+          "absCharmExposure": 69250209.66184486,
+          "normalizedGexShare": 0.15414066230412024,
+          "normalizedCharmShare": 0.7154744148427068,
+          "combinedWeight": 0.3786741633195549
+        },
+        {
+          "strike": 520.0,
+          "absDollarGex": 8691464.463927623,
+          "absCharmExposure": 5408897.100311535,
+          "normalizedGexShare": 0.05146537227504176,
+          "normalizedCharmShare": 0.05588326023396927,
+          "combinedWeight": 0.05323252745861277
+        }
+      ]
+    },
+    "wheelTrackerCases": {
+      "PINNING_REGIME": {
+        "asOfUtcSec": 1781723400,
+        "regime": "PINNING_REGIME",
+        "spotChange": 1.1000000000000227,
+        "spotReturnPct": 0.002204408817635316,
+        "gammaFlipChange": 0.5,
+        "gexCharmPinChange": 0.0,
+        "netDeltaSharesChange": 2000.0,
+        "distanceToPinPct": 0.00019996000799833212,
+        "isLateSessionEt": true,
+        "snapshotsCount": 2
+      },
+      "DERIVATIVES_CONFIRMED_UPTREND": {
+        "asOfUtcSec": 1781710200,
+        "regime": "DERIVATIVES_CONFIRMED_UPTREND",
+        "spotChange": 3.0,
+        "spotReturnPct": 0.006,
+        "gammaFlipChange": 1.5,
+        "gexCharmPinChange": 1.0,
+        "netDeltaSharesChange": 45000.0,
+        "distanceToPinPct": 0.005964214711729622,
+        "isLateSessionEt": false,
+        "snapshotsCount": 2
+      },
+      "UNSUPPORTED_SPOT_RALLY": {
+        "asOfUtcSec": 1781710200,
+        "regime": "UNSUPPORTED_SPOT_RALLY",
+        "spotChange": 3.0,
+        "spotReturnPct": 0.006,
+        "gammaFlipChange": -1.5,
+        "gexCharmPinChange": -1.0,
+        "netDeltaSharesChange": -35000.0,
+        "distanceToPinPct": 0.0019880715705765406,
+        "isLateSessionEt": false,
+        "snapshotsCount": 2
+      },
+      "DERIVATIVES_CONFIRMED_DOWNTREND": {
+        "asOfUtcSec": 1781710200,
+        "regime": "DERIVATIVES_CONFIRMED_DOWNTREND",
+        "spotChange": -3.5,
+        "spotReturnPct": -0.007,
+        "gammaFlipChange": -2.5,
+        "gexCharmPinChange": -1.0,
+        "netDeltaSharesChange": -60000.0,
+        "distanceToPinPct": 0.005035246727089627,
+        "isLateSessionEt": false,
+        "snapshotsCount": 2
+      },
+      "UNSUPPORTED_SPOT_SELLOFF": {
+        "asOfUtcSec": 1781710200,
+        "regime": "UNSUPPORTED_SPOT_SELLOFF",
+        "spotChange": -3.5,
+        "spotReturnPct": -0.007,
+        "gammaFlipChange": 1.0,
+        "gexCharmPinChange": 1.0,
+        "netDeltaSharesChange": 45000.0,
+        "distanceToPinPct": 0.0010070493454179255,
+        "isLateSessionEt": false,
+        "snapshotsCount": 2
+      },
+      "NEUTRAL": {
+        "asOfUtcSec": 1781710200,
+        "regime": "NEUTRAL",
+        "spotChange": 0.10000000000002274,
+        "spotReturnPct": 0.00020000000000004546,
+        "gammaFlipChange": 0.0,
+        "gexCharmPinChange": 0.0,
+        "netDeltaSharesChange": 500.0,
+        "distanceToPinPct": 0.0037992401519695604,
+        "isLateSessionEt": false,
+        "snapshotsCount": 2
+      },
+      "NO_DATA_CAUSAL": {
+        "asOfUtcSec": 1781710200,
+        "regime": "NO_DATA",
+        "spotChange": null,
+        "spotReturnPct": null,
+        "gammaFlipChange": null,
+        "gexCharmPinChange": null,
+        "netDeltaSharesChange": null,
+        "distanceToPinPct": null,
+        "isLateSessionEt": false,
+        "snapshotsCount": 1
+      }
+    }
+  }
+}
