@@ -666,17 +666,50 @@ export function hydrateFromArOverview(overview: ArOverviewResponse): void {
   }
 
   for (const ced of overview.cedears) {
-    const existing = US_MARKET_DATA.find((u) => u.ticker === ced.ticker);
+    const existing = US_MARKET_DATA.find(
+      (u) =>
+        u.ticker === ced.ticker ||
+        u.ticker.replace('.', '') === ced.ticker ||
+        (ced.adrTicker !== undefined && u.ticker === ced.adrTicker.replace(' US', '')),
+    );
     if (existing) {
-      if (ced.last !== null && Number.isFinite(ced.last)) existing.cedearArsPrice = ced.last;
-      if (ced.cclImplicit !== null && ced.cclImplicit !== undefined && Number.isFinite(ced.cclImplicit)) {
-        existing.cclImplicit = ced.cclImplicit;
+      if (ced.last !== null && Number.isFinite(ced.last)) {
+        existing.cedearArsPrice = ced.last;
       }
-      if (ced.adrPrice !== null && ced.adrPrice !== undefined && Number.isFinite(ced.adrPrice)) {
+      if (
+        !Number.isFinite(existing.price) &&
+        ced.adrPrice !== null &&
+        ced.adrPrice !== undefined &&
+        Number.isFinite(ced.adrPrice)
+      ) {
         existing.price = ced.adrPrice;
       }
-      if (ced.deltaPct !== null && Number.isFinite(ced.deltaPct) && !Number.isFinite(existing.deltaPct)) {
-        existing.deltaPct = ced.deltaPct;
+      const nextDelta =
+        ced.adrDeltaPct !== null && ced.adrDeltaPct !== undefined && Number.isFinite(ced.adrDeltaPct)
+          ? ced.adrDeltaPct
+          : ced.deltaPct;
+      if (nextDelta !== null && Number.isFinite(nextDelta) && !Number.isFinite(existing.deltaPct)) {
+        existing.deltaPct = nextDelta;
+      }
+      if (
+        Number.isFinite(existing.price) &&
+        existing.price > 0 &&
+        Number.isFinite(existing.cedearArsPrice) &&
+        existing.cedearArsPrice > 0 &&
+        existing.cedearRatioNum > 0
+      ) {
+        existing.cclImplicit = Number(
+          ((existing.cedearArsPrice * existing.cedearRatioNum) / existing.price).toFixed(2),
+        );
+      } else if (
+        ced.cclImplicit !== null &&
+        ced.cclImplicit !== undefined &&
+        Number.isFinite(ced.cclImplicit)
+      ) {
+        existing.cclImplicit = ced.cclImplicit;
+      }
+      if (ced.signalText && existing.signal === '—') {
+        existing.signal = ced.signalText;
       }
     }
   }
@@ -722,8 +755,14 @@ export function hydrateFromArMacro(macro: ArMacroResponse): void {
     embi.value = macro.variables.riesgoPaisPb;
   }
 
-  if (macro.sovereignCurve.length > 0 && BONDS_DATA.every((b) => !Number.isFinite(b.price))) {
-    BONDS_DATA.splice(0, BONDS_DATA.length, ...macro.sovereignCurve.map(mapBondDtoToRow));
+  if (macro.sovereignCurve.length > 0) {
+    const existingNotes = BONDS_DATA.filter((b) => b.tranche === 'LECAC / Letras Tasa Fija');
+    BONDS_DATA.splice(
+      0,
+      BONDS_DATA.length,
+      ...macro.sovereignCurve.map(mapBondDtoToRow),
+      ...existingNotes,
+    );
   }
 }
 
@@ -909,8 +948,13 @@ export function hydrateFromArRelations(rel: ArRelationsResponse): void {
 }
 
 export function hydrateFromUsSnapshot(snap: UsSnapshotResponseDto): void {
-  const spot = snap.envelope?.metrics?.spot?.value ?? null;
-  const iv30 = snap.volSurfaceSummary?.iv30d ?? null;
+  const snapMetrics = snap.envelope?.snapshot?.metrics;
+  const spot = snapMetrics?.spot ?? snap.envelope?.metrics?.spot?.value ?? null;
+  const iv30 =
+    snap.volSurfaceSummary?.iv30d ??
+    snapMetrics?.iv30d ??
+    snap.volSurfaceSummary?.frontSlice?.ivAtm ??
+    null;
   const target = US_MARKET_DATA.find((u) => u.ticker === snap.symbol.toUpperCase());
   if (target) {
     if (spot !== null && Number.isFinite(spot)) {

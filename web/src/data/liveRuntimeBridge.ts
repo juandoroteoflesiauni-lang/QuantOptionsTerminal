@@ -306,13 +306,14 @@ export async function refreshBackendHealth(): Promise<boolean> {
 
 function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): ArOptionsResponse {
   const quote = snap.marketContext?.unifiedQuotes?.find((q) => q.ticker.toUpperCase() === clean);
-  const spot = snap.envelope?.metrics?.spot?.value ?? quote?.price ?? null;
+  const snapMetrics = snap.envelope?.snapshot?.metrics;
+  const spot = snapMetrics?.spot ?? snap.envelope?.metrics?.spot?.value ?? quote?.price ?? null;
   const frontSlice = snap.volSurfaceSummary?.frontSlice ?? snap.volSurfaceSummary?.slices?.[0] ?? null;
   const rateDec = frontSlice?.rate ?? snap.marketContext?.treasury?.rate30d ?? null;
   const rateTna = rateDec !== null && Number.isFinite(rateDec) ? (Math.exp(rateDec) - 1) * 100 : null;
-  const rv20 = snap.envelope?.metrics?.realizedVol20d?.value ?? null;
-  const rv60 = snap.envelope?.metrics?.realizedVol60d?.value ?? null;
-  const iv30 = snap.volSurfaceSummary?.iv30d ?? frontSlice?.ivAtm ?? null;
+  const rv20 = snapMetrics?.realizedVolAnnualized ?? snap.envelope?.metrics?.realizedVol20d?.value ?? null;
+  const rv60 = snapMetrics?.rvCenteredAnnualized ?? snap.envelope?.metrics?.realizedVol60d?.value ?? null;
+  const iv30 = snap.volSurfaceSummary?.iv30d ?? snapMetrics?.iv30d ?? frontSlice?.ivAtm ?? null;
 
   type UsContractList = NonNullable<NonNullable<UsSnapshotResponseDto['volSurfaceSummary']>['contracts']>[number];
   const contractsByExp = new Map<string, UsContractList[]>();
@@ -585,6 +586,7 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
       refreshOverview(),
       refreshMacro(),
       requestMonitoringPanel('bonos'),
+      requestOptionsChain('GGAL'),
       requestRelations(),
       requestUsSnapshot('SPY'),
       requestUsSnapshot('QQQ'),
@@ -608,11 +610,23 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
 
   const fastRetryId = setInterval(() => {
     if (disposed) return;
-    const needReconnectOrWarmup = !state.isBackendConnected || state.warmupStatus === 'WARMING_UP';
+    const needReconnectOrWarmup =
+      !state.isBackendConnected ||
+      state.warmupStatus === 'WARMING_UP' ||
+      state.overview === null ||
+      state.macro === null ||
+      state.feedStatus === 'NO_DATA';
     if (needReconnectOrWarmup) {
       void (async () => {
         const ok = await refreshBackendHealth();
-        if (ok && (!prevConnected || (prevWarmupStatus === 'WARMING_UP' && state.warmupStatus === 'READY'))) {
+        if (
+          ok &&
+          (!prevConnected ||
+            (prevWarmupStatus === 'WARMING_UP' && state.warmupStatus === 'READY') ||
+            state.overview === null ||
+            state.macro === null ||
+            state.feedStatus === 'NO_DATA')
+        ) {
           await runInitialAndCycle();
         }
         prevConnected = state.isBackendConnected;
@@ -623,6 +637,10 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
 
   const intervalId = setInterval(() => {
     if (disposed) return;
+    if (state.overview === null || state.macro === null || state.feedStatus === 'NO_DATA') {
+      void runInitialAndCycle();
+      return;
+    }
     void refreshBackendHealth();
     void refreshOverview();
   }, 20_000);

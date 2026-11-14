@@ -786,6 +786,14 @@ export interface UsSnapshotResponseDto {
     readonly contracts?: readonly UsOptionContractRowDto[];
   } | null;
   readonly envelope?: {
+    readonly snapshot?: {
+      readonly metrics?: {
+        readonly spot?: number | null;
+        readonly iv30d?: number | null;
+        readonly realizedVolAnnualized?: number | null;
+        readonly rvCenteredAnnualized?: number | null;
+      };
+    };
     readonly metrics?: {
       readonly spot?: { readonly value: number | null };
       readonly realizedVol20d?: { readonly value: number | null };

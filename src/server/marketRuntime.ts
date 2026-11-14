@@ -2031,7 +2031,35 @@ export class MarketRuntime {
 
     const macroDateGte = addCalendarDaysEt(nowSec, -35);
     const unifiedTickers = [
-      ...new Set([canonicalSymbol, correlatedSymbol, 'SPY', 'QQQ', 'I:SPX', 'I:VIX', 'I:SKEW']),
+      ...new Set([
+        canonicalSymbol,
+        correlatedSymbol,
+        'SPY',
+        'QQQ',
+        'IWM',
+        'NVDA',
+        'AAPL',
+        'MSFT',
+        'AMZN',
+        'GOOGL',
+        'META',
+        'TSLA',
+        'AMD',
+        'JPM',
+        'BAC',
+        'BRK.B',
+        'MELI',
+        'KO',
+        'WMT',
+        'XOM',
+        'SLB',
+        'EWZ',
+        'XLE',
+        'XLF',
+        'I:SPX',
+        'I:VIX',
+        'I:SKEW',
+      ]),
     ];
 
     const baseTransport = {
@@ -2202,7 +2230,7 @@ export class MarketRuntime {
           excludeBinary: false,
           excludeAdjusted: false,
           limit: 1_000,
-          maxPages: 15,
+          maxPages: 3,
           ...baseTransport,
         });
         referenceContracts = refRes.contracts;
@@ -2219,7 +2247,7 @@ export class MarketRuntime {
           excludeAdjusted: true,
           referenceContracts,
           snapshotLimit: 250,
-          maxPages: 25,
+          maxPages: 4,
           ...baseTransport,
         });
         contracts = chainRes.contracts;

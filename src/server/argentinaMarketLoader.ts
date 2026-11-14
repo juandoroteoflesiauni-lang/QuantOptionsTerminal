@@ -571,6 +571,16 @@ const AR_STOCK_META: readonly StockMetadata[] = [
   { ticker: 'HARG', name: 'Holcim Argentina', sector: 'Materiales', panel: 'General', color: '#14B8A6', dividendYield: 0 },
   { ticker: 'AGRO', name: 'Agrometal S.A.', sector: 'Agro', panel: 'General', color: '#84CC16', dividendYield: 0 },
   { ticker: 'MORI', name: 'Morixe Hermanos', sector: 'Agro', panel: 'General', color: '#EAB308', dividendYield: 0 },
+  { ticker: 'BPAT', name: 'Banco Patagonia', sector: 'Bancos', panel: 'General', color: '#3B82F6', dividendYield: 0 },
+  { ticker: 'CGPA2', name: 'Camuzzi Gas Pampeana', sector: 'Reguladas', panel: 'General', color: '#14B8A6', dividendYield: 0 },
+  { ticker: 'DGCU2', name: 'Distribuidora de Gas Cuyana', sector: 'Reguladas', panel: 'General', color: '#0EA5E9', dividendYield: 0 },
+  { ticker: 'SEMI', name: 'Molinos Juan Semino', sector: 'Agro', panel: 'General', color: '#22C55E', dividendYield: 0 },
+  { ticker: 'MOLI', name: 'Molinos Río de la Plata', sector: 'Agro', panel: 'General', color: '#8B7CF6', dividendYield: 0 },
+  { ticker: 'LEDE', name: 'Ledesma S.A.A.I.', sector: 'Agro', panel: 'General', color: '#10B981', dividendYield: 0 },
+  { ticker: 'GCLA', name: 'Grupo Clarín', sector: 'Telecom', panel: 'General', color: '#6366F1', dividendYield: 0 },
+  { ticker: 'BOLT', name: 'Boldt S.A.', sector: 'Telecom', panel: 'General', color: '#06B6D4', dividendYield: 0 },
+  { ticker: 'INVJ', name: 'Inversora Juramento', sector: 'Agro', panel: 'General', color: '#F59E0B', dividendYield: 0 },
+  { ticker: 'OEST', name: 'Grupo Concesionario del Oeste', sector: 'Reguladas', panel: 'General', color: '#10B981', dividendYield: 0 },
 ];
 
 const STOCK_META_MAP = new Map<string, StockMetadata>(
@@ -593,7 +603,9 @@ const CEDEAR_RATIOS: Readonly<Record<string, { readonly usTicker: string; readon
   VISTA: { usTicker: 'VIST', ratio: 3, name: 'Vista Energy SAB' },
   VIST: { usTicker: 'VIST', ratio: 3, name: 'Vista Energy SAB' },
   XOM: { usTicker: 'XOM', ratio: 10, name: 'Exxon Mobil Corp.' },
+  SLB: { usTicker: 'SLB', ratio: 3, name: 'SLB (Schlumberger)' },
   JPM: { usTicker: 'JPM', ratio: 15, name: 'JPMorgan Chase & Co.' },
+  BAC: { usTicker: 'BAC', ratio: 4, name: 'Bank of America Corp.' },
   AMD: { usTicker: 'AMD', ratio: 10, name: 'Advanced Micro Devices' },
   NFLX: { usTicker: 'NFLX', ratio: 48, name: 'Netflix Inc.' },
   GLOB: { usTicker: 'GLOB', ratio: 18, name: 'Globant S.A.' },
@@ -601,6 +613,7 @@ const CEDEAR_RATIOS: Readonly<Record<string, { readonly usTicker: string; readon
   WMT: { usTicker: 'WMT', ratio: 18, name: 'Walmart Inc.' },
   DIS: { usTicker: 'DIS', ratio: 12, name: 'Walt Disney Co.' },
   XLE: { usTicker: 'XLE', ratio: 2, name: 'Energy Select Sector SPDR Fund' },
+  XLF: { usTicker: 'XLF', ratio: 2, name: 'Financial Select Sector SPDR Fund' },
   EWZ: { usTicker: 'EWZ', ratio: 2, name: 'iShares MSCI Brazil ETF' },
   IWM: { usTicker: 'IWM', ratio: 10, name: 'iShares Russell 2000 ETF' },
   DIA: { usTicker: 'DIA', ratio: 20, name: 'SPDR Dow Jones Industrial' },
@@ -1411,12 +1424,12 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
     const last = readNum(item, ['c', 'close', 'last', 'px_last', 'mark', 'trade', 'settlementPrice']);
     const bid = readNum(item, ['px_bid', 'bid', 'bidPrice', 'ars_bid']);
     const ask = readNum(item, ['px_ask', 'ask', 'askPrice', 'ars_ask']);
-    const prevClose = readNum(item, ['prev_close', 'previousClose', 'closingPrice', 'open', 'o']);
-    const deltaPct = readNum(item, ['pct_change', 'imbalance', 'variation', 'changePct', 'var']);
-    const low = readNum(item, ['l', 'low', 'min', 'lowPrice']);
-    const high = readNum(item, ['h', 'high', 'max', 'highPrice']);
+    const prevCloseRaw = readNum(item, ['prev_close', 'previousClose', 'closingPrice', 'open', 'o']);
+    const deltaPctRaw = readNum(item, ['pct_change', 'imbalance', 'variation', 'changePct', 'var']);
+    const lowRaw = readNum(item, ['l', 'low', 'min', 'lowPrice']);
+    const highRaw = readNum(item, ['h', 'high', 'max', 'highPrice']);
     const vwap = readNum(item, ['vw', 'vwap']);
-    const volumeArs = readNum(item, ['v_ars', 'volumeAmount', 'monto', 'amount']);
+    const volumeArsRaw = readNum(item, ['v_ars', 'volumeAmount', 'monto', 'amount']);
     const nominalVol = readNum(item, ['v', 'q_op', 'volume', 'nominalVolume']);
     const mark = readNum(item, ['mark', 'c', 'close', 'last']);
     const arsBid = readNum(item, ['ars_bid']);
@@ -1424,10 +1437,30 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
     const usdBid = readNum(item, ['usd_bid']);
     const usdAsk = readNum(item, ['usd_ask']);
 
-    let computedDeltaPct = deltaPct;
+    const prevClose =
+      prevCloseRaw !== null
+        ? prevCloseRaw
+        : last !== null && last > 0 && deltaPctRaw !== null && Number.isFinite(deltaPctRaw) && deltaPctRaw > -99
+          ? Number((last / (1 + deltaPctRaw / 100)).toFixed(4))
+          : null;
+
+    let computedDeltaPct = deltaPctRaw;
     if (computedDeltaPct === null && last !== null && prevClose !== null && prevClose > 0) {
       computedDeltaPct = ((last - prevClose) / prevClose) * 100;
     }
+
+    const volumeArs =
+      volumeArsRaw !== null
+        ? volumeArsRaw
+        : nominalVol !== null && last !== null && nominalVol > 0 && last > 0
+          ? Math.round(nominalVol * last)
+          : null;
+
+    const rangeCandidates = [last, prevClose, bid, ask].filter(
+      (v): v is number => v !== null && Number.isFinite(v) && v > 0,
+    );
+    const low = lowRaw !== null ? lowRaw : rangeCandidates.length > 0 ? Math.min(...rangeCandidates) : null;
+    const high = highRaw !== null ? highRaw : rangeCandidates.length > 0 ? Math.max(...rangeCandidates) : null;
 
     rows.push({
       symbol: cleanSym,
@@ -1711,6 +1744,7 @@ export class ArgentinaMarketRuntime {
         let baseMonetariaArsM: number | null = null;
         let updatedAt: string | null = null;
 
+        const secondaryBcraIds = new Set([35, 45, 46, 59, 64, 66, 71, 197]);
         if (!bcraRes.ok) {
           errors.push(`BCRA v4.0: ${bcraRes.error}`);
         } else if (isPlainRecord(bcraRes.data) && Array.isArray(bcraRes.data['results'])) {
@@ -1720,39 +1754,63 @@ export class ArgentinaMarketRuntime {
             }
             const idVar = readNum(item, ['idVariable', 'id']);
             const desc = (readStr(item, ['descripcion', 'nombre']) ?? '').toLowerCase();
-            const val = readNum(item, ['valor', 'value']);
-            const fecha = readStr(item, ['fecha', 'date']);
+            const val = readNum(item, ['ultValorInformado', 'valor', 'value']);
+            const fecha = readStr(item, ['ultFechaInformada', 'fecha', 'date']);
             if (fecha !== null && (updatedAt === null || fecha > updatedAt)) {
               updatedAt = fecha;
             }
             if (val === null) {
               continue;
             }
-            if (idVar === 5 || desc.includes('mayorista') || desc.includes('3500')) {
-              a3500 = a3500 ?? val;
-            } else if (idVar === 7 || desc.includes('badlar')) {
-              badlarTna = badlarTna ?? val;
-            } else if (idVar === 44 || desc.includes('tamar')) {
-              tamarTna = tamarTna ?? val;
-            } else if (idVar === 6 || desc.includes('política monetaria') || desc.includes('politica monetaria')) {
-              tpmTna = tpmTna ?? val;
-            } else if (idVar === 30 || desc === 'cer' || desc.includes('coeficiente de estabilización')) {
-              cer = cer ?? val;
-            } else if (idVar === 31 || desc.includes('uva')) {
-              uva = uva ?? val;
-            } else if (idVar === 1 || desc.includes('reservas internacionales')) {
-              reservasUsdM = reservasUsdM ?? val;
-            } else if (idVar === 15 || desc.includes('base monetaria')) {
-              baseMonetariaArsM = baseMonetariaArsM ?? val;
+            if (idVar === 5) {
+              a3500 = val;
+            } else if (idVar === 7) {
+              badlarTna = val;
+            } else if (idVar === 44) {
+              tamarTna = val;
+            } else if (idVar === 6) {
+              tpmTna = val;
+            } else if (idVar === 30) {
+              cer = val;
+            } else if (idVar === 31) {
+              uva = val;
+            } else if (idVar === 1) {
+              reservasUsdM = val;
+            } else if (idVar === 15) {
+              baseMonetariaArsM = val;
+            } else if (idVar === null || !secondaryBcraIds.has(idVar)) {
+              if (desc.includes('mayorista') || desc.includes('3500')) {
+                a3500 = a3500 ?? val;
+              } else if (desc.includes('badlar')) {
+                badlarTna = badlarTna ?? val;
+              } else if (desc.includes('tamar')) {
+                tamarTna = tamarTna ?? val;
+              } else if (desc.includes('política monetaria') || desc.includes('politica monetaria')) {
+                tpmTna = tpmTna ?? val;
+              } else if (desc === 'cer' || desc.includes('coeficiente de estabilización')) {
+                cer = cer ?? val;
+              } else if (desc.includes('uva')) {
+                uva = uva ?? val;
+              } else if (desc.includes('reservas internacionales')) {
+                reservasUsdM = reservasUsdM ?? val;
+              } else if (desc.includes('base monetaria')) {
+                baseMonetariaArsM = baseMonetariaArsM ?? val;
+              }
             }
           }
         }
 
-        const dolares: ArMacroResponse['dolares'][number][] = [];
-        let mepArgDatos: number | null = null;
-        let cclArgDatos: number | null = null;
-        let blue: number | null = null;
-        let oficial: number | null = null;
+        const dolarDisplayNames: Readonly<Record<string, string>> = {
+          oficial: 'Oficial',
+          mayorista: 'Mayorista',
+          bolsa: 'MEP (Bolsa)',
+          contadoconliqui: 'Contado con Liqui',
+          blue: 'Blue',
+          cripto: 'Cripto',
+          tarjeta: 'Tarjeta',
+          solidario: 'Solidario',
+        };
+        const latestDolaresByCasa = new Map<string, ArMacroResponse['dolares'][number]>();
 
         if (!dolaresRes.ok) {
           errors.push(`ArgentinaDatos dolares: ${dolaresRes.error}`);
@@ -1762,17 +1820,35 @@ export class ArgentinaMarketRuntime {
               continue;
             }
             const casa = (readStr(d, ['casa']) ?? '').toLowerCase();
-            const nombre = readStr(d, ['nombre']) ?? casa.toUpperCase();
+            if (casa.length === 0) {
+              continue;
+            }
+            const nombre = readStr(d, ['nombre']) ?? dolarDisplayNames[casa] ?? casa.toUpperCase();
             const compra = readNum(d, ['compra']);
             const venta = readNum(d, ['venta']);
-            const fecha = readStr(d, ['fechaActualizacion']);
-            dolares.push({ casa, nombre, compra, venta, fechaActualizacion: fecha });
-            if (casa === 'bolsa') mepArgDatos = venta ?? compra;
-            if (casa === 'contadoconliqui') cclArgDatos = venta ?? compra;
-            if (casa === 'blue') blue = venta ?? compra;
-            if (casa === 'oficial') oficial = venta ?? compra;
+            const fecha = readStr(d, ['fechaActualizacion', 'fecha']);
+            if (compra === null && venta === null) {
+              continue;
+            }
+            const prev = latestDolaresByCasa.get(casa);
+            const isNewer =
+              prev === undefined ||
+              (fecha !== null && (prev.fechaActualizacion === null || fecha >= prev.fechaActualizacion)) ||
+              (fecha === null && prev.fechaActualizacion === null);
+            if (isNewer) {
+              latestDolaresByCasa.set(casa, { casa, nombre, compra, venta, fechaActualizacion: fecha });
+            }
           }
         }
+        const dolares: ArMacroResponse['dolares'][number][] = [...latestDolaresByCasa.values()];
+        const mepRow = latestDolaresByCasa.get('bolsa');
+        const cclRow = latestDolaresByCasa.get('contadoconliqui');
+        const blueRow = latestDolaresByCasa.get('blue');
+        const oficialRow = latestDolaresByCasa.get('oficial');
+        const mepArgDatos = mepRow ? (mepRow.venta ?? mepRow.compra) : null;
+        const cclArgDatos = cclRow ? (cclRow.venta ?? cclRow.compra) : null;
+        const blue = blueRow ? (blueRow.venta ?? blueRow.compra) : null;
+        const oficial = oficialRow ? (oficialRow.venta ?? oficialRow.compra) : null;
 
         const extractLatestIndex = (res: typeof infMRes, label: string): number | null => {
           if (!res.ok) {
@@ -2308,17 +2384,10 @@ export class ArgentinaMarketRuntime {
           hasPositiveLast(cedearsRes.rows);
         const openBymaOk = hasPositiveLast(bymaMerged) || bymaMerged.length > 0;
 
-        // Respaldo EOD 24/7 (fines de semana / feriados / pre-apertura cuando /live/* devuelve vacío o precios 0 sin error HTTP)
-        const needStocksEod =
-          !hasPositiveLast(stocksRes.rows) &&
-          !hasPositiveLast(bymaMerged) &&
-          stocksRes.error === null;
-        const needCedearsEod =
-          !hasPositiveLast(cedearsRes.rows) &&
-          cedearsRes.error === null;
-        const needBondsEod =
-          !hasPositiveLast(bondsRes.rows) &&
-          bondsRes.error === null;
+        // Respaldo EOD 24/7 (fines de semana / feriados / pre-apertura cuando /live/* devuelve vacío, error o precios 0)
+        const needStocksEod = !hasPositiveLast(stocksRes.rows) && !hasPositiveLast(bymaMerged);
+        const needCedearsEod = !hasPositiveLast(cedearsRes.rows);
+        const needBondsEod = !hasPositiveLast(bondsRes.rows);
 
         const [eodStocks, eodCedears, eodBonds] = await Promise.all([
           needStocksEod
@@ -2647,7 +2716,7 @@ export class ArgentinaMarketRuntime {
         ];
 
         let effectiveBondRows = bondsRes.rows;
-        if (!hasPositiveLast(effectiveBondRows) && bondsRes.error === null) {
+        if (!hasPositiveLast(effectiveBondRows)) {
           const eodBonds = await this.populateEodRowsFromHistorical(
             'bonds',
             SOVEREIGN_BONDS.flatMap((b) =>
@@ -2668,7 +2737,11 @@ export class ArgentinaMarketRuntime {
         );
         const providerErrors = [...macroData.errors, ...overview.providerErrors];
         const hasAnyMacro = cards.some((c) => c.numericValue !== null);
-        const feedStatus: FeedStatus = !hasAnyMacro ? 'NO_DATA' : providerErrors.length > 0 ? 'PARTIAL' : 'LIVE';
+        const feedStatus: FeedStatus = !hasAnyMacro
+          ? 'NO_DATA'
+          : sovereignCurve.length > 0 && macroData.errors.length === 0
+            ? overview.feedStatus
+            : 'PARTIAL';
 
         return {
           asOfUtcSec: nowSec,
@@ -2700,7 +2773,7 @@ export class ArgentinaMarketRuntime {
     ]);
 
     let effectiveBondRows = bondsRes.rows;
-    if (!hasPositiveLast(effectiveBondRows) && bondsRes.error === null) {
+    if (!hasPositiveLast(effectiveBondRows)) {
       const eodBonds = await this.populateEodRowsFromHistorical(
         'bonds',
         SOVEREIGN_BONDS.flatMap((b) =>
@@ -2766,8 +2839,8 @@ export class ArgentinaMarketRuntime {
     readonly optionsDeltaFlowSign?: number;
   }): ArStockInstitutionalEnginesDto {
     const evalSec = Math.floor(params.asOfUtcSec);
-    const closedBars = normalizeClosedDailyBarsForEngines(params.bars, evalSec);
-    const closedBench = normalizeClosedDailyBarsForEngines(params.benchmarkBars, evalSec);
+    const closedBars = normalizeClosedDailyBarsForEngines(params.bars.slice(-90), evalSec);
+    const closedBench = normalizeClosedDailyBarsForEngines(params.benchmarkBars.slice(-90), evalSec);
     const spot = params.spot ?? closedBars[closedBars.length - 1]?.close ?? null;
     const atr14 = computeWilderAtr14(closedBars);
     const cvdSlopeSign = computeCausalCvdSlopeSign(closedBars);
@@ -2982,8 +3055,9 @@ export class ArgentinaMarketRuntime {
       benchmarkBars: benchBars,
     });
 
-    const historicalBars: ArHistoricalBarDto[] = bars.map((b, idx) => {
-      const prev = bars[idx - 1];
+    const recentBars = bars.slice(-120);
+    const historicalBars: ArHistoricalBarDto[] = recentBars.map((b, idx) => {
+      const prev = recentBars[idx - 1];
       const ret = prev !== undefined && prev.close > 0 ? ((b.close - prev.close) / prev.close) * 100 : null;
       const d = new Date(b.time * 1_000);
       return {
@@ -3051,8 +3125,13 @@ export class ArgentinaMarketRuntime {
         const spot = stock?.last ?? (bars.length > 0 ? bars[bars.length - 1]?.close ?? null : null);
         const dividendYield = STOCK_META_MAP.get(underlying)?.dividendYield ?? 0;
 
-        // Tasa libre de riesgo desde BCRA BADLAR/TAMAR; sin fallback inventado si falta BCRA
-        const rateTnaPct = macroData.variables.badlarTna ?? macroData.variables.tamarTna ?? macroData.variables.tpmTna ?? null;
+        // Tasa libre de riesgo desde BCRA BADLAR/TAMAR/TPM/PF; sin fallback inventado si falta BCRA
+        const rateTnaPct =
+          macroData.variables.badlarTna ??
+          macroData.variables.tamarTna ??
+          macroData.variables.tpmTna ??
+          macroData.variables.plazoFijoTna ??
+          null;
         const continuousRate =
           rateTnaPct !== null && rateTnaPct > 0 ? Math.log(1 + rateTnaPct / 100) : null;
 
@@ -3362,7 +3441,7 @@ export class ArgentinaMarketRuntime {
         if (spot !== null && spot > 0 && Number.isFinite(evalRate)) {
           const frontExp = expiries[0];
           const evalSec = Math.floor(nowSec);
-          const closedBars = normalizeClosedDailyBarsForEngines(bars, evalSec);
+          const closedBars = normalizeClosedDailyBarsForEngines(bars.slice(-120), evalSec);
           const cclDiv = overview.cclMedian ?? overview.mepMedian ?? null;
 
           // 1) Order Flow Neto BYMA en ARS + USD-CCL y Anomalías Vol/OI MAD (Pieza 16)

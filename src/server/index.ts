@@ -70,10 +70,13 @@ export async function startServerFromEnv(env: NodeJS.ProcessEnv = process.env): 
   };
 }
 
-const argvEntry = process.argv[1];
-const isEntrypoint =
-  argvEntry !== undefined &&
-  pathToFileURL(resolve(argvEntry)).href.toLowerCase() === import.meta.url.toLowerCase();
+const isEntrypoint = process.argv
+  .slice(1)
+  .some(
+    (arg) =>
+      !arg.startsWith('-') &&
+      pathToFileURL(resolve(arg)).href.toLowerCase() === import.meta.url.toLowerCase(),
+  );
 
 if (isEntrypoint) {
   const withWeb =

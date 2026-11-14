@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:server": "vite-node src/server/index.ts",
-    "dev:terminal": "vite-node src/server/index.ts -- --with-web",
+    "dev:server": "vite-node --script src/server/index.ts",
+    "dev:terminal": "vite-node --script src/server/index.ts --with-web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
