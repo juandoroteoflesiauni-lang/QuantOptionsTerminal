@@ -1,0 +1,3927 @@
+{
+  "meta": {
+    "description": "Independent Python 3.12 stdlib reference fixture for Pieza 20 (GGAL Specialist)",
+    "precisionTarget": "1e-11"
+  },
+  "feesAndCalendar": {
+    "bymaEquityStdRate_1M": 0.001815,
+    "bymaEquityBlockRate_25M": 0.001952456,
+    "bymaOptionPremiumRate": 0.005445,
+    "bymaExerciseRate": 0.001815,
+    "bymaSovereignBondRate_exVat": 0.0011,
+    "bymaShortLoan30d": 2.0166666666666668e-05,
+    "bymaShortLoan120d_capped90d": 6.05e-05,
+    "finraTafSuspended_q4_2026": true,
+    "finraTafSuspended_2027": false,
+    "usEquitySellQ4_2026": 2.0600000000000003e-05,
+    "usEquitySell2027": 2.428888888888889e-05,
+    "usOptionSellQ4_2026": 0.00018060000000000003,
+    "usOptionSell2027": 0.00019176000000000002,
+    "settleCalDaysFriNov20_withNov23Hol": 4,
+    "exp1530ArtDec18": 1797618600
+  },
+  "motor1": {
+    "input_overlap": {
+      "asOfUtcSec": 1795015800,
+      "data912TimestampSec": 1795015797,
+      "massiveTimestampSec": 1795015798,
+      "marketMode": "LIVE",
+      "arHolidays": [
+        "2026-11-23"
+      ],
+      "usHolidays": [],
+      "byma24h": {
+        "bid": 5100.0,
+        "ask": 5110.0
+      },
+      "bymaCi": {
+        "bid": 5094.0,
+        "ask": 5102.0
+      },
+      "adr": {
+        "bid": 44.8,
+        "ask": 44.9
+      },
+      "sofrRateAnnual": 0.043,
+      "caucionArsRateTna": 0.34,
+      "sovereignBonds": [
+        {
+          "ticker": "AL30",
+          "ars24h": {
+            "bid": 73200.0,
+            "ask": 73400.0
+          },
+          "usdC24h": {
+            "bid": 62.1,
+            "ask": 62.3
+          },
+          "arsNominalBase": 100,
+          "usdCNominalBase": 100
+        },
+        {
+          "ticker": "GD30",
+          "ars24h": {
+            "bid": 76450.0,
+            "ask": 76700.0
+          },
+          "usdC24h": {
+            "bid": 64.9,
+            "ask": 65.15
+          },
+          "arsNominalBase": 100,
+          "usdCNominalBase": 100
+        }
+      ],
+      "spreadHistory": [
+        {
+          "time": 1792855800,
+          "cclGgal24h": 1151.7334411354375,
+          "cclSovereign": 1175.0
+        },
+        {
+          "time": 1792942200,
+          "cclGgal24h": 1160.4334382582,
+          "cclSovereign": 1175.5
+        },
+        {
+          "time": 1793028600,
+          "cclGgal24h": 1163.1523349940046,
+          "cclSovereign": 1176.0
+        },
+        {
+          "time": 1793115000,
+          "cclGgal24h": 1168.2462342536937,
+          "cclSovereign": 1176.5
+        },
+        {
+          "time": 1793201400,
+          "cclGgal24h": 1168.5838905392716,
+          "cclSovereign": 1177.0
+        },
+        {
+          "time": 1793287800,
+          "cclGgal24h": 1172.1375424208893,
+          "cclSovereign": 1177.5
+        },
+        {
+          "time": 1793374200,
+          "cclGgal24h": 1171.46037773717,
+          "cclSovereign": 1178.0
+        },
+        {
+          "time": 1793460600,
+          "cclGgal24h": 1174.360729765063,
+          "cclSovereign": 1178.5
+        },
+        {
+          "time": 1793547000,
+          "cclGgal24h": 1173.252250888829,
+          "cclSovereign": 1179.0
+        },
+        {
+          "time": 1793633400,
+          "cclGgal24h": 1175.876764723236,
+          "cclSovereign": 1179.5
+        },
+        {
+          "time": 1793719800,
+          "cclGgal24h": 1174.5847365396417,
+          "cclSovereign": 1180.0
+        },
+        {
+          "time": 1793806200,
+          "cclGgal24h": 1177.0934567772401,
+          "cclSovereign": 1180.5
+        },
+        {
+          "time": 1793892600,
+          "cclGgal24h": 1175.722832193983,
+          "cclSovereign": 1181.0
+        },
+        {
+          "time": 1793979000,
+          "cclGgal24h": 1178.1835123394399,
+          "cclSovereign": 1181.5
+        },
+        {
+          "time": 1794065400,
+          "cclGgal24h": 1176.7787044119216,
+          "cclSovereign": 1182.0
+        },
+        {
+          "time": 1794151800,
+          "cclGgal24h": 1179.220008439665,
+          "cclSovereign": 1182.5
+        },
+        {
+          "time": 1794238200,
+          "cclGgal24h": 1177.799803477782,
+          "cclSovereign": 1183.0
+        },
+        {
+          "time": 1794324600,
+          "cclGgal24h": 1180.233854665182,
+          "cclSovereign": 1183.5
+        },
+        {
+          "time": 1794411000,
+          "cclGgal24h": 1178.8061976678994,
+          "cclSovereign": 1184.0
+        },
+        {
+          "time": 1794497400,
+          "cclGgal24h": 1181.2381228858126,
+          "cclSovereign": 1184.5
+        },
+        {
+          "time": 1794583800,
+          "cclGgal24h": 1179.8063736488994,
+          "cclSovereign": 1185.0
+        },
+        {
+          "time": 1794670200,
+          "cclGgal24h": 1182.2383409152208,
+          "cclSovereign": 1185.5
+        },
+        {
+          "time": 1794756600,
+          "cclGgal24h": 1180.8039201886359,
+          "cclSovereign": 1186.0
+        },
+        {
+          "time": 1794843000,
+          "cclGgal24h": 1183.236846280844,
+          "cclSovereign": 1186.5
+        },
+        {
+          "time": 1794929400,
+          "cclGgal24h": 1181.80035484563,
+          "cclSovereign": 1187.0
+        },
+        {
+          "time": 1795019400,
+          "cclGgal24h": 2500.0,
+          "cclSovereign": 1000.0
+        },
+        {
+          "time": 1795023000,
+          "cclGgal24h": 3500.0,
+          "cclSovereign": 1000.0
+        }
+      ],
+      "bymaPrevClose24hArs": 5220.0
+    },
+    "overlap": {
+      "asOfUtcSec": 1795015800,
+      "sessionRegime": "OVERLAP",
+      "dstMode": "EST",
+      "deltaAr1Days": 1,
+      "deltaUs1Days": 1,
+      "spot": {
+        "byma24hArs": 5105.0,
+        "bymaCiArs": 5098.0,
+        "adrMidUsd": 44.849999999999994,
+        "fairBymaOpenArs": 5283.8414866202465,
+        "fairAdrUsd": 43.33196795925294
+      },
+      "ccl": {
+        "cclGgal24h": 1138.2385730211818,
+        "cclGgalCiTo24h": 1137.7366381087645,
+        "cclAl30_24h": 1178.4565916398715,
+        "cclGd30_24h": 1177.6239907727795,
+        "cclSovereignBenchmark": 1178.11404383952,
+        "spreadLogBps": -344.32935846364643,
+        "ouMeanBps": -40.0335544756417,
+        "ouHalfLifeDays": 1.1385913026775025,
+        "ouEqSigmaBps": 15.984858364387032,
+        "zScore": -19.036502986222956,
+        "netEdgeAfterCostsBps": 210.879930917469,
+        "closeProbability5d": 0.26233926119439144
+      },
+      "ouCalibration": {
+        "excludedFutureCount": 2,
+        "observationsUsed": 25,
+        "phi": 0.5440162795830048,
+        "kappaPerDay": 0.6087761068699065,
+        "muLog": -0.00400335544756417,
+        "eqSigma": 0.0015984858364387032
+      },
+      "signal": "LONG_BYMA_SHORT_ADR",
+      "preOpenOptionRepricing": []
+    },
+    "nasdaqSoloEst": {
+      "asOfUtcSec": 1795033800,
+      "dstMode": "EST",
+      "sessionRegime": "NASDAQ_SOLO_17_18"
+    },
+    "julyCloseEdt": {
+      "asOfUtcSec": 1784147400,
+      "dstMode": "EDT",
+      "sessionRegime": "CLOSED"
+    },
+    "input_preopen": {
+      "asOfUtcSec": 1784118600,
+      "data912TimestampSec": 1784118596,
+      "massiveTimestampSec": 1784118598,
+      "marketMode": "LIVE",
+      "arHolidays": [],
+      "usHolidays": [],
+      "byma24h": {
+        "bid": 5000.0,
+        "ask": 5010.0
+      },
+      "adr": {
+        "bid": 44.1,
+        "ask": 44.2
+      },
+      "sofrRateAnnual": 0.043,
+      "caucionArsRateTna": 0.34,
+      "sovereignBonds": [
+        {
+          "ticker": "AL30",
+          "ars24h": {
+            "bid": 73200.0,
+            "ask": 73400.0
+          },
+          "usdC24h": {
+            "bid": 62.1,
+            "ask": 62.3
+          },
+          "arsNominalBase": 100,
+          "usdCNominalBase": 100
+        },
+        {
+          "ticker": "GD30",
+          "ars24h": {
+            "bid": 76450.0,
+            "ask": 76700.0
+          },
+          "usdC24h": {
+            "bid": 64.9,
+            "ask": 65.15
+          },
+          "arsNominalBase": 100,
+          "usdCNominalBase": 100
+        }
+      ],
+      "spreadHistory": [
+        {
+          "time": 1782390600,
+          "cclGgal24h": 1148.5491788198856,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782477000,
+          "cclGgal24h": 1152.702695999625,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782563400,
+          "cclGgal24h": 1156.270250609138,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782649800,
+          "cclGgal24h": 1155.292897137875,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782736200,
+          "cclGgal24h": 1156.4357528545859,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782822600,
+          "cclGgal24h": 1156.2338029131222,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782909000,
+          "cclGgal24h": 1151.498159071361,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1782995400,
+          "cclGgal24h": 1149.6403091393142,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783081800,
+          "cclGgal24h": 1147.796984643609,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783168200,
+          "cclGgal24h": 1143.128052815582,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783254600,
+          "cclGgal24h": 1142.974850567691,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783341000,
+          "cclGgal24h": 1144.1570258049567,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783427400,
+          "cclGgal24h": 1143.236157375393,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783513800,
+          "cclGgal24h": 1146.8063339539651,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783600200,
+          "cclGgal24h": 1150.9646831851603,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783686600,
+          "cclGgal24h": 1151.6547563814506,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783773000,
+          "cclGgal24h": 1155.1862304450517,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783859400,
+          "cclGgal24h": 1157.630413601426,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1783945800,
+          "cclGgal24h": 1155.2524611131778,
+          "cclSovereign": 1152.0
+        },
+        {
+          "time": 1784032200,
+          "cclGgal24h": 1155.0041871611152,
+          "cclSovereign": 1152.0
+        }
+      ],
+      "preOpen": {
+        "bymaPrevClose24hArs": 5000.0,
+        "adrPrev1700ArtUsd": 43.2,
+        "adrPreMarketVolume": 120000.0,
+        "prevDaySpreadLog1700": -0.008,
+        "overnightDays": 1.0,
+        "spyOvernightLogReturn": 0.006,
+        "qqqOvernightLogReturn": 0.008,
+        "bymaExDividendArs": 0.0,
+        "adrExDividendUsd": 0.0
+      },
+      "preOpenOptions": [
+        {
+          "tickerByma": "GFGC5200DI",
+          "prevCloseArs": 210.0,
+          "delta": 0.52,
+          "gamma": 0.00045,
+          "vega": 820.0,
+          "theta": -950.0,
+          "deltaImpliedVol": 0.015
+        }
+      ]
+    },
+    "preopenEdt": {
+      "asOfUtcSec": 1784118600,
+      "sessionRegime": "PREMARKET_REPRICE",
+      "dstMode": "EDT",
+      "deltaAr1Days": 1,
+      "deltaUs1Days": 1,
+      "spot": {
+        "byma24hArs": 5005.0,
+        "bymaCiArs": "__NaN__",
+        "adrMidUsd": 44.150000000000006,
+        "fairBymaOpenArs": 5115.331010444292,
+        "fairAdrUsd": 42.48315369952223
+      },
+      "ccl": {
+        "cclGgal24h": 1133.6353340883352,
+        "cclGgalCiTo24h": "__NaN__",
+        "cclAl30_24h": 1178.4565916398715,
+        "cclGd30_24h": 1177.6239907727795,
+        "cclSovereignBenchmark": 1178.11404383952,
+        "spreadLogBps": -384.8531324097326,
+        "ouMeanBps": 10.601256895654307,
+        "ouHalfLifeDays": 4.583550956195323,
+        "ouEqSigmaBps": 46.8892794378534,
+        "zScore": -8.433791136191767,
+        "netEdgeAfterCostsBps": 301.62847015091893,
+        "closeProbability5d": 4.439197594230393e-05
+      },
+      "ouCalibration": {
+        "excludedFutureCount": 0,
+        "observationsUsed": 20,
+        "phi": 0.8596543133547989,
+        "kappaPerDay": 0.15122493175799825,
+        "muLog": 0.0010601256895654307,
+        "eqSigma": 0.0046889279437853405
+      },
+      "signal": "LONG_BYMA_SHORT_ADR",
+      "preOpenOptionRepricing": [
+        {
+          "tickerByma": "GFGC5200DI",
+          "prevCloseArs": 210.0,
+          "fairOpenArs": 282.6621651482771,
+          "deltaRepricePct": 34.60103102298909
+        }
+      ]
+    },
+    "staleLock": {
+      "asOfUtcSec": 1795015800,
+      "sessionRegime": "OVERLAP",
+      "dstMode": "EST",
+      "deltaAr1Days": 1,
+      "deltaUs1Days": 1,
+      "signal": "STALE_DATA_LOCK",
+      "cclGgal24h": "__NaN__",
+      "cclSovereignBenchmark": "__NaN__"
+    },
+    "eodCierre": {
+      "asOfUtcSec": 1795015800,
+      "sessionRegime": "OVERLAP",
+      "dstMode": "EST",
+      "deltaAr1Days": 1,
+      "deltaUs1Days": 1,
+      "spot": {
+        "byma24hArs": 5105.0,
+        "bymaCiArs": 5098.0,
+        "adrMidUsd": 44.849999999999994,
+        "fairBymaOpenArs": 5283.8414866202465,
+        "fairAdrUsd": 43.33196795925294
+      },
+      "ccl": {
+        "cclGgal24h": 1138.2385730211818,
+        "cclGgalCiTo24h": 1137.7366381087645,
+        "cclAl30_24h": 1178.4565916398715,
+        "cclGd30_24h": 1177.6239907727795,
+        "cclSovereignBenchmark": 1178.11404383952,
+        "spreadLogBps": -344.32935846364643,
+        "ouMeanBps": -40.0335544756417,
+        "ouHalfLifeDays": 1.1385913026775025,
+        "ouEqSigmaBps": 15.984858364387032,
+        "zScore": -19.036502986222956,
+        "netEdgeAfterCostsBps": 210.879930917469,
+        "closeProbability5d": 0.26233926119439144
+      },
+      "ouCalibration": {
+        "excludedFutureCount": 2,
+        "observationsUsed": 25,
+        "phi": 0.5440162795830048,
+        "kappaPerDay": 0.6087761068699065,
+        "muLog": -0.00400335544756417,
+        "eqSigma": 0.0015984858364387032
+      },
+      "signal": "LONG_BYMA_SHORT_ADR",
+      "preOpenOptionRepricing": []
+    }
+  },
+  "motor2": {
+    "bymaEvalInput": {
+      "asOfUtcSec": 1794326400,
+      "spot24hArs": 5200.0,
+      "expiryDateKey": "2026-12-18",
+      "deltaAr1Days": 1,
+      "deltaExDays": 3,
+      "arHolidays": [
+        "2026-11-23"
+      ],
+      "rateCurve": [
+        {
+          "days": 1.0,
+          "continuousRateAnnual": 0.3
+        },
+        {
+          "days": 30.0,
+          "continuousRateAnnual": 0.31
+        },
+        {
+          "days": 60.0,
+          "continuousRateAnnual": 0.32
+        }
+      ],
+      "dividends": [
+        {
+          "exDivUtcSec": 1795615200,
+          "payDateUtcSec": 1795788000,
+          "amountArs": 90.0
+        }
+      ]
+    },
+    "unitBs02": {
+      "evalParams": {
+        "asOfUtcSec": 1794326400,
+        "expiry1530UtcSec": 1797618600,
+        "spot24hArs": 5200.0,
+        "adjustedSpotArs": 5106.993068643254,
+        "forwardArs": 5290.63357615958,
+        "t1Years": 0.0027397260273972603,
+        "r1Continuous": 0.3,
+        "tExpYears": 0.10439497716894977,
+        "tSettleYears": 0.11261415525114155,
+        "rContAtSettle": 0.3137013888888889,
+        "rEff": 0.3383995846242634,
+        "pvDividendsArs": 88.73471469998852,
+        "maturityDays": 38.104166666666664
+      },
+      "strike": 5200.0,
+      "sigma": 0.56,
+      "callPrice": 410.38740229965833,
+      "putPrice": 342.3424174513657,
+      "callGreeks": {
+        "price": 410.38740229965833,
+        "delta": 0.5732936516788342,
+        "gamma": 0.00042363635632082074,
+        "vega": 647.0015189583304,
+        "theta": -2588.044917051873,
+        "vanna": -0.0035195552983661176,
+        "charm": -0.7232923103505455
+      },
+      "ivCheckFromCallQuote": {
+        "iv": 0.5600000000000008,
+        "arbFlag": "OK",
+        "lowerBoundArs": 87.48763991501346,
+        "modelPriceAtIvArs": 410.3874022996588
+      }
+    },
+    "preExDivEarlyExercise": {
+      "input": {
+        "spotPreExArs": 5400.0,
+        "spotPostEx24hArs": 5140.0,
+        "strike": 4800.0,
+        "remainingTExpYears": 0.06027397260273973,
+        "rEff": 0.31,
+        "t1Years": 0.0027397260273972603,
+        "r1Continuous": 0.3,
+        "volatility": 0.45,
+        "exerciseAllInCostArs": 8.712
+      },
+      "continuationValueArs": 492.09432048173176,
+      "earlyExerciseNetValueArs": 590.7950519242204,
+      "edgeArs": 98.70073144248863,
+      "shouldExerciseEarly": true
+    },
+    "returnHistory": [
+      {
+        "time": 1789142400,
+        "adrLogReturn": 0.008,
+        "cclLogReturn": 0.013876553231625217
+      },
+      {
+        "time": 1789228800,
+        "adrLogReturn": 0.010814154880795073,
+        "cclLogReturn": 0.00968951879344625
+      },
+      {
+        "time": 1789315200,
+        "adrLogReturn": 0.008942724605948145,
+        "cclLogReturn": -0.0006921631773056458
+      },
+      {
+        "time": 1789401600,
+        "adrLogReturn": 0.0067480091533719064,
+        "cclLogReturn": -0.004912288606282701
+      },
+      {
+        "time": 1789488000,
+        "adrLogReturn": 0.0078195367149494,
+        "cclLogReturn": 0.0017985946301306301
+      },
+      {
+        "time": 1789574400,
+        "adrLogReturn": 0.011953095006938986,
+        "cclLogReturn": 0.011386200381827598
+      },
+      {
+        "time": 1789660800,
+        "adrLogReturn": 0.015209490715808337,
+        "cclLogReturn": 0.011888054486827714
+      },
+      {
+        "time": 1789747200,
+        "adrLogReturn": 0.013023691343405891,
+        "cclLogReturn": 0.000740638317557006
+      },
+      {
+        "time": 1789833600,
+        "adrLogReturn": 0.003991198364844335,
+        "cclLogReturn": -0.012101040000129177
+      },
+      {
+        "time": 1789920000,
+        "adrLogReturn": -0.008586159879309116,
+        "cclLogReturn": -0.01469076534526543
+      },
+      {
+        "time": 1790006400,
+        "adrLogReturn": -0.01864107952469634,
+        "cclLogReturn": -0.005816498028122024
+      },
+      {
+        "time": 1790092800,
+        "adrLogReturn": -0.021387560329345627,
+        "cclLogReturn": 0.00393055155085656
+      },
+      {
+        "time": 1790179200,
+        "adrLogReturn": -0.016497108384180285,
+        "cclLogReturn": 0.003871118880701542
+      },
+      {
+        "time": 1790265600,
+        "adrLogReturn": -0.008071049126571278,
+        "cclLogReturn": -0.005087372057082726
+      },
+      {
+        "time": 1790352000,
+        "adrLogReturn": -0.001473522884076775,
+        "cclLogReturn": -0.01157545711139156
+      },
+      {
+        "time": 1790438400,
+        "adrLogReturn": 0.0005681328334952484,
+        "cclLogReturn": -0.006435647704002956
+      },
+      {
+        "time": 1790524800,
+        "adrLogReturn": -0.00033030077695264215,
+        "cclLogReturn": 0.006943819890440878
+      },
+      {
+        "time": 1790611200,
+        "adrLogReturn": 6.825402376478724e-05,
+        "cclLogReturn": 0.015979830493407
+      },
+      {
+        "time": 1790697600,
+        "adrLogReturn": 0.004854038034839418,
+        "cclLogReturn": 0.012323549333220794
+      },
+      {
+        "time": 1790784000,
+        "adrLogReturn": 0.013096322511487374,
+        "cclLogReturn": 0.0007432051164954776
+      },
+      {
+        "time": 1790870400,
+        "adrLogReturn": 0.02012290736530337,
+        "cclLogReturn": -0.006208646414600066
+      },
+      {
+        "time": 1790956800,
+        "adrLogReturn": 0.02080880735927222,
+        "cclLogReturn": -0.001896464866140356
+      },
+      {
+        "time": 1791043200,
+        "adrLogReturn": 0.01342433238789191,
+        "cclLogReturn": 0.007298704009069696
+      },
+      {
+        "time": 1791129600,
+        "adrLogReturn": 0.0011352119015079522,
+        "cclLogReturn": 0.00921592938075193
+      },
+      {
+        "time": 1791216000,
+        "adrLogReturn": -0.010010675917657695,
+        "cclLogReturn": -0.0004625469233481504
+      },
+      {
+        "time": 1791302400,
+        "adrLogReturn": -0.015146753784088671,
+        "cclLogReturn": -0.013141931216406364
+      },
+      {
+        "time": 1791388800,
+        "adrLogReturn": -0.013707300750878289,
+        "cclLogReturn": -0.016394433528362597
+      },
+      {
+        "time": 1791475200,
+        "adrLogReturn": -0.009331240344450598,
+        "cclLogReturn": -0.007314949482191451
+      },
+      {
+        "time": 1791561600,
+        "adrLogReturn": -0.00670575408614071,
+        "cclLogReturn": 0.004406722256169104
+      },
+      {
+        "time": 1791648000,
+        "adrLogReturn": -0.007801960086038267,
+        "cclLogReturn": 0.007038287021835071
+      },
+      {
+        "time": 1791734400,
+        "adrLogReturn": -0.010385704239877213,
+        "cclLogReturn": -0.0005439756035608583
+      },
+      {
+        "time": 1791820800,
+        "adrLogReturn": -0.00993007380025972,
+        "cclLogReturn": -0.007903815357218137
+      },
+      {
+        "time": 1791907200,
+        "adrLogReturn": -0.003447271686038425,
+        "cclLogReturn": -0.004789310813869315
+      },
+      {
+        "time": 1791993600,
+        "adrLogReturn": 0.00772413255131458,
+        "cclLogReturn": 0.007314993861074998
+      },
+      {
+        "time": 1792080000,
+        "adrLogReturn": 0.018368977904959345,
+        "cclLogReturn": 0.01650744071922876
+      },
+      {
+        "time": 1792166400,
+        "adrLogReturn": 0.022830853595880052,
+        "cclLogReturn": 0.013266132741650885
+      },
+      {
+        "time": 1792252800,
+        "adrLogReturn": 0.0189139461165164,
+        "cclLogReturn": 0.0007718591726786571
+      },
+      {
+        "time": 1792339200,
+        "adrLogReturn": 0.009358357645660833,
+        "cclLogReturn": -0.008510848432365752
+      },
+      {
+        "time": 1792425600,
+        "adrLogReturn": -0.00019816261481438516,
+        "cclLogReturn": -0.0062672874730257564
+      },
+      {
+        "time": 1792512000,
+        "adrLogReturn": -0.005235139770312942,
+        "cclLogReturn": 0.0028698839574442113
+      },
+      {
+        "time": 1792598400,
+        "adrLogReturn": -0.005342259266995217,
+        "cclLogReturn": 0.006727564340909865
+      },
+      {
+        "time": 1792684800,
+        "adrLogReturn": -0.0039928517612000895,
+        "cclLogReturn": -0.0007595055065644412
+      },
+      {
+        "time": 1792771200,
+        "adrLogReturn": -0.005354184662853185,
+        "cclLogReturn": -0.012628575903524534
+      },
+      {
+        "time": 1792857600,
+        "adrLogReturn": -0.010637063113945414,
+        "cclLogReturn": -0.016305353715701163
+      },
+      {
+        "time": 1792944000,
+        "adrLogReturn": -0.016825706686512367,
+        "cclLogReturn": -0.007282717367598859
+      },
+      {
+        "time": 1793030400,
+        "adrLogReturn": -0.018804964629982206,
+        "cclLogReturn": 0.005876645981731282
+      },
+      {
+        "time": 1793116800,
+        "adrLogReturn": -0.013299517288163866,
+        "cclLogReturn": 0.010692793112130772
+      },
+      {
+        "time": 1793203200,
+        "adrLogReturn": -0.0016331940473608554,
+        "cclLogReturn": 0.004106623007973436
+      },
+      {
+        "time": 1793289600,
+        "adrLogReturn": 0.010824092934104343,
+        "cclLogReturn": -0.004525080422447724
+      },
+      {
+        "time": 1793376000,
+        "adrLogReturn": 0.01817410240554456,
+        "cclLogReturn": -0.0039957308154146085
+      },
+      {
+        "time": 1793462400,
+        "adrLogReturn": 0.017896754671456253,
+        "cclLogReturn": 0.006224373084554387
+      },
+      {
+        "time": 1793548800,
+        "adrLogReturn": 0.012276971554431464,
+        "cclLogReturn": 0.015234228747499457
+      },
+      {
+        "time": 1793635200,
+        "adrLogReturn": 0.006347891409389122,
+        "cclLogReturn": 0.012572580834271267
+      },
+      {
+        "time": 1793721600,
+        "adrLogReturn": 0.003958714166909368,
+        "cclLogReturn": -0.0002528088697822872
+      },
+      {
+        "time": 1793808000,
+        "adrLogReturn": 0.004962399695786502,
+        "cclLogReturn": -0.01119168270695098
+      },
+      {
+        "time": 1793894400,
+        "adrLogReturn": 0.005635615591588599,
+        "cclLogReturn": -0.010509604373260829
+      },
+      {
+        "time": 1793980800,
+        "adrLogReturn": 0.0019643939529770263,
+        "cclLogReturn": -0.0010753925125889818
+      },
+      {
+        "time": 1794067200,
+        "adrLogReturn": -0.0067648955789179465,
+        "cclLogReturn": 0.005109190744907512
+      },
+      {
+        "time": 1794153600,
+        "adrLogReturn": -0.016874184409588083,
+        "cclLogReturn": 0.0002921853282892859
+      },
+      {
+        "time": 1794240000,
+        "adrLogReturn": -0.02261491394335526,
+        "cclLogReturn": -0.010400328735398857
+      },
+      {
+        "time": 1794412800,
+        "adrLogReturn": 0.5,
+        "cclLogReturn": -0.5
+      }
+    ],
+    "cclReturnHistory": [
+      {
+        "time": 1789142400,
+        "logReturn": 0.013876553231625217
+      },
+      {
+        "time": 1789228800,
+        "logReturn": 0.00968951879344625
+      },
+      {
+        "time": 1789315200,
+        "logReturn": -0.0006921631773056458
+      },
+      {
+        "time": 1789401600,
+        "logReturn": -0.004912288606282701
+      },
+      {
+        "time": 1789488000,
+        "logReturn": 0.0017985946301306301
+      },
+      {
+        "time": 1789574400,
+        "logReturn": 0.011386200381827598
+      },
+      {
+        "time": 1789660800,
+        "logReturn": 0.011888054486827714
+      },
+      {
+        "time": 1789747200,
+        "logReturn": 0.000740638317557006
+      },
+      {
+        "time": 1789833600,
+        "logReturn": -0.012101040000129177
+      },
+      {
+        "time": 1789920000,
+        "logReturn": -0.01469076534526543
+      },
+      {
+        "time": 1790006400,
+        "logReturn": -0.005816498028122024
+      },
+      {
+        "time": 1790092800,
+        "logReturn": 0.00393055155085656
+      },
+      {
+        "time": 1790179200,
+        "logReturn": 0.003871118880701542
+      },
+      {
+        "time": 1790265600,
+        "logReturn": -0.005087372057082726
+      },
+      {
+        "time": 1790352000,
+        "logReturn": -0.01157545711139156
+      },
+      {
+        "time": 1790438400,
+        "logReturn": -0.006435647704002956
+      },
+      {
+        "time": 1790524800,
+        "logReturn": 0.006943819890440878
+      },
+      {
+        "time": 1790611200,
+        "logReturn": 0.015979830493407
+      },
+      {
+        "time": 1790697600,
+        "logReturn": 0.012323549333220794
+      },
+      {
+        "time": 1790784000,
+        "logReturn": 0.0007432051164954776
+      },
+      {
+        "time": 1790870400,
+        "logReturn": -0.006208646414600066
+      },
+      {
+        "time": 1790956800,
+        "logReturn": -0.001896464866140356
+      },
+      {
+        "time": 1791043200,
+        "logReturn": 0.007298704009069696
+      },
+      {
+        "time": 1791129600,
+        "logReturn": 0.00921592938075193
+      },
+      {
+        "time": 1791216000,
+        "logReturn": -0.0004625469233481504
+      },
+      {
+        "time": 1791302400,
+        "logReturn": -0.013141931216406364
+      },
+      {
+        "time": 1791388800,
+        "logReturn": -0.016394433528362597
+      },
+      {
+        "time": 1791475200,
+        "logReturn": -0.007314949482191451
+      },
+      {
+        "time": 1791561600,
+        "logReturn": 0.004406722256169104
+      },
+      {
+        "time": 1791648000,
+        "logReturn": 0.007038287021835071
+      },
+      {
+        "time": 1791734400,
+        "logReturn": -0.0005439756035608583
+      },
+      {
+        "time": 1791820800,
+        "logReturn": -0.007903815357218137
+      },
+      {
+        "time": 1791907200,
+        "logReturn": -0.004789310813869315
+      },
+      {
+        "time": 1791993600,
+        "logReturn": 0.007314993861074998
+      },
+      {
+        "time": 1792080000,
+        "logReturn": 0.01650744071922876
+      },
+      {
+        "time": 1792166400,
+        "logReturn": 0.013266132741650885
+      },
+      {
+        "time": 1792252800,
+        "logReturn": 0.0007718591726786571
+      },
+      {
+        "time": 1792339200,
+        "logReturn": -0.008510848432365752
+      },
+      {
+        "time": 1792425600,
+        "logReturn": -0.0062672874730257564
+      },
+      {
+        "time": 1792512000,
+        "logReturn": 0.0028698839574442113
+      },
+      {
+        "time": 1792598400,
+        "logReturn": 0.006727564340909865
+      },
+      {
+        "time": 1792684800,
+        "logReturn": -0.0007595055065644412
+      },
+      {
+        "time": 1792771200,
+        "logReturn": -0.012628575903524534
+      },
+      {
+        "time": 1792857600,
+        "logReturn": -0.016305353715701163
+      },
+      {
+        "time": 1792944000,
+        "logReturn": -0.007282717367598859
+      },
+      {
+        "time": 1793030400,
+        "logReturn": 0.005876645981731282
+      },
+      {
+        "time": 1793116800,
+        "logReturn": 0.010692793112130772
+      },
+      {
+        "time": 1793203200,
+        "logReturn": 0.004106623007973436
+      },
+      {
+        "time": 1793289600,
+        "logReturn": -0.004525080422447724
+      },
+      {
+        "time": 1793376000,
+        "logReturn": -0.0039957308154146085
+      },
+      {
+        "time": 1793462400,
+        "logReturn": 0.006224373084554387
+      },
+      {
+        "time": 1793548800,
+        "logReturn": 0.015234228747499457
+      },
+      {
+        "time": 1793635200,
+        "logReturn": 0.012572580834271267
+      },
+      {
+        "time": 1793721600,
+        "logReturn": -0.0002528088697822872
+      },
+      {
+        "time": 1793808000,
+        "logReturn": -0.01119168270695098
+      },
+      {
+        "time": 1793894400,
+        "logReturn": -0.010509604373260829
+      },
+      {
+        "time": 1793980800,
+        "logReturn": -0.0010753925125889818
+      },
+      {
+        "time": 1794067200,
+        "logReturn": 0.005109190744907512
+      },
+      {
+        "time": 1794153600,
+        "logReturn": 0.0002921853282892859
+      },
+      {
+        "time": 1794240000,
+        "logReturn": -0.010400328735398857
+      },
+      {
+        "time": 1794412800,
+        "logReturn": 0.8
+      }
+    ],
+    "opraSlices": [
+      {
+        "timeToExpiryYears": 0.07,
+        "forwardUsd": 45.2,
+        "atmIvDecimal": 0.44,
+        "quotes": [
+          {
+            "strike": 38.0,
+            "contractType": "put",
+            "ivDecimal": 0.52
+          },
+          {
+            "strike": 42.0,
+            "contractType": "put",
+            "ivDecimal": 0.47
+          },
+          {
+            "strike": 45.2,
+            "contractType": "call",
+            "ivDecimal": 0.44
+          },
+          {
+            "strike": 49.0,
+            "contractType": "call",
+            "ivDecimal": 0.41
+          },
+          {
+            "strike": 54.0,
+            "contractType": "call",
+            "ivDecimal": 0.39
+          }
+        ]
+      },
+      {
+        "timeToExpiryYears": 0.16,
+        "forwardUsd": 45.4,
+        "atmIvDecimal": 0.46,
+        "quotes": [
+          {
+            "strike": 36.0,
+            "contractType": "put",
+            "ivDecimal": 0.54
+          },
+          {
+            "strike": 41.0,
+            "contractType": "put",
+            "ivDecimal": 0.49
+          },
+          {
+            "strike": 45.4,
+            "contractType": "call",
+            "ivDecimal": 0.46
+          },
+          {
+            "strike": 50.0,
+            "contractType": "call",
+            "ivDecimal": 0.43
+          },
+          {
+            "strike": 56.0,
+            "contractType": "call",
+            "ivDecimal": 0.41
+          }
+        ]
+      }
+    ],
+    "normalScenario": {
+      "bymaOptions": [
+        {
+          "strike": 4400.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 99.25628044840141,
+            "ask": 102.25628044840141
+          }
+        },
+        {
+          "strike": 4800.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 186.09313860263046,
+            "ask": 189.09313860263046
+          }
+        },
+        {
+          "strike": 5200.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 340.8424174513657,
+            "ask": 343.8424174513657
+          }
+        },
+        {
+          "strike": 5600.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 189.29092006216774,
+            "ask": 192.29092006216774
+          }
+        },
+        {
+          "strike": 6000.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 68.90045899526524,
+            "ask": 71.90045899526524
+          }
+        },
+        {
+          "strike": 4400.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 686.9930686432544,
+            "ask": 691.9930686432544
+          }
+        }
+      ],
+      "bymaAtmIvPct": 53.96074453640946,
+      "opraAdrAtmIvPct": 45.18218996215029,
+      "realizedCorrEwma": 0.2910641302221661,
+      "harRvCclPct": 16.29293513121322,
+      "impliedCclVolPct": 19.14890285194584,
+      "impliedCorrelation": 0.41083442452323227,
+      "overwritingCompressionScore": 7.058825231147097,
+      "arbViolationsCount": 1,
+      "boundaryRegime": "NORMAL_UNIQUE_ROOT"
+    },
+    "dualRootScenario": {
+      "bymaOptions": [
+        {
+          "strike": 4400.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 24.125664015938128,
+            "ask": 26.125664015938128
+          }
+        },
+        {
+          "strike": 4800.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 93.66108186649944,
+            "ask": 95.66108186649944
+          }
+        },
+        {
+          "strike": 5200.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 249.7411477368555,
+            "ask": 251.7411477368555
+          }
+        },
+        {
+          "strike": 5600.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 155.46884454780138,
+            "ask": 157.46884454780138
+          }
+        },
+        {
+          "strike": 6000.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 67.13687210929629,
+            "ask": 69.13687210929629
+          }
+        }
+      ],
+      "realizedCorrEwmaOverride": -0.45,
+      "harRvCclAnnualOverride": 0.32,
+      "impliedCclVolPct": 30.038135281099336,
+      "impliedCorrelation": -0.46450143397937677,
+      "boundaryRegime": "DUAL_ROOT_NEG_CORR"
+    },
+    "violationScenario": {
+      "bymaOptions": [
+        {
+          "strike": 4400.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 9.309906560481068,
+            "ask": 11.309906560481068
+          }
+        },
+        {
+          "strike": 4800.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 58.40041242424195,
+            "ask": 60.40041242424195
+          }
+        },
+        {
+          "strike": 5200.0,
+          "contractType": "put",
+          "quote": {
+            "bid": 203.48150448841625,
+            "ask": 205.48150448841625
+          }
+        },
+        {
+          "strike": 5600.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 110.02954624695576,
+            "ask": 112.02954624695576
+          }
+        },
+        {
+          "strike": 6000.0,
+          "contractType": "call",
+          "quote": {
+            "bid": 36.41589044233808,
+            "ask": 38.41589044233808
+          }
+        }
+      ],
+      "realizedCorrEwmaOverride": 0.25,
+      "harRvCclAnnualOverride": 0.32,
+      "impliedCclVolPct": null,
+      "impliedCorrelation": -0.6603232004190246,
+      "boundaryRegime": "VIOLATION_BYMA_COMPRESSED"
+    }
+  },
+  "motor3": {
+    "specialFunctions": {
+      "logGamma_5_5": 3.9578139676187165,
+      "regIncBeta_035_25_40": 0.45480978374959136,
+      "studentTCdf_175_4": 0.9224918944289165,
+      "studentTInvCdf_092_4": 1.7229325481642062,
+      "invNormCdf_0975": 1.9599639845400536,
+      "chi2InvCdf_080_5": 7.289276126649011
+    },
+    "baseConfig": {
+      "asOfUtcSec": 1794499200,
+      "expiryDate": "2026-12-18",
+      "dteCalendar": 36,
+      "spotByma24hArs": 5200.0,
+      "spotAdrUsd": 44.5,
+      "expectedCerGrowthOverHorizon": 0.032,
+      "historicalSeries": [
+        {
+          "time": 1790006400,
+          "adrCloseUsd": 40.0,
+          "cclGgal": 1100.0,
+          "cerIndex": 100.0
+        },
+        {
+          "time": 1790092800,
+          "adrCloseUsd": 40.04802881152345,
+          "cclGgal": 1112.611750392275,
+          "cerIndex": 100.09004051215274
+        },
+        {
+          "time": 1790179200,
+          "adrCloseUsd": 40.47513456628198,
+          "cclGgal": 1116.868194343117,
+          "cerIndex": 100.18016209724377
+        },
+        {
+          "time": 1790265600,
+          "adrCloseUsd": 41.179046904712756,
+          "cclGgal": 1109.0573381574327,
+          "cerIndex": 100.27036482827157
+        },
+        {
+          "time": 1790352000,
+          "adrCloseUsd": 41.97495484602079,
+          "cclGgal": 1092.6817044583108,
+          "cerIndex": 100.36064877830036
+        },
+        {
+          "time": 1790438400,
+          "adrCloseUsd": 42.64141919534956,
+          "cclGgal": 1076.6980544397577,
+          "cerIndex": 100.45101402046015
+        },
+        {
+          "time": 1790524800,
+          "adrCloseUsd": 42.98692330915764,
+          "cclGgal": 1070.1350313515513,
+          "cerIndex": 100.54146062794679
+        },
+        {
+          "time": 1790611200,
+          "adrCloseUsd": 42.91650731666438,
+          "cclGgal": 1077.0508171201202,
+          "cerIndex": 100.63198867402204
+        },
+        {
+          "time": 1790697600,
+          "adrCloseUsd": 42.46776363398677,
+          "cclGgal": 1094.4824857604167,
+          "cerIndex": 100.72259823201361
+        },
+        {
+          "time": 1790784000,
+          "adrCloseUsd": 41.79666066999733,
+          "cclGgal": 1114.0348529220005,
+          "cerIndex": 100.81328937531525
+        },
+        {
+          "time": 1790870400,
+          "adrCloseUsd": 41.12113376252559,
+          "cclGgal": 1126.5832188531638,
+          "cerIndex": 100.9040621773868
+        },
+        {
+          "time": 1790956800,
+          "adrCloseUsd": 40.650960609816174,
+          "cclGgal": 1127.737660507226,
+          "cerIndex": 100.99491671175424
+        },
+        {
+          "time": 1791043200,
+          "adrCloseUsd": 40.53083598537823,
+          "cclGgal": 1120.180825430731,
+          "cerIndex": 101.08585305200974
+        },
+        {
+          "time": 1791129600,
+          "adrCloseUsd": 40.807700906434974,
+          "cclGgal": 1110.994028909566,
+          "cerIndex": 101.17687127181173
+        },
+        {
+          "time": 1791216000,
+          "adrCloseUsd": 41.42115294180048,
+          "cclGgal": 1106.3883325038425,
+          "cerIndex": 101.26797144488499
+        },
+        {
+          "time": 1791302400,
+          "adrCloseUsd": 42.215131333478766,
+          "cclGgal": 1107.8889004480218,
+          "cerIndex": 101.35915364502065
+        },
+        {
+          "time": 1791388800,
+          "adrCloseUsd": 42.97358372608455,
+          "cclGgal": 1112.1636516303613,
+          "cerIndex": 101.45041794607631
+        },
+        {
+          "time": 1791475200,
+          "adrCloseUsd": 43.480567077766565,
+          "cclGgal": 1114.209356544141,
+          "cerIndex": 101.54176442197605
+        },
+        {
+          "time": 1791561600,
+          "adrCloseUsd": 43.59135512133556,
+          "cclGgal": 1111.677166224297,
+          "cerIndex": 101.63319314671052
+        },
+        {
+          "time": 1791648000,
+          "adrCloseUsd": 43.28573814133935,
+          "cclGgal": 1107.107562622695,
+          "cerIndex": 101.724704194337
+        },
+        {
+          "time": 1791734400,
+          "adrCloseUsd": 42.675981927902384,
+          "cclGgal": 1106.2220236710702,
+          "cerIndex": 101.81629763897942
+        },
+        {
+          "time": 1791820800,
+          "adrCloseUsd": 41.96502167930372,
+          "cclGgal": 1113.6010082062426,
+          "cerIndex": 101.90797355482852
+        },
+        {
+          "time": 1791907200,
+          "adrCloseUsd": 41.37731573808367,
+          "cclGgal": 1128.8588989936122,
+          "cerIndex": 101.99973201614175
+        },
+        {
+          "time": 1791993600,
+          "adrCloseUsd": 41.09305574576871,
+          "cclGgal": 1145.7882771051786,
+          "cerIndex": 102.0915730972435
+        },
+        {
+          "time": 1792080000,
+          "adrCloseUsd": 41.20430421533444,
+          "cclGgal": 1155.4272125024966,
+          "cerIndex": 102.18349687252504
+        },
+        {
+          "time": 1792166400,
+          "adrCloseUsd": 41.69578503545087,
+          "cclGgal": 1151.8128320039455,
+          "cerIndex": 102.27550341644464
+        },
+        {
+          "time": 1792252800,
+          "adrCloseUsd": 42.447487739974264,
+          "cclGgal": 1136.4987691566312,
+          "cerIndex": 102.36759280352759
+        },
+        {
+          "time": 1792339200,
+          "adrCloseUsd": 43.26005209424409,
+          "cclGgal": 1117.9730738993962,
+          "cerIndex": 102.45976510836631
+        },
+        {
+          "time": 1792425600,
+          "adrCloseUsd": 43.905818162130345,
+          "cclGgal": 1106.4100534448514,
+          "cerIndex": 102.55202040562037
+        },
+        {
+          "time": 1792512000,
+          "adrCloseUsd": 44.19903577886577,
+          "cclGgal": 1107.8860846039704,
+          "cerIndex": 102.64435877001657
+        },
+        {
+          "time": 1792598400,
+          "adrCloseUsd": 44.061603096915455,
+          "cclGgal": 1121.4567083834447,
+          "cerIndex": 102.73678027634898
+        },
+        {
+          "time": 1792684800,
+          "adrCloseUsd": 43.55291296777269,
+          "cclGgal": 1140.031514773058,
+          "cerIndex": 102.82928499947903
+        },
+        {
+          "time": 1792771200,
+          "adrCloseUsd": 42.84742359969526,
+          "cclGgal": 1154.5488728363173,
+          "cerIndex": 102.92187301433556
+        },
+        {
+          "time": 1792857600,
+          "adrCloseUsd": 42.17241423780341,
+          "cclGgal": 1159.4401471969838,
+          "cerIndex": 103.01454439591485
+        },
+        {
+          "time": 1792944000,
+          "adrCloseUsd": 41.73651949111127,
+          "cclGgal": 1155.7377164451784,
+          "cerIndex": 103.10729921928075
+        },
+        {
+          "time": 1793030400,
+          "adrCloseUsd": 41.67471251083225,
+          "cclGgal": 1149.3828151893558,
+          "cerIndex": 103.20013755956464
+        },
+        {
+          "time": 1793116800,
+          "adrCloseUsd": 42.01855986171799,
+          "cclGgal": 1146.319791281863,
+          "cerIndex": 103.2930594919656
+        },
+        {
+          "time": 1793203200,
+          "adrCloseUsd": 42.6896947098919,
+          "cclGgal": 1148.319050457426,
+          "cerIndex": 103.38606509175038
+        },
+        {
+          "time": 1793289600,
+          "adrCloseUsd": 43.51531838287723,
+          "cclGgal": 1152.2460942611287,
+          "cerIndex": 103.47915443425356
+        },
+        {
+          "time": 1793376000,
+          "adrCloseUsd": 44.26887607027546,
+          "cclGgal": 1152.9869992249683,
+          "cerIndex": 103.57232759487748
+        },
+        {
+          "time": 1793462400,
+          "adrCloseUsd": 44.73490335766191,
+          "cclGgal": 1147.9864251074123,
+          "cerIndex": 103.66558464909241
+        },
+        {
+          "time": 1793548800,
+          "adrCloseUsd": 44.781482149830474,
+          "cclGgal": 1139.9616035407878,
+          "cerIndex": 103.75892567243658
+        },
+        {
+          "time": 1793635200,
+          "adrCloseUsd": 44.4093876341794,
+          "cclGgal": 1135.4862429576538,
+          "cerIndex": 103.85235074051621
+        },
+        {
+          "time": 1793721600,
+          "adrCloseUsd": 43.752007946516464,
+          "cclGgal": 1140.5026374642748,
+          "cerIndex": 103.94585992900564
+        },
+        {
+          "time": 1793808000,
+          "adrCloseUsd": 43.02611452532851,
+          "cclGgal": 1155.9598757591336,
+          "cerIndex": 104.03945331364727
+        },
+        {
+          "time": 1793894400,
+          "adrCloseUsd": 42.459413484524006,
+          "cclGgal": 1176.228451061083,
+          "cerIndex": 104.13313097025178
+        },
+        {
+          "time": 1793980800,
+          "adrCloseUsd": 42.225583322759896,
+          "cclGgal": 1191.5099988408076,
+          "cerIndex": 104.22689297469807
+        },
+        {
+          "time": 1794067200,
+          "adrCloseUsd": 42.403161252148436,
+          "cclGgal": 1193.6078028929576,
+          "cerIndex": 104.32073940293337
+        },
+        {
+          "time": 1794153600,
+          "adrCloseUsd": 42.95936638565374,
+          "cclGgal": 1181.557251220388,
+          "cerIndex": 104.4146703309733
+        },
+        {
+          "time": 1794240000,
+          "adrCloseUsd": 43.756135057384846,
+          "cclGgal": 1162.5400101700318,
+          "cerIndex": 104.5086858349019
+        },
+        {
+          "time": 1794326400,
+          "adrCloseUsd": 44.58011470550055,
+          "cclGgal": 1147.2283897395723,
+          "cerIndex": 104.60278599087174
+        },
+        {
+          "time": 1794412800,
+          "adrCloseUsd": 45.19896650080041,
+          "cclGgal": 1143.4372462129704,
+          "cerIndex": 104.69697087510394
+        },
+        {
+          "time": 1794585600,
+          "adrCloseUsd": 90.0,
+          "cclGgal": 2500.0,
+          "cerIndex": 150.0
+        }
+      ],
+      "copulaSampleCount": 128,
+      "gridSize": 45,
+      "bymaForward": 5375.125449905221,
+      "opraForward": 44.68912954189706,
+      "timeToExpiryYears": 0.09863013698630137,
+      "timeToSettleYearsByma": 0.10684931506849316,
+      "bymaRiskFree": 0.31,
+      "opraRiskFree": 0.043
+    },
+    "bymaNodesAligned": [
+      {
+        "strike": 4200.0,
+        "ivDecimal": 0.61
+      },
+      {
+        "strike": 4600.0,
+        "ivDecimal": 0.58
+      },
+      {
+        "strike": 5000.0,
+        "ivDecimal": 0.555
+      },
+      {
+        "strike": 5370.0,
+        "ivDecimal": 0.54
+      },
+      {
+        "strike": 5800.0,
+        "ivDecimal": 0.53
+      },
+      {
+        "strike": 6200.0,
+        "ivDecimal": 0.525
+      },
+      {
+        "strike": 6700.0,
+        "ivDecimal": 0.525
+      }
+    ],
+    "opraNodesStd": [
+      {
+        "strike": 36.0,
+        "ivDecimal": 0.5
+      },
+      {
+        "strike": 40.0,
+        "ivDecimal": 0.46
+      },
+      {
+        "strike": 44.5,
+        "ivDecimal": 0.43
+      },
+      {
+        "strike": 48.0,
+        "ivDecimal": 0.415
+      },
+      {
+        "strike": 52.0,
+        "ivDecimal": 0.405
+      }
+    ],
+    "alignedResult": {
+      "physicalMetricsUsd": {
+        "expectedReturnPct": 6.355259695565091,
+        "volatilityPct": 20.127829900934444,
+        "cvar95UsdPct": -3.4956056864650384,
+        "studentTCopulaDof": 29.99546896146215,
+        "studentTCopulaRho": -0.6726821990109173
+      },
+      "riskNeutralBymaArs": {
+        "svi": {
+          "a": 0.0219009541817706,
+          "b": 0.03027162877463061,
+          "rho": -0.6599397386737333,
+          "m": -0.008285887415493149,
+          "sigma": 0.23090000000000002
+        },
+        "minButterflyG": 0.4637587353278035,
+        "impliedMean": 5390.118395052305,
+        "impliedVolPct": 54.5309096602274,
+        "impliedSkewness": -0.24320281762888027,
+        "impliedExcessKurtosis": 0.20946067345548647,
+        "leftTail10PctProbDiff": -0.4192573502472333,
+        "rightTail10PctProbDiff": -0.10877916400993679,
+        "klDivergencePvsQ": 0.6753756304694596
+      },
+      "riskNeutralOpraUsd": {
+        "svi": {
+          "a": -0.040195439421793495,
+          "b": 0.09670493734536546,
+          "rho": -0.6516293228138652,
+          "m": -0.3867009482627189,
+          "sigma": 0.7629
+        },
+        "minButterflyG": 0.1399494570552832,
+        "impliedMean": 44.82267367769977,
+        "impliedVolPct": 42.82318731089473,
+        "impliedSkewness": -0.29682599971975665,
+        "impliedExcessKurtosis": 0.17199287327905877,
+        "leftTail10PctProbDiff": -0.32133390155098684,
+        "rightTail10PctProbDiff": -0.025284713468078784,
+        "klDivergencePvsQ": 0.48442560167294657
+      },
+      "tailDislocationSignal": "SELL_LEFT_TAIL_BYMA",
+      "simulatedNodes": [
+        {
+          "spotUsd": 47.31969436479303,
+          "spotArs": 5571.917500280423,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.29824836660801,
+          "spotArs": 5610.626668841083,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.2781278531396,
+          "spotArs": 5632.436103172489,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.498251484291586,
+          "spotArs": 5379.704393226552,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.48336075754401,
+          "spotArs": 6046.897174039922,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.967998401373755,
+          "spotArs": 5403.725653387551,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.04518891705359,
+          "spotArs": 5933.341096583665,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.08849081067735,
+          "spotArs": 5605.6370637006885,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.29233780232476,
+          "spotArs": 5434.032952778958,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.691850596018725,
+          "spotArs": 5387.041755699974,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.87828163865312,
+          "spotArs": 6005.857378334987,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.813266460137676,
+          "spotArs": 5180.410680589255,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.531912392436155,
+          "spotArs": 5833.325833822621,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.93867812990595,
+          "spotArs": 5825.782329241782,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.335230450547584,
+          "spotArs": 5705.362757046245,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.96824156415099,
+          "spotArs": 5561.452427222647,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.00178203799269,
+          "spotArs": 6122.826889752168,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.001222616962544,
+          "spotArs": 5246.699314450114,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.27834147046252,
+          "spotArs": 5888.23990874798,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.37483231049437,
+          "spotArs": 5566.773583355326,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.50966310797223,
+          "spotArs": 5696.777359727607,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.317468752117335,
+          "spotArs": 5593.762951997957,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.07187083811576,
+          "spotArs": 6086.126553298484,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.49185440151526,
+          "spotArs": 5307.600010038291,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.21412289097473,
+          "spotArs": 5936.480021873425,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.2039229907187,
+          "spotArs": 5874.173751843106,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.95695694834204,
+          "spotArs": 5622.093222005322,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.15430465160014,
+          "spotArs": 5333.40136800668,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.802347121126104,
+          "spotArs": 5983.356800514797,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.9721848286489,
+          "spotArs": 5386.855355135506,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.36590815858232,
+          "spotArs": 5741.477995793736,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.93593257656461,
+          "spotArs": 5604.22590235693,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.58404677616999,
+          "spotArs": 5578.375314896706,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.93595705173042,
+          "spotArs": 5495.698125551952,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.667923411241524,
+          "spotArs": 6242.0580049850005,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.36755744712564,
+          "spotArs": 5084.071169263813,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.24658952825595,
+          "spotArs": 5775.589754706691,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.255475017055986,
+          "spotArs": 5708.57729428721,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.98391933966018,
+          "spotArs": 5710.624172632072,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.02860340479256,
+          "spotArs": 5496.716724052605,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.611948470415754,
+          "spotArs": 6011.789556961119,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.248109685337106,
+          "spotArs": 5356.7513792627815,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.680631693458814,
+          "spotArs": 5950.596313723626,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.29951985971444,
+          "spotArs": 5711.837578768659,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.123472040444774,
+          "spotArs": 5579.4670821835625,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.94819924269113,
+          "spotArs": 5619.151154364624,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.32903013202837,
+          "spotArs": 5998.399149173578,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.05691244251959,
+          "spotArs": 5262.328668890883,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.19368198423836,
+          "spotArs": 5795.235247323288,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.232264742028,
+          "spotArs": 5738.597522432167,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.86994195877092,
+          "spotArs": 5823.157053055881,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.56418293000916,
+          "spotArs": 5544.715579475176,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.5135620737981,
+          "spotArs": 6327.141959138104,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.63126973945808,
+          "spotArs": 5299.983897253184,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.332962821944754,
+          "spotArs": 5721.281801725095,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.11698660768907,
+          "spotArs": 5528.503621606236,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.94943018269146,
+          "spotArs": 5614.1444189540125,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.97354564137929,
+          "spotArs": 5552.096666429101,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.874780322640866,
+          "spotArs": 6080.508500329048,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.93588445250948,
+          "spotArs": 5282.207590122353,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.28627880703474,
+          "spotArs": 5924.99468003687,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.290223688063385,
+          "spotArs": 6034.354203671929,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.36344188386671,
+          "spotArs": 5666.866280660571,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.9486346361631,
+          "spotArs": 5501.019137235367,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.480790530361034,
+          "spotArs": 5809.302563658483,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.30230608549984,
+          "spotArs": 5220.45177684565,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.29389042557241,
+          "spotArs": 5899.51673166901,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.49977062018831,
+          "spotArs": 5595.240444919439,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.9489742508472,
+          "spotArs": 5737.907214816309,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.97610264834267,
+          "spotArs": 5622.571002279344,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.1134000723353,
+          "spotArs": 6243.905201258895,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.103406280383155,
+          "spotArs": 5192.497365127204,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.36358346479821,
+          "spotArs": 5707.415324801565,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.856221968848295,
+          "spotArs": 5695.871825897623,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.083389761106204,
+          "spotArs": 5680.48058253055,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.61580172712302,
+          "spotArs": 5469.895597228727,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.82690917817312,
+          "spotArs": 6100.0871461782,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.94159862287383,
+          "spotArs": 5535.052397095105,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.248668600133044,
+          "spotArs": 5953.326246030503,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.93630066872469,
+          "spotArs": 5615.644242689366,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.26894561511103,
+          "spotArs": 5327.341500647588,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.876052191864645,
+          "spotArs": 5408.425988141871,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.46973600080683,
+          "spotArs": 5961.740120291274,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.00754817031608,
+          "spotArs": 5198.761999356579,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.72430915893996,
+          "spotArs": 5832.7888233761805,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.31757069809295,
+          "spotArs": 5863.521397109875,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.21674392134601,
+          "spotArs": 5721.755571263915,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.32319671250776,
+          "spotArs": 5507.552566355773,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.61893483400244,
+          "spotArs": 6016.290717399938,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.25048643111274,
+          "spotArs": 5139.495715224532,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.03354882971581,
+          "spotArs": 5867.343878551102,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.18681998213359,
+          "spotArs": 5615.368166428927,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.92538597288273,
+          "spotArs": 5690.536590206805,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.28331969269432,
+          "spotArs": 5691.426212709524,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.37443529705139,
+          "spotArs": 5953.716150618525,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.949227074367,
+          "spotArs": 5459.911517880514,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.75846221084056,
+          "spotArs": 5764.59840048878,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.96152977189067,
+          "spotArs": 5779.617099136968,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.00977545194539,
+          "spotArs": 5670.06533227233,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.11587881125304,
+          "spotArs": 5375.094990193538,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.50895363802333,
+          "spotArs": 5983.429088929773,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.24137366702199,
+          "spotArs": 5422.554708361844,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.088176655396865,
+          "spotArs": 5913.097842800931,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.27832369839186,
+          "spotArs": 5600.335754751989,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.78301685474133,
+          "spotArs": 5678.617553572969,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.14585470459054,
+          "spotArs": 5581.576396408178,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.88460445255022,
+          "spotArs": 6355.660439268549,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.124427681747065,
+          "spotArs": 5076.455712595911,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.617070543322434,
+          "spotArs": 5813.1360778421085,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.95355605633323,
+          "spotArs": 5743.633478461116,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.34671355657701,
+          "spotArs": 5667.440566635264,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.03117807376978,
+          "spotArs": 5487.95948640209,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.284458299528296,
+          "spotArs": 5905.030170905346,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.295819961465654,
+          "spotArs": 5360.499052060869,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.88477213915718,
+          "spotArs": 5966.688977862585,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.586101168685126,
+          "spotArs": 5658.861007422965,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.5310855831119,
+          "spotArs": 5531.320702495988,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.78814037232386,
+          "spotArs": 5590.3098761133015,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.06957934517,
+          "spotArs": 5990.161974451113,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.117410342822716,
+          "spotArs": 5196.742936700617,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.196592465391845,
+          "spotArs": 5808.727957968597,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.98213330203938,
+          "spotArs": 5847.602965379878,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.89584905064555,
+          "spotArs": 5800.141296174278,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.05987344992441,
+          "spotArs": 5513.158226942112,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.90358514274013,
+          "spotArs": 6508.317461171877,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.30321531341685,
+          "spotArs": 5382.35462940207,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.37546500237192,
+          "spotArs": 5704.244643789849,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.92839629716795,
+          "spotArs": 5607.704868144395,
+          "probability": 0.0078125
+        }
+      ]
+    },
+    "bymaNodesLeftPanic": [
+      {
+        "strike": 3800.0,
+        "ivDecimal": 0.96
+      },
+      {
+        "strike": 4400.0,
+        "ivDecimal": 0.78
+      },
+      {
+        "strike": 5000.0,
+        "ivDecimal": 0.62
+      },
+      {
+        "strike": 5400.0,
+        "ivDecimal": 0.56
+      },
+      {
+        "strike": 6000.0,
+        "ivDecimal": 0.53
+      },
+      {
+        "strike": 6500.0,
+        "ivDecimal": 0.52
+      }
+    ],
+    "leftPanicResult": {
+      "physicalMetricsUsd": {
+        "expectedReturnPct": 6.355259695565091,
+        "volatilityPct": 20.127829900934444,
+        "cvar95UsdPct": -3.4956056864650384,
+        "studentTCopulaDof": 29.99546896146215,
+        "studentTCopulaRho": -0.6726821990109173
+      },
+      "riskNeutralBymaArs": {
+        "svi": {
+          "a": 0.023372627166337395,
+          "b": 0.1137226333772822,
+          "rho": -0.9797056473485218,
+          "m": -0.057280291441648874,
+          "sigma": 0.11199999999999999
+        },
+        "minButterflyG": 0.21340274876428933,
+        "impliedMean": 5516.397188865451,
+        "impliedVolPct": 50.898986303633635,
+        "impliedSkewness": -0.5834846730776293,
+        "impliedExcessKurtosis": 1.4546634412269732,
+        "leftTail10PctProbDiff": -0.3610179928897451,
+        "rightTail10PctProbDiff": -0.12455439444347213,
+        "klDivergencePvsQ": 0.513734565181825
+      },
+      "riskNeutralOpraUsd": {
+        "svi": {
+          "a": -0.040195439421793495,
+          "b": 0.09670493734536546,
+          "rho": -0.6516293228138652,
+          "m": -0.3867009482627189,
+          "sigma": 0.7629
+        },
+        "minButterflyG": 0.1399494570552832,
+        "impliedMean": 44.82267367769977,
+        "impliedVolPct": 42.82318731089473,
+        "impliedSkewness": -0.29682599971975665,
+        "impliedExcessKurtosis": 0.17199287327905877,
+        "leftTail10PctProbDiff": -0.32133390155098684,
+        "rightTail10PctProbDiff": -0.025284713468078784,
+        "klDivergencePvsQ": 0.48442560167294657
+      },
+      "tailDislocationSignal": "SELL_LEFT_TAIL_BYMA",
+      "simulatedNodes": [
+        {
+          "spotUsd": 47.31969436479303,
+          "spotArs": 5571.917500280423,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.29824836660801,
+          "spotArs": 5610.626668841083,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.2781278531396,
+          "spotArs": 5632.436103172489,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.498251484291586,
+          "spotArs": 5379.704393226552,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.48336075754401,
+          "spotArs": 6046.897174039922,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.967998401373755,
+          "spotArs": 5403.725653387551,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.04518891705359,
+          "spotArs": 5933.341096583665,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.08849081067735,
+          "spotArs": 5605.6370637006885,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.29233780232476,
+          "spotArs": 5434.032952778958,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.691850596018725,
+          "spotArs": 5387.041755699974,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.87828163865312,
+          "spotArs": 6005.857378334987,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.813266460137676,
+          "spotArs": 5180.410680589255,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.531912392436155,
+          "spotArs": 5833.325833822621,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.93867812990595,
+          "spotArs": 5825.782329241782,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.335230450547584,
+          "spotArs": 5705.362757046245,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.96824156415099,
+          "spotArs": 5561.452427222647,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.00178203799269,
+          "spotArs": 6122.826889752168,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.001222616962544,
+          "spotArs": 5246.699314450114,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.27834147046252,
+          "spotArs": 5888.23990874798,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.37483231049437,
+          "spotArs": 5566.773583355326,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.50966310797223,
+          "spotArs": 5696.777359727607,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.317468752117335,
+          "spotArs": 5593.762951997957,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.07187083811576,
+          "spotArs": 6086.126553298484,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.49185440151526,
+          "spotArs": 5307.600010038291,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.21412289097473,
+          "spotArs": 5936.480021873425,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.2039229907187,
+          "spotArs": 5874.173751843106,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.95695694834204,
+          "spotArs": 5622.093222005322,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.15430465160014,
+          "spotArs": 5333.40136800668,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.802347121126104,
+          "spotArs": 5983.356800514797,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.9721848286489,
+          "spotArs": 5386.855355135506,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.36590815858232,
+          "spotArs": 5741.477995793736,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.93593257656461,
+          "spotArs": 5604.22590235693,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.58404677616999,
+          "spotArs": 5578.375314896706,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.93595705173042,
+          "spotArs": 5495.698125551952,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.667923411241524,
+          "spotArs": 6242.0580049850005,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.36755744712564,
+          "spotArs": 5084.071169263813,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.24658952825595,
+          "spotArs": 5775.589754706691,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.255475017055986,
+          "spotArs": 5708.57729428721,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.98391933966018,
+          "spotArs": 5710.624172632072,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.02860340479256,
+          "spotArs": 5496.716724052605,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.611948470415754,
+          "spotArs": 6011.789556961119,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.248109685337106,
+          "spotArs": 5356.7513792627815,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.680631693458814,
+          "spotArs": 5950.596313723626,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.29951985971444,
+          "spotArs": 5711.837578768659,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.123472040444774,
+          "spotArs": 5579.4670821835625,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.94819924269113,
+          "spotArs": 5619.151154364624,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.32903013202837,
+          "spotArs": 5998.399149173578,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.05691244251959,
+          "spotArs": 5262.328668890883,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.19368198423836,
+          "spotArs": 5795.235247323288,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.232264742028,
+          "spotArs": 5738.597522432167,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.86994195877092,
+          "spotArs": 5823.157053055881,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.56418293000916,
+          "spotArs": 5544.715579475176,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.5135620737981,
+          "spotArs": 6327.141959138104,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.63126973945808,
+          "spotArs": 5299.983897253184,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.332962821944754,
+          "spotArs": 5721.281801725095,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.11698660768907,
+          "spotArs": 5528.503621606236,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.94943018269146,
+          "spotArs": 5614.1444189540125,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.97354564137929,
+          "spotArs": 5552.096666429101,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.874780322640866,
+          "spotArs": 6080.508500329048,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.93588445250948,
+          "spotArs": 5282.207590122353,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.28627880703474,
+          "spotArs": 5924.99468003687,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.290223688063385,
+          "spotArs": 6034.354203671929,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.36344188386671,
+          "spotArs": 5666.866280660571,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.9486346361631,
+          "spotArs": 5501.019137235367,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.480790530361034,
+          "spotArs": 5809.302563658483,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.30230608549984,
+          "spotArs": 5220.45177684565,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.29389042557241,
+          "spotArs": 5899.51673166901,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.49977062018831,
+          "spotArs": 5595.240444919439,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.9489742508472,
+          "spotArs": 5737.907214816309,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.97610264834267,
+          "spotArs": 5622.571002279344,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.1134000723353,
+          "spotArs": 6243.905201258895,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.103406280383155,
+          "spotArs": 5192.497365127204,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.36358346479821,
+          "spotArs": 5707.415324801565,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.856221968848295,
+          "spotArs": 5695.871825897623,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.083389761106204,
+          "spotArs": 5680.48058253055,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.61580172712302,
+          "spotArs": 5469.895597228727,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.82690917817312,
+          "spotArs": 6100.0871461782,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.94159862287383,
+          "spotArs": 5535.052397095105,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.248668600133044,
+          "spotArs": 5953.326246030503,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.93630066872469,
+          "spotArs": 5615.644242689366,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.26894561511103,
+          "spotArs": 5327.341500647588,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.876052191864645,
+          "spotArs": 5408.425988141871,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.46973600080683,
+          "spotArs": 5961.740120291274,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.00754817031608,
+          "spotArs": 5198.761999356579,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.72430915893996,
+          "spotArs": 5832.7888233761805,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.31757069809295,
+          "spotArs": 5863.521397109875,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.21674392134601,
+          "spotArs": 5721.755571263915,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.32319671250776,
+          "spotArs": 5507.552566355773,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.61893483400244,
+          "spotArs": 6016.290717399938,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.25048643111274,
+          "spotArs": 5139.495715224532,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.03354882971581,
+          "spotArs": 5867.343878551102,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.18681998213359,
+          "spotArs": 5615.368166428927,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.92538597288273,
+          "spotArs": 5690.536590206805,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.28331969269432,
+          "spotArs": 5691.426212709524,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.37443529705139,
+          "spotArs": 5953.716150618525,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.949227074367,
+          "spotArs": 5459.911517880514,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.75846221084056,
+          "spotArs": 5764.59840048878,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.96152977189067,
+          "spotArs": 5779.617099136968,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.00977545194539,
+          "spotArs": 5670.06533227233,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.11587881125304,
+          "spotArs": 5375.094990193538,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.50895363802333,
+          "spotArs": 5983.429088929773,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.24137366702199,
+          "spotArs": 5422.554708361844,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.088176655396865,
+          "spotArs": 5913.097842800931,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.27832369839186,
+          "spotArs": 5600.335754751989,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.78301685474133,
+          "spotArs": 5678.617553572969,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.14585470459054,
+          "spotArs": 5581.576396408178,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.88460445255022,
+          "spotArs": 6355.660439268549,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 44.124427681747065,
+          "spotArs": 5076.455712595911,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.617070543322434,
+          "spotArs": 5813.1360778421085,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.95355605633323,
+          "spotArs": 5743.633478461116,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.34671355657701,
+          "spotArs": 5667.440566635264,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.03117807376978,
+          "spotArs": 5487.95948640209,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 48.284458299528296,
+          "spotArs": 5905.030170905346,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.295819961465654,
+          "spotArs": 5360.499052060869,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.88477213915718,
+          "spotArs": 5966.688977862585,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.586101168685126,
+          "spotArs": 5658.861007422965,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.5310855831119,
+          "spotArs": 5531.320702495988,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 46.78814037232386,
+          "spotArs": 5590.3098761133015,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.06957934517,
+          "spotArs": 5990.161974451113,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 43.117410342822716,
+          "spotArs": 5196.742936700617,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 49.196592465391845,
+          "spotArs": 5808.727957968597,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.98213330203938,
+          "spotArs": 5847.602965379878,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.89584905064555,
+          "spotArs": 5800.141296174278,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 45.05987344992441,
+          "spotArs": 5513.158226942112,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 50.90358514274013,
+          "spotArs": 6508.317461171877,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 47.30321531341685,
+          "spotArs": 5382.35462940207,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 51.37546500237192,
+          "spotArs": 5704.244643789849,
+          "probability": 0.0078125
+        },
+        {
+          "spotUsd": 42.92839629716795,
+          "spotArs": 5607.704868144395,
+          "probability": 0.0078125
+        }
+      ]
+    }
+  },
+  "motor4": {
+    "inputPinLocked": {
+      "asOfUtcSec": 1797611400,
+      "anexoBAsOfDate": "2026-12-17",
+      "bymaEval": {
+        "asOfUtcSec": 1797611400,
+        "spot24hArs": 5980.0,
+        "expiryDateKey": "2026-12-18",
+        "deltaAr1Days": 3,
+        "deltaExDays": 3,
+        "arHolidays": [
+          "2026-12-08"
+        ],
+        "rateCurve": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.31
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.32
+          }
+        ]
+      },
+      "atmIvDecimal": 0.54,
+      "strikes": [
+        {
+          "strikeArs": 5600.0,
+          "callOi": {
+            "coveredNom": 100000,
+            "uncoveredNom": 20000,
+            "oppositeNom": 30000,
+            "crossedNom": 10000
+          },
+          "putOi": {
+            "coveredNom": 50000,
+            "uncoveredNom": 220000,
+            "oppositeNom": 40000,
+            "crossedNom": 50000
+          },
+          "callIvDecimal": 0.62,
+          "putIvDecimal": 0.64
+        },
+        {
+          "strikeArs": 6000.0,
+          "callOi": {
+            "coveredNom": 900000,
+            "uncoveredNom": 1200000,
+            "oppositeNom": 150000,
+            "crossedNom": 500000
+          },
+          "putOi": {
+            "coveredNom": 50000,
+            "uncoveredNom": 80000,
+            "oppositeNom": 20000,
+            "crossedNom": 10000
+          },
+          "callIvDecimal": 0.54,
+          "putIvDecimal": 0.56
+        },
+        {
+          "strikeArs": 6400.0,
+          "callOi": {
+            "coveredNom": 1500000,
+            "uncoveredNom": 180000,
+            "oppositeNom": 40000,
+            "crossedNom": 20000
+          },
+          "putOi": {
+            "coveredNom": 10000,
+            "uncoveredNom": 20000,
+            "oppositeNom": 10000,
+            "crossedNom": 5000
+          },
+          "callIvDecimal": 0.52,
+          "putIvDecimal": 0.54
+        }
+      ],
+      "arHolidays": [
+        "2026-12-08"
+      ],
+      "adrTrades": [
+        {
+          "timestamp": 1797611360,
+          "price": 49.99,
+          "size": 1000,
+          "exchange": 11
+        },
+        {
+          "timestamp": 1797611385,
+          "price": 49.92,
+          "size": 400,
+          "exchange": 4,
+          "trfTimestamp": 1797611385
+        }
+      ],
+      "adrQuotes": [
+        {
+          "timestamp": 1797611350,
+          "bid": 49.9,
+          "ask": 49.98,
+          "bidSize": 500,
+          "askSize": 400
+        },
+        {
+          "timestamp": 1797611375,
+          "bid": 49.95,
+          "ask": 50.03,
+          "bidSize": 300,
+          "askSize": 600
+        }
+      ],
+      "bymaSnapshots": [
+        {
+          "time": 1797611340,
+          "bid": 5975.0,
+          "ask": 5985.0,
+          "last": 5980.0,
+          "cumVolumeShares": 10000
+        },
+        {
+          "time": 1797611360,
+          "bid": 5978.0,
+          "ask": 5988.0,
+          "last": 5988.0,
+          "cumVolumeShares": 14500
+        },
+        {
+          "time": 1797611380,
+          "bid": 5982.0,
+          "ask": 5990.0,
+          "last": 5979.0,
+          "cumVolumeShares": 16000
+        }
+      ]
+    },
+    "pinLocked": {
+      "anexoBLagTradingDays": 1,
+      "isExpiryDay": true,
+      "minutesTo1530Cutoff": 120.0,
+      "regime": "PIN_LOCKED",
+      "zeroGammaLevelArs": 5799.243363935647,
+      "callWallArs": 6000.0,
+      "putWallArs": 6000.0,
+      "peakPinStrikeArs": 6000.0,
+      "maxPinScore": 0.9999999995755474,
+      "maxUncoveredCrossedConcentrationPct": 77.32181425485962,
+      "netEffectiveGexArsPer1Pct": 4028579539.48133,
+      "netVannaArsPerVolPt": 21238173.571047563,
+      "netCharmArsPerDay": -21825791017.961655,
+      "bymaNetSignedArs": 17977500.0,
+      "adrNetSignedUsd": 30022.0,
+      "strikeProfile": [
+        {
+          "strikeArs": 5600.0,
+          "cEff": 40500.0,
+          "pEff": 272750.0,
+          "effGex": -0.19408599449596153,
+          "attr": 3.888165133204905,
+          "cIv": 0.62,
+          "pIv": 0.64,
+          "pinScore": 4.2445249774703695e-10
+        },
+        {
+          "strikeArs": 6000.0,
+          "cEff": 1650000.0,
+          "pEff": 95750.0,
+          "effGex": 4028579539.675416,
+          "attr": 9160424669.880991,
+          "cIv": 0.54,
+          "pIv": 0.56,
+          "pinScore": 0.9999999995755474
+        },
+        {
+          "strikeArs": 6400.0,
+          "cEff": 246500.0,
+          "pEff": 27500.0,
+          "effGex": 5.198403595748669e-08,
+          "attr": 5.699011965797053e-07,
+          "cIv": 0.52,
+          "pIv": 0.54,
+          "pinScore": 6.221340351300691e-17
+        }
+      ]
+    },
+    "inputNegGamma": {
+      "asOfUtcSec": 1796401800,
+      "anexoBAsOfDate": "2026-12-03",
+      "bymaEval": {
+        "asOfUtcSec": 1796401800,
+        "spot24hArs": 5620.0,
+        "expiryDateKey": "2026-12-18",
+        "deltaAr1Days": 3,
+        "deltaExDays": 3,
+        "arHolidays": [
+          "2026-12-08"
+        ],
+        "rateCurve": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.31
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.32
+          }
+        ]
+      },
+      "atmIvDecimal": 0.58,
+      "strikes": [
+        {
+          "strikeArs": 5600.0,
+          "callOi": {
+            "coveredNom": 100000,
+            "uncoveredNom": 20000,
+            "oppositeNom": 10000,
+            "crossedNom": 5000
+          },
+          "putOi": {
+            "coveredNom": 10000,
+            "uncoveredNom": 2500000,
+            "oppositeNom": 100000,
+            "crossedNom": 400000
+          },
+          "callIvDecimal": 0.56,
+          "putIvDecimal": 0.62
+        },
+        {
+          "strikeArs": 6000.0,
+          "callOi": {
+            "coveredNom": 400000,
+            "uncoveredNom": 40000,
+            "oppositeNom": 20000,
+            "crossedNom": 10000
+          },
+          "putOi": {
+            "coveredNom": 20000,
+            "uncoveredNom": 120000,
+            "oppositeNom": 10000,
+            "crossedNom": 10000
+          },
+          "callIvDecimal": 0.54,
+          "putIvDecimal": 0.58
+        }
+      ],
+      "arHolidays": [
+        "2026-12-08"
+      ]
+    },
+    "negGamma": {
+      "anexoBLagTradingDays": -8,
+      "isExpiryDay": false,
+      "minutesTo1530Cutoff": null,
+      "regime": "NEGATIVE_GAMMA_TRENDING",
+      "zeroGammaLevelArs": 4742.280535451007,
+      "callWallArs": 6000.0,
+      "putWallArs": 5600.0,
+      "peakPinStrikeArs": 5600.0,
+      "maxPinScore": 0.9759375742628803,
+      "maxUncoveredCrossedConcentrationPct": 94.20289855072464,
+      "netEffectiveGexArsPer1Pct": -558668693.674216,
+      "netVannaArsPerVolPt": -539317.4414814359,
+      "netCharmArsPerDay": 27323255.894148313,
+      "bymaNetSignedArs": 17977500.0,
+      "adrNetSignedUsd": 30022.0,
+      "strikeProfile": [
+        {
+          "strikeArs": 5600.0,
+          "cEff": 29750.0,
+          "pEff": 2835250.0,
+          "effGex": -542955135.7644694,
+          "attr": 548774464.6638242,
+          "cIv": 0.56,
+          "pIv": 0.62,
+          "pinScore": 0.9759375742628803
+        },
+        {
+          "strikeArs": 6000.0,
+          "cEff": 64500.0,
+          "pEff": 131500.0,
+          "effGex": -15713557.909746604,
+          "attr": 13530419.517226228,
+          "cIv": 0.54,
+          "pIv": 0.58,
+          "pinScore": 0.024062425737119714
+        }
+      ]
+    }
+  },
+  "motor5": {
+    "input": {
+      "asOfUtcSec": 1794499200,
+      "spotByma24hArs": 5200.0,
+      "spotByma24hQuote": {
+        "bid": 5196.0,
+        "ask": 5204.0
+      },
+      "spotAdrUsd": 44.5,
+      "spotAdrQuote": {
+        "bid": 44.46,
+        "ask": 44.54
+      },
+      "frontExpiryDateKey": "2026-12-18",
+      "backExpiryDateKey": "2027-02-19",
+      "deltaAr1Days": 1,
+      "deltaExDays": 3,
+      "arHolidays": [
+        "2026-11-23"
+      ],
+      "caucion1dTnaPct": 32.0,
+      "lecapMatchedTnaPct": 34.5,
+      "sofrPct": 4.3,
+      "rateCurveArs": [
+        {
+          "days": 1.0,
+          "continuousRateAnnual": 0.3
+        },
+        {
+          "days": 40.0,
+          "continuousRateAnnual": 0.31
+        },
+        {
+          "days": 100.0,
+          "continuousRateAnnual": 0.325
+        }
+      ],
+      "dividendsArs": [
+        {
+          "exDivUtcSec": 1795701600,
+          "payDateUtcSec": 1796047200,
+          "amountArs": 65.0
+        }
+      ],
+      "bymaChain": [
+        {
+          "ticker": "GFGC5000DI",
+          "contractType": "call",
+          "strikeArs": 5000.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 620.0,
+          "askArs": 640.0,
+          "openInterestNom": 350000,
+          "ivDecimal": 0.54
+        },
+        {
+          "ticker": "GFGC5400DI",
+          "contractType": "call",
+          "strikeArs": 5400.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 395.0,
+          "askArs": 410.0,
+          "openInterestNom": 600000,
+          "ivDecimal": 0.51
+        },
+        {
+          "ticker": "GFGC5800DI",
+          "contractType": "call",
+          "strikeArs": 5800.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 215.0,
+          "askArs": 225.0,
+          "openInterestNom": 800000,
+          "ivDecimal": 0.48
+        },
+        {
+          "ticker": "GFGC6200DI",
+          "contractType": "call",
+          "strikeArs": 6200.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 88.0,
+          "askArs": 96.0,
+          "openInterestNom": 420000,
+          "ivDecimal": 0.45
+        },
+        {
+          "ticker": "GFGC6600DI",
+          "contractType": "call",
+          "strikeArs": 6600.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 40.0,
+          "askArs": 48.0,
+          "openInterestNom": 50000,
+          "ivDecimal": 0.44
+        },
+        {
+          "ticker": "GFGV5000DI",
+          "contractType": "put",
+          "strikeArs": 5000.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 108.0,
+          "askArs": 116.0,
+          "openInterestNom": 280000,
+          "ivDecimal": 0.59
+        },
+        {
+          "ticker": "GFGV5400DI",
+          "contractType": "put",
+          "strikeArs": 5400.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 255.0,
+          "askArs": 270.0,
+          "openInterestNom": 220000,
+          "ivDecimal": 0.57
+        },
+        {
+          "ticker": "GFGV5800DI",
+          "contractType": "put",
+          "strikeArs": 5800.0,
+          "expiryDateKey": "2026-12-18",
+          "bidArs": 525.0,
+          "askArs": 550.0,
+          "openInterestNom": 180000,
+          "ivDecimal": 0.55
+        },
+        {
+          "ticker": "GFGC5800FE",
+          "contractType": "call",
+          "strikeArs": 5800.0,
+          "expiryDateKey": "2027-02-19",
+          "bidArs": 495.0,
+          "askArs": 520.0,
+          "openInterestNom": 300000,
+          "ivDecimal": 0.52
+        }
+      ],
+      "opraChain": [
+        {
+          "ticker": "GGAL261218C42.5",
+          "contractType": "call",
+          "strikeUsd": 42.5,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 4.2,
+          "askUsd": 4.4,
+          "openInterestContracts": 400,
+          "ivDecimal": 0.47
+        },
+        {
+          "ticker": "GGAL261218C45",
+          "contractType": "call",
+          "strikeUsd": 45.0,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 2.65,
+          "askUsd": 2.85,
+          "openInterestContracts": 900,
+          "ivDecimal": 0.45
+        },
+        {
+          "ticker": "GGAL261218C47.5",
+          "contractType": "call",
+          "strikeUsd": 47.5,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 1.45,
+          "askUsd": 1.6,
+          "openInterestContracts": 700,
+          "ivDecimal": 0.43
+        },
+        {
+          "ticker": "GGAL261218C50",
+          "contractType": "call",
+          "strikeUsd": 50.0,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 0.72,
+          "askUsd": 0.85,
+          "openInterestContracts": 500,
+          "ivDecimal": 0.41
+        },
+        {
+          "ticker": "GGAL261218P42.5",
+          "contractType": "put",
+          "strikeUsd": 42.5,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 1.4,
+          "askUsd": 1.55,
+          "openInterestContracts": 350,
+          "ivDecimal": 0.48
+        },
+        {
+          "ticker": "GGAL261218P45",
+          "contractType": "put",
+          "strikeUsd": 45.0,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 2.4,
+          "askUsd": 2.6,
+          "openInterestContracts": 450,
+          "ivDecimal": 0.46
+        },
+        {
+          "ticker": "GGAL261218P47.5",
+          "contractType": "put",
+          "strikeUsd": 47.5,
+          "expiryDateKey": "2026-12-18",
+          "expiryUtcSec": 1797618600,
+          "bidUsd": 4.0,
+          "askUsd": 4.25,
+          "openInterestContracts": 250,
+          "ivDecimal": 0.44
+        },
+        {
+          "ticker": "GGAL270219C47.5",
+          "contractType": "call",
+          "strikeUsd": 47.5,
+          "expiryDateKey": "2027-02-19",
+          "expiryUtcSec": 1803061800,
+          "bidUsd": 3.4,
+          "askUsd": 3.65,
+          "openInterestContracts": 200,
+          "ivDecimal": 0.47
+        }
+      ],
+      "physicalNodes": [
+        {
+          "spotUsd": 37.20671252316808,
+          "spotArs": 4291.5957161567485,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 37.68601946376489,
+          "spotArs": 4358.820454194912,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 38.171500966093305,
+          "spotArs": 4427.098219056474,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 38.663236572528675,
+          "spotArs": 4496.445505643806,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 39.16130685013275,
+          "spotArs": 4566.8790672399755,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 39.665793403853996,
+          "spotArs": 4638.415919556091,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 40.17677888989789,
+          "spotArs": 4711.073344842051,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 40.69434702926953,
+          "spotArs": 4784.868896061678,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 41.21858262149065,
+          "spotArs": 4859.82040113326,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 41.74957155849339,
+          "spotArs": 4935.945967236507,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 42.287400838692996,
+          "spotArs": 5013.263985186985,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 42.83215858124184,
+          "spotArs": 5091.793133879062,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 43.38393404046708,
+          "spotArs": 5171.552384798455,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 43.94281762049426,
+          "spotArs": 5252.561006605462,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 44.50890089005934,
+          "spotArs": 5334.838569789986,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 45.08227659751151,
+          "spotArs": 5418.40495139948,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 45.663038686009315,
+          "spotArs": 5503.2803398409405,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 46.25128230891247,
+          "spotArs": 5589.485239758142,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 46.84710384537207,
+          "spotArs": 5677.040476985245,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 47.45060091612145,
+          "spotArs": 5765.967203578017,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 48.06187239947071,
+          "spotArs": 5856.286902923856,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 48.68101844750708,
+          "spotArs": 5948.021394931864,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 49.308140502504074,
+          "spotArs": 6041.19284130421,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 49.94334131354205,
+          "spotArs": 6135.823750890071,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 50.5867249533428,
+          "spotArs": 6231.936985123446,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 51.23839683532111,
+          "spotArs": 6329.555763546135,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 51.89846373085591,
+          "spotArs": 6428.703669417237,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 52.56703378678391,
+          "spotArs": 6529.404655410524,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 53.24421654311862,
+          "spotArs": 6631.683049401052,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 53.93012295099771,
+          "spotArs": 6735.56356034241,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 54.62486539086141,
+          "spotArs": 6841.071284236055,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 55.32855769086515,
+          "spotArs": 6948.231710194122,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 56.041315145529545,
+          "spotArs": 7057.0707265972205,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 56.763254534630356,
+          "spotArs": 7167.614627348697,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 57.49449414233207,
+          "spotArs": 7279.890118226838,
+          "probability": 0.027777777777777776
+        },
+        {
+          "spotUsd": 58.23515377656776,
+          "spotArs": 7393.924323336603,
+          "probability": 0.027777777777777776
+        }
+      ]
+    },
+    "spotChecks": {
+      "bullCall_5000_5800": {
+        "id": "BULL_CALL_GFGC5000DI_GFGC5800DI",
+        "expectedValueUnderP": 606.5644388292644,
+        "netSharpeProxy": 0.017333749322579795,
+        "opraEquivalentSharpe": -0.03977817367436908,
+        "bymaAdvantageBps": 926.4714592073886
+      },
+      "bearPut_5800_5000": {
+        "id": "BEAR_PUT_GFGV5800DI_GFGV5000DI",
+        "expectedValueUnderP": -13077.41852117645,
+        "netSharpeProxy": -0.3737124696430494
+      },
+      "buyWrite_5800": {
+        "id": "BUY_WRITE_GGAL_GFGC5800DI",
+        "marginRequired": 499942.846819452,
+        "tnaYieldPct": 164.05958189177505,
+        "spreadOverLecapBps": 12955.958189177505,
+        "expectedValueUnderP": 23451.592186213697,
+        "netSharpeProxy": 0.4536880236479574,
+        "opraEquivalentSharpe": 0.3520846868894414,
+        "bymaAdvantageBps": -1924.37279030998
+      },
+      "calendar_5800_di_fe": {
+        "id": "CALENDAR_GFGC5800DI_GFGC5800FE",
+        "sigmaFwd": 0.5415932795218941,
+        "expectedValueUnderP": 6443.067831598343,
+        "netSharpeProxy": 0.37460398870631706
+      },
+      "ratio_1x2": {
+        "id": "RATIO_1X2_CALL_GFGC5400DI_GFGC6200DI",
+        "marginRequired": 62000.0,
+        "expectedValueUnderP": -11963.870479936037,
+        "netSharpeProxy": -0.4274804425361465
+      },
+      "ratio_1x3": {
+        "id": "RATIO_1X3_CALL_GFGC5400DI_GFGC6200DI",
+        "marginRequired": 124000.0,
+        "expectedValueUnderP": -25333.601850128376,
+        "netSharpeProxy": -0.4750449566605717
+      }
+    }
+  }
+}
