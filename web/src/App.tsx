@@ -24,6 +24,7 @@ import {
   Moon,
   CheckCircle2,
   CandlestickChart,
+  Scale,
 } from 'lucide-react';
 import {
   GLOBAL_INDICATORS,
@@ -60,6 +61,7 @@ import {
   CommandPaletteModal,
   ShortcutsModal,
 } from './components/Overlays';
+import { GgalSpecialistModule } from './components/ggal/GgalSpecialistModule';
 
 type PageId =
   | 'inicio'
@@ -71,6 +73,7 @@ type PageId =
   | 'futuros'
   | 'bonos'
   | 'relaciones'
+  | 'ggal-specialist'
   | 'posiciones'
   | 'espacios'
   | 'alertas'
@@ -202,6 +205,7 @@ export default function App() {
     futuros: '/futuros',
     bonos: '/bonos/curva-soberana',
     relaciones: '/relaciones',
+    'ggal-specialist': '/ar/ggal-specialist',
     posiciones: '/posiciones',
     espacios: '/espacios',
     alertas: '/alertas',
@@ -226,6 +230,7 @@ export default function App() {
     futuros: 'Futuros Rofex DLR y Sintéticos USD',
     bonos: 'Bonos Soberanos · Curva TIR vs. Duration',
     relaciones: 'Relaciones y Arbitraje Estadístico (Z-Score)',
+    'ggal-specialist': 'GGAL Specialist · Dual BYMA / ADR / OPRA / IAMC',
     posiciones: 'Posiciones y Riesgo Agregado de Cartera',
     espacios: 'Espacios de Trabajo Multimonitor',
     alertas: 'Centro de Alertas Cuantitativas',
@@ -495,6 +500,27 @@ export default function App() {
                 {!sidebarCollapsed && <span>Relaciones</span>}
               </button>
 
+              {/* GGAL Specialist */}
+              <button
+                type="button"
+                onClick={() => setActivePage('ggal-specialist')}
+                className={`w-full flex items-center justify-between px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
+                  activePage === 'ggal-specialist'
+                    ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]'
+                }`}
+              >
+                <span className="flex items-center gap-2.5">
+                  <Scale className="w-4 h-4 shrink-0 text-[#8B7CF6]" />
+                  {!sidebarCollapsed && <span>GGAL Specialist</span>}
+                </span>
+                {!sidebarCollapsed && (
+                  <span className="text-[9.5px] font-mono-num px-1.5 py-0.2 rounded bg-[#211B3A] text-[#C4B5FD]">
+                    AR·US
+                  </span>
+                )}
+              </button>
+
               {/* Posiciones */}
               <button
                 type="button"
@@ -682,6 +708,9 @@ export default function App() {
             {activePage === 'bonos' && <BondsCurveModule />}
             {activePage === 'futuros' && <FuturesModule />}
             {activePage === 'relaciones' && <RatiosModule />}
+            {activePage === 'ggal-specialist' && (
+              <GgalSpecialistModule onOpenOrderTicket={handleOpenOrderTicket} />
+            )}
             {activePage === 'posiciones' && (
               <PositionsModule
                 positions={positions}

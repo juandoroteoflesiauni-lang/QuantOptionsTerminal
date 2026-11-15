@@ -12,6 +12,13 @@
  *  - `GET /api/ar/stock?symbol=GGAL`
  *  - `GET /api/ar/options?underlying=GGAL`
  *  - `GET /api/ar/relations`
+ *  - `GET /api/ar/ggal-specialist/overview`
+ *  - `GET /api/ar/ggal-specialist/parity-gap`
+ *  - `GET /api/ar/ggal-specialist/vol-triangle`
+ *  - `GET /api/ar/ggal-specialist/dual-density`
+ *  - `GET /api/ar/ggal-specialist/structure-pinning`
+ *  - `POST /api/ar/ggal-specialist/strategy-selector`
+ *  - `POST /api/ar/ggal-specialist/anexo-b/ingest`
  *
  * WebSocket:
  *  - `ws://host:port/ws`
@@ -30,6 +37,7 @@ import {
   ArgentinaMarketRuntime,
   type ArMonitoringResponse,
 } from './argentinaMarketLoader.js';
+import { GgalSpecialistRuntime } from './ggalSpecialistRuntime.js';
 import {
   MarketRuntime,
   RuntimeNoDataError,
@@ -43,6 +51,7 @@ const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?
 export interface HttpWsServerOptions {
   readonly runtime?: MarketRuntime;
   readonly arRuntime?: ArgentinaMarketRuntime;
+  readonly ggalRuntime?: GgalSpecialistRuntime;
   readonly host?: string;
   readonly port?: number;
   readonly secrets?: readonly string[];
@@ -55,6 +64,7 @@ export interface HttpWsServerHandle {
   readonly wss: WebSocketServer;
   readonly runtime: MarketRuntime;
   readonly arRuntime: ArgentinaMarketRuntime;
+  readonly ggalRuntime: GgalSpecialistRuntime;
   start(): Promise<{ readonly host: string; readonly port: number }>;
   stop(): Promise<void>;
 }
@@ -69,9 +79,45 @@ function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Cache-Control', 'no-store');
+}
+
+async function readJsonBody(
+  req: IncomingMessage,
+  secrets: readonly string[],
+  maxBytes = 1_048_576,
+): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : (chunk as Buffer);
+    total += buf.length;
+    if (total > maxBytes) {
+      throw new RuntimeNoDataError(
+        'INVALID_PARAMETER',
+        'Request JSON body exceeds 1 MB limit',
+        secrets,
+        400,
+      );
+    }
+    chunks.push(buf);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  if (raw === '') {
+    return {};
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (err: unknown) {
+    throw new RuntimeNoDataError(
+      'INVALID_PARAMETER',
+      redactSecrets(`Invalid JSON request body: ${toErrorMessage(err, 'Malformed JSON')}`, secrets),
+      secrets,
+      400,
+    );
+  }
 }
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -184,8 +230,9 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsServerHandle {
   const auth = loadRuntimeAuth();
   const runtime = options.runtime ?? new MarketRuntime();
-  const arRuntime = options.arRuntime ?? new ArgentinaMarketRuntime({ secrets: options.secrets ?? auth.secrets });
   const secrets = options.secrets ?? auth.secrets;
+  const arRuntime = options.arRuntime ?? new ArgentinaMarketRuntime({ secrets });
+  const ggalRuntime = options.ggalRuntime ?? new GgalSpecialistRuntime({ runtime, arRuntime, secrets });
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
   const startRuntimeWs = options.startRuntimeWs ?? false;
@@ -203,7 +250,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       return;
     }
 
-    if (req.method !== 'GET') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
       sendJson(res, 405, {
         status: 'NO_DATA',
         reason: 'INVALID_PARAMETER',
@@ -216,6 +263,18 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     const pathname = requestUrl.pathname;
     const params = requestUrl.searchParams;
 
+    const isPostOnlyRoute =
+      pathname === '/api/ar/ggal-specialist/strategy-selector' ||
+      pathname === '/api/ar/ggal-specialist/anexo-b/ingest';
+    if ((req.method === 'POST' && !isPostOnlyRoute) || (req.method !== 'POST' && isPostOnlyRoute)) {
+      sendJson(res, 405, {
+        status: 'NO_DATA',
+        reason: 'INVALID_PARAMETER',
+        detail: `Method ${req.method ?? 'UNKNOWN'} not allowed for ${pathname}`,
+      });
+      return;
+    }
+
     try {
       if (pathname === '/api/health') {
         sendJson(res, 200, {
@@ -227,7 +286,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (pathname === '/api/snapshot') {
         const symbol = params.get('symbol') ?? 'SPY';
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const snapshot = await runtime.getSnapshot(symbol, { forceRefresh });
         sendJson(res, 200, snapshot);
         return;
@@ -238,7 +297,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         const timeframe = params.get('timeframe') ?? '5m';
         const visibleBars = parseOptionalPositiveInt(params.get('visibleBars'), 'visibleBars', secrets);
         const rthOnly = parseBooleanFlag(params.get('rthOnly'));
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const bars = await runtime.getBars(symbol, timeframe, {
           ...(visibleBars === undefined ? {} : { visibleBars }),
           rthOnly,
@@ -258,7 +317,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           'minPremium',
           secrets,
         );
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
 
         const unusual = await runtime.getUnusualTrades({
           ...(symbolParam !== null && symbolParam.trim() !== ''
@@ -279,14 +338,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       }
 
       if (pathname === '/api/ar/overview') {
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const overview = await arRuntime.getOverview(forceRefresh);
         sendJson(res, 200, overview);
         return;
       }
 
       if (pathname === '/api/ar/macro') {
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const macro = await arRuntime.getMacro(forceRefresh);
         sendJson(res, 200, macro);
         return;
@@ -294,7 +353,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (pathname === '/api/ar/monitoring') {
         const panel = parseMonitoringPanel(params.get('panel'), secrets);
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const monitoring = await arRuntime.getMonitoring(panel, forceRefresh);
         sendJson(res, 200, monitoring);
         return;
@@ -302,7 +361,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (pathname === '/api/ar/stock') {
         const symbol = params.get('symbol')?.trim() || 'GGAL';
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const stock = await arRuntime.getStockDetail(symbol, forceRefresh);
         sendJson(res, 200, stock);
         return;
@@ -310,16 +369,109 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (pathname === '/api/ar/options') {
         const underlying = params.get('underlying')?.trim() || 'GGAL';
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const optionsChain = await arRuntime.getOptionsChain(underlying, forceRefresh);
         sendJson(res, 200, optionsChain);
         return;
       }
 
       if (pathname === '/api/ar/relations') {
-        const forceRefresh = parseBooleanFlag(params.get('refresh'));
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const relations = await arRuntime.getRelations(forceRefresh);
         sendJson(res, 200, relations);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/overview') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const overview = await ggalRuntime.getOverview(forceRefresh);
+        sendJson(res, 200, overview);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/parity-gap') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const parityGap = await ggalRuntime.getParityGap(forceRefresh);
+        sendJson(res, 200, parityGap);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/vol-triangle') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const volTriangle = await ggalRuntime.getVolTriangle(forceRefresh);
+        sendJson(res, 200, volTriangle);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/dual-density') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const dualDensity = await ggalRuntime.getDualDensity(forceRefresh);
+        sendJson(res, 200, dualDensity);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/structure-pinning') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const structurePinning = await ggalRuntime.getStructurePinning(forceRefresh);
+        sendJson(res, 200, structurePinning);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/strategy-selector') {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const body = await readJsonBody(req, secrets);
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', 'Expected JSON object body for strategy-selector', secrets, 400);
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const selector = await ggalRuntime.runStrategySelector(body, forceRefresh);
+        sendJson(res, 200, selector);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/anexo-b/ingest') {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const body = await readJsonBody(req, secrets);
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', 'Expected JSON object body for anexo-b/ingest', secrets, 400);
+        }
+        const ingested = ggalRuntime.ingestAnexoB(body);
+        sendJson(res, 200, ingested);
+        return;
+      }
+
+      if (req.method !== 'GET') {
+        sendJson(res, 405, {
+          status: 'NO_DATA',
+          reason: 'INVALID_PARAMETER',
+          detail: `Method ${req.method ?? 'UNKNOWN'} not allowed for ${pathname}`,
+        });
         return;
       }
 
@@ -403,6 +555,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     wss,
     runtime,
     arRuntime,
+    ggalRuntime,
     async start(): Promise<{ readonly host: string; readonly port: number }> {
       await new Promise<void>((resolveListen, rejectListen) => {
         const onError = (err: Error): void => {
@@ -421,7 +574,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (enableBackgroundWarmup) {
         warmupStatus = 'WARMING_UP';
-        void Promise.allSettled([arRuntime.warmup(), runtime.warmup()]).finally(() => {
+        ggalRuntime.startRecorder();
+        void (async () => {
+          // Calentamos Argentina primero (ligero, <1.5s) para que /inicio responda de inmediato
+          // antes de iniciar el warmup de las cadenas americanas.
+          await arRuntime.warmup();
+          await new Promise<void>((r) => setTimeout(r, 20));
+          await runtime.warmup();
+        })().finally(() => {
           warmupStatus = 'READY';
         });
       }
@@ -434,6 +594,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       return { host, port };
     },
     async stop(): Promise<void> {
+      ggalRuntime.stop();
       removeListener();
       runtime.stopWs();
       for (const client of wss.clients) {
