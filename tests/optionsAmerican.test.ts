@@ -4,6 +4,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   bivariateNormCdf,
   DEFAULT_CRR_STEPS,
+  gammaAmericanFiniteDiffOrAnalytical,
   greeksAmericanFiniteDiffOrAnalytical,
   MAX_CRR_STEPS,
   priceAmericanBjerksund2002,
@@ -354,6 +355,11 @@ describe('Pieza 3: Bivariate Normal, Put-Call Forward Parity, Bjerksund-Stenslan
       for (const tc of fixture.bjerksund2002Cases) {
         const input = deepFreeze(tc.input);
         const greeks = greeksAmericanFiniteDiffOrAnalytical(input);
+        const fastGamma = gammaAmericanFiniteDiffOrAnalytical(input);
+        expect(fastGamma).toBe(greeks.gamma);
+        expect(Math.abs(fastGamma - tc.expectedGreeks.gamma), `${tc.name}.fastGamma`).toBeLessThan(
+          1e-6,
+        );
         expect(greeks.gamma).toBeGreaterThanOrEqual(-1e-10);
         expect(greeks.vega).toBeGreaterThanOrEqual(-1e-10);
         expect(Math.abs(greeks.thetaDaily - greeks.theta / 365)).toBeLessThan(1e-15);

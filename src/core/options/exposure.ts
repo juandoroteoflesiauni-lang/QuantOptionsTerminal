@@ -1,5 +1,6 @@
 import { MAX_TIME_SECONDS } from '../sessions.js';
 import {
+  gammaAmericanFiniteDiffOrAnalytical,
   greeksAmericanFiniteDiffOrAnalytical,
   solveImpliedVolAmerican,
 } from './american.js';
@@ -618,6 +619,39 @@ function evaluateModelGreeks(
   });
 }
 
+function evaluateModelGamma(
+  model: ExposureModel,
+  underlier: number,
+  strike: number,
+  timeToExpiry: number,
+  rate: number,
+  dividendYield: number,
+  iv: number,
+  contractType: OptionContractType,
+): number {
+  if (model === 'american') {
+    return gammaAmericanFiniteDiffOrAnalytical({
+      spot: underlier,
+      strike,
+      timeToExpiry,
+      rate,
+      dividendYield,
+      volatility: iv,
+      contractType,
+    });
+  }
+  return evaluateModelGreeks(
+    model,
+    underlier,
+    strike,
+    timeToExpiry,
+    rate,
+    dividendYield,
+    iv,
+    contractType,
+  ).gamma;
+}
+
 function evaluateContractForChain(
   contract: ExposureContractInput,
   index: number,
@@ -953,7 +987,7 @@ function evaluatePreparedNetGexAtSpot(
   let total = 0;
   for (const p of preparedList) {
     const evalUnderlier = p.underlier * scaleRatio;
-    const greeks = evaluateModelGreeks(
+    const gamma = evaluateModelGamma(
       model,
       evalUnderlier,
       p.strike,
@@ -963,14 +997,14 @@ function evaluatePreparedNetGexAtSpot(
       p.iv,
       p.contractType,
     );
-    if (!Number.isFinite(greeks.gamma)) {
+    if (!Number.isFinite(gamma)) {
       return Number.NaN;
     }
     total +=
       p.sign *
       p.openInterest *
       p.sharesPerContract *
-      greeks.gamma *
+      gamma *
       evalUnderlier *
       evalUnderlier *
       ONE_PERCENT;

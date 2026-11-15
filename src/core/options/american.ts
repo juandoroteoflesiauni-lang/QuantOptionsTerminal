@@ -15,6 +15,7 @@ export const MAX_CRR_STEPS = 5000;
 const GOLDEN_RATIO_CONJUGATE = 0.5 * (Math.sqrt(5) - 1);
 const LOG_SQRT_2PI = 0.5 * Math.log(2 * Math.PI);
 const MIN_GAMMA_EXP = -745;
+const EXP_ZERO_THRESHOLD = -746;
 const MAX_SAFE_EXP = 700;
 const BVN_HIGH_RHO_THRESHOLD = 0.925;
 const BVN_HIGH_RHO_SUBINTERVALS = 4;
@@ -54,6 +55,18 @@ const GL20_QUADRATURE: readonly (readonly [number, number])[] = [
   [0.9639719272779138, 0.04060142980038694],
   [0.9931285991850949, 0.017614007139152118],
 ];
+
+const GL20_COUNT = GL20_QUADRATURE.length;
+const GL20_XI = new Float64Array(GL20_QUADRATURE.map(([xi]) => xi));
+const GL20_WI = new Float64Array(GL20_QUADRATURE.map(([, wi]) => wi));
+const BS2002_RHO = Math.sqrt(GOLDEN_RATIO_CONJUGATE);
+const BS2002_ASIN_RHO = Math.asin(BS2002_RHO);
+const BS2002_SN = new Float64Array(
+  GL20_QUADRATURE.map(([xi]) => Math.sin(0.5 * BS2002_ASIN_RHO * (xi + 1))),
+);
+const BS2002_DENOM = new Float64Array(
+  Array.from(BS2002_SN, (sn) => 1 - sn * sn),
+);
 
 const NAN_GREEKS_RESULT: OptionGreeksResult = {
   price: Number.NaN,
@@ -189,6 +202,16 @@ function mulExpBvn(logCoeff: number, a: number, b: number, rho: number): number 
   if (logCoeff === Number.NEGATIVE_INFINITY) {
     return 0;
   }
+  if (
+    logCoeff <= EXP_ZERO_THRESHOLD &&
+    Number.isFinite(a) &&
+    Number.isFinite(b) &&
+    Number.isFinite(rho) &&
+    rho >= -1 &&
+    rho <= 1
+  ) {
+    return 0;
+  }
   const bvnVal = bivariateNormCdf(a, b, rho);
   if (!Number.isFinite(bvnVal)) {
     return Number.NaN;
@@ -229,6 +252,9 @@ export function bivariateNormCdf(a: number, b: number, rho: number): number {
   if (rho < -1 || rho > 1) {
     return Number.NaN;
   }
+  if (a <= -39 || b <= -39) {
+    return 0;
+  }
   if (Math.abs(rho) < 1e-15) {
     return clampProbability(normCdf(a) * normCdf(b));
   }
@@ -244,15 +270,36 @@ export function bivariateNormCdf(a: number, b: number, rho: number): number {
     const k = -b;
     const hk = h * k;
     const hs = 0.5 * (h * h + k * k);
-    const asinRho = Math.asin(rho);
     let integral = 0;
+    let asinRho: number;
 
-    for (const [xi, wi] of GL20_QUADRATURE) {
-      const sn = Math.sin(0.5 * asinRho * (xi + 1));
-      const denom = 1 - sn * sn;
-      const exponent = (sn * hk - hs) / denom;
-      if (exponent > MIN_GAMMA_EXP) {
-        integral += wi * Math.exp(exponent);
+    if (rho === BS2002_RHO || rho === -BS2002_RHO) {
+      const signRho = rho > 0 ? 1 : -1;
+      asinRho = signRho * BS2002_ASIN_RHO;
+      const hkSigned = signRho * hk;
+      for (let i = 0; i < GL20_COUNT; i += 1) {
+        const sn = BS2002_SN[i];
+        const denom = BS2002_DENOM[i];
+        const wi = GL20_WI[i];
+        if (sn === undefined || denom === undefined || wi === undefined) continue;
+        const exponent = (sn * hkSigned - hs) / denom;
+        if (exponent > MIN_GAMMA_EXP) {
+          integral += wi * Math.exp(exponent);
+        }
+      }
+    } else {
+      asinRho = Math.asin(rho);
+      const halfAsinRho = 0.5 * asinRho;
+      for (let i = 0; i < GL20_COUNT; i += 1) {
+        const xi = GL20_XI[i];
+        const wi = GL20_WI[i];
+        if (xi === undefined || wi === undefined) continue;
+        const sn = Math.sin(halfAsinRho * (xi + 1));
+        const denom = 1 - sn * sn;
+        const exponent = (sn * hk - hs) / denom;
+        if (exponent > MIN_GAMMA_EXP) {
+          integral += wi * Math.exp(exponent);
+        }
       }
     }
 
@@ -273,8 +320,12 @@ export function bivariateNormCdf(a: number, b: number, rho: number): number {
 
   for (let panel = 0; panel < BVN_HIGH_RHO_SUBINTERVALS; panel++) {
     const lo = panel * subInterval;
-    for (const [xi, wi] of GL20_QUADRATURE) {
-      const theta = lo + 0.5 * subInterval * (xi + 1);
+    const halfSub = 0.5 * subInterval;
+    for (let i = 0; i < GL20_COUNT; i += 1) {
+      const xi = GL20_XI[i];
+      const wi = GL20_WI[i];
+      if (xi === undefined || wi === undefined) continue;
+      const theta = lo + halfSub * (xi + 1);
       const sn = Math.sin(theta);
       const snSq = sn * sn;
       if (snSq > 0) {
@@ -410,12 +461,16 @@ function bjerksund2002CallCore(
     );
   };
 
-  const scaledPsi = (
-    scale: number,
-    logBase: number,
-    gamma: number,
-    boundaryH: number,
-  ): number => {
+  const logSpot = Math.log(spot);
+  const logX2Spot = Math.log(x2 / spot);
+  const logX1Spot = Math.log(x1 / spot);
+  const logX1X2 = Math.log(x1 / x2);
+  const logSpotX1 = Math.log(spot / x1);
+  const logX2SqOverSpotX1 = Math.log((x2 * x2) / (spot * x1));
+  const invSqrtT1 = 1 / sqrtT1;
+  const invSqrtT = 1 / sqrtT;
+
+  const preparePsi = (logBase: number, gamma: number) => {
     const lambda =
       gamma === beta
         ? 0
@@ -423,31 +478,37 @@ function bjerksund2002CallCore(
     const kappa = (2 * carry) / sigmaSq + (2 * gamma - 1);
     const drift = carry + (gamma - 0.5) * sigmaSq;
 
-    const e1 = (Math.log(spot / x1) + drift * t1) / sqrtT1;
-    const e2 = (Math.log((x2 * x2) / (spot * x1)) + drift * t1) / sqrtT1;
-    const e3 = (Math.log(spot / x1) - drift * t1) / sqrtT1;
-    const e4 = (Math.log((x2 * x2) / (spot * x1)) - drift * t1) / sqrtT1;
+    const driftT1 = drift * t1;
+    const driftT = drift * timeToExpiry;
+    const e1 = (logSpotX1 + driftT1) * invSqrtT1;
+    const e2 = (logX2SqOverSpotX1 + driftT1) * invSqrtT1;
+    const e3 = (logSpotX1 - driftT1) * invSqrtT1;
+    const e4 = (logX2SqOverSpotX1 - driftT1) * invSqrtT1;
 
-    const f1 = (Math.log(spot / boundaryH) + drift * timeToExpiry) / sqrtT;
-    const f2 =
-      (Math.log((x2 * x2) / (spot * boundaryH)) + drift * timeToExpiry) / sqrtT;
-    const f3 =
-      (Math.log((x1 * x1) / (spot * boundaryH)) + drift * timeToExpiry) / sqrtT;
-    const f4 =
-      (Math.log((spot * x1 * x1) / (boundaryH * x2 * x2)) + drift * timeToExpiry) /
-      sqrtT;
+    const logPre1 = lambda * timeToExpiry + logBase;
+    const logPre2 = logPre1 + kappa * logX2Spot;
+    const logPre3 = logPre1 + kappa * logX1Spot;
+    const logPre4 = logPre1 + kappa * logX1X2;
 
-    const logPre = lambda * timeToExpiry + logBase;
-    const term1 = mulExpBvn(logPre, -e1, -f1, rho);
-    const term2 = mulExpBvn(logPre + kappa * Math.log(x2 / spot), -e2, -f2, rho);
-    const term3 = mulExpBvn(logPre + kappa * Math.log(x1 / spot), -e3, -f3, -rho);
-    const term4 = mulExpBvn(logPre + kappa * Math.log(x1 / x2), -e4, -f4, -rho);
-    return scale * (term1 - term2 - term3 + term4);
+    return (scale: number, boundaryH: number): number => {
+      const f1 = (Math.log(spot / boundaryH) + driftT) * invSqrtT;
+      const f2 = (Math.log((x2 * x2) / (spot * boundaryH)) + driftT) * invSqrtT;
+      const f3 = (Math.log((x1 * x1) / (spot * boundaryH)) + driftT) * invSqrtT;
+      const f4 = (Math.log((spot * x1 * x1) / (boundaryH * x2 * x2)) + driftT) * invSqrtT;
+
+      const term1 = mulExpBvn(logPre1, -e1, -f1, rho);
+      const term2 = mulExpBvn(logPre2, -e2, -f2, rho);
+      const term3 = mulExpBvn(logPre3, -e3, -f3, -rho);
+      const term4 = mulExpBvn(logPre4, -e4, -f4, -rho);
+      return scale * (term1 - term2 - term3 + term4);
+    };
   };
 
   const logSpotOverX2 = beta * Math.log(spot / x2);
-  const logSpotOverX1 = beta * Math.log(spot / x1);
-  const logSpot = Math.log(spot);
+  const logSpotOverX1 = beta * logSpotX1;
+  const psiBeta = preparePsi(logSpotOverX1, beta);
+  const psi1 = preparePsi(logSpot, 1);
+  const psi0 = preparePsi(0, 0);
 
   const rawValue =
     (x2 - strike) * Math.exp(logSpotOverX2) -
@@ -457,11 +518,11 @@ function bjerksund2002CallCore(
     scaledPhi(strike, 0, 0, x2, x2) +
     scaledPhi(strike, 0, 0, x1, x2) +
     scaledPhi(x1 - strike, logSpotOverX1, beta, x1, x2) -
-    scaledPsi(x1 - strike, logSpotOverX1, beta, x1) +
-    scaledPsi(1, logSpot, 1, x1) -
-    scaledPsi(1, logSpot, 1, strike) -
-    scaledPsi(strike, 0, 0, x1) +
-    scaledPsi(strike, 0, 0, strike);
+    psiBeta(x1 - strike, x1) +
+    psi1(1, x1) -
+    psi1(1, strike) -
+    psi0(strike, x1) +
+    psi0(strike, strike);
 
   if (!Number.isFinite(rawValue)) {
     return Number.NaN;
@@ -514,6 +575,51 @@ export function priceAmericanBjerksund2002(input: BsmInput): number {
   );
 }
 
+function computeSpotGammaFd(input: BsmInput, spotRelStep: number): {
+  readonly price: number;
+  readonly dS: number;
+  readonly vUpS: number;
+  readonly vDnS: number;
+  readonly gamma: number;
+} | null {
+  const price = priceAmericanBjerksund2002(input);
+  const dS = input.spot * spotRelStep;
+  if (!Number.isFinite(price) || !isPositiveFinite(dS)) {
+    return null;
+  }
+  const vUpS = priceAmericanBjerksund2002({ ...input, spot: input.spot + dS });
+  const vDnS = priceAmericanBjerksund2002({ ...input, spot: input.spot - dS });
+  return {
+    price,
+    dS,
+    vUpS,
+    vDnS,
+    gamma: (vUpS - 2 * price + vDnS) / (dS * dS),
+  };
+}
+
+/**
+ * Computes American option spot Gamma using analytical BSM in the zero-early-exercise
+ * Merton regime or central spot finite differences on `priceAmericanBjerksund2002`.
+ */
+export function gammaAmericanFiniteDiffOrAnalytical(
+  input: BsmInput,
+  options?: Pick<AmericanGreeksOptions, 'spotRelStep'>,
+): number {
+  if (!isValidBsmInput(input)) {
+    return Number.NaN;
+  }
+  if (isMertonZeroEarlyExercise(input)) {
+    return greeksBsm(input).gamma;
+  }
+  const spotRelStep = options?.spotRelStep ?? DEFAULT_FD_SPOT_REL_STEP;
+  if (!isPositiveFinite(spotRelStep)) {
+    return Number.NaN;
+  }
+  const res = computeSpotGammaFd(input, spotRelStep);
+  return res !== null && Number.isFinite(res.gamma) ? res.gamma : Number.NaN;
+}
+
 /**
  * Computes price and 1st/2nd-order American option Greeks.
  *
@@ -547,19 +653,15 @@ export function greeksAmericanFiniteDiffOrAnalytical(
     return NAN_GREEKS_RESULT;
   }
 
-  const price = priceAmericanBjerksund2002(input);
-  if (!Number.isFinite(price)) {
-    return NAN_GREEKS_RESULT;
-  }
-
-  const dS = input.spot * spotRelStep;
   const dSig = Math.min(input.volatility * volRelStep, 0.25 * input.volatility);
   const dT = Math.min(requestedTimeStep, 0.25 * input.timeToExpiry);
   const dR = rateStep;
 
-  if (!isPositiveFinite(dS) || !isPositiveFinite(dSig) || !isPositiveFinite(dT)) {
+  const spotFd = computeSpotGammaFd(input, spotRelStep);
+  if (spotFd === null || !isPositiveFinite(dSig) || !isPositiveFinite(dT)) {
     return NAN_GREEKS_RESULT;
   }
+  const { price, dS, vUpS, vDnS, gamma } = spotFd;
 
   const evalAt = (
     spot: number,
@@ -577,10 +679,7 @@ export function greeksAmericanFiniteDiffOrAnalytical(
       contractType: input.contractType,
     });
 
-  const vUpS = evalAt(input.spot + dS, input.timeToExpiry, input.rate, input.volatility);
-  const vDnS = evalAt(input.spot - dS, input.timeToExpiry, input.rate, input.volatility);
   const delta = (vUpS - vDnS) / (2 * dS);
-  const gamma = (vUpS - 2 * price + vDnS) / (dS * dS);
 
   const vUpT = evalAt(input.spot, input.timeToExpiry + dT, input.rate, input.volatility);
   const vDnT = evalAt(input.spot, input.timeToExpiry - dT, input.rate, input.volatility);

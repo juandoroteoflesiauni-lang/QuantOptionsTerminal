@@ -789,4 +789,41 @@ describe('serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offl
     expect(healthJson.hasApiKey).toBe(true);
     expect(['IDLE', 'WARMING_UP', 'READY']).toContain(healthJson.warmupStatus);
   });
+
+  it('serializes NaN callVolume/putVolume in exposureSummary.byStrike as null without crashing snapshot', async () => {
+    const secretKey = 'SECRET_VOLUME_NULL_KEY';
+    const fixedNowMs = etDateTimeToUtcMs(2025, 3, 10, 14, 45, 0, true);
+    const fixedNowSec = Math.floor(fixedNowMs / 1_000);
+    const baseFetch = createOfflineMassiveFetch({ asOfUtcSec: fixedNowSec, secretKey });
+
+    const missingVolumeFetch: FetchFn = async (url) => {
+      const res = await baseFetch(url);
+      const { pathname } = new URL(url);
+      if (pathname.startsWith('/v3/snapshot/options/') && typeof res.text === 'string') {
+        const parsed = JSON.parse(res.text) as { status: string; results: Record<string, unknown>[] };
+        for (const item of parsed.results) {
+          const details = item['details'] as { strike_price?: number; contract_type?: string } | undefined;
+          if (details?.strike_price === 605 && details.contract_type === 'call') {
+            item['day'] = {};
+          }
+        }
+        return { ...res, text: JSON.stringify(parsed) };
+      }
+      return res;
+    };
+
+    const runtime = new MarketRuntime({
+      apiKey: secretKey,
+      secrets: [secretKey],
+      nowMsFn: () => fixedNowMs,
+      enableWs: false,
+      fetchFn: missingVolumeFetch,
+    });
+
+    const snap = await runtime.getSnapshot('SPY');
+    const row605 = snap.exposureSummary?.byStrike.find((s) => s.strike === 605);
+    expect(row605).toBeDefined();
+    expect(row605?.callVolume).toBeNull();
+    expect(row605?.putVolume).toBeGreaterThan(0);
+  });
 });
