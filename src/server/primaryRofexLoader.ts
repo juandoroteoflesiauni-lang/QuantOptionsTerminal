@@ -1508,6 +1508,7 @@ export class PrimaryRofexClient {
   public async getMervOrderBook5Levels(
     rawTicker: string,
     forceRefresh = false,
+    preferredSettlement?: '24HS' | 'CI',
   ): Promise<OrderBook5LevelsDto | null> {
     if (!this.config.configured) {
       return null;
@@ -1528,9 +1529,13 @@ export class PrimaryRofexClient {
       }
 
       const preferred =
-        candidates.find((c) => c.parsed.settlement.toUpperCase() === '24HS') ??
-        candidates.find((c) => c.parsed.settlement.toUpperCase() === 'CI') ??
-        candidates[0];
+        preferredSettlement === 'CI'
+          ? candidates.find((c) => c.parsed.settlement.toUpperCase() === 'CI')
+          : preferredSettlement === '24HS'
+            ? candidates.find((c) => c.parsed.settlement.toUpperCase() === '24HS')
+            : (candidates.find((c) => c.parsed.settlement.toUpperCase() === '24HS') ??
+              candidates.find((c) => c.parsed.settlement.toUpperCase() === 'CI') ??
+              candidates[0]);
       if (preferred === undefined) {
         return null;
       }

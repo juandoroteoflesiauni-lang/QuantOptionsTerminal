@@ -8,7 +8,9 @@ import type {
   ArRelationsResponse,
   ArStockDetailResponse,
   FeedStatus,
+  TerminalTimeframe,
   UsSnapshotResponseDto,
+  UsTerminalBarsResponseDto,
 } from './liveTypes';
 import {
   AR_STOCKS,
@@ -75,8 +77,14 @@ const listeners = new Set<StoreListener>();
 const tickerListeners = new Set<TickerListener>();
 const seqByKey = new Map<string, number>();
 const abortByKey = new Map<string, AbortController>();
+const inFlightByKey = new Map<
+  string,
+  { readonly url: string; readonly token: number; readonly promise: Promise<unknown> }
+>();
 const lastKnownPriceBySymbol = new Map<string, number>();
 let flashClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+const DEFAULT_FETCH_TIMEOUT_MS = 25_000;
 
 function notify(): void {
   state = { ...state, version: state.version + 1 };
@@ -139,7 +147,22 @@ function recordPriceFlashes(nextPrices: ReadonlyMap<string, number>): void {
   }, 620);
 }
 
-async function fetchJsonGuarded<T>(key: string, url: string): Promise<T | null> {
+async function fetchJsonGuarded<T>(
+  key: string,
+  url: string,
+  options?: { readonly force?: boolean; readonly timeoutMs?: number; readonly signal?: AbortSignal },
+): Promise<T | null> {
+  if (options?.signal?.aborted) {
+    return null;
+  }
+  const force = options?.force === true;
+  if (!force) {
+    const existing = inFlightByKey.get(key);
+    if (existing !== undefined && existing.url === url) {
+      return existing.promise as Promise<T | null>;
+    }
+  }
+
   const prevAbort = abortByKey.get(key);
   if (prevAbort) prevAbort.abort();
   const controller = new AbortController();
@@ -147,22 +170,45 @@ async function fetchJsonGuarded<T>(key: string, url: string): Promise<T | null> 
   const nextSeq = (seqByKey.get(key) ?? 0) + 1;
   seqByKey.set(key, nextSeq);
 
-  try {
-    const resp = await fetch(url, {
-      signal: controller.signal,
-      headers: { accept: 'application/json' },
-    });
-    if (!resp.ok) {
+  const onExternalAbort = () => controller.abort();
+  options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
+
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  const run = (async (): Promise<T | null> => {
+    try {
+      const resp = await fetch(url, {
+        signal: controller.signal,
+        headers: { accept: 'application/json' },
+      });
+      if (!resp.ok) {
+        return null;
+      }
+      const parsed = (await resp.json()) as T;
+      if (seqByKey.get(key) !== nextSeq || options?.signal?.aborted) {
+        return null;
+      }
+      return parsed;
+    } catch {
       return null;
+    } finally {
+      clearTimeout(timeoutId);
+      options?.signal?.removeEventListener('abort', onExternalAbort);
+      if (abortByKey.get(key) === controller) {
+        abortByKey.delete(key);
+      }
+      const cur = inFlightByKey.get(key);
+      if (cur !== undefined && cur.token === nextSeq) {
+        inFlightByKey.delete(key);
+      }
     }
-    const parsed = (await resp.json()) as T;
-    if (seqByKey.get(key) !== nextSeq) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
+  })();
+
+  inFlightByKey.set(key, { url, token: nextSeq, promise: run });
+  return run;
 }
 
 function combineFeedStatus(a: FeedStatus, b: FeedStatus): FeedStatus {
@@ -177,7 +223,8 @@ function combineFeedStatus(a: FeedStatus, b: FeedStatus): FeedStatus {
 export async function refreshOverview(force = false): Promise<void> {
   const res = await fetchJsonGuarded<ArOverviewResponse>(
     'overview',
-    `/api/ar/overview${force ? '?force=1' : ''}`
+    `/api/ar/overview${force ? '?refresh=1' : ''}`,
+    { force }
   );
   if (!res) {
     if (!state.overview) {
@@ -195,6 +242,7 @@ export async function refreshOverview(force = false): Promise<void> {
 
   state = {
     ...state,
+    isBackendConnected: true,
     overview: res,
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     marketState: res.marketState,
@@ -209,12 +257,14 @@ export async function refreshOverview(force = false): Promise<void> {
 export async function refreshMacro(force = false): Promise<void> {
   const res = await fetchJsonGuarded<ArMacroResponse>(
     'macro',
-    `/api/ar/macro${force ? '?force=1' : ''}`
+    `/api/ar/macro${force ? '?refresh=1' : ''}`,
+    { force }
   );
   if (!res) return;
   hydrateFromArMacro(res);
   state = {
     ...state,
+    isBackendConnected: true,
     macro: res,
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
@@ -229,7 +279,8 @@ export async function requestMonitoringPanel(
 ): Promise<void> {
   const res = await fetchJsonGuarded<ArMonitoringResponse>(
     'monitoring',
-    `/api/ar/monitoring?panel=${encodeURIComponent(panel)}${force ? '&force=1' : ''}`
+    `/api/ar/monitoring?panel=${encodeURIComponent(panel)}${force ? '&refresh=1' : ''}`,
+    { force }
   );
   if (!res) return;
   hydrateFromArMonitoring(res);
@@ -246,7 +297,8 @@ export async function requestMonitoringPanel(
 export async function requestRelations(force = false): Promise<void> {
   const res = await fetchJsonGuarded<ArRelationsResponse>(
     'relations',
-    `/api/ar/relations${force ? '?force=1' : ''}`
+    `/api/ar/relations${force ? '?refresh=1' : ''}`,
+    { force }
   );
   if (!res) return;
   hydrateFromArRelations(res);
@@ -259,14 +311,20 @@ export async function requestRelations(force = false): Promise<void> {
   notify();
 }
 
-export async function requestStockDetail(symbol: string, force = false): Promise<void> {
+export async function requestStockDetail(
+  symbol: string,
+  force = false,
+  timeframe: TerminalTimeframe = '1D',
+  signal?: AbortSignal,
+): Promise<ArStockDetailResponse | null> {
   const clean = symbol.trim().toUpperCase();
-  if (!clean) return;
+  if (!clean) return null;
   const res = await fetchJsonGuarded<ArStockDetailResponse>(
     `stock:${clean}`,
-    `/api/ar/stock?symbol=${encodeURIComponent(clean)}${force ? '&force=1' : ''}`
+    `/api/ar/stock?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}${force ? '&refresh=1' : ''}`,
+    { force, signal }
   );
-  if (!res) return;
+  if (!res) return null;
   state = {
     ...state,
     stockDetailsBySymbol: { ...state.stockDetailsBySymbol, [clean]: res },
@@ -274,6 +332,22 @@ export async function requestStockDetail(symbol: string, force = false): Promise
     lastSyncUtcSec: res.asOfUtcSec,
   };
   notify();
+  return res;
+}
+
+export async function requestTerminalBars(
+  symbol: string,
+  timeframe: TerminalTimeframe,
+  options?: { readonly force?: boolean; readonly visibleBars?: number; readonly signal?: AbortSignal },
+): Promise<UsTerminalBarsResponseDto | null> {
+  const clean = symbol.trim().toUpperCase();
+  if (!clean) return null;
+  const vis = options?.visibleBars ?? 180;
+  return fetchJsonGuarded<UsTerminalBarsResponseDto>(
+    `bars:${clean}:${timeframe}`,
+    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&visibleBars=${String(vis)}${options?.force ? '&refresh=1' : ''}`,
+    { force: options?.force === true, signal: options?.signal },
+  );
 }
 
 const US_OPTION_UNDERLYINGS = new Set(['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT']);
@@ -504,7 +578,8 @@ export async function requestOptionsChain(underlying: string, force = false): Pr
   }
   const res = await fetchJsonGuarded<ArOptionsResponse>(
     `options:${clean}`,
-    `/api/ar/options?underlying=${encodeURIComponent(clean)}${force ? '&force=1' : ''}`
+    `/api/ar/options?underlying=${encodeURIComponent(clean)}${force ? '&refresh=1' : ''}`,
+    { force }
   );
   if (!res) return;
   hydrateFromArOptions(res);
@@ -519,14 +594,18 @@ export async function requestOptionsChain(underlying: string, force = false): Pr
   notify();
 }
 
-export async function requestUsSnapshot(symbol: string): Promise<void> {
+export async function requestUsSnapshot(
+  symbol: string,
+  options?: { readonly force?: boolean; readonly signal?: AbortSignal },
+): Promise<UsSnapshotResponseDto | null> {
   const clean = symbol.trim().toUpperCase();
-  if (!clean) return;
+  if (!clean) return null;
   const res = await fetchJsonGuarded<UsSnapshotResponseDto>(
     `us:${clean}`,
-    `/api/snapshot?symbol=${encodeURIComponent(clean)}&timeframe=5m`
+    `/api/snapshot?symbol=${encodeURIComponent(clean)}&timeframe=5m${options?.force ? '&refresh=1' : ''}`,
+    { force: options?.force === true, signal: options?.signal },
   );
-  if (!res || !res.marketContext) return;
+  if (!res || !res.marketContext) return null;
   hydrateFromUsSnapshot(res);
   state = {
     ...state,
@@ -537,6 +616,7 @@ export async function requestUsSnapshot(symbol: string): Promise<void> {
   };
   publishTickerUpdatesFromMemory();
   notify();
+  return res;
 }
 
 function handleWsMessage(raw: string): void {
@@ -578,18 +658,27 @@ function handleWsMessage(raw: string): void {
 export function startLiveRuntimePolling(enabled: boolean): () => void {
   let disposed = false;
   let ws: WebSocket | null = null;
+  let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   const runInitialAndCycle = async () => {
     if (disposed) return;
-    await refreshBackendHealth();
+    // Fase 1: ruta crítica de Inicio + panel AR (<= 5 requests simultáneos para no saturar pool HTTP/1.1)
     await Promise.all([
+      refreshBackendHealth(),
       refreshOverview(),
       refreshMacro(),
       requestMonitoringPanel('bonos'),
       requestOptionsChain('GGAL'),
+    ]);
+    if (disposed) return;
+    // Fase 2: pares relativos + mercado US prioritario, sin bloquear el render inicial AR
+    await Promise.all([
       requestRelations(),
       requestUsSnapshot('SPY'),
       requestUsSnapshot('QQQ'),
+    ]);
+    if (disposed) return;
+    await Promise.all([
       requestUsSnapshot('NVDA'),
       requestUsSnapshot('AAPL'),
       requestUsSnapshot('MSFT'),
@@ -608,6 +697,20 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
   let prevWarmupStatus = state.warmupStatus;
   let prevConnected = state.isBackendConnected;
 
+  const retryMissingSlices = async () => {
+    const tasks: Promise<unknown>[] = [];
+    if (state.overview === null || state.feedStatus === 'NO_DATA') tasks.push(refreshOverview());
+    if (state.macro === null) tasks.push(refreshMacro());
+    if (state.monitoring === null) tasks.push(requestMonitoringPanel('bonos'));
+    if (state.optionsByUnderlying['GGAL'] === undefined) tasks.push(requestOptionsChain('GGAL'));
+    if (state.relations === null) tasks.push(requestRelations());
+    if (state.usSnapshotsBySymbol['SPY'] === undefined) tasks.push(requestUsSnapshot('SPY'));
+    if (state.usSnapshotsBySymbol['QQQ'] === undefined) tasks.push(requestUsSnapshot('QQQ'));
+    if (tasks.length > 0) {
+      await Promise.all(tasks);
+    }
+  };
+
   const fastRetryId = setInterval(() => {
     if (disposed) return;
     const needReconnectOrWarmup =
@@ -619,64 +722,93 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
     if (needReconnectOrWarmup) {
       void (async () => {
         const ok = await refreshBackendHealth();
-        if (
-          ok &&
-          (!prevConnected ||
-            (prevWarmupStatus === 'WARMING_UP' && state.warmupStatus === 'READY') ||
-            state.overview === null ||
-            state.macro === null ||
-            state.feedStatus === 'NO_DATA')
-        ) {
-          await runInitialAndCycle();
+        if (ok) {
+          const justConnected = !prevConnected;
+          const justWarmed = prevWarmupStatus === 'WARMING_UP' && state.warmupStatus === 'READY';
+          if (justConnected || justWarmed) {
+            await runInitialAndCycle();
+          } else if (state.overview === null || state.macro === null || state.feedStatus === 'NO_DATA') {
+            await retryMissingSlices();
+          }
         }
         prevConnected = state.isBackendConnected;
         prevWarmupStatus = state.warmupStatus;
       })();
     }
-  }, 5_000);
+  }, 3_000);
 
   const intervalId = setInterval(() => {
     if (disposed) return;
     if (state.overview === null || state.macro === null || state.feedStatus === 'NO_DATA') {
-      void runInitialAndCycle();
+      void retryMissingSlices();
       return;
     }
     void refreshBackendHealth();
     void refreshOverview();
   }, 20_000);
 
-  if (typeof window !== 'undefined' && typeof WebSocket !== 'undefined') {
+  const connectWs = () => {
+    if (disposed || typeof window === 'undefined' || typeof WebSocket === 'undefined') {
+      return;
+    }
     try {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${proto}//${window.location.host}/ws`);
-      ws.addEventListener('open', () => {
-        ws?.send(
+      const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+      ws = socket;
+      socket.addEventListener('open', () => {
+        socket.send(
           JSON.stringify({
             action: 'subscribe',
             symbols: ['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT'],
           })
         );
       });
-      ws.addEventListener('message', (ev) => {
+      socket.addEventListener('message', (ev) => {
         if (!disposed && typeof ev.data === 'string') {
           handleWsMessage(ev.data);
+        }
+      });
+      const scheduleReconnect = () => {
+        if (ws === socket) {
+          ws = null;
+        }
+        if (!disposed && wsReconnectTimer === null) {
+          wsReconnectTimer = setTimeout(() => {
+            wsReconnectTimer = null;
+            connectWs();
+          }, 3_000);
+        }
+      };
+      socket.addEventListener('close', scheduleReconnect);
+      socket.addEventListener('error', () => {
+        try {
+          socket.close();
+        } catch {
+          // noop
         }
       });
     } catch {
       ws = null;
     }
-  }
+  };
+
+  connectWs();
 
   return () => {
     disposed = true;
     clearInterval(fastRetryId);
     clearInterval(intervalId);
+    if (wsReconnectTimer !== null) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
     if (ws) {
       try {
         ws.close();
       } catch {
         // noop
       }
+      ws = null;
     }
   };
 }
