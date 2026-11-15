@@ -13,17 +13,32 @@ import {
   X,
 } from 'lucide-react';
 import {
+  fetchGgalClearingRisk,
+  fetchGgalDualChart,
   fetchGgalDualDensity,
+  fetchGgalFeedStatus,
+  fetchGgalMicrostructure,
+  fetchGgalOptionsSurface,
   fetchGgalParityGap,
+  fetchGgalRegime2027,
   fetchGgalSpecialistOverview,
   fetchGgalStructurePinning,
   fetchGgalVolTriangle,
   postGgalAnexoBIngest,
   postGgalStrategySelector,
+  type ArFeedRouterStatusSnapshotDto,
+  type GgalAvwapAnchorMode,
   type GgalBadgeMode,
+  type GgalClearingRiskResponseDto,
+  type GgalDualChartCoordMode,
+  type GgalDualChartPayloadDto,
+  type GgalDualChartTimeframe,
   type GgalDualDensityResponseDto,
+  type GgalMicrostructureResponseDto,
+  type GgalOptionsSurfaceResponseDto,
   type GgalParityGapResponseDto,
   type GgalRankedStrategyDto,
+  type GgalRegime2027ResponseDto,
   type GgalSpecialistOverviewResponseDto,
   type GgalStrategyFamily,
   type GgalStrategySelectorResponseDto,
@@ -35,13 +50,16 @@ import { fmtNum, fmtPct } from '../../data/marketData';
 import { HelpTooltip, InsightBanner, KPICard } from '../DesignSystem';
 import { CompanyLogo } from '../common/CompanyLogo';
 import type { OrderTicketPreset } from '../Overlays';
+import { GgalDualChartView } from './GgalDualChartView';
 
 export type GgalTabId =
   | 'parity-gap'
   | 'vol-triangle'
   | 'dual-density'
   | 'structure-pinning'
-  | 'strategy-selector';
+  | 'strategy-selector'
+  | 'microstructure-orats'
+  | 'regime-2027';
 
 const TAB_ITEMS: readonly { readonly id: GgalTabId; readonly label: string }[] = [
   { id: 'parity-gap', label: '1. Paridad & Gap' },
@@ -49,6 +67,8 @@ const TAB_ITEMS: readonly { readonly id: GgalTabId; readonly label: string }[] =
   { id: 'dual-density', label: '3. Densidad Dual P vs. Q' },
   { id: 'structure-pinning', label: '4. Estructura, Anexo B & Pinning' },
   { id: 'strategy-selector', label: '5. Selector de Estrategias' },
+  { id: 'microstructure-orats', label: '6. Microestructura L2, VPIN & ORATS' },
+  { id: 'regime-2027', label: '7. Régimen Electoral 2027' },
 ];
 
 const STRATEGY_FAMILIES: readonly { readonly value: GgalStrategyFamily | 'ALL'; readonly label: string }[] = [
@@ -124,6 +144,19 @@ export const GgalSpecialistModule: React.FC<{
   const [dualData, setDualData] = useState<GgalDualDensityResponseDto | null>(null);
   const [structureData, setStructureData] = useState<GgalStructurePinningResponseDto | null>(null);
   const [strategyData, setStrategyData] = useState<GgalStrategySelectorResponseDto | null>(null);
+  const [routerStatus, setRouterStatus] = useState<ArFeedRouterStatusSnapshotDto | null>(null);
+  const [microData, setMicroData] = useState<GgalMicrostructureResponseDto | null>(null);
+  const [surfaceData, setSurfaceData] = useState<GgalOptionsSurfaceResponseDto | null>(null);
+  const [clearingRiskData, setClearingRiskData] = useState<GgalClearingRiskResponseDto | null>(null);
+  const [regimeData, setRegimeData] = useState<GgalRegime2027ResponseDto | null>(null);
+
+  // Dual Synced Charts state
+  const [coordMode, setCoordMode] = useState<GgalDualChartCoordMode>('ARS_BYMA');
+  const [chartTimeframe, setChartTimeframe] = useState<GgalDualChartTimeframe>('1D');
+  const [avwapAnchor, setAvwapAnchor] = useState<GgalAvwapAnchorMode>('MONTH_START');
+  const [dualChartPayload, setDualChartPayload] = useState<GgalDualChartPayloadDto | null>(null);
+  const [dualChartLoading, setDualChartLoading] = useState(false);
+  const [dualChartError, setDualChartError] = useState<string | null>(null);
 
   // Filtros interactivos Motor 5 (0 lotes/nom por defecto cuando no hay Anexo B ingestado o en EOD)
   const [familyFilter, setFamilyFilter] = useState<GgalStrategyFamily | 'ALL'>('ALL');
@@ -140,6 +173,39 @@ export const GgalSpecialistModule: React.FC<{
   const [anexoSuccess, setAnexoSuccess] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  const dualChartAbortRef = useRef<AbortController | null>(null);
+
+  const loadDualChart = useCallback(
+    async (forceRefresh = false) => {
+      dualChartAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      dualChartAbortRef.current = ctrl;
+      setDualChartLoading(true);
+      setDualChartError(null);
+      try {
+        const res = await fetchGgalDualChart({
+          coord: coordMode,
+          timeframe: chartTimeframe,
+          avwapAnchor,
+          forceRefresh,
+          signal: ctrl.signal,
+        });
+        if (!ctrl.signal.aborted) {
+          setRouterStatus(res.routerStatus);
+          setDualChartPayload(res.dualChart);
+        }
+      } catch (err: unknown) {
+        if (!ctrl.signal.aborted) {
+          setDualChartError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!ctrl.signal.aborted) {
+          setDualChartLoading(false);
+        }
+      }
+    },
+    [avwapAnchor, chartTimeframe, coordMode],
+  );
 
   const loadTab = useCallback(
     async (tab: GgalTabId, forceRefresh = false) => {
@@ -153,6 +219,14 @@ export const GgalSpecialistModule: React.FC<{
           forceRefresh,
           signal: ctrl.signal,
         });
+        const feedStatusPromise = fetchGgalFeedStatus({
+          forceRefresh,
+          signal: ctrl.signal,
+        }).then((rs) => {
+          if (!ctrl.signal.aborted) {
+            setRouterStatus(rs);
+          }
+        });
 
         let tabPromise: Promise<void>;
         if (tab === 'parity-gap') {
@@ -165,6 +239,26 @@ export const GgalSpecialistModule: React.FC<{
           tabPromise = fetchGgalStructurePinning({ forceRefresh, signal: ctrl.signal }).then(
             setStructureData,
           );
+        } else if (tab === 'microstructure-orats') {
+          tabPromise = Promise.all([
+            fetchGgalMicrostructure({ forceRefresh, signal: ctrl.signal }),
+            fetchGgalOptionsSurface({ forceRefresh, signal: ctrl.signal }),
+            fetchGgalClearingRisk({ forceRefresh, signal: ctrl.signal }),
+          ]).then(([mRes, sRes, cRes]) => {
+            if (!ctrl.signal.aborted) {
+              setRouterStatus(mRes.routerStatus);
+              setMicroData(mRes);
+              setSurfaceData(sRes);
+              setClearingRiskData(cRes);
+            }
+          });
+        } else if (tab === 'regime-2027') {
+          tabPromise = fetchGgalRegime2027({ forceRefresh, signal: ctrl.signal }).then((rRes) => {
+            if (!ctrl.signal.aborted) {
+              setRouterStatus(rRes.routerStatus);
+              setRegimeData(rRes);
+            }
+          });
         } else {
           const parsedOi = Number(minBymaOiNom);
           const parsedMult = Number(minEvMultiple);
@@ -182,7 +276,7 @@ export const GgalSpecialistModule: React.FC<{
           ).then(setStrategyData);
         }
 
-        const [ov] = await Promise.all([overviewPromise, tabPromise]);
+        const [ov] = await Promise.all([overviewPromise, feedStatusPromise, tabPromise]);
         if (!ctrl.signal.aborted) {
           setOverview(ov);
         }
@@ -199,6 +293,13 @@ export const GgalSpecialistModule: React.FC<{
     },
     [enforceThresholds, familyFilter, minBymaOiNom, minEvMultiple],
   );
+
+  useEffect(() => {
+    void loadDualChart(false);
+    return () => {
+      dualChartAbortRef.current?.abort();
+    };
+  }, [loadDualChart]);
 
   useEffect(() => {
     void loadTab(activeTab, false);
@@ -695,7 +796,87 @@ export const GgalSpecialistModule: React.FC<{
         );
       })()}
 
-      {/* Sub-navegación de 5 motores */}
+      {/* Telemetría del Router AR (Zero Silent Fallbacks) */}
+      {routerStatus !== null && (
+        <div className="rounded-[10px] bg-[#10131D] border border-[#1E2538] p-3 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-semibold text-[#E5E7EB]">Enrutador Feeds AR:</span>
+              <span className="rounded px-2 py-0.5 font-mono text-[11px] bg-[#161B2B] text-[#93C5FD] border border-[#2B3554]">
+                Activo: {routerStatus.activePrimaryEquityProvider ?? 'NINGUNO'}
+              </span>
+              <span
+                className={`rounded px-2 py-0.5 font-mono text-[11px] border ${
+                  routerStatus.activeQualityTier === 'REALTIME_L2_TICK'
+                    ? 'bg-[#0D2E1D] text-[#2EDC7E] border-[#1F6B43]'
+                    : routerStatus.activeQualityTier === 'POLLING_L1_REST'
+                      ? 'bg-[#35280F] text-[#F5B544] border-[#785315]'
+                      : 'bg-[#361318] text-[#FF5C63] border-[#6E232B]'
+                }`}
+              >
+                Tier: {routerStatus.activeQualityTier}
+              </span>
+              <span
+                className={`rounded px-2 py-0.5 font-mono text-[11px] border ${
+                  routerStatus.l2Available
+                    ? 'bg-[#0D2E1D] text-[#2EDC7E] border-[#1F6B43]'
+                    : 'bg-[#361318] text-[#FF5C63] border-[#6E232B]'
+                }`}
+              >
+                {routerStatus.l2Available ? 'L2 5-PUNTAS OK' : 'L2 NO DISPONIBLE'}
+              </span>
+              {routerStatus.isContingencyEod && (
+                <span className="rounded px-2 py-0.5 font-mono text-[11px] bg-[#35280F] text-[#F5B544] border border-[#785315]">
+                  DATA912 CONTINGENCIA / EOD
+                </span>
+              )}
+            </div>
+            {routerStatus.degradationReason !== null && (
+              <span className="font-mono text-[11px] text-[#FCA5A5]">
+                Degradación explícita: {routerStatus.degradationReason}
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5">
+            {routerStatus.providers.map((p) => (
+              <div
+                key={p.provider}
+                title={`${p.roleDescription}${p.errorReason ? ` | ${p.errorReason}` : ''}`}
+                className={`rounded px-2 py-1 border text-[10.5px] font-mono ${
+                  p.connected
+                    ? 'bg-[#0D2E1D]/45 border-[#1F6B43] text-[#A7F3D0]'
+                    : p.configured
+                      ? 'bg-[#35280F]/35 border-[#785315] text-[#FDE68A]'
+                      : 'bg-[#11131D] border-[#1E2230] text-[#6B7280]'
+                }`}
+              >
+                <div className="truncate font-semibold">
+                  #{p.priority} {p.provider.replace('_CONTINGENCY', '').replace('_MARKETDATA_V1', '')}
+                </div>
+                <div className="truncate text-[9.5px] opacity-80">
+                  {p.connected ? p.qualityTier : (p.errorReason ?? 'UNAVAILABLE')}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Gráficos Dedicados Sincronizados (Chart 1 68% + Chart 2 Mirror GEX/L2 32%) */}
+      <GgalDualChartView
+        payload={dualChartPayload}
+        loading={dualChartLoading}
+        error={dualChartError}
+        coordMode={coordMode}
+        timeframe={chartTimeframe}
+        avwapAnchor={avwapAnchor}
+        onChangeCoordMode={setCoordMode}
+        onChangeTimeframe={setChartTimeframe}
+        onChangeAvwapAnchor={setAvwapAnchor}
+        onRefresh={() => void loadDualChart(true)}
+      />
+
+      {/* Sub-navegación de 7 motores */}
       <div className="flex flex-wrap items-center gap-1.5 border-b border-[#1E1E2B] pb-2.5">
         {TAB_ITEMS.map((t) => {
           const active = activeTab === t.id;
@@ -1404,6 +1585,358 @@ export const GgalSpecialistModule: React.FC<{
                 </div>
               )}
             </>
+          )}
+        </div>
+      )}
+
+      {/* TAB 6 — MICROESTRUCTURA L2 / VPIN (MOTOR 8), SUPERFICIE ORATS HÍBRIDA & CLEARING */}
+      {activeTab === 'microstructure-orats' && (
+        <div className="space-y-4">
+          {microData !== null && microData.microstructure.status === 'UNAVAILABLE' && (
+            <InsightBanner tag="Degradación Explícita Motor 8 (Zero Silent Fallbacks)" variant="neg">
+              Microestructura L2 INDISPONIBLE ({microData.microstructure.reason}):{' '}
+              {microData.microstructure.detail} · Proveedor activo:{' '}
+              {microData.microstructure.activeProvider ?? 'NINGUNO'} (
+              {microData.microstructure.qualityTier})
+            </InsightBanner>
+          )}
+
+          {microData !== null && microData.microstructure.status === 'OPERATIONAL' && (
+            <div className="space-y-3">
+              {microData.microstructure.vpin.toxicAlert && (
+                <InsightBanner tag="VPIN Toxicidad > Percentil 90" variant="neg">
+                  Flujo informado elevado en reloj de volumen (V_bucket={' '}
+                  {fmtNum(microData.microstructure.vpin.bucketSizeShares, 0)} acciones · VPIN={' '}
+                  {fmtNum(microData.microstructure.vpin.vpin, 3)} · Percentil{' '}
+                  {fmtNum(microData.microstructure.vpin.percentileRank, 1)}%).
+                </InsightBanner>
+              )}
+              {microData.microstructure.iceberg.detected && (
+                <InsightBanner tag="Detección Iceberg L1 Activa" variant="warn">
+                  Recarga oculta detectada en punta{' '}
+                  <strong>{microData.microstructure.iceberg.side}</strong> @{' '}
+                  {fmtCurrency(microData.microstructure.iceberg.priceLevel, '$ ', 2)} · Vol.
+                  ejecutado {fmtNum(microData.microstructure.iceberg.executedVolumeAtBest, 0)} &gt;
+                  caída visible {fmtNum(microData.microstructure.iceberg.visibleDropAtBest, 0)} (est.
+                  recarga {fmtNum(microData.microstructure.iceberg.reloadedVolumeEstimate, 0)}).
+                </InsightBanner>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                <KPICard
+                  title="Microprice L1 / Multi-Nivel"
+                  heroValue={fmtCurrency(microData.microstructure.micropriceMultiLevel, '$ ', 2)}
+                  subtitle={`Microprice L1: ${fmtCurrency(microData.microstructure.micropriceL1, '$ ', 2)} · Mid: ${fmtCurrency(microData.microstructure.midPrice, '$ ', 2)}`}
+                />
+                <KPICard
+                  title="OBI L1 / L1–L5 Decay"
+                  heroValue={fmtNum(microData.microstructure.obiMultiLevel, 3)}
+                  subtitle={`OBI L1: ${fmtNum(microData.microstructure.obiL1, 3)} · α=${fmtNum(microData.microstructure.decayAlpha, 2)} · Spread: ${fmtNum(microData.microstructure.spreadBps, 1)} bps`}
+                />
+                <KPICard
+                  title="Profundidad L1–L5 Bid / Ask"
+                  heroValue={`${fmtNum(microData.microstructure.totalBidDepth5, 0)} / ${fmtNum(microData.microstructure.totalAskDepth5, 0)}`}
+                  subtitle={`L1: ${fmtCurrency(microData.microstructure.bestBid, '$ ', 2)} × ${fmtCurrency(microData.microstructure.bestAsk, '$ ', 2)}`}
+                />
+                <KPICard
+                  title="VPIN (N=50 Buckets)"
+                  heroValue={fmtNum(microData.microstructure.vpin.vpin, 3)}
+                  subtitle={`Percentil ${fmtNum(microData.microstructure.vpin.percentileRank, 1)}% · Buckets=${microData.microstructure.vpin.populatedBuckets}`}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Superficie Híbrida ORATS + Massive Spot + Yang-Zhang */}
+          {surfaceData !== null && (
+            <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-[13px] font-bold text-[#F3F4F6]">
+                  Desacople Híbrido: Spot Massive ({surfaceData.surface.massiveSpotSourceMode}) +
+                  Superficie ORATS + Vol. Realizada Yang-Zhang
+                </h4>
+                <span className="font-mono text-[11px] text-[#9CA3AF]">
+                  ORATS: {surfaceData.surface.status}
+                  {surfaceData.surface.status === 'UNAVAILABLE'
+                    ? ` (${surfaceData.surface.reason})`
+                    : ` (${surfaceData.surface.tradeDate})`}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                <KPICard
+                  title="Massive ADR Spot / Yang-Zhang 20d"
+                  heroValue={fmtCurrency(surfaceData.surface.massiveSpotPrice, 'US$ ', 2)}
+                  subtitle={`YZ ADR Vol: ${fmtPct(surfaceData.surface.yangZhangAdrVol !== null ? surfaceData.surface.yangZhangAdrVol * 100 : null, 2, false)}`}
+                />
+                <KPICard
+                  title="VI CCL Alas OTM (Motor 2)"
+                  heroValue={fmtPct(
+                    surfaceData.otmWingCclVol.extractedCclImplVol !== null
+                      ? surfaceData.otmWingCclVol.extractedCclImplVol * 100
+                      : null,
+                    2,
+                    false,
+                  )}
+                  subtitle={
+                    surfaceData.otmWingCclVol.status === 'OPERATIONAL'
+                      ? `Compresión ATM Call Overwriting: ${fmtNum(surfaceData.otmWingCclVol.callOverwritingCompressionPct, 1)}% (${surfaceData.otmWingCclVol.selectedWingsCount} alas)`
+                      : `Indisponible: ${surfaceData.otmWingCclVol.reason ?? '—'}`
+                  }
+                />
+                {surfaceData.surface.status === 'OPERATIONAL' ? (
+                  <>
+                    <KPICard
+                      title="ORATS smvVol / Ex-Ern IV30"
+                      heroValue={fmtPct(
+                        surfaceData.surface.smvVol !== null ? surfaceData.surface.smvVol * 100 : null,
+                        2,
+                        false,
+                      )}
+                      subtitle={`IV30: ${fmtPct(surfaceData.surface.iv30d !== null ? surfaceData.surface.iv30d * 100 : null, 2, false)} · ExErn30: ${fmtPct(surfaceData.surface.exErnIv30d !== null ? surfaceData.surface.exErnIv30d * 100 : null, 2, false)}`}
+                    />
+                    <KPICard
+                      title="ORATS Div / Borrow / Implied Move"
+                      heroValue={fmtPct(
+                        surfaceData.surface.impliedMove !== null
+                          ? surfaceData.surface.impliedMove * 100
+                          : null,
+                        2,
+                        false,
+                      )}
+                      subtitle={`annIdiv: ${fmtNum(surfaceData.surface.annIdiv, 2)} · borrow30: ${fmtPct(surfaceData.surface.borrow30 !== null ? surfaceData.surface.borrow30 * 100 : null, 2, false)}`}
+                    />
+                  </>
+                ) : (
+                  <div className="xl:col-span-2 flex items-center rounded-[8px] border border-[#334155] bg-[#161B2B] px-3 py-2 text-xs text-[#CBD5E1]">
+                    ORATS desacoplado explícitamente en modo UNAVAILABLE ({surfaceData.surface.reason}). Spot NBBO/Barras Massive y Yang-Zhang activos sin fallback silencioso.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Clearing Risk BYMA & PinScore 15:30 ART ponderado por L2 */}
+          {clearingRiskData !== null && (
+            <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-2">
+              <h4 className="text-[13px] font-bold text-[#F3F4F6]">
+                Riesgo de Clearing BYMA, Anexo B &amp; PinScore L2 (15:30 ART)
+              </h4>
+              {clearingRiskData.clearingRisk.status === 'UNAVAILABLE' ? (
+                <div className="text-xs text-[#FCA5A5]">
+                  Clearing Risk INDISPONIBLE: {clearingRiskData.clearingRisk.reason}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div className="rounded border border-[#1E1E2B] bg-[#0B0D14] p-3">
+                    <div className="text-[#9CA3AF]">Estado Anexo B IAMC</div>
+                    <div className="font-mono font-bold text-[#F3F4F6] mt-0.5">
+                      {clearingRiskData.clearingRisk.anexoBStatus} (
+                      {clearingRiskData.clearingRisk.anexoBTradeDate ?? 'Sin ingesta'})
+                    </div>
+                    <div className="text-[#787B86] mt-1">
+                      Descubiertas: {fmtNum(clearingRiskData.clearingRisk.totalUncoveredContracts, 0)} lotes · Cubiertas:{' '}
+                      {fmtNum(clearingRiskData.clearingRisk.totalCoveredContracts, 0)} lotes
+                    </div>
+                  </div>
+                  <div className="rounded border border-[#1E1E2B] bg-[#0B0D14] p-3">
+                    <div className="text-[#9CA3AF]">Asimetría Dividendo JUL-26 (sin ajuste strike)</div>
+                    <div className="font-mono font-bold text-[#F5B544] mt-0.5">
+                      {clearingRiskData.clearingRisk.jul26DividendNoStrikeAdjFlag
+                        ? 'ACTIVO — Ajuste Forward BYMA aplicado'
+                        : 'NO APLICA EN VTO ACTIVO'}
+                    </div>
+                    <div className="text-[#787B86] mt-1">
+                      Margen Inicial Ref: {fmtPct(clearingRiskData.clearingRisk.bymaInitialMarginPct, 1, false)} · Aforo:{' '}
+                      {fmtPct(clearingRiskData.clearingRisk.clearingHaircutPct, 1, false)}
+                    </div>
+                  </div>
+                  <div className="rounded border border-[#1E1E2B] bg-[#0B0D14] p-3">
+                    <div className="text-[#9CA3AF]">PinScore 15:30 ART Ponderado OBI/Depth</div>
+                    <div className="font-mono font-bold text-[#E5E7EB] mt-0.5">
+                      {clearingRiskData.clearingRisk.l2PinScore.status === 'OPERATIONAL'
+                        ? fmtNum(clearingRiskData.clearingRisk.l2PinScore.weightedPinScore, 3)
+                        : `UNAVAILABLE (${clearingRiskData.clearingRisk.l2PinScore.reason ?? 'NON_L2'})`}
+                    </div>
+                    <div className="text-[#787B86] mt-1">
+                      Hora ART: {clearingRiskData.clearingRisk.l2PinScore.asOfBuenosAiresTime}{' '}
+                      {clearingRiskData.clearingRisk.l2PinScore.isClosingWindow1530Art
+                        ? '(Ventana Cierre 15:30 ART)'
+                        : '(Fuera de ventana cierre)'}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 7 — RÉGIMEN ELECTORAL 2027 (MOTOR 9 HAMILTON MARKOV-SWITCHING) */}
+      {activeTab === 'regime-2027' && (
+        <div className="space-y-4">
+          {regimeData === null ? (
+            <EmptyPanel title="Cargando Motor 9..." detail="Evaluando filtro de Hamilton 3 estados..." />
+          ) : regimeData.regime.status === 'UNAVAILABLE' ? (
+            <InsightBanner tag="Motor 9 — Régimen Electoral 2027 UNAVAILABLE" variant="neg">
+              Filtro Hamilton detenido explícitamente sin fallback ({regimeData.regime.reason}).
+              Verifica disponibilidad de la curva de futuros DLR/* (mínimo 4 vencimientos) y barras
+              sincrónicas/asincrónicas de GGAL, BMA, BBAR y SUPV.
+            </InsightBanner>
+          ) : (
+            (() => {
+              const reg = regimeData.regime;
+              const probs = reg.posteriorProbabilities;
+              const labels = [
+                'CALM_COMPRESSION (Compresión)',
+                'FX_BRECHA_TENSION (Tensión Brecha/FX)',
+                'ELECTORAL_TAIL_JUMP (Salto de Cola Electoral)',
+              ] as const;
+              return (
+                <div className="space-y-4">
+                  <InsightBanner
+                    tag="Motor 9 — Filtro Recursivo Hamilton (3 Estados)"
+                    variant={
+                      reg.currentRegime === 'CALM_COMPRESSION'
+                        ? 'pos'
+                        : reg.currentRegime === 'FX_BRECHA_TENSION'
+                          ? 'warn'
+                          : 'neg'
+                    }
+                  >
+                    Régimen activo: <strong>{reg.currentRegime}</strong> · Intensidad de Salto Efectiva λ=
+                    <strong className="font-mono-num">{fmtNum(reg.effectiveJumpIntensity, 2)}</strong>/año · Multiplicador Kelly=
+                    <strong className="font-mono-num">{fmtNum(reg.kellyFractionMultiplier, 2)}x</strong> · CVaR 99% Overnight=
+                    <strong className="font-mono-num">{fmtPct(reg.overnightCvar99Pct, 2, false)}</strong>
+                  </InsightBanner>
+
+                  {/* Probabilidades Posteriores */}
+                  <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-3">
+                    <h4 className="text-[13px] font-bold text-[#F3F4F6]">
+                      Probabilidades Posteriores de Estado Markov-Switching
+                    </h4>
+                    <div className="space-y-2.5">
+                      {labels.map((lbl, idx) => {
+                        const probPct = (probs[idx] ?? 0) * 100;
+                        const barColor =
+                          idx === 0
+                            ? 'bg-emerald-500'
+                            : idx === 1
+                              ? 'bg-amber-400'
+                              : 'bg-rose-500';
+                        return (
+                          <div key={lbl} className="space-y-1">
+                            <div className="flex justify-between text-xs font-mono">
+                              <span className="text-[#D1D5DB]">{lbl}</span>
+                              <span className="text-[#FFFFFF] font-semibold">
+                                {fmtPct(probPct, 2, false)}
+                              </span>
+                            </div>
+                            <div className="h-2 w-full rounded bg-[#1E1E2B] overflow-hidden">
+                              <div
+                                className={`h-full ${barColor}`}
+                                style={{ width: `${Math.min(100, Math.max(0, probPct)).toFixed(1)}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 5 Observables + Pesos de Cobertura Recomendados */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-2 text-xs">
+                      <h4 className="text-[13px] font-bold text-[#F3F4F6]">
+                        Vector de 5 Observables &amp; Lead-Lag Hayashi-Yoshida
+                      </h4>
+                      <div className="grid grid-cols-2 gap-2 font-mono">
+                        <div className="rounded bg-[#0B0D14] p-2 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">Basket Bancos IV30 Ex-Ern</div>
+                          <div className="text-sm font-bold text-white">
+                            {fmtPct(reg.observables.bankBasketIv30ExErn * 100, 2, false)}
+                          </div>
+                        </div>
+                        <div className="rounded bg-[#0B0D14] p-2 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">GGAL Skew 25Δ (Put-Call)</div>
+                          <div className="text-sm font-bold text-white">
+                            {fmtPct(reg.observables.ggal25DeltaSkew * 100, 2, false)}
+                          </div>
+                        </div>
+                        <div className="rounded bg-[#0B0D14] p-2 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">Spread Legislación NY/ARG</div>
+                          <div className="text-sm font-bold text-white">
+                            {fmtPct(reg.observables.sovereignLegislationSpreadPct, 2, false)}
+                          </div>
+                        </div>
+                        <div className="rounded bg-[#0B0D14] p-2 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">Kink Forward DLR/* Electoral</div>
+                          <div className="text-sm font-bold text-amber-300">
+                            {fmtPct(reg.observables.dlrElectoralForwardKink, 2, false)} (
+                            {reg.dlrKinkDetail.peakMaturityLabel ?? '—'})
+                          </div>
+                        </div>
+                      </div>
+                      {reg.leadLagDetail.byBankScore !== null && (
+                        <div className="mt-2 pt-2 border-t border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF] mb-1">
+                            Líder Hayashi-Yoshida: <strong className="text-cyan-300">{reg.observables.crossBankLeadLagLeader}</strong>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5 font-mono text-[11px]">
+                            {(['GGAL', 'BMA', 'BBAR', 'SUPV'] as const).map((tk) => (
+                              <div key={tk} className="rounded bg-[#0B0D14] px-2 py-1 border border-[#1E1E2B] text-center">
+                                <div className="text-[#9CA3AF]">{tk}</div>
+                                <div className="text-white font-semibold">
+                                  {fmtNum(reg.leadLagDetail.byBankScore?.[tk], 3)}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-2 text-xs">
+                      <h4 className="text-[13px] font-bold text-[#F3F4F6]">
+                        Pesos de Cobertura Óptimos Recomendados (Convexo Hamilton)
+                      </h4>
+                      <div className="grid grid-cols-2 gap-2 font-mono">
+                        <div className="rounded bg-[#0B0D14] p-2.5 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">Futuros DLR/* A3/ROFEX</div>
+                          <div className="text-base font-bold text-cyan-300">
+                            {fmtPct(reg.recommendedHedgeWeights.dlrFuturesWeight * 100, 1, false)}
+                          </div>
+                        </div>
+                        <div className="rounded bg-[#0B0D14] p-2.5 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">OTM Put Wings</div>
+                          <div className="text-base font-bold text-rose-300">
+                            {fmtPct(reg.recommendedHedgeWeights.otmPutWingWeight * 100, 1, false)}
+                          </div>
+                        </div>
+                        <div className="rounded bg-[#0B0D14] p-2.5 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">Collar Cash ARS / Lecap</div>
+                          <div className="text-base font-bold text-emerald-300">
+                            {fmtPct(reg.recommendedHedgeWeights.cashArsCollarWeight * 100, 1, false)}
+                          </div>
+                        </div>
+                        <div className="rounded bg-[#0B0D14] p-2.5 border border-[#1E1E2B]">
+                          <div className="text-[#9CA3AF]">ADR Delta Hedge (US)</div>
+                          <div className="text-base font-bold text-amber-300">
+                            {fmtPct(reg.recommendedHedgeWeights.adrDeltaHedgeWeight * 100, 1, false)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="pt-2 text-[11px] font-mono text-[#9CA3AF]">
+                        Vol. Realizada Yang-Zhang 20d (ADR):{' '}
+                        <span className="text-white">
+                          {fmtPct(reg.yangZhangVol20d !== null ? reg.yangZhangVol20d * 100 : null, 2, false)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()
           )}
         </div>
       )}

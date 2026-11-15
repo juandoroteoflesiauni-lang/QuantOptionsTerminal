@@ -80,6 +80,49 @@ import {
   type ArOverviewResponse,
   type ArStockDetailResponse,
 } from './argentinaMarketLoader.js';
+import { calculateEma } from '../core/ema.js';
+import { createInitialWelfordState, updateWelford } from '../core/welford.js';
+import type {
+  ArFeedRouterStatusSnapshot,
+  GgalAvwapAnchorMode,
+  GgalAvwapBandPoint,
+  GgalChartBarPoint,
+  GgalChartStructureZone,
+  GgalClearingRiskPayload,
+  GgalDualChartCoordMode,
+  GgalDualChartPayload,
+  GgalDualChartTimeframe,
+  GgalElectoralObservables,
+  GgalElectoralRegimeState,
+  GgalExpectedConePoint,
+  GgalL2ConfluenceAlert,
+  GgalL2LadderState,
+  GgalL2MicrostructureMetrics,
+  GgalLinePoint,
+  GgalStrikeGreekProfileRow,
+  GgalSubPanePoint,
+  GgalVolumeProfileSummary,
+  OratsHybridSurfacePayload,
+} from '../core/ggal/institutionalContracts.js';
+import {
+  computeDlrForwardKink,
+  computeHayashiYoshidaLeadLag,
+  computeL2Microstructure,
+  computeL2WeightedPinScore,
+  computeYangZhangVol,
+  convertArsPriceToCoord,
+  convertOhlcBarToCoord,
+  extractOtmWingCclImpliedVol,
+  updateElectoralMarkovRegime,
+  type AsyncPriceTick,
+  type DlrCurvePointInput,
+  type OtmWingStrikeInput,
+  type VpinSignedTradeInput,
+} from '../core/ggal/l2AndRegimeEngines.js';
+import {
+  ArFeedRouter,
+  collectArFeedSecrets,
+} from './arFeedRouter.js';
 import {
   MarketRuntime,
   RuntimeNoDataError,
@@ -88,6 +131,11 @@ import {
   type TerminalBarsResponse,
   type TerminalSnapshotResponse,
 } from './marketRuntime.js';
+import {
+  OratsHybridClient,
+  loadOratsClientConfigFromEnv,
+  type OratsHttpFn,
+} from './oratsHybridClient.js';
 import { redactSecrets } from './runtimeCache.js';
 
 export type GgalBadgeMode =
@@ -116,6 +164,9 @@ export interface GgalSpecialistRuntimeDeps {
   readonly arHolidays?: readonly string[];
   readonly usHolidays?: readonly string[];
   readonly secrets?: readonly string[];
+  readonly env?: NodeJS.ProcessEnv;
+  readonly arFeedRouter?: ArFeedRouter;
+  readonly oratsClient?: OratsHybridClient;
 }
 
 export interface GgalTelemetryHeaderDto {
@@ -1016,8 +1067,19 @@ export class GgalSpecialistRuntime {
   private readonly recorderSnapshots: GgalRecorderSnapshotEntry[] = [];
   private readonly bymaFlowSnapshots: BymaSnapshotFlowPoint[] = [];
   private recorderTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly arFeedRouter: ArFeedRouter;
+  private readonly oratsClient: OratsHybridClient;
+  private regimePriorProbabilities: readonly [number, number, number] = [0.55, 0.35, 0.10];
 
   public constructor(deps: GgalSpecialistRuntimeDeps) {
+    const effectiveEnv: NodeJS.ProcessEnv =
+      deps.env ?? (deps.fetchFn !== undefined ? {} : process.env);
+    const oratsCfg = loadOratsClientConfigFromEnv(effectiveEnv);
+    const combinedSecrets = [
+      ...(deps.secrets ?? []),
+      ...collectArFeedSecrets(effectiveEnv),
+      ...(oratsCfg.apiKey !== null ? [oratsCfg.apiKey] : []),
+    ];
     this.runtime = deps.runtime;
     this.arRuntime = deps.arRuntime;
     this.fetchFn = deps.fetchFn ?? defaultHttpFn;
@@ -1032,7 +1094,36 @@ export class GgalSpecialistRuntime {
     this.maxSyncSkewSec = deps.maxSyncSkewSec ?? DEFAULT_STALENESS_SEC;
     this.arHolidays = deps.arHolidays ?? [];
     this.usHolidays = deps.usHolidays ?? [];
-    this.secrets = deps.secrets ?? [];
+    this.secrets = [...new Set(combinedSecrets)];
+    this.arFeedRouter =
+      deps.arFeedRouter ??
+      new ArFeedRouter({
+        env: effectiveEnv,
+        nowMsFn: this.nowMsFn,
+        secrets: this.secrets,
+      });
+    const oratsFetchAdapter: OratsHttpFn = async (url, init) => {
+      const reqInit: ArHttpRequestInit = {
+        method: init?.method === 'POST' ? 'POST' : 'GET',
+        ...(init?.headers !== undefined ? { headers: init.headers } : {}),
+        ...(init?.timeoutMs !== undefined ? { timeoutMs: init.timeoutMs } : {}),
+      };
+      const res = await this.fetchFn(url, reqInit);
+      return {
+        ok: res.ok,
+        status: res.status,
+        json: (): Promise<unknown> => Promise.resolve(JSON.parse(res.text) as unknown),
+        text: (): Promise<string> => Promise.resolve(res.text),
+      };
+    };
+    this.oratsClient =
+      deps.oratsClient ??
+      new OratsHybridClient({
+        env: effectiveEnv,
+        fetchFn: oratsFetchAdapter,
+        nowMsFn: this.nowMsFn,
+        secrets: this.secrets,
+      });
   }
 
   public startRecorder(): void {
@@ -3432,5 +3523,1211 @@ export class GgalSpecialistRuntime {
       },
       topStrategies: strat.result?.rankedStrategies ?? [],
     };
+  }
+
+  private syncFeedRouterWithBundle(bundle: MarketBundle): ArFeedRouterStatusSnapshot {
+    const connHealth =
+      typeof this.arRuntime.getConnectorHealth === 'function'
+        ? this.arRuntime.getConnectorHealth()
+        : null;
+    const primaryConfigured = connHealth?.primaryRofex.configured ?? false;
+    const primaryWsConnected = connHealth?.primaryRofex.wsConnected ?? false;
+    const bmbConnected = connHealth?.bullMarket.connected ?? false;
+    const rawBook = bundle.ggalDetail.orderBook5Levels ?? null;
+    const hasL2Levels =
+      rawBook !== null &&
+      rawBook.source !== 'BYMA_L1_ONLY' &&
+      rawBook.bids.length > 0 &&
+      rawBook.asks.length > 0 &&
+      (primaryWsConnected || bmbConnected);
+
+    const lastPrimarySec =
+      connHealth?.bullMarket.lastUpdateUtcSec ??
+      (hasL2Levels ? bundle.asOfUtcSec : null);
+
+    const endpoints = this.arFeedRouter.getEndpointsConfig();
+    const ppiConfigured =
+      endpoints.ppiBaseUrl !== null && endpoints.ppiApiKey !== null && endpoints.ppiApiSecret !== null;
+    const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
+    const maeConfigured = endpoints.maeBaseUrl !== null && endpoints.maeApiKey !== null;
+    const bymaClearingConfigured = endpoints.bymaClearingUrl !== null;
+
+    this.arFeedRouter.updateFromRuntimeTelemetry({
+      asOfUtcSec: bundle.asOfUtcSec,
+      primaryConfigured,
+      primaryConnected: hasL2Levels,
+      primaryLastMsgUtcSec: lastPrimarySec,
+      primaryError: connHealth?.primaryRofex.lastError ?? null,
+      ppiConfigured,
+      ppiHealthy: ppiConfigured && bundle.ggalDetail.stock !== null,
+      ppiLastMsgUtcSec: ppiConfigured ? bundle.asOfUtcSec : null,
+      ppiError: null,
+      iolConfigured,
+      iolHealthy: iolConfigured && bundle.ggalDetail.stock !== null,
+      iolLastMsgUtcSec: iolConfigured ? bundle.asOfUtcSec : null,
+      iolError: null,
+      maeConfigured,
+      maeHealthy: maeConfigured && bundle.macro.variables.a3500 !== null,
+      maeLastMsgUtcSec: maeConfigured ? bundle.asOfUtcSec : null,
+      maeError: null,
+      bymaClearingConfigured,
+      bymaClearingHealthy: bymaClearingConfigured && bundle.ggalOptions.expiries.length > 0,
+      bymaClearingLastMsgUtcSec: bymaClearingConfigured ? bundle.asOfUtcSec : null,
+      bymaClearingError: null,
+      anexoBLoaded: this.anexoBStore !== null,
+      anexoBLastMsgUtcSec: this.anexoBStore?.ingestedAtUtcSec ?? null,
+      anexoBError: null,
+      data912Reachable: bundle.liveStocks.length > 0 || bundle.ggalDetail.stock !== null,
+      data912LastMsgUtcSec:
+        bundle.liveStocks.length > 0 || bundle.ggalDetail.stock !== null
+          ? bundle.asOfUtcSec
+          : null,
+      data912Error: null,
+    });
+
+    return this.arFeedRouter.getStatusSnapshot(bundle.asOfUtcSec);
+  }
+
+  private resolveMassiveSpotAndYzVol(bundle: MarketBundle): {
+    readonly massiveSpotPrice: number | null;
+    readonly massiveSpotSourceMode: 'MASSIVE_NBBO' | 'MASSIVE_BARS' | 'UNAVAILABLE';
+    readonly yangZhangAdrVol: number;
+  } {
+    const snap = bundle.usSnapshot;
+    let massiveSpotPrice: number | null = null;
+    let massiveSpotSourceMode: 'MASSIVE_NBBO' | 'MASSIVE_BARS' | 'UNAVAILABLE' = 'UNAVAILABLE';
+
+    if (snap !== null) {
+      const snapSpot = snap.envelope.snapshot.metrics.spot;
+      if (snapSpot !== null && Number.isFinite(snapSpot) && snapSpot > 0) {
+        massiveSpotPrice = snapSpot;
+        massiveSpotSourceMode =
+          snap.quoteMode === 'LIVE_NBBO' ? 'MASSIVE_NBBO' : 'MASSIVE_BARS';
+      }
+    }
+
+    const rawBars = bundle.usBars?.bars ?? [];
+    const sortedBars = rawBars
+      .filter(
+        (b) =>
+          Number.isInteger(b.time) &&
+          b.time > 0 &&
+          Number.isFinite(b.open) &&
+          b.open > 0 &&
+          Number.isFinite(b.high) &&
+          b.high >= Math.max(b.open, b.close) &&
+          Number.isFinite(b.low) &&
+          b.low <= Math.min(b.open, b.close) &&
+          Number.isFinite(b.close) &&
+          b.close > 0,
+      )
+      .slice()
+      .sort((a, b) => a.time - b.time);
+
+    if (massiveSpotPrice === null && sortedBars.length > 0) {
+      const lastBar = sortedBars[sortedBars.length - 1];
+      if (lastBar !== undefined) {
+        massiveSpotPrice = lastBar.close;
+        massiveSpotSourceMode = 'MASSIVE_BARS';
+      }
+    }
+
+    const yzBars = sortedBars.slice(-21).map((b) => ({
+      timeSec: b.time,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+    }));
+    const yangZhangAdrVol = computeYangZhangVol(yzBars, 252);
+
+    return {
+      massiveSpotPrice,
+      massiveSpotSourceMode,
+      yangZhangAdrVol,
+    };
+  }
+
+  private buildVpinTradesFromBundle(bundle: MarketBundle): {
+    readonly trades: readonly VpinSignedTradeInput[];
+    readonly adv20Shares: number;
+  } {
+    const hist = bundle.ggalDetail.historicalBars;
+    const recent20 = hist.slice(-20);
+    let volSum = 0;
+    let volCount = 0;
+    for (const b of recent20) {
+      if (Number.isFinite(b.volume) && b.volume > 0) {
+        volSum += b.volume;
+        volCount += 1;
+      }
+    }
+    const adv20Shares = volCount > 0 ? volSum / volCount : Number.NaN;
+
+    const trades: VpinSignedTradeInput[] = [];
+    const sourceBars = bundle.ggalDetail.historicalBars.slice(-60);
+    for (const bar of sourceBars) {
+      if (!Number.isFinite(bar.close) || bar.close <= 0 || !Number.isFinite(bar.volume) || bar.volume <= 0) {
+        continue;
+      }
+      const range = Math.max(1e-6, bar.high - bar.low);
+      const buyRatio = Math.min(1, Math.max(0, (bar.close - bar.low) / range));
+      trades.push({
+        timeSec: bar.time,
+        price: bar.close,
+        buyVolume: bar.volume * buyRatio,
+        sellVolume: bar.volume * (1 - buyRatio),
+      });
+    }
+
+    return { trades, adv20Shares };
+  }
+
+  private buildL2MetricsFromBundle(bundle: MarketBundle): {
+    readonly routerStatus: ArFeedRouterStatusSnapshot;
+    readonly l2Ladder: GgalL2LadderState;
+    readonly microstructure: GgalL2MicrostructureMetrics;
+  } {
+    const routerStatus = this.syncFeedRouterWithBundle(bundle);
+    const l2Ladder = this.arFeedRouter.resolveL2LadderState(
+      'GGAL',
+      bundle.ggalDetail.orderBook5Levels ?? null,
+      bundle.asOfUtcSec,
+    );
+
+    const { trades, adv20Shares } = this.buildVpinTradesFromBundle(bundle);
+    const vpinInput =
+      Number.isFinite(adv20Shares) && adv20Shares > 0 && trades.length > 0
+        ? {
+            trades,
+            adv20Shares,
+            windowBuckets: 50,
+            bucketAdvFraction: 0.02,
+            historicalVpinDistribution: null,
+          }
+        : null;
+
+    const microstructure = computeL2Microstructure({
+      ladder: l2Ladder,
+      decayAlpha: 0.55,
+      icebergInput: null,
+      vpinInput,
+    });
+
+    return {
+      routerStatus,
+      l2Ladder,
+      microstructure,
+    };
+  }
+
+  private buildOtmWingCclFromBundle(bundle: MarketBundle) {
+    const vol = this.buildVolTriangleCore(bundle);
+    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    const strikes: OtmWingStrikeInput[] = [];
+
+    const bymaAtmIv =
+      vol.output !== null && Number.isFinite(vol.output.bymaAtmIvPct)
+        ? vol.output.bymaAtmIvPct / 100
+        : Number.NaN;
+    const usAtmIv =
+      vol.output !== null && Number.isFinite(vol.output.opraAdrAtmIvPct)
+        ? vol.output.opraAdrAtmIvPct / 100
+        : Number.NaN;
+    const corrAdrCcl =
+      vol.output !== null && Number.isFinite(vol.output.realizedCorrEwma)
+        ? vol.output.realizedCorrEwma
+        : 0;
+
+    if (front !== null && Number.isFinite(usAtmIv)) {
+      const jul26NoStrikeAdj =
+        front.expiryCode.toUpperCase().includes('JU') ||
+        front.expirationDate.includes('-06-') ||
+        front.expirationDate.includes('-07-') ||
+        front.expirationDate.includes('-08-');
+      for (const c of front.calls) {
+        if (
+          c.delta !== null &&
+          c.iv !== null &&
+          Number.isFinite(c.delta) &&
+          Number.isFinite(c.iv) &&
+          c.iv > 0
+        ) {
+          strikes.push({
+            strikeArs: c.strike,
+            side: 'CALL',
+            absDelta: Math.abs(c.delta),
+            bymaIv: c.iv,
+            usWingIv: usAtmIv,
+            isJul26DividendNoStrikeAdj: jul26NoStrikeAdj,
+          });
+        }
+      }
+      for (const p of front.puts) {
+        if (
+          p.delta !== null &&
+          p.iv !== null &&
+          Number.isFinite(p.delta) &&
+          Number.isFinite(p.iv) &&
+          p.iv > 0
+        ) {
+          strikes.push({
+            strikeArs: p.strike,
+            side: 'PUT',
+            absDelta: Math.abs(p.delta),
+            bymaIv: p.iv,
+            usWingIv: usAtmIv,
+            isJul26DividendNoStrikeAdj: jul26NoStrikeAdj,
+          });
+        }
+      }
+    }
+
+    return extractOtmWingCclImpliedVol({
+      bymaAtmIv,
+      usAtmIv,
+      corrAdrCcl,
+      jul26DividendYieldDragAnn: 0.03,
+      strikes,
+    });
+  }
+
+  public async getFeedStatus(forceRefresh = false): Promise<ArFeedRouterStatusSnapshot> {
+    const bundle = await this.loadMarketBundle(forceRefresh);
+    return this.syncFeedRouterWithBundle(bundle);
+  }
+
+  public async getMicrostructure(forceRefresh = false): Promise<{
+    readonly routerStatus: ArFeedRouterStatusSnapshot;
+    readonly l2Ladder: JsonSafeValue<GgalL2LadderState>;
+    readonly microstructure: JsonSafeValue<GgalL2MicrostructureMetrics>;
+  }> {
+    const bundle = await this.loadMarketBundle(forceRefresh);
+    const { routerStatus, l2Ladder, microstructure } = this.buildL2MetricsFromBundle(bundle);
+    return {
+      routerStatus,
+      l2Ladder: toJsonSafe(l2Ladder),
+      microstructure: toJsonSafe(microstructure),
+    };
+  }
+
+  public async getOptionsSurface(forceRefresh = false): Promise<{
+    readonly routerStatus: ArFeedRouterStatusSnapshot;
+    readonly surface: JsonSafeValue<OratsHybridSurfacePayload>;
+    readonly otmWingCclVol: ReturnType<typeof extractOtmWingCclImpliedVol>;
+  }> {
+    const bundle = await this.loadMarketBundle(forceRefresh);
+    const routerStatus = this.syncFeedRouterWithBundle(bundle);
+    const { massiveSpotPrice, massiveSpotSourceMode, yangZhangAdrVol } =
+      this.resolveMassiveSpotAndYzVol(bundle);
+
+    const surface = await this.oratsClient.fetchHybridSurface({
+      ticker: 'GGAL',
+      massiveSpotPrice,
+      massiveSpotSourceMode,
+      yangZhangAdrVol,
+      forceRefresh,
+    });
+    const otmWingCclVol = this.buildOtmWingCclFromBundle(bundle);
+
+    return {
+      routerStatus,
+      surface: toJsonSafe(surface),
+      otmWingCclVol: toJsonSafe(otmWingCclVol) as ReturnType<typeof extractOtmWingCclImpliedVol>,
+    };
+  }
+
+  public async getClearingRisk(forceRefresh = false): Promise<{
+    readonly routerStatus: ArFeedRouterStatusSnapshot;
+    readonly clearingRisk: JsonSafeValue<GgalClearingRiskPayload>;
+  }> {
+    const bundle = await this.loadMarketBundle(forceRefresh);
+    const { routerStatus, microstructure } = this.buildL2MetricsFromBundle(bundle);
+    const structure = await this.getStructurePinning(false);
+    const otmWingCclVol = this.buildOtmWingCclFromBundle(bundle);
+
+    const strRes = structure.result ?? structure.proxyResult ?? null;
+    if (strRes === null) {
+      return {
+        routerStatus,
+        clearingRisk: toJsonSafe({
+          status: 'UNAVAILABLE',
+          asOfUtcSec: bundle.asOfUtcSec,
+          reason: 'NO_STRUCTURE_PINNING_DATA_AVAILABLE',
+        } satisfies GgalClearingRiskPayload),
+      };
+    }
+
+    const spots = this.resolveSpotQuotes(bundle, bundle.overview.marketState === 'CERRADO');
+    const spotArs =
+      Number.isFinite(spots.byma24hQuote.bid) && Number.isFinite(spots.byma24hQuote.ask)
+        ? 0.5 * (spots.byma24hQuote.bid + spots.byma24hQuote.ask)
+        : (bundle.ggalDetail.stock?.last ?? Number.NaN);
+
+    const pinStrikeArs = strRes.peakPinStrikeArs ?? Number.NaN;
+    const basePin = strRes.maxPinScore ?? Number.NaN;
+
+    const l2PinScore = computeL2WeightedPinScore({
+      asOfUtcSec: bundle.asOfUtcSec,
+      pinStrikeArs,
+      spotArs,
+      baseAnexoBPinScore: basePin,
+      l2Metrics: microstructure,
+    });
+
+    const anexoTotals = this.anexoBStore?.totals ?? null;
+    const totalUncoveredContracts =
+      anexoTotals !== null
+        ? Math.round((anexoTotals.callUncoveredNom + anexoTotals.putUncoveredNom) / 100)
+        : 0;
+    const totalCoveredContracts =
+      anexoTotals !== null
+        ? Math.round((anexoTotals.callCoveredNom + anexoTotals.putCoveredNom) / 100)
+        : 0;
+
+    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    const jul26Flag =
+      front !== null &&
+      (front.expiryCode.toUpperCase().includes('JU') ||
+        front.expirationDate.includes('-06-') ||
+        front.expirationDate.includes('-07-') ||
+        front.expirationDate.includes('-08-'));
+
+    const payload: GgalClearingRiskPayload = {
+      status: 'OPERATIONAL',
+      asOfUtcSec: bundle.asOfUtcSec,
+      anexoBStatus:
+        this.anexoBStore === null
+          ? 'UNAVAILABLE'
+          : structure.telemetry.anexoBLagTradingDays !== null &&
+              structure.telemetry.anexoBLagTradingDays > 0
+            ? 'CARRY_FORWARD_NO_TRADE'
+            : 'FRESH',
+      anexoBTradeDate: this.anexoBStore?.asOfDate ?? null,
+      jul26DividendNoStrikeAdjFlag: jul26Flag,
+      bymaInitialMarginPct: totalUncoveredContracts > 0 ? 18.0 : Number.NaN,
+      clearingHaircutPct: totalUncoveredContracts > 0 ? 25.0 : Number.NaN,
+      totalUncoveredContracts,
+      totalCoveredContracts,
+      l2PinScore,
+      otmWingCclVol,
+      reason: null,
+    };
+
+    return {
+      routerStatus,
+      clearingRisk: toJsonSafe(payload),
+    };
+  }
+
+  public async getRegime2027(forceRefresh = false): Promise<{
+    readonly routerStatus: ArFeedRouterStatusSnapshot;
+    readonly regime: JsonSafeValue<GgalElectoralRegimeState>;
+  }> {
+    const bundle = await this.loadMarketBundle(forceRefresh);
+    const routerStatus = this.syncFeedRouterWithBundle(bundle);
+    const { yangZhangAdrVol } = this.resolveMassiveSpotAndYzVol(bundle);
+
+    const rofxContracts = bundle.macro.rofxFutures ?? [];
+    const dlrCurve: DlrCurvePointInput[] = rofxContracts
+      .filter(
+        (c): c is typeof c & { readonly days: number; readonly price: number } =>
+          c.days !== null &&
+          Number.isFinite(c.days) &&
+          c.days > 0 &&
+          c.price !== null &&
+          c.price > 0,
+      )
+      .map((c) => ({
+        maturityLabel: c.contract,
+        daysToMaturity: c.days,
+        priceArs: c.price,
+        isElectoralWindow: c.contract.includes('27') || c.days >= 120,
+      }));
+    const dlrKinkDetail = computeDlrForwardKink(dlrCurve);
+
+    const bankTickers = ['GGAL', 'BMA', 'BBAR', 'SUPV'] as const;
+    const bankBarResults = await Promise.all(
+      bankTickers.map((tk) =>
+        this.runtime
+          .getBars(tk, '5m', { visibleBars: 120, forceRefresh })
+          .catch(() => null),
+      ),
+    );
+
+    const toTicks = (res: TerminalBarsResponse | null): readonly AsyncPriceTick[] => {
+      if (res === null) {
+        return [];
+      }
+      return res.bars
+        .filter((b) => Number.isInteger(b.time) && b.time > 0 && Number.isFinite(b.close) && b.close > 0)
+        .map((b) => ({ timeSec: b.time, price: b.close }));
+    };
+
+    const ggalTicks = toTicks(bankBarResults[0] ?? bundle.usBars);
+    const leadLagDetail = computeHayashiYoshidaLeadLag({
+      GGAL: ggalTicks,
+      BMA: toTicks(bankBarResults[1] ?? null),
+      BBAR: toTicks(bankBarResults[2] ?? null),
+      SUPV: toTicks(bankBarResults[3] ?? null),
+    });
+
+    const vol = this.buildVolTriangleCore(bundle);
+    const otmWing = this.buildOtmWingCclFromBundle(bundle);
+    const parity = this.computeParityGapCore(bundle);
+
+    // 25-delta skew from front BYMA or ORATS surface if configured
+    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    let ggal25DeltaSkew = Number.NaN;
+    if (front !== null) {
+      const put25 = front.puts.find(
+        (p) => p.delta !== null && p.iv !== null && Math.abs(Math.abs(p.delta) - 0.25) <= 0.08,
+      );
+      const call25 = front.calls.find(
+        (c) => c.delta !== null && c.iv !== null && Math.abs(Math.abs(c.delta) - 0.25) <= 0.08,
+      );
+      if (put25?.iv !== null && put25?.iv !== undefined && call25?.iv !== null && call25?.iv !== undefined) {
+        ggal25DeltaSkew = put25.iv - call25.iv;
+      }
+    }
+
+    // Sovereign NY vs ARG legislation spread (%) from monitoring bonds (GD30 vs AL30 parity/TIR or CCL)
+    const al30 = bundle.monitoring.bonds.find((b) => b.ticker === 'AL30');
+    const gd30 = bundle.monitoring.bonds.find((b) => b.ticker === 'GD30');
+    let sovereignLegislationSpreadPct = Number.NaN;
+    if (
+      al30?.parityPct !== null &&
+      al30?.parityPct !== undefined &&
+      gd30?.parityPct !== null &&
+      gd30?.parityPct !== undefined &&
+      al30.parityPct > 0
+    ) {
+      sovereignLegislationSpreadPct = Math.abs(gd30.parityPct - al30.parityPct);
+    } else if (
+      Number.isFinite(parity.output.ccl.cclAl30_24h) &&
+      Number.isFinite(parity.output.ccl.cclGd30_24h) &&
+      parity.output.ccl.cclAl30_24h > 0
+    ) {
+      sovereignLegislationSpreadPct =
+        (Math.abs(parity.output.ccl.cclGd30_24h - parity.output.ccl.cclAl30_24h) /
+          parity.output.ccl.cclAl30_24h) *
+        100;
+    }
+
+    const bankBasketIv30ExErn =
+      vol.output !== null && Number.isFinite(vol.output.opraAdrAtmIvPct)
+        ? vol.output.opraAdrAtmIvPct / 100
+        : otmWing.status === 'OPERATIONAL'
+          ? otmWing.extractedCclImplVol
+          : Number.NaN;
+
+    const observables: GgalElectoralObservables | null =
+      dlrKinkDetail.available &&
+      leadLagDetail.available &&
+      Number.isFinite(bankBasketIv30ExErn) &&
+      Number.isFinite(ggal25DeltaSkew) &&
+      Number.isFinite(sovereignLegislationSpreadPct)
+        ? {
+            bankBasketIv30ExErn,
+            ggal25DeltaSkew,
+            sovereignLegislationSpreadPct,
+            dlrElectoralForwardKink: dlrKinkDetail.maxSecondDifferencePct,
+            crossBankLeadLagLeader: leadLagDetail.leader,
+            crossBankLeadLagIntensity: Math.abs(leadLagDetail.leaderAverageLeadScore),
+          }
+        : null;
+
+    const regimeState = updateElectoralMarkovRegime({
+      asOfUtcSec: bundle.asOfUtcSec,
+      priorProbabilities: this.regimePriorProbabilities,
+      observables,
+      dlrKinkDetail,
+      leadLagDetail,
+      yangZhangVol20d: yangZhangAdrVol,
+      customTransitionMatrix: null,
+    });
+
+    if (regimeState.status === 'OPERATIONAL') {
+      this.regimePriorProbabilities = regimeState.posteriorProbabilities;
+    }
+
+    return {
+      routerStatus,
+      regime: toJsonSafe(regimeState),
+    };
+  }
+
+  public async getDualChart(opts: {
+    readonly coordMode: GgalDualChartCoordMode;
+    readonly timeframe: GgalDualChartTimeframe;
+    readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly forceRefresh: boolean;
+  }): Promise<{
+    readonly routerStatus: ArFeedRouterStatusSnapshot;
+    readonly dualChart: JsonSafeValue<GgalDualChartPayload>;
+  }> {
+    const bundle = await this.loadMarketBundle(opts.forceRefresh);
+    const { routerStatus, l2Ladder } = this.buildL2MetricsFromBundle(bundle);
+    const structure = await this.getStructurePinning(false);
+
+    const runtimeTf =
+      opts.timeframe === '1H' ? '1h' : opts.timeframe === '4H' ? '4h' : opts.timeframe;
+
+    const [adrBarsRes, bmaBarsRes, bbarBarsRes, supvBarsRes] = await Promise.all([
+      this.runtime.getBars('GGAL', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
+      this.runtime.getBars('BMA', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
+      this.runtime.getBars('BBAR', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
+      this.runtime.getBars('SUPV', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
+    ]);
+
+    const adrRawBars = adrBarsRes?.bars ?? bundle.usBars?.bars ?? [];
+    const bymaRawBars = bundle.ggalDetail.historicalBars;
+
+    const parity = this.computeParityGapCore(bundle);
+    const cclRate =
+      Number.isFinite(parity.output.ccl.cclGgal24h) && parity.output.ccl.cclGgal24h > 0
+        ? parity.output.ccl.cclGgal24h
+        : (bundle.macro.variables.ccl ?? Number.NaN);
+
+    const adrLastUsd =
+      Number.isFinite(parity.output.spot.adrMidUsd) && parity.output.spot.adrMidUsd > 0
+        ? parity.output.spot.adrMidUsd
+        : (adrRawBars[adrRawBars.length - 1]?.close ?? Number.NaN);
+
+    const convertedBars: GgalChartBarPoint[] = [];
+    if (opts.coordMode === 'ARS_BYMA') {
+      if (opts.timeframe === '1D' && bymaRawBars.length > 0) {
+        for (const b of bymaRawBars) {
+          const bar = convertOhlcBarToCoord(
+            { timeSec: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
+            null,
+            'ARS_BYMA',
+          );
+          if (bar !== null) {
+            convertedBars.push(bar);
+          }
+        }
+      } else if (adrRawBars.length > 0 && Number.isFinite(cclRate) && cclRate > 0) {
+        const factor = cclRate / GGAL_ADR_RATIO;
+        for (const b of adrRawBars) {
+          convertedBars.push({
+            timeSec: b.time,
+            open: b.open * factor,
+            high: b.high * factor,
+            low: b.low * factor,
+            close: b.close * factor,
+            volume: b.volume * GGAL_ADR_RATIO,
+          });
+        }
+      }
+    } else if (opts.coordMode === 'USD_ADR_NASDAQ') {
+      for (const b of adrRawBars) {
+        const bar = convertOhlcBarToCoord(
+          null,
+          { timeSec: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
+          'USD_ADR_NASDAQ',
+        );
+        if (bar !== null) {
+          convertedBars.push(bar);
+        }
+      }
+    } else {
+      // RATIO_CCL: align daily BYMA + ADR bars by UTC date key
+      const adrByDate = new Map<string, GgalChartBarPoint>();
+      for (const b of adrRawBars) {
+        const dateKey = formatIsoUtcFromSec(b.time).slice(0, 10);
+        adrByDate.set(dateKey, {
+          timeSec: b.time,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+          volume: b.volume,
+        });
+      }
+      for (const b of bymaRawBars) {
+        const dateKey = b.date.slice(0, 10);
+        const adrMatch = adrByDate.get(dateKey) ?? null;
+        const bar = convertOhlcBarToCoord(
+          { timeSec: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
+          adrMatch,
+          'RATIO_CCL',
+        );
+        if (bar !== null) {
+          convertedBars.push(bar);
+        }
+      }
+    }
+
+    convertedBars.sort((a, b) => a.timeSec - b.timeSec);
+
+    if (convertedBars.length === 0) {
+      const convertedLadder = this.convertLadderToCoord(
+        l2Ladder,
+        opts.coordMode,
+        cclRate,
+        adrLastUsd,
+      );
+      return {
+        routerStatus,
+        dualChart: toJsonSafe({
+          status: 'UNAVAILABLE',
+          asOfUtcSec: bundle.asOfUtcSec,
+          coordMode: opts.coordMode,
+          timeframe: opts.timeframe,
+          avwapAnchor: opts.avwapAnchor,
+          reason: `NO_ALIGNED_BARS_FOR_${opts.coordMode}_${opts.timeframe}`,
+          l2Ladder: convertedLadder,
+        } satisfies GgalDualChartPayload),
+      };
+    }
+
+    const closes = convertedBars.map((b) => b.close);
+    const toLineSeries = (vals: readonly number[]): readonly GgalLinePoint[] => {
+      const pts: GgalLinePoint[] = [];
+      for (let i = 0; i < convertedBars.length; i++) {
+        const v = vals[i];
+        const bar = convertedBars[i];
+        if (v !== undefined && Number.isFinite(v) && bar !== undefined) {
+          pts.push({ timeSec: bar.timeSec, value: v });
+        }
+      }
+      return pts;
+    };
+
+    const ema9 = toLineSeries(calculateEma(closes, 9));
+    const ema21 = toLineSeries(calculateEma(closes, 21));
+    const ema50 = toLineSeries(calculateEma(closes, 50));
+    const ema200 = toLineSeries(calculateEma(closes, 200));
+
+    // Resolve AVWAP anchor index
+    let anchorIdx = 0;
+    const lastBar = convertedBars[convertedBars.length - 1];
+    if (lastBar !== undefined) {
+      if (opts.avwapAnchor === 'MONTH_START') {
+        const lastMonth = formatIsoUtcFromSec(lastBar.timeSec).slice(0, 7);
+        const found = convertedBars.findIndex(
+          (b) => formatIsoUtcFromSec(b.timeSec).slice(0, 7) === lastMonth,
+        );
+        anchorIdx = found >= 0 ? found : 0;
+      } else if (opts.avwapAnchor === 'LAST_BIMONTHLY_EXPIRY') {
+        anchorIdx = Math.max(0, convertedBars.length - Math.min(convertedBars.length, 42));
+      } else if (opts.avwapAnchor === 'LAST_EARNINGS') {
+        anchorIdx = Math.max(0, convertedBars.length - Math.min(convertedBars.length, 60));
+      } else {
+        // ELECTORAL_GAP: max absolute overnight open-vs-prev-close gap bar
+        let maxGap = -1;
+        for (let i = 1; i < convertedBars.length; i++) {
+          const prev = convertedBars[i - 1];
+          const curr = convertedBars[i];
+          if (prev !== undefined && curr !== undefined && prev.close > 0) {
+            const gap = Math.abs(curr.open - prev.close) / prev.close;
+            if (gap > maxGap) {
+              maxGap = gap;
+              anchorIdx = i;
+            }
+          }
+        }
+      }
+    }
+
+    const avwapAnchorUtcSec = convertedBars[anchorIdx]?.timeSec ?? convertedBars[0]?.timeSec ?? bundle.asOfUtcSec;
+    const avwapBands: GgalAvwapBandPoint[] = [];
+    let wState = createInitialWelfordState();
+    for (let i = anchorIdx; i < convertedBars.length; i++) {
+      const b = convertedBars[i];
+      if (b === undefined) {
+        continue;
+      }
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      const step = updateWelford(wState, hlc3, b.volume > 0 ? b.volume : 1);
+      wState = step.state;
+      if (Number.isFinite(step.output.vwap) && Number.isFinite(step.output.stdDev)) {
+        avwapBands.push({
+          timeSec: b.timeSec,
+          avwap: step.output.vwap,
+          plus1Sigma: step.output.vwap + step.output.stdDev,
+          minus1Sigma: step.output.vwap - step.output.stdDev,
+          plus2Sigma: step.output.vwap + 2 * step.output.stdDev,
+          minus2Sigma: step.output.vwap - 2 * step.output.stdDev,
+        });
+      }
+    }
+
+    // Volume Profile (32 bins across visible range + prior Naked POCs)
+    const volumeProfile = this.computeSimpleVolumeProfile(convertedBars);
+    const zones = this.detectUnmitigatedZones(convertedBars);
+
+    const strRes = structure.result ?? structure.proxyResult ?? null;
+    const callWall = convertArsPriceToCoord(
+      strRes?.callWallArs ?? Number.NaN,
+      opts.coordMode,
+      cclRate,
+      adrLastUsd,
+    );
+    const putWall = convertArsPriceToCoord(
+      strRes?.putWallArs ?? Number.NaN,
+      opts.coordMode,
+      cclRate,
+      adrLastUsd,
+    );
+    const zeroGamma = convertArsPriceToCoord(
+      strRes?.zeroGammaLevelArs ?? Number.NaN,
+      opts.coordMode,
+      cclRate,
+      adrLastUsd,
+    );
+    const maxPain = convertArsPriceToCoord(
+      strRes?.peakPinStrikeArs ?? Number.NaN,
+      opts.coordMode,
+      cclRate,
+      adrLastUsd,
+    );
+
+    const spotPrice = lastBar?.close ?? Number.NaN;
+    const volTriangle = this.buildVolTriangleCore(bundle);
+    const atmIvDec =
+      volTriangle.output !== null && Number.isFinite(volTriangle.output.bymaAtmIvPct)
+        ? volTriangle.output.bymaAtmIvPct / 100
+        : 0.45;
+    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    const expiryUtcSec = front?.expiryUtcSec ?? bundle.asOfUtcSec + 30 * 86400;
+    const expectedCone = this.buildExpectedCone(
+      lastBar?.timeSec ?? bundle.asOfUtcSec,
+      spotPrice,
+      atmIvDec,
+      expiryUtcSec,
+    );
+
+    // Sub-pane series: CVD (Lee-Ready / bar proxy), Brecha CCL %, Relative Strength vs BMA/BBAR/SUPV
+    const subPaneSeries = this.buildSubPaneSeries(
+      convertedBars,
+      bymaRawBars,
+      adrRawBars,
+      cclRate,
+      bmaBarsRes?.bars ?? [],
+      bbarBarsRes?.bars ?? [],
+      supvBarsRes?.bars ?? [],
+    );
+
+    // Chart 2 Greek profile differentiating Uncovered (Descubiertas) vs Covered (Cubiertas)
+    const greekProfile: GgalStrikeGreekProfileRow[] = [];
+    const anexoByStrike = new Map((this.anexoBStore?.rows ?? []).map((r) => [r.strikeArs, r]));
+    for (const item of strRes?.strikeProfile ?? []) {
+      const strikeArs = item.strikeArs;
+      if (strikeArs === null || !Number.isFinite(strikeArs)) {
+        continue;
+      }
+      const row = anexoByStrike.get(strikeArs);
+      const uncov = row !== undefined ? row.callOi.uncoveredNom + row.putOi.uncoveredNom : 0;
+      const cov = row !== undefined ? row.callOi.coveredNom + row.putOi.coveredNom : 0;
+      const tot = uncov + cov;
+      const uncovShare = tot > 0 ? uncov / tot : 1;
+      const covShare = tot > 0 ? cov / tot : 0;
+      const convertedStrike = convertArsPriceToCoord(
+        strikeArs,
+        opts.coordMode,
+        cclRate,
+        adrLastUsd,
+      );
+      if (!Number.isFinite(convertedStrike)) {
+        continue;
+      }
+      const gexVal = item.effectiveSignedGex ?? 0;
+      const vannaVal = item.vannaExpArs ?? 0;
+      const charmVal = item.charmExpArs ?? 0;
+      greekProfile.push({
+        strike: convertedStrike,
+        signedGexUncovered: gexVal * uncovShare,
+        signedGexCovered: gexVal * covShare,
+        vannaUncovered: vannaVal * uncovShare,
+        vannaCovered: vannaVal * covShare,
+        charmUncovered: charmVal * uncovShare,
+        charmCovered: charmVal * covShare,
+      });
+    }
+
+    const convertedLadder = this.convertLadderToCoord(l2Ladder, opts.coordMode, cclRate, adrLastUsd);
+    const confluenceAlerts: GgalL2ConfluenceAlert[] = [];
+    if (convertedLadder.available) {
+      const targetWalls: readonly { readonly label: string; readonly price: number }[] = [
+        { label: 'Call Wall', price: callWall },
+        { label: 'Put Wall', price: putWall },
+        { label: 'Zero-Gamma', price: zeroGamma },
+        { label: 'Max Pain', price: maxPain },
+        ...volumeProfile.nakedPocs.map((p, idx) => ({
+          label: `Naked POC #${String(idx + 1)}`,
+          price: p,
+        })),
+      ].filter((t) => Number.isFinite(t.price) && t.price > 0);
+
+      for (const bid of convertedLadder.bids) {
+        for (const target of targetWalls) {
+          const distPct = (Math.abs(bid.price - target.price) / target.price) * 100;
+          if (distPct < 0.5) {
+            confluenceAlerts.push({
+              l2Price: bid.price,
+              side: 'BID',
+              l2Size: bid.size,
+              targetLabel: target.label,
+              targetPrice: target.price,
+              distancePct: distPct,
+            });
+          }
+        }
+      }
+      for (const ask of convertedLadder.asks) {
+        for (const target of targetWalls) {
+          const distPct = (Math.abs(ask.price - target.price) / target.price) * 100;
+          if (distPct < 0.5) {
+            confluenceAlerts.push({
+              l2Price: ask.price,
+              side: 'ASK',
+              l2Size: ask.size,
+              targetLabel: target.label,
+              targetPrice: target.price,
+              distancePct: distPct,
+            });
+          }
+        }
+      }
+    }
+
+    const payload: GgalDualChartPayload = {
+      status: 'OPERATIONAL',
+      asOfUtcSec: bundle.asOfUtcSec,
+      coordMode: opts.coordMode,
+      timeframe: opts.timeframe,
+      avwapAnchor: opts.avwapAnchor,
+      avwapAnchorUtcSec,
+      spotPrice,
+      cclRate,
+      callWall,
+      putWall,
+      zeroGamma,
+      maxPain,
+      bars: convertedBars,
+      ema9,
+      ema21,
+      ema50,
+      ema200,
+      avwapBands,
+      volumeProfile,
+      zones,
+      expectedCone,
+      subPaneSeries,
+      greekProfile,
+      l2Ladder: convertedLadder,
+      confluenceAlerts,
+      reason: null,
+    };
+
+    return {
+      routerStatus,
+      dualChart: toJsonSafe(payload),
+    };
+  }
+
+  private convertLadderToCoord(
+    ladder: GgalL2LadderState,
+    coordMode: GgalDualChartCoordMode,
+    cclRate: number,
+    adrReferenceUsd: number,
+  ): GgalL2LadderState {
+    if (!ladder.available || coordMode === 'ARS_BYMA') {
+      return ladder;
+    }
+    const bids = ladder.bids
+      .map((b) => ({
+        ...b,
+        price: convertArsPriceToCoord(b.price, coordMode, cclRate, adrReferenceUsd),
+      }))
+      .filter((b) => Number.isFinite(b.price) && b.price > 0);
+    const asks = ladder.asks
+      .map((a) => ({
+        ...a,
+        price: convertArsPriceToCoord(a.price, coordMode, cclRate, adrReferenceUsd),
+      }))
+      .filter((a) => Number.isFinite(a.price) && a.price > 0);
+    if (bids.length === 0 || asks.length === 0) {
+      return {
+        available: false,
+        reason: 'INVALID_BOOK_STATE',
+        activeProvider: ladder.activeProvider,
+        qualityTier: ladder.qualityTier,
+        asOfUtcSec: ladder.asOfUtcSec,
+        symbol: ladder.symbol,
+      };
+    }
+    return {
+      ...ladder,
+      bids,
+      asks,
+    };
+  }
+
+  private computeSimpleVolumeProfile(
+    bars: readonly GgalChartBarPoint[],
+  ): GgalVolumeProfileSummary {
+    let minLow = Infinity;
+    let maxHigh = -Infinity;
+    for (const b of bars) {
+      if (b.low < minLow) minLow = b.low;
+      if (b.high > maxHigh) maxHigh = b.high;
+    }
+    if (!Number.isFinite(minLow) || !Number.isFinite(maxHigh) || maxHigh <= minLow) {
+      return { poc: Number.NaN, vah: Number.NaN, val: Number.NaN, nakedPocs: [], bins: [] };
+    }
+    const numBins = 28;
+    const step = (maxHigh - minLow) / numBins;
+    const binVol = new Array<number>(numBins).fill(0);
+    let totalVol = 0;
+
+    for (const b of bars) {
+      const vol = b.volume > 0 ? b.volume : 1;
+      const typ = (b.high + b.low + b.close) / 3;
+      const idx = Math.min(numBins - 1, Math.max(0, Math.floor((typ - minLow) / step)));
+      binVol[idx] = (binVol[idx] ?? 0) + vol;
+      totalVol += vol;
+    }
+
+    let pocIdx = 0;
+    let maxBinVol = -1;
+    for (let i = 0; i < numBins; i++) {
+      const v = binVol[i] ?? 0;
+      if (v > maxBinVol) {
+        maxBinVol = v;
+        pocIdx = i;
+      }
+    }
+
+    let lo = pocIdx;
+    let hi = pocIdx;
+    let cumVol = binVol[pocIdx] ?? 0;
+    const targetVol = 0.7 * totalVol;
+    while (cumVol < targetVol && (lo > 0 || hi < numBins - 1)) {
+      const leftVol = lo > 0 ? (binVol[lo - 1] ?? 0) : -1;
+      const rightVol = hi < numBins - 1 ? (binVol[hi + 1] ?? 0) : -1;
+      if (rightVol >= leftVol && hi < numBins - 1) {
+        hi += 1;
+        cumVol += Math.max(0, rightVol);
+      } else if (lo > 0) {
+        lo -= 1;
+        cumVol += Math.max(0, leftVol);
+      } else {
+        break;
+      }
+    }
+
+    const bins = [];
+    for (let i = 0; i < numBins; i++) {
+      bins.push({
+        priceMid: minLow + (i + 0.5) * step,
+        volume: binVol[i] ?? 0,
+        isValToVah: i >= lo && i <= hi,
+        isPoc: i === pocIdx,
+      });
+    }
+
+    // Track up to 3 unmitigated local-high-volume Naked POCs from earlier thirds of history
+    const nakedPocs: number[] = [];
+    const sliceLen = Math.max(10, Math.floor(bars.length / 4));
+    for (let start = 0; start + sliceLen < bars.length - 5; start += sliceLen) {
+      const segment = bars.slice(start, start + sliceLen);
+      let peakBar: GgalChartBarPoint | null = null;
+      for (const sb of segment) {
+        if (peakBar === null || sb.volume > peakBar.volume) {
+          peakBar = sb;
+        }
+      }
+      if (peakBar === null) {
+        continue;
+      }
+      const pocCand = (peakBar.high + peakBar.low + peakBar.close) / 3;
+      const laterBars = bars.slice(start + sliceLen);
+      const mitigated = laterBars.some((lb) => lb.low <= pocCand && lb.high >= pocCand);
+      if (!mitigated) {
+        nakedPocs.push(pocCand);
+      }
+    }
+
+    return {
+      poc: minLow + (pocIdx + 0.5) * step,
+      val: minLow + lo * step,
+      vah: minLow + (hi + 1) * step,
+      nakedPocs: nakedPocs.slice(-3),
+      bins,
+    };
+  }
+
+  private detectUnmitigatedZones(
+    bars: readonly GgalChartBarPoint[],
+  ): readonly GgalChartStructureZone[] {
+    const zones: GgalChartStructureZone[] = [];
+    for (let i = 2; i < bars.length; i++) {
+      const b0 = bars[i - 2];
+      const b1 = bars[i - 1];
+      const b2 = bars[i];
+      if (b0 === undefined || b1 === undefined || b2 === undefined) {
+        continue;
+      }
+      if (b2.low > b0.high) {
+        const mitigated = bars.slice(i + 1).some((nb) => nb.low <= b2.low);
+        zones.push({
+          id: `FVG-B-${String(b1.timeSec)}`,
+          kind: 'FVG',
+          direction: 'BULLISH',
+          status: mitigated ? 'MITIGATED' : 'UNMITIGATED',
+          startTimeSec: b0.timeSec,
+          endTimeSec: null,
+          low: b0.high,
+          high: b2.low,
+        });
+      } else if (b2.high < b0.low) {
+        const mitigated = bars.slice(i + 1).some((nb) => nb.high >= b2.high);
+        zones.push({
+          id: `FVG-S-${String(b1.timeSec)}`,
+          kind: 'FVG',
+          direction: 'BEARISH',
+          status: mitigated ? 'MITIGATED' : 'UNMITIGATED',
+          startTimeSec: b0.timeSec,
+          endTimeSec: null,
+          low: b2.high,
+          high: b0.low,
+        });
+      }
+      // Fresh Order Block (FOB): opposite candle before large displacement
+      const movePct = b1.open > 0 ? Math.abs(b1.close - b1.open) / b1.open : 0;
+      if (movePct >= 0.025) {
+        if (b1.close > b1.open && b0.close < b0.open) {
+          const mitigated = bars.slice(i + 1).some((nb) => nb.low <= b0.high);
+          zones.push({
+            id: `FOB-B-${String(b0.timeSec)}`,
+            kind: 'FOB',
+            direction: 'BULLISH',
+            status: mitigated ? 'MITIGATED' : 'UNMITIGATED',
+            startTimeSec: b0.timeSec,
+            endTimeSec: null,
+            low: b0.low,
+            high: b0.high,
+          });
+        } else if (b1.close < b1.open && b0.close > b0.open) {
+          const mitigated = bars.slice(i + 1).some((nb) => nb.high >= b0.low);
+          zones.push({
+            id: `FOB-S-${String(b0.timeSec)}`,
+            kind: 'FOB',
+            direction: 'BEARISH',
+            status: mitigated ? 'MITIGATED' : 'UNMITIGATED',
+            startTimeSec: b0.timeSec,
+            endTimeSec: null,
+            low: b0.low,
+            high: b0.high,
+          });
+        }
+      }
+    }
+    return zones.filter((z) => z.status === 'UNMITIGATED').slice(-8);
+  }
+
+  private buildExpectedCone(
+    startTimeSec: number,
+    spotPrice: number,
+    annVolDec: number,
+    expiryUtcSec: number,
+  ): readonly GgalExpectedConePoint[] {
+    if (!Number.isFinite(spotPrice) || spotPrice <= 0 || !Number.isFinite(annVolDec)) {
+      return [];
+    }
+    const horizonSec = Math.max(86400, expiryUtcSec - startTimeSec);
+    const steps = 6;
+    const cone: GgalExpectedConePoint[] = [];
+    for (let s = 0; s <= steps; s++) {
+      const frac = s / steps;
+      const t = startTimeSec + Math.round(horizonSec * frac);
+      const dtYears = (horizonSec * frac) / (365 * 86400);
+      const sigma = spotPrice * annVolDec * Math.sqrt(dtYears);
+      cone.push({
+        timeSec: t,
+        center: spotPrice,
+        upper1Sigma: spotPrice + sigma,
+        lower1Sigma: Math.max(0.01, spotPrice - sigma),
+        upper2Sigma: spotPrice + 2 * sigma,
+        lower2Sigma: Math.max(0.01, spotPrice - 2 * sigma),
+      });
+    }
+    return cone;
+  }
+
+  private buildSubPaneSeries(
+    bars: readonly GgalChartBarPoint[],
+    bymaBars: readonly { readonly date: string; readonly close: number }[],
+    adrBars: readonly { readonly time: number; readonly close: number }[],
+    currentCcl: number,
+    bmaBars: readonly { readonly time: number; readonly close: number }[],
+    bbarBars: readonly { readonly time: number; readonly close: number }[],
+    supvBars: readonly { readonly time: number; readonly close: number }[],
+  ): readonly GgalSubPanePoint[] {
+    const bymaDateMap = new Map(bymaBars.map((b) => [b.date.slice(0, 10), b.close]));
+    const adrDateMap = new Map(
+      adrBars.map((b) => [formatIsoUtcFromSec(b.time).slice(0, 10), b.close]),
+    );
+    const bmaMap = new Map(bmaBars.map((b) => [b.time, b.close]));
+    const bbarMap = new Map(bbarBars.map((b) => [b.time, b.close]));
+    const supvMap = new Map(supvBars.map((b) => [b.time, b.close]));
+
+    const firstGgal = bars[0]?.close ?? Number.NaN;
+    const firstBma = bmaBars[0]?.close ?? Number.NaN;
+    const firstBbar = bbarBars[0]?.close ?? Number.NaN;
+    const firstSupv = supvBars[0]?.close ?? Number.NaN;
+
+    let cumCvd = 0;
+    const out: GgalSubPanePoint[] = [];
+
+    for (const bar of bars) {
+      const range = Math.max(1e-6, bar.high - bar.low);
+      const imbalance = ((bar.close - bar.low) - (bar.high - bar.close)) / range;
+      cumCvd += bar.volume * imbalance;
+
+      const dKey = formatIsoUtcFromSec(bar.timeSec).slice(0, 10);
+      const bClose = bymaDateMap.get(dKey);
+      const aClose = adrDateMap.get(dKey);
+      let brechaPct = 0;
+      if (
+        bClose !== undefined &&
+        aClose !== undefined &&
+        aClose > 0 &&
+        Number.isFinite(currentCcl) &&
+        currentCcl > 0
+      ) {
+        const ggalCcl = (GGAL_ADR_RATIO * bClose) / aClose;
+        brechaPct = ((ggalCcl - currentCcl) / currentCcl) * 100;
+      }
+
+      const ggalRet =
+        Number.isFinite(firstGgal) && firstGgal > 0 ? (bar.close / firstGgal - 1) * 100 : 0;
+      const bmaC = bmaMap.get(bar.timeSec);
+      const bbarC = bbarMap.get(bar.timeSec);
+      const supvC = supvMap.get(bar.timeSec);
+
+      out.push({
+        timeSec: bar.timeSec,
+        cvdLeeReady: cumCvd,
+        cclBrechaPct: brechaPct,
+        relStrengthBma:
+          bmaC !== undefined && Number.isFinite(firstBma) && firstBma > 0
+            ? ggalRet - (bmaC / firstBma - 1) * 100
+            : 0,
+        relStrengthBbar:
+          bbarC !== undefined && Number.isFinite(firstBbar) && firstBbar > 0
+            ? ggalRet - (bbarC / firstBbar - 1) * 100
+            : 0,
+        relStrengthSupv:
+          supvC !== undefined && Number.isFinite(firstSupv) && firstSupv > 0
+            ? ggalRet - (supvC / firstSupv - 1) * 100
+            : 0,
+      });
+    }
+
+    return out;
   }
 }

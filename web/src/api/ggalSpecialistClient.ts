@@ -567,3 +567,455 @@ export function postGgalAnexoBIngest(
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Pieza 28 — Feed Router, Hybrid ORATS Surface, Microestructura L2/VPIN,
+// Clearing Risk, Régimen Electoral 2027 & Dual Synchronized Chart DTOs
+// ---------------------------------------------------------------------------
+
+export type ArFeedProviderId =
+  | 'PRIMARY_MATRIZ_WS'
+  | 'PPI_REST'
+  | 'IOL_REST'
+  | 'MAE_MARKETDATA_V1'
+  | 'BYMA_CLEARING'
+  | 'IAMC_ANEXO_B_PDF'
+  | 'DATA912_EOD_CONTINGENCY';
+
+export type FeedQualityTier =
+  | 'REALTIME_L2_TICK'
+  | 'POLLING_L1_REST'
+  | 'EOD_CONTINGENCY'
+  | 'UNAVAILABLE';
+
+export interface ArProviderHealthEntryDto {
+  readonly provider: ArFeedProviderId;
+  readonly priority: number;
+  readonly configured: boolean;
+  readonly connected: boolean;
+  readonly qualityTier: FeedQualityTier;
+  readonly lastMessageUtcSec: number | null;
+  readonly latencyMs: number | null;
+  readonly stale: boolean;
+  readonly errorReason: string | null;
+  readonly roleDescription: string;
+}
+
+export interface ArFeedRouterStatusSnapshotDto {
+  readonly asOfUtcSec: number;
+  readonly activePrimaryEquityProvider: ArFeedProviderId | null;
+  readonly activeQualityTier: FeedQualityTier;
+  readonly l2Available: boolean;
+  readonly activeFxFuturesProvider: ArFeedProviderId | null;
+  readonly activeSovereignProvider: ArFeedProviderId | null;
+  readonly activeAnexoBProvider: ArFeedProviderId | null;
+  readonly isContingencyEod: boolean;
+  readonly degradationReason: string | null;
+  readonly providers: readonly ArProviderHealthEntryDto[];
+}
+
+export interface GgalL2OrderLevelDto {
+  readonly level: 1 | 2 | 3 | 4 | 5;
+  readonly price: number;
+  readonly size: number;
+  readonly orderCount: number | null;
+}
+
+export type GgalL2LadderStateDto =
+  | {
+      readonly available: true;
+      readonly activeProvider: ArFeedProviderId;
+      readonly qualityTier: 'REALTIME_L2_TICK';
+      readonly asOfUtcSec: number;
+      readonly symbol: string;
+      readonly bids: readonly GgalL2OrderLevelDto[];
+      readonly asks: readonly GgalL2OrderLevelDto[];
+    }
+  | {
+      readonly available: false;
+      readonly reason: 'NON_L2_FEED_ACTIVE' | 'FEED_DISCONNECTED' | 'INVALID_BOOK_STATE';
+      readonly activeProvider: ArFeedProviderId | null;
+      readonly qualityTier: FeedQualityTier;
+      readonly asOfUtcSec: number;
+      readonly symbol: string;
+    };
+
+export type GgalL2MicrostructureMetricsDto =
+  | {
+      readonly status: 'OPERATIONAL';
+      readonly activeProvider: ArFeedProviderId;
+      readonly qualityTier: 'REALTIME_L2_TICK';
+      readonly asOfUtcSec: number;
+      readonly decayAlpha: number;
+      readonly bestBid: number;
+      readonly bestAsk: number;
+      readonly midPrice: number;
+      readonly spreadAbs: number;
+      readonly spreadBps: number;
+      readonly obiL1: number;
+      readonly obiMultiLevel: number;
+      readonly micropriceL1: number;
+      readonly micropriceMultiLevel: number;
+      readonly totalBidDepth5: number;
+      readonly totalAskDepth5: number;
+      readonly iceberg: {
+        readonly detected: boolean;
+        readonly side: 'BID' | 'ASK' | 'NONE';
+        readonly priceLevel: number | null;
+        readonly executedVolumeAtBest: number;
+        readonly visibleDropAtBest: number;
+        readonly reloadedVolumeEstimate: number;
+        readonly reloadRatio: number;
+      };
+      readonly vpin: {
+        readonly bucketSizeShares: number | null;
+        readonly windowBuckets: number;
+        readonly populatedBuckets: number;
+        readonly vpin: number | null;
+        readonly percentileRank: number | null;
+        readonly toxicAlert: boolean;
+        readonly bucketSeries: readonly number[];
+      };
+      readonly reason: null;
+    }
+  | {
+      readonly status: 'UNAVAILABLE';
+      readonly reason: 'DEGRADED_TO_NON_L2_FEED' | 'INVALID_L2_INPUT' | 'INSUFFICIENT_DEPTH';
+      readonly activeProvider: ArFeedProviderId | null;
+      readonly qualityTier: FeedQualityTier;
+      readonly asOfUtcSec: number;
+      readonly detail: string;
+    };
+
+export interface GgalMicrostructureResponseDto {
+  readonly routerStatus: ArFeedRouterStatusSnapshotDto;
+  readonly l2Ladder: GgalL2LadderStateDto;
+  readonly microstructure: GgalL2MicrostructureMetricsDto;
+}
+
+export interface GgalOptionsSurfaceResponseDto {
+  readonly routerStatus: ArFeedRouterStatusSnapshotDto;
+  readonly surface:
+    | {
+        readonly status: 'OPERATIONAL';
+        readonly source: 'ORATS_DELAYED_CORE';
+        readonly ticker: string;
+        readonly tradeDate: string;
+        readonly asOfUtcSec: number;
+        readonly stockPrice: number | null;
+        readonly massiveSpotPrice: number | null;
+        readonly massiveSpotSourceMode: 'MASSIVE_NBBO' | 'MASSIVE_BARS' | 'UNAVAILABLE';
+        readonly smvVol: number | null;
+        readonly iv30d: number | null;
+        readonly exErnIv30d: number | null;
+        readonly impliedMove: number | null;
+        readonly annIdiv: number | null;
+        readonly impliedNextDiv: number | null;
+        readonly borrow30: number | null;
+        readonly yieldRate: number | null;
+        readonly yangZhangAdrVol: number | null;
+      }
+    | {
+        readonly status: 'UNAVAILABLE';
+        readonly source: 'ORATS_DELAYED_CORE';
+        readonly ticker: string;
+        readonly asOfUtcSec: number;
+        readonly reason: string;
+        readonly massiveSpotPrice: number | null;
+        readonly massiveSpotSourceMode: 'MASSIVE_NBBO' | 'MASSIVE_BARS' | 'UNAVAILABLE';
+        readonly yangZhangAdrVol: number | null;
+      };
+  readonly otmWingCclVol: {
+    readonly status: 'OPERATIONAL' | 'UNAVAILABLE';
+    readonly extractedCclImplVol: number | null;
+    readonly atmBymaCompressedIv: number | null;
+    readonly callOverwritingCompressionPct: number | null;
+    readonly selectedWingsCount: number;
+    readonly reason: string | null;
+  };
+}
+
+export interface GgalClearingRiskResponseDto {
+  readonly routerStatus: ArFeedRouterStatusSnapshotDto;
+  readonly clearingRisk:
+    | {
+        readonly status: 'OPERATIONAL';
+        readonly asOfUtcSec: number;
+        readonly anexoBStatus: 'FRESH' | 'CARRY_FORWARD_NO_TRADE' | 'UNAVAILABLE';
+        readonly anexoBTradeDate: string | null;
+        readonly jul26DividendNoStrikeAdjFlag: boolean;
+        readonly bymaInitialMarginPct: number | null;
+        readonly clearingHaircutPct: number | null;
+        readonly totalUncoveredContracts: number;
+        readonly totalCoveredContracts: number;
+        readonly l2PinScore: {
+          readonly status: 'OPERATIONAL' | 'UNAVAILABLE';
+          readonly weightedPinScore: number | null;
+          readonly isClosingWindow1530Art: boolean;
+          readonly asOfBuenosAiresTime: string;
+          readonly reason: string | null;
+        };
+      }
+    | {
+        readonly status: 'UNAVAILABLE';
+        readonly asOfUtcSec: number;
+        readonly reason: string;
+      };
+}
+
+export type GgalElectoralRegimeId =
+  | 'CALM_COMPRESSION'
+  | 'FX_BRECHA_TENSION'
+  | 'ELECTORAL_TAIL_JUMP';
+
+export interface GgalRegime2027ResponseDto {
+  readonly routerStatus: ArFeedRouterStatusSnapshotDto;
+  readonly regime:
+    | {
+        readonly status: 'OPERATIONAL';
+        readonly asOfUtcSec: number;
+        readonly currentRegime: GgalElectoralRegimeId;
+        readonly posteriorProbabilities: readonly [number, number, number];
+        readonly effectiveJumpIntensity: number;
+        readonly kellyFractionMultiplier: number;
+        readonly overnightCvar99Pct: number;
+        readonly recommendedHedgeWeights: {
+          readonly dlrFuturesWeight: number;
+          readonly otmPutWingWeight: number;
+          readonly cashArsCollarWeight: number;
+          readonly adrDeltaHedgeWeight: number;
+        };
+        readonly observables: {
+          readonly bankBasketIv30ExErn: number;
+          readonly ggal25DeltaSkew: number;
+          readonly sovereignLegislationSpreadPct: number;
+          readonly dlrElectoralForwardKink: number;
+          readonly crossBankLeadLagLeader: 'GGAL' | 'BMA' | 'BBAR' | 'SUPV';
+          readonly crossBankLeadLagIntensity: number;
+        };
+        readonly dlrKinkDetail: {
+          readonly available: boolean;
+          readonly maxSecondDifferencePct: number | null;
+          readonly peakMaturityLabel: string | null;
+          readonly annualizedTermSlopePct: number | null;
+          readonly reason: string | null;
+        };
+        readonly leadLagDetail: {
+          readonly available: boolean;
+          readonly leader: 'GGAL' | 'BMA' | 'BBAR' | 'SUPV' | null;
+          readonly byBankScore: Readonly<Record<'GGAL' | 'BMA' | 'BBAR' | 'SUPV', number>> | null;
+          readonly reason: string | null;
+        };
+        readonly yangZhangVol20d: number | null;
+      }
+    | {
+        readonly status: 'UNAVAILABLE';
+        readonly asOfUtcSec: number;
+        readonly reason: string;
+        readonly currentRegime: null;
+      };
+}
+
+export type GgalDualChartCoordMode = 'ARS_BYMA' | 'USD_ADR_NASDAQ' | 'RATIO_CCL';
+export type GgalDualChartTimeframe = '1m' | '5m' | '15m' | '1H' | '4H' | '1D';
+export type GgalAvwapAnchorMode =
+  | 'MONTH_START'
+  | 'LAST_BIMONTHLY_EXPIRY'
+  | 'LAST_EARNINGS'
+  | 'ELECTORAL_GAP';
+export type GgalSubPaneIndicatorMode = 'CVD_LEE_READY' | 'CCL_BRECHA_PCT' | 'REL_STRENGTH_BANKS';
+export type GgalGreekProfileMode = 'SIGNED_GEX' | 'VANNA' | 'CHARM';
+
+export interface GgalDualChartPayloadDto {
+  readonly status: 'OPERATIONAL' | 'UNAVAILABLE';
+  readonly asOfUtcSec: number;
+  readonly coordMode: GgalDualChartCoordMode;
+  readonly timeframe: GgalDualChartTimeframe;
+  readonly avwapAnchor: GgalAvwapAnchorMode;
+  readonly avwapAnchorUtcSec?: number;
+  readonly spotPrice?: number | null;
+  readonly cclRate?: number | null;
+  readonly callWall?: number | null;
+  readonly putWall?: number | null;
+  readonly zeroGamma?: number | null;
+  readonly maxPain?: number | null;
+  readonly bars?: readonly {
+    readonly timeSec: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+    readonly volume: number;
+  }[];
+  readonly ema9?: readonly { readonly timeSec: number; readonly value: number }[];
+  readonly ema21?: readonly { readonly timeSec: number; readonly value: number }[];
+  readonly ema50?: readonly { readonly timeSec: number; readonly value: number }[];
+  readonly ema200?: readonly { readonly timeSec: number; readonly value: number }[];
+  readonly avwapBands?: readonly {
+    readonly timeSec: number;
+    readonly avwap: number;
+    readonly plus1Sigma: number;
+    readonly minus1Sigma: number;
+    readonly plus2Sigma: number;
+    readonly minus2Sigma: number;
+  }[];
+  readonly volumeProfile?: {
+    readonly poc: number | null;
+    readonly vah: number | null;
+    readonly val: number | null;
+    readonly nakedPocs: readonly number[];
+    readonly bins: readonly {
+      readonly priceMid: number;
+      readonly volume: number;
+      readonly isValToVah: boolean;
+      readonly isPoc: boolean;
+    }[];
+  };
+  readonly zones?: readonly {
+    readonly id: string;
+    readonly kind: 'FVG' | 'FOB';
+    readonly direction: 'BULLISH' | 'BEARISH';
+    readonly status: 'UNMITIGATED' | 'MITIGATED';
+    readonly startTimeSec: number;
+    readonly endTimeSec: number | null;
+    readonly low: number;
+    readonly high: number;
+  }[];
+  readonly expectedCone?: readonly {
+    readonly timeSec: number;
+    readonly center: number;
+    readonly upper1Sigma: number;
+    readonly lower1Sigma: number;
+    readonly upper2Sigma: number;
+    readonly lower2Sigma: number;
+  }[];
+  readonly subPaneSeries?: readonly {
+    readonly timeSec: number;
+    readonly cvdLeeReady: number;
+    readonly cclBrechaPct: number;
+    readonly relStrengthBma: number;
+    readonly relStrengthBbar: number;
+    readonly relStrengthSupv: number;
+  }[];
+  readonly greekProfile?: readonly {
+    readonly strike: number;
+    readonly signedGexUncovered: number;
+    readonly signedGexCovered: number;
+    readonly vannaUncovered: number;
+    readonly vannaCovered: number;
+    readonly charmUncovered: number;
+    readonly charmCovered: number;
+  }[];
+  readonly l2Ladder: GgalL2LadderStateDto;
+  readonly confluenceAlerts?: readonly {
+    readonly l2Price: number;
+    readonly side: 'BID' | 'ASK';
+    readonly l2Size: number;
+    readonly targetLabel: string;
+    readonly targetPrice: number;
+    readonly distancePct: number;
+  }[];
+  readonly reason: string | null;
+}
+
+export interface GgalDualChartResponseDto {
+  readonly routerStatus: ArFeedRouterStatusSnapshotDto;
+  readonly dualChart: GgalDualChartPayloadDto;
+}
+
+export function fetchGgalFeedStatus(
+  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<ArFeedRouterStatusSnapshotDto> {
+  const qs = options.forceRefresh ? '?refresh=1' : '';
+  return requestJson<ArFeedRouterStatusSnapshotDto>(
+    `/api/ar/ggal-specialist/feed-status${qs}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+export function fetchGgalMicrostructure(
+  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<GgalMicrostructureResponseDto> {
+  const qs = options.forceRefresh ? '?refresh=1' : '';
+  return requestJson<GgalMicrostructureResponseDto>(
+    `/api/ar/ggal-specialist/microstructure${qs}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+export function fetchGgalOptionsSurface(
+  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<GgalOptionsSurfaceResponseDto> {
+  const qs = options.forceRefresh ? '?refresh=1' : '';
+  return requestJson<GgalOptionsSurfaceResponseDto>(
+    `/api/ar/ggal-specialist/options-surface${qs}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+export function fetchGgalClearingRisk(
+  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<GgalClearingRiskResponseDto> {
+  const qs = options.forceRefresh ? '?refresh=1' : '';
+  return requestJson<GgalClearingRiskResponseDto>(
+    `/api/ar/ggal-specialist/clearing-risk${qs}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+export function fetchGgalRegime2027(
+  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<GgalRegime2027ResponseDto> {
+  const qs = options.forceRefresh ? '?refresh=1' : '';
+  return requestJson<GgalRegime2027ResponseDto>(
+    `/api/ar/ggal-specialist/regime-2027${qs}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+export function fetchGgalDualChart(
+  params: {
+    readonly coord: GgalDualChartCoordMode;
+    readonly timeframe: GgalDualChartTimeframe;
+    readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly forceRefresh?: boolean;
+    readonly signal?: AbortSignal;
+  },
+): Promise<GgalDualChartResponseDto> {
+  const sp = new URLSearchParams({
+    coord: params.coord,
+    timeframe: params.timeframe,
+    avwapAnchor: params.avwapAnchor,
+  });
+  if (params.forceRefresh) {
+    sp.set('refresh', '1');
+  }
+  return requestJson<GgalDualChartResponseDto>(
+    `/api/ar/ggal-specialist/dual-chart?${sp.toString()}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    },
+  );
+}

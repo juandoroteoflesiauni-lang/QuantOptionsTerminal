@@ -33,11 +33,17 @@ import {
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
+import type {
+  GgalAvwapAnchorMode,
+  GgalDualChartCoordMode,
+  GgalDualChartTimeframe,
+} from '../core/ggal/institutionalContracts.js';
 import { toErrorMessage } from '../data/normalizeShared.js';
 import {
   ArgentinaMarketRuntime,
   type ArMonitoringResponse,
 } from './argentinaMarketLoader.js';
+import { collectArFeedSecrets } from './arFeedRouter.js';
 import { GgalSpecialistRuntime } from './ggalSpecialistRuntime.js';
 import {
   MarketRuntime,
@@ -45,6 +51,7 @@ import {
   loadRuntimeAuth,
   type RuntimeWsBroadcast,
 } from './marketRuntime.js';
+import { loadOratsClientConfigFromEnv } from './oratsHybridClient.js';
 import { collectBrokerSecretsFromEnv } from './primaryRofexLoader.js';
 import { redactSecrets } from './runtimeCache.js';
 
@@ -239,10 +246,23 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     secrets,
     env: options.env ?? process.env,
   });
-  const getAllSecrets = (): readonly string[] => [
-    ...new Set([...secrets, ...arRuntime.getSecrets()]),
+  const effectiveEnv = options.env ?? process.env;
+  const oratsKey = loadOratsClientConfigFromEnv(effectiveEnv).apiKey;
+  const extraSecrets = [
+    ...collectArFeedSecrets(effectiveEnv),
+    ...(oratsKey !== null ? [oratsKey] : []),
   ];
-  const ggalRuntime = options.ggalRuntime ?? new GgalSpecialistRuntime({ runtime, arRuntime, secrets });
+  const getAllSecrets = (): readonly string[] => [
+    ...new Set([...secrets, ...extraSecrets, ...arRuntime.getSecrets()]),
+  ];
+  const ggalRuntime =
+    options.ggalRuntime ??
+    new GgalSpecialistRuntime({
+      runtime,
+      arRuntime,
+      secrets: getAllSecrets(),
+      env: effectiveEnv,
+    });
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
   const startRuntimeWs = options.startRuntimeWs ?? false;
@@ -511,6 +531,126 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         }
         const ingested = ggalRuntime.ingestAnexoB(body);
         sendJson(res, 200, ingested);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/feed-status') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const feedStatus = await ggalRuntime.getFeedStatus(forceRefresh);
+        sendJson(res, 200, feedStatus);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/dual-chart') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const coordRaw = (params.get('coord') ?? 'ARS_BYMA').trim().toUpperCase();
+        if (coordRaw !== 'ARS_BYMA' && coordRaw !== 'USD_ADR_NASDAQ' && coordRaw !== 'RATIO_CCL') {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            `Invalid coord "${coordRaw}". Expected ARS_BYMA | USD_ADR_NASDAQ | RATIO_CCL`,
+            secrets,
+            400,
+          );
+        }
+        const coordMode: GgalDualChartCoordMode = coordRaw;
+
+        const tfRaw = (params.get('timeframe') ?? '1D').trim();
+        let timeframe: GgalDualChartTimeframe;
+        if (
+          tfRaw === '1m' ||
+          tfRaw === '5m' ||
+          tfRaw === '15m' ||
+          tfRaw === '1H' ||
+          tfRaw === '4H' ||
+          tfRaw === '1D'
+        ) {
+          timeframe = tfRaw;
+        } else {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            `Invalid timeframe "${tfRaw}". Expected 1m | 5m | 15m | 1H | 4H | 1D`,
+            secrets,
+            400,
+          );
+        }
+
+        const anchorRaw = (params.get('avwapAnchor') ?? 'MONTH_START').trim().toUpperCase();
+        let avwapAnchor: GgalAvwapAnchorMode;
+        if (
+          anchorRaw === 'MONTH_START' ||
+          anchorRaw === 'LAST_BIMONTHLY_EXPIRY' ||
+          anchorRaw === 'LAST_EARNINGS' ||
+          anchorRaw === 'ELECTORAL_GAP'
+        ) {
+          avwapAnchor = anchorRaw;
+        } else {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            `Invalid avwapAnchor "${anchorRaw}"`,
+            secrets,
+            400,
+          );
+        }
+
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const dualChart = await ggalRuntime.getDualChart({
+          coordMode,
+          timeframe,
+          avwapAnchor,
+          forceRefresh,
+        });
+        sendJson(res, 200, dualChart);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/microstructure') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const microstructure = await ggalRuntime.getMicrostructure(forceRefresh);
+        sendJson(res, 200, microstructure);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/options-surface') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const surface = await ggalRuntime.getOptionsSurface(forceRefresh);
+        sendJson(res, 200, surface);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/clearing-risk') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const clearingRisk = await ggalRuntime.getClearingRisk(forceRefresh);
+        sendJson(res, 200, clearingRisk);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/regime-2027') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { status: 'NO_DATA', reason: 'INVALID_PARAMETER', detail: `Method ${req.method ?? ''} not allowed` });
+          return;
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const regime2027 = await ggalRuntime.getRegime2027(forceRefresh);
+        sendJson(res, 200, regime2027);
         return;
       }
 
