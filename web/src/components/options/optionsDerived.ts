@@ -1,4 +1,11 @@
-import type { ArOptionContractDto, ArOptionExpiryDto, ArOptionsResponse } from '../../data/liveTypes';
+import type {
+  ArOptionContractDto,
+  ArOptionExpiryDto,
+  ArOptionsQuantEnginesDto,
+  ArOptionsResponse,
+  SerializedTerminalEnginesDto,
+  UsSnapshotResponseDto,
+} from '../../data/liveTypes';
 import { type OptionChainRow, type OptionExpiryGroup, fmtMoneyCompact, fmtNum } from '../../data/marketData';
 import {
   COMMISSION_RATE,
@@ -1374,4 +1381,486 @@ export function computeInlineMarkersForRows(params: {
   }
 
   return { beforeFirst, afterIndex };
+}
+
+// ============================================================================
+// Pieza 27: DTOs y helpers puros para VolatilitySuiteView (6 sub-pestañas)
+// ============================================================================
+
+export interface VolSuiteSmilePointDto {
+  readonly strike: number;
+  readonly moneynessPct: number;
+  readonly delta: number | null;
+  readonly ivPct: number | null;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly mid: number | null;
+  readonly volume: number | null;
+  readonly openInterest: number | null;
+  readonly isOtm: boolean;
+  readonly isShortDteItm: boolean;
+}
+
+export interface VolSuiteCompositeSmilePointDto {
+  readonly strike: number;
+  readonly moneynessPct: number;
+  readonly ivPct: number | null;
+  readonly sourceSide: 'PUT' | 'CALL' | 'ATM_AVG';
+}
+
+export interface VolSuiteSeparatedSmileDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly onlyOtm: boolean;
+  readonly isShortDteSlice: boolean;
+  readonly excludedItmCount: number;
+  readonly callPoints: readonly VolSuiteSmilePointDto[];
+  readonly putPoints: readonly VolSuiteSmilePointDto[];
+  readonly compositeOtmPoints: readonly VolSuiteCompositeSmilePointDto[];
+  readonly atmIvPct: number | null;
+  readonly callWingAvgIvPct: number | null;
+  readonly putWingAvgIvPct: number | null;
+  readonly callVsPutSkewPp: number | null;
+  readonly iv25DeltaCallPct: number | null;
+  readonly iv25DeltaPutPct: number | null;
+  readonly riskReversal25DeltaPp: number | null;
+}
+
+export interface VolSuiteMatrixCellDto {
+  readonly offsetPct: number;
+  readonly ivPct: number | null;
+}
+
+export interface VolSuiteMatrixRowDto {
+  readonly expiryCode: string;
+  readonly expiryLabel: string;
+  readonly daysToExpiry: number;
+  readonly atmIvPct: number | null;
+  readonly cells: readonly VolSuiteMatrixCellDto[];
+}
+
+export interface VolSuiteMoneynessMatrixDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly offsetsPct: readonly number[];
+  readonly rows: readonly VolSuiteMatrixRowDto[];
+  readonly termRegime: 'CONTANGO' | 'BACKWARDATION' | 'FLAT' | 'NO_DATA';
+  readonly termSpreadPp: number | null;
+}
+
+export interface VolSuiteHistoryPointDto {
+  readonly time: number;
+  readonly date: string;
+  readonly close: number | null;
+  readonly rvPct: number | null;
+}
+
+export interface VolSuiteQuintileBucketDto {
+  readonly id: 'VERY_LOW' | 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
+  readonly label: string;
+  readonly rangeLabel: string;
+  readonly minBoundPct: number | null;
+  readonly maxBoundPct: number | null;
+  readonly occurrences: number;
+  readonly avgVolChange30dPts: number | null;
+  readonly avgUnderlyingReturn30dPct: number | null;
+  readonly pctVolDecreased: number | null;
+  readonly isCurrent: boolean;
+}
+
+export type VolSuiteOperativeRegimeCode =
+  | 'VENTA_PRIMA_CUBIERTA'
+  | 'COMPRA_CONVEXIDAD_CALENDAR'
+  | 'NEUTRAL_SELECTIVO'
+  | 'NO_DATA';
+
+export interface VolSuiteSeasonalityRowDto {
+  readonly monthIndex: number;
+  readonly monthLabel: string;
+  readonly tradingDays: number;
+  readonly monthsSampled: number;
+  readonly meanDailyReturnPct: number | null;
+  readonly avgMonthlyReturnPct: number | null;
+  readonly annualizedVolPct: number | null;
+  readonly positiveMonthRatePct: number | null;
+}
+
+export interface VolSuiteExtremeSessionDto {
+  readonly time: number;
+  readonly date: string;
+  readonly logReturnPct: number | null;
+  readonly simpleReturnPct: number | null;
+  readonly zScore: number | null;
+  readonly direction: 'UP' | 'DOWN';
+}
+
+export interface VolSuiteHistoricalCondDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly barsUsed: number;
+  readonly historyObservations: number;
+  readonly pairedObservations: number;
+  readonly currentEvalVolPct: number | null;
+  readonly latestRv20Pct: number | null;
+  readonly latestRv23Pct: number | null;
+  readonly latestRv60Pct: number | null;
+  readonly vrpVsRv23Pts: number | null;
+  readonly ivRank: number | null;
+  readonly ivPercentile: number | null;
+  readonly quantiles: {
+    readonly minPct: number | null;
+    readonly p20Pct: number | null;
+    readonly p40Pct: number | null;
+    readonly p60Pct: number | null;
+    readonly p80Pct: number | null;
+    readonly maxPct: number | null;
+    readonly medianPct: number | null;
+  };
+  readonly operativeRegime: {
+    readonly code: VolSuiteOperativeRegimeCode;
+    readonly label: string;
+    readonly rationale: string;
+  };
+  readonly buckets: readonly VolSuiteQuintileBucketDto[];
+  readonly historySeries: readonly VolSuiteHistoryPointDto[];
+  readonly seasonalityMonths: readonly VolSuiteSeasonalityRowDto[];
+  readonly extremeSessions: readonly VolSuiteExtremeSessionDto[];
+}
+
+export interface VolSuiteRvWindowDto {
+  readonly minPct: number | null;
+  readonly p25Pct: number | null;
+  readonly medianPct: number | null;
+  readonly p75Pct: number | null;
+  readonly maxPct: number | null;
+  readonly currentPct: number | null;
+  readonly observations: number;
+}
+
+export interface VolSuiteExpectedConeDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly dailyMoveAbs: number | null;
+  readonly dailyMovePct: number | null;
+  readonly horizonMove1SigmaPct: number | null;
+  readonly upper1Sigma: number | null;
+  readonly lower1Sigma: number | null;
+  readonly upper2Sigma: number | null;
+  readonly lower2Sigma: number | null;
+  readonly probQAboveSpotPct: number | null;
+  readonly probQBelowMinus10Pct: number | null;
+  readonly comparisonNodes: readonly {
+    readonly strike: number;
+    readonly densityQ: number | null;
+    readonly lognormalDensity: number | null;
+    readonly probAboveQ: number | null;
+  }[];
+}
+
+export interface VolSuiteParityStrikeDto {
+  readonly strike: number;
+  readonly callIvPct: number | null;
+  readonly putIvPct: number | null;
+  readonly ivSpreadPp: number | null;
+  readonly callBid: number | null;
+  readonly callAsk: number | null;
+  readonly callMid: number | null;
+  readonly putBid: number | null;
+  readonly putAsk: number | null;
+  readonly putMid: number | null;
+  readonly syntheticForwardMid: number | null;
+  readonly midImpliedTeaPct: number | null;
+  readonly teaTomadoraPct: number | null;
+  readonly teaColocadoraPct: number | null;
+  readonly canLendAboveBenchmark: boolean;
+  readonly canBorrowBelowBenchmark: boolean;
+  readonly edgeColocadoraBps: number | null;
+  readonly edgeTomadoraBps: number | null;
+}
+
+export interface VolSuiteParityDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly daysToExpiry: number;
+  readonly benchmarkTeaPct: number | null;
+  readonly benchmarkLabel: string;
+  readonly medianMidTeaPct: number | null;
+  readonly medianTeaTomadoraPct: number | null;
+  readonly medianTeaColocadoraPct: number | null;
+  readonly bestColocadoraStrike: number | null;
+  readonly bestColocadoraTeaPct: number | null;
+  readonly bestTomadoraStrike: number | null;
+  readonly bestTomadoraTeaPct: number | null;
+  readonly strikes: readonly VolSuiteParityStrikeDto[];
+}
+
+export interface VolSuiteRatioRowDto {
+  readonly side: 'CALL' | 'PUT';
+  readonly targetOffsetPct: number;
+  readonly longStrike: number;
+  readonly longPrice: number | null;
+  readonly shortStrike: number;
+  readonly shortMoneynessPct: number | null;
+  readonly shortPrice: number | null;
+  readonly priceSource: 'BBO' | 'MID';
+  readonly otmLotsPerBought: number | null;
+  readonly netCash1x2: number | null;
+  readonly outerBreakeven1x2: number | null;
+}
+
+export interface VolSuiteStructureCostDto {
+  readonly id: 'BULL_CALL_5' | 'BEAR_PUT_5' | 'BUTTERFLY_SYM';
+  readonly name: string;
+  readonly legsLabel: string;
+  readonly strikes: readonly number[];
+  readonly priceSource: 'BBO' | 'MID';
+  readonly width: number | null;
+  readonly netDebit: number | null;
+  readonly maxProfit: number | null;
+  readonly maxRisk: number | null;
+  readonly costPctOfMaxProfit: number | null;
+  readonly costPctOfWidth: number | null;
+  readonly rewardRiskRatio: number | null;
+  readonly breakevenLow: number | null;
+  readonly breakevenHigh: number | null;
+  readonly bs2002HistoricalPercentile: number | null;
+  readonly bs2002HistoricalMinPct: number | null;
+  readonly bs2002HistoricalMedianPct: number | null;
+  readonly bs2002HistoricalMaxPct: number | null;
+  readonly bs2002HistoricalObs: number;
+}
+
+export interface VolSuiteRatiosStructuresDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly callRatios: readonly VolSuiteRatioRowDto[];
+  readonly putRatios: readonly VolSuiteRatioRowDto[];
+  readonly structures: readonly VolSuiteStructureCostDto[];
+}
+
+export interface VolSuiteDualSurfaceNodeDto {
+  readonly offsetPct: number;
+  readonly bymaIvPct: number | null;
+  readonly opraAdrIvPct: number | null;
+  readonly theoreticalBymaIvPct: number | null;
+  readonly spreadBymaMinusOpraPp: number | null;
+  readonly spreadBymaMinusTheoreticalPp: number | null;
+}
+
+export interface VolSuiteDualSurfaceDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly arUnderlying: string;
+  readonly adrTicker: string;
+  readonly adrRatio: number | null;
+  readonly bymaSpotArs: number | null;
+  readonly adrSpotUsd: number | null;
+  readonly cclImplicit: number | null;
+  readonly bymaExpiryCode: string;
+  readonly bymaDays: number;
+  readonly opraExpiryDate: string;
+  readonly opraDays: number;
+  readonly cclAnnualVolPct: number | null;
+  readonly corrAdrCcl: number | null;
+  readonly bymaAtmIvPct: number | null;
+  readonly opraAtmIvPct: number | null;
+  readonly theoreticalAtmIvPct: number | null;
+  readonly atmSpreadBymaVsOpraPp: number | null;
+  readonly atmSpreadBymaVsTheoreticalPp: number | null;
+  readonly nodes: readonly VolSuiteDualSurfaceNodeDto[];
+}
+
+export interface VolAnalyticsExpirySuiteDto {
+  readonly expiryCode: string;
+  readonly expirationDate: string;
+  readonly daysToExpiry: number;
+  readonly smileOtmOnly: VolSuiteSeparatedSmileDto;
+  readonly smileAll: VolSuiteSeparatedSmileDto;
+  readonly priorSmile: {
+    readonly dateKey: string;
+    readonly tradingDaysAgo: number;
+    readonly atmIvPct: number | null;
+    readonly compositeOtmPoints: readonly VolSuiteCompositeSmilePointDto[];
+  } | null;
+  readonly expectedCone: VolSuiteExpectedConeDto;
+  readonly parity: VolSuiteParityDto;
+  readonly ratiosAndStructures: VolSuiteRatiosStructuresDto;
+}
+
+export interface VolAnalyticsSuiteDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly market: 'BYMA' | 'US';
+  readonly underlying: string;
+  readonly spot: number | null;
+  readonly rateContinuous: number | null;
+  readonly rateTeaPct: number | null;
+  readonly benchmarkLabel: string;
+  readonly dividendYield: number | null;
+  readonly activeExpiryCode: string | null;
+  readonly hasDualAdr: boolean;
+  readonly nonDualMessage: string | null;
+  readonly moneynessMatrixOtm: VolSuiteMoneynessMatrixDto;
+  readonly moneynessMatrixAll: VolSuiteMoneynessMatrixDto;
+  readonly historicalConditional: VolSuiteHistoricalCondDto;
+  readonly rvWindows: {
+    readonly rv20: VolSuiteRvWindowDto;
+    readonly rv60: VolSuiteRvWindowDto;
+    readonly rv120: VolSuiteRvWindowDto;
+  };
+  readonly dualSurface: VolSuiteDualSurfaceDto | null;
+  readonly expiriesByCode: Readonly<Record<string, VolAnalyticsExpirySuiteDto>>;
+}
+
+export type UnifiedQuantEnginesDto = Pick<
+  ArOptionsQuantEnginesDto,
+  | 'qDistribution'
+  | 'pDistribution'
+  | 'pqDivergence'
+  | 'volCone'
+  | 'syntheticRates'
+  | 'conversionReversal'
+  | 'buyWrite'
+  | 'calendarRoll'
+  | 'confluenceClusters'
+>;
+
+export type VolHistoryHorizon = '1M' | '3M' | '6M' | '1A' | 'TODO';
+
+const HORIZON_BAR_LIMITS: Readonly<Record<VolHistoryHorizon, number>> = {
+  '1M': 23,
+  '3M': 63,
+  '6M': 126,
+  '1A': 252,
+  TODO: 750,
+};
+
+/** Resuelve el payload de Pieza 27 tanto desde motores BYMA como desde el snapshot US. */
+export function resolveActiveVolAnalyticsSuite(params: {
+  readonly liveOptions: ArOptionsResponse | undefined;
+  readonly liveQuantEngines: ArOptionsQuantEnginesDto | null;
+  readonly usSnapshot: UsSnapshotResponseDto | undefined;
+}): VolAnalyticsSuiteDto | null {
+  const fromActive = (
+    params.liveQuantEngines as (ArOptionsQuantEnginesDto & {
+      readonly volAnalyticsSuite?: VolAnalyticsSuiteDto | null;
+    }) | null
+  )?.volAnalyticsSuite;
+  if (fromActive) return fromActive;
+
+  const fromOptions = (
+    params.liveOptions?.quantEngines as
+      | (ArOptionsQuantEnginesDto & {
+          readonly volAnalyticsSuite?: VolAnalyticsSuiteDto | null;
+        })
+      | null
+      | undefined
+  )?.volAnalyticsSuite;
+  if (fromOptions) return fromOptions;
+
+  const fromUs = (
+    params.usSnapshot?.terminalEngines as
+      | (SerializedTerminalEnginesDto & {
+          readonly volAnalyticsSuite?: VolAnalyticsSuiteDto | null;
+        })
+      | null
+      | undefined
+  )?.volAnalyticsSuite;
+  return fromUs ?? null;
+}
+
+/** Resuelve el slice de vencimiento activo dentro de `expiriesByCode` sin silenciosos falsos. */
+export function resolveExpiryVolSuite(
+  suite: VolAnalyticsSuiteDto | null,
+  selectedExpiryCode: string | null,
+): VolAnalyticsExpirySuiteDto | null {
+  if (!suite) return null;
+  if (selectedExpiryCode && suite.expiriesByCode[selectedExpiryCode]) {
+    return suite.expiriesByCode[selectedExpiryCode] ?? null;
+  }
+  if (suite.activeExpiryCode && suite.expiriesByCode[suite.activeExpiryCode]) {
+    return suite.expiriesByCode[suite.activeExpiryCode] ?? null;
+  }
+  const firstKey = Object.keys(suite.expiriesByCode)[0];
+  return firstKey ? (suite.expiriesByCode[firstKey] ?? null) : null;
+}
+
+/** Unifica motores cuantitativos AR (`activeQuantEngines`) y US (`terminalEngines`) para Tab 1 y Tab 4. */
+export function resolveUnifiedQuantEngines(
+  liveQuantEngines: ArOptionsQuantEnginesDto | null,
+  usSnapshot: UsSnapshotResponseDto | undefined,
+): UnifiedQuantEnginesDto | null {
+  return liveQuantEngines ?? usSnapshot?.terminalEngines ?? null;
+}
+
+/** Recorta la serie histórica de RV/close según el horizonte seleccionado. */
+export function sliceHistorySeriesByHorizon(
+  series: readonly VolSuiteHistoryPointDto[],
+  horizon: VolHistoryHorizon,
+): readonly VolSuiteHistoryPointDto[] {
+  if (series.length === 0) return [];
+  const limit = HORIZON_BAR_LIMITS[horizon];
+  return series.length > limit ? series.slice(-limit) : series;
+}
+
+/** Formateo estricto nulo-seguro (`'—'` ante `null`/`undefined`/`NaN`). */
+export function fmtNullableNumber(
+  value: number | null | undefined,
+  decimals = 2,
+  suffix = '',
+  prefix = '',
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return `${prefix}${fmtNum(value, decimals)}${suffix}`;
+}
+
+/** Formateo con signo explícito (`+` / `-`) o `'—'` ante falta de datos. */
+export function fmtSignedNullable(
+  value: number | null | undefined,
+  decimals = 2,
+  suffix = '',
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${fmtNum(value, decimals)}${suffix}`;
+}
+
+/** Calcula dominio [min, max] con padding para gráficos SVG neutros sin colapsar en rango cero. */
+export function computeNumericExtent(
+  values: readonly (number | null | undefined)[],
+  padRatio = 0.08,
+  fallbackSpan = 1,
+): { readonly min: number; readonly max: number } {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of values) {
+    if (v !== null && v !== undefined && Number.isFinite(v)) {
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    return { min: 0, max: fallbackSpan };
+  }
+  const rawSpan = hi - lo;
+  const span = rawSpan > 1e-9 ? rawSpan : Math.max(Math.abs(lo) * 0.1, fallbackSpan);
+  const pad = span * padRatio;
+  return { min: lo - pad, max: hi + pad };
+}
+
+/** Mapea puntos `(x, y)` finitos a path SVG `M ... L ...` con cortes si faltan valores. */
+export function buildSvgLinePath(
+  points: readonly { readonly x: number; readonly y: number | null | undefined }[],
+  mapX: (x: number) => number,
+  mapY: (y: number) => number,
+): string {
+  const parts: string[] = [];
+  let penDown = false;
+  for (const pt of points) {
+    if (pt.y === null || pt.y === undefined || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+      penDown = false;
+      continue;
+    }
+    const sx = mapX(pt.x);
+    const sy = mapY(pt.y);
+    if (!Number.isFinite(sx) || !Number.isFinite(sy)) {
+      penDown = false;
+      continue;
+    }
+    parts.push(`${penDown ? 'L' : 'M'}${sx.toFixed(1)},${sy.toFixed(1)}`);
+    penDown = true;
+  }
+  return parts.join(' ');
 }

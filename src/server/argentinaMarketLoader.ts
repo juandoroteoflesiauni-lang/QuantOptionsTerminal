@@ -99,6 +99,23 @@ import {
 import { computeSliceVolMetrics } from '../core/options/volMetrics.js';
 import { buildVolSlice, evaluateSliceIvAtStrike, type VolQuoteInput } from '../core/options/volSurface.js';
 import {
+  buildExpectedConeAndLognormalSummary,
+  buildNormalizedMoneynessMatrix,
+  buildSeparatedOtmSmile,
+  computeCclVolAndAdrCorrelation,
+  computeDualBymaVsOpraSurface,
+  computeHistoricalVolConditionalTable,
+  computeParityAndSyntheticRatesByStrike,
+  computeRatiosAndStructureCosts,
+  computeRollingRvDistributionAtWindow,
+  type CompositeOtmSmilePoint,
+  type HistoricalDailyBarInput,
+  type SeparatedSmileResult,
+  type VolAnalyticsExpirySuiteResult,
+  type VolAnalyticsPriorSmileSnapshot,
+  type VolAnalyticsSuiteResult,
+} from '../core/options/volAnalyticsSuite.js';
+import {
   computeStructureCostPercentile,
   detectSpatialConfluenceClusters,
   evaluateRelativeStrengthAndCatalysts,
@@ -137,6 +154,7 @@ import {
   type CachedDailyBarsResult,
   type EquityPanelAnalyticsDto,
   type EquityPanelRowDto,
+  type TerminalSnapshotResponse,
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 
@@ -155,7 +173,11 @@ export type UsRuntimeAdapter = Pick<MarketRuntime, 'getCachedDailyBars1d'> &
   Partial<
     Pick<
       MarketRuntime,
-      'getUsEquityPanelAnalytics' | 'getCachedIv30Map' | 'getCachedDailyBars1dBatch' | 'getBars'
+      | 'getSnapshot'
+      | 'getUsEquityPanelAnalytics'
+      | 'getCachedIv30Map'
+      | 'getCachedDailyBars1dBatch'
+      | 'getBars'
     >
   >;
 
@@ -475,6 +497,7 @@ export interface ArOptionsQuantEnginesDto {
   readonly structureOptimizerBearish: JsonSafe<OptimizeOptionStructuresResult> | null;
   readonly structureCostPercentile: JsonSafe<StructureCostPercentileResult> | null;
   readonly confluenceClusters: JsonSafe<SpatialConfluenceResult> | null;
+  readonly volAnalyticsSuite?: JsonSafe<VolAnalyticsSuiteResult> | null;
 }
 
 export interface ArStockDetailResponse {
@@ -826,6 +849,19 @@ const AR_STOCK_META: readonly StockMetadata[] = [
 const STOCK_META_MAP = new Map<string, StockMetadata>(
   AR_STOCK_META.map((m) => [m.ticker, m]),
 );
+
+const DUAL_ADR_OPTIONS_TICKERS = new Set<string>([
+  'GGAL',
+  'YPFD',
+  'PAMP',
+  'BMA',
+  'CEPU',
+  'TGSU2',
+  'EDN',
+  'SUPV',
+  'BBAR',
+  'LOMA',
+]);
 
 const CEDEAR_RATIOS: Readonly<Record<string, { readonly usTicker: string; readonly ratio: number; readonly name: string }>> = {
   SPY: { usTicker: 'SPY', ratio: 20, name: 'SPDR S&P 500 ETF Trust' },
@@ -2831,6 +2867,14 @@ export class ArgentinaMarketRuntime {
   private readonly histCache: SingleFlightRuntimeCache<readonly Bar[]>;
   private readonly macroCache: SingleFlightRuntimeCache<unknown>;
   private readonly computedCache: SingleFlightRuntimeCache<unknown>;
+  private readonly priorSmileCache = new Map<
+    string,
+    readonly {
+      readonly dateKey: string;
+      readonly atmIvPct: number;
+      readonly compositeOtmPoints: readonly CompositeOtmSmilePoint[];
+    }[]
+  >();
 
   private data912Queue: Promise<void> = Promise.resolve();
   private lastData912ReqMs = 0;
@@ -4613,6 +4657,461 @@ export class ArgentinaMarketRuntime {
     };
   }
 
+  private recordAndResolvePriorSmile(
+    cacheKey: string,
+    dateKey: string,
+    atmIvPct: number,
+    compositeOtmPoints: readonly CompositeOtmSmilePoint[],
+  ): VolAnalyticsPriorSmileSnapshot | null {
+    if (!Number.isFinite(atmIvPct) || atmIvPct <= 0 || compositeOtmPoints.length < 2) {
+      return null;
+    }
+    const existing = this.priorSmileCache.get(cacheKey) ?? [];
+    const filtered = existing.filter((e) => e.dateKey !== dateKey);
+    const updated = [...filtered, { dateKey, atmIvPct, compositeOtmPoints }]
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
+      .slice(-20);
+    this.priorSmileCache.set(cacheKey, updated);
+
+    const lastIdx = updated.length - 1;
+    let bestCandidate: VolAnalyticsPriorSmileSnapshot | null = null;
+    let bestDistFromTarget = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < lastIdx; i += 1) {
+      const ago = lastIdx - i;
+      if (ago < 5 || ago > 10) continue;
+      const dist = Math.abs(ago - 7);
+      const entry = updated[i];
+      if (entry !== undefined && dist < bestDistFromTarget) {
+        bestDistFromTarget = dist;
+        bestCandidate = {
+          dateKey: entry.dateKey,
+          tradingDaysAgo: ago,
+          atmIvPct: entry.atmIvPct,
+          compositeOtmPoints: entry.compositeOtmPoints,
+        };
+      }
+    }
+    return bestCandidate;
+  }
+
+  private pickArCaucionBenchmarkTea(params: {
+    readonly bmbSnap: BmbBridgeSnapshotDto | null;
+    readonly macroVars: ArMacroResponse['variables'];
+    readonly continuousRate: number | null;
+    readonly targetDays: number;
+  }): { readonly teaPct: number; readonly label: string } {
+    const { bmbSnap, macroVars, continuousRate, targetDays } = params;
+    if (bmbSnap !== null && bmbSnap.health.status === 'READY' && bmbSnap.cauciones.length > 0) {
+      const valid = bmbSnap.cauciones
+        .filter(
+          (c) =>
+            c.currency === 'ARS' &&
+            c.termDays > 0 &&
+            ((c.teaEffective !== null && Number.isFinite(c.teaEffective)) ||
+              (c.tnaWeighted !== null && c.tnaWeighted > 0)),
+        )
+        .slice()
+        .sort((a, b) => Math.abs(a.termDays - targetDays) - Math.abs(b.termDays - targetDays));
+      const best = valid[0];
+      if (best !== undefined) {
+        const tea =
+          best.teaEffective !== null && Number.isFinite(best.teaEffective)
+            ? best.teaEffective
+            : best.tnaWeighted !== null
+              ? computeCaucionTeaEffectivePct(best.tnaWeighted, best.termDays)
+              : Number.NaN;
+        if (Number.isFinite(tea)) {
+          return { teaPct: tea, label: `Caución ${String(best.termDays)}d` };
+        }
+      }
+    }
+    const bcraRefTna =
+      macroVars.tamarTna ?? macroVars.badlarTna ?? macroVars.tpmTna ?? macroVars.plazoFijoTna;
+    const bcraSourceName =
+      macroVars.tamarTna !== null
+        ? 'Caución Ref. TAMAR'
+        : macroVars.badlarTna !== null
+          ? 'Caución Ref. BADLAR'
+          : macroVars.tpmTna !== null
+            ? 'Caución Ref. TPM'
+            : 'Caución Ref. BCRA';
+    if (bcraRefTna !== null && Number.isFinite(bcraRefTna) && bcraRefTna > 0) {
+      const daysClamped = Math.max(1, Math.min(90, Math.round(targetDays)));
+      const tea = computeCaucionTeaEffectivePct(bcraRefTna, daysClamped);
+      if (Number.isFinite(tea)) {
+        return { teaPct: tea, label: bcraSourceName };
+      }
+    }
+    if (continuousRate !== null && Number.isFinite(continuousRate)) {
+      const tea = Math.expm1(continuousRate) * 100;
+      if (Number.isFinite(tea)) {
+        return { teaPct: tea, label: 'Tasa Libre BYMA' };
+      }
+    }
+    return { teaPct: Number.NaN, label: 'Caución / BCRA' };
+  }
+
+  private buildArVolAnalyticsSuite(params: {
+    readonly underlying: string;
+    readonly spot: number | null;
+    readonly spotBid: number | null;
+    readonly spotAsk: number | null;
+    readonly evalRate: number;
+    readonly continuousRate: number | null;
+    readonly dividendYield: number;
+    readonly nowSec: number;
+    readonly closedBars: readonly Bar[];
+    readonly expiries: readonly ArOptionExpiryDto[];
+    readonly termExpiries: readonly ArOptionExpiryDto[];
+    readonly primaryExp: ArOptionExpiryDto | undefined;
+    readonly qDistByExpiry: ReadonlyMap<string, RiskNeutralDistributionResult | null>;
+    readonly bmbSnap: BmbBridgeSnapshotDto | null;
+    readonly macroVars: ArMacroResponse['variables'];
+    readonly adrSnap: TerminalSnapshotResponse | null;
+    readonly adrBars: readonly Bar[];
+    readonly adrTicker: string | null;
+    readonly adrRatio: number | null;
+  }): VolAnalyticsSuiteResult | null {
+    const {
+      underlying,
+      spot,
+      spotBid,
+      spotAsk,
+      evalRate,
+      continuousRate,
+      dividendYield,
+      nowSec,
+      closedBars,
+      expiries,
+      termExpiries,
+      primaryExp,
+      qDistByExpiry,
+      bmbSnap,
+      macroVars,
+      adrSnap,
+      adrBars,
+      adrTicker,
+      adrRatio,
+    } = params;
+
+    if (spot === null || spot <= 0) {
+      return null;
+    }
+
+    const histInputs: HistoricalDailyBarInput[] = closedBars.map((b) => ({
+      time: b.time,
+      close: b.close,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+    }));
+
+    const primaryIvAtmPct =
+      primaryExp?.ivAtm !== null && primaryExp?.ivAtm !== undefined && primaryExp.ivAtm > 0
+        ? primaryExp.ivAtm * 100
+        : null;
+
+    const historicalConditional = computeHistoricalVolConditionalTable(
+      {
+        bars: histInputs,
+        currentIvAtmPct: primaryIvAtmPct,
+      },
+      {
+        rvWindowDays: 23,
+        forwardTradingDays: 21,
+        maxHistoryPoints: 750,
+        tailSigmaThreshold: 3.0,
+      },
+    );
+
+    const rvWindows = {
+      rv20: computeRollingRvDistributionAtWindow(histInputs, 20, 750),
+      rv60: computeRollingRvDistributionAtWindow(histInputs, 60, 750),
+      rv120: computeRollingRvDistributionAtWindow(histInputs, 120, 750),
+    };
+
+    const histVolSeriesForCost = historicalConditional.historySeries
+      .slice(-252)
+      .map((p) => p.rvPct);
+
+    const dateKeyUtc = new Date(nowSec * 1_000).toISOString().slice(0, 10);
+    const rateForSmile = Number.isFinite(evalRate) ? evalRate : 0;
+
+    const smileOtmMap = new Map<string, SeparatedSmileResult>();
+    const smileAllMap = new Map<string, SeparatedSmileResult>();
+    const expiriesByCode: Record<string, VolAnalyticsExpirySuiteResult> = {};
+
+    for (const exp of expiries) {
+      const tExp = Math.max(1 / 365, exp.days / 365);
+      const contractsInput = [...exp.calls, ...exp.puts].map((c) => ({
+        strike: c.strike,
+        contractType: c.contractType,
+        iv: c.iv,
+        bid: c.bid,
+        ask: c.ask,
+        last: c.last,
+        mid: c.mark,
+        volume: c.volume,
+        openInterest: c.openInterest,
+        delta: c.delta,
+      }));
+
+      const smileOtmOnly = buildSeparatedOtmSmile(
+        {
+          spot,
+          timeToExpiryYears: tExp,
+          daysToExpiry: exp.days,
+          rate: rateForSmile,
+          dividendYield,
+          contracts: contractsInput,
+        },
+        { onlyOtm: true },
+      );
+      const smileAll = buildSeparatedOtmSmile(
+        {
+          spot,
+          timeToExpiryYears: tExp,
+          daysToExpiry: exp.days,
+          rate: rateForSmile,
+          dividendYield,
+          contracts: contractsInput,
+        },
+        { onlyOtm: false },
+      );
+      smileOtmMap.set(exp.expiryCode, smileOtmOnly);
+      smileAllMap.set(exp.expiryCode, smileAll);
+
+      const priorSmile = this.recordAndResolvePriorSmile(
+        `${underlying}:${exp.expiryCode}`,
+        dateKeyUtc,
+        smileOtmOnly.atmIvPct,
+        smileOtmOnly.compositeOtmPoints,
+      );
+
+      const atmIvForCone =
+        Number.isFinite(smileOtmOnly.atmIvPct) && smileOtmOnly.atmIvPct > 0
+          ? smileOtmOnly.atmIvPct
+          : exp.ivAtm !== null && exp.ivAtm > 0
+            ? exp.ivAtm * 100
+            : Number.NaN;
+
+      const qDist = qDistByExpiry.get(exp.expiryCode) ?? null;
+      const expectedCone = buildExpectedConeAndLognormalSummary({
+        spot,
+        atmIvPct: atmIvForCone,
+        daysToExpiry: exp.days,
+        rate: rateForSmile,
+        dividendYield,
+        ...(qDist !== null && qDist.status === 'OK'
+          ? {
+              qNodes: qDist.nodes.map((n) => ({
+                strike: n.strike,
+                densityQ: n.densityQ,
+                probAboveQ: n.probAboveQ,
+              })),
+            }
+          : {}),
+      });
+
+      const callByK = new Map(exp.calls.map((c) => [c.strike, c]));
+      const putByK = new Map(exp.puts.map((p) => [p.strike, p]));
+      const parityPairs = exp.strikes.map((k) => {
+        const c = callByK.get(k);
+        const p = putByK.get(k);
+        return {
+          strike: k,
+          callBid: c?.bid ?? null,
+          callAsk: c?.ask ?? null,
+          callMid: c?.mark ?? c?.last ?? null,
+          callIvPct: c?.iv !== null && c?.iv !== undefined && c.iv > 0 ? c.iv * 100 : null,
+          putBid: p?.bid ?? null,
+          putAsk: p?.ask ?? null,
+          putMid: p?.mark ?? p?.last ?? null,
+          putIvPct: p?.iv !== null && p?.iv !== undefined && p.iv > 0 ? p.iv * 100 : null,
+          callVolume: c?.volume ?? null,
+          putVolume: p?.volume ?? null,
+        };
+      });
+
+      const expBench = this.pickArCaucionBenchmarkTea({
+        bmbSnap,
+        macroVars,
+        continuousRate,
+        targetDays: exp.days,
+      });
+
+      const parity = computeParityAndSyntheticRatesByStrike({
+        spotMid: spot,
+        spotBid,
+        spotAsk,
+        daysToExpiry: exp.days,
+        dividendYield,
+        benchmarkTeaPct: Number.isFinite(expBench.teaPct) ? expBench.teaPct : null,
+        benchmarkLabel: expBench.label,
+        pairs: parityPairs,
+      });
+
+      const ratioStrikes = exp.strikes.map((k) => {
+        const c = callByK.get(k);
+        const p = putByK.get(k);
+        return {
+          strike: k,
+          callBid: c?.bid ?? null,
+          callAsk: c?.ask ?? null,
+          callMid: c?.mark ?? c?.last ?? null,
+          putBid: p?.bid ?? null,
+          putAsk: p?.ask ?? null,
+          putMid: p?.mark ?? p?.last ?? null,
+        };
+      });
+
+      const ratiosAndStructures = computeRatiosAndStructureCosts({
+        spot,
+        daysToExpiry: exp.days,
+        rate: rateForSmile,
+        dividendYield,
+        strikes: ratioStrikes,
+        historicalVolPctSeries: histVolSeriesForCost,
+      });
+
+      expiriesByCode[exp.expiryCode] = {
+        expiryCode: exp.expiryCode,
+        expirationDate: exp.expirationDate,
+        daysToExpiry: exp.days,
+        smileOtmOnly,
+        smileAll,
+        priorSmile,
+        expectedCone,
+        parity,
+        ratiosAndStructures,
+      };
+    }
+
+    const matrixExps = termExpiries.length > 0 ? termExpiries : expiries;
+    const moneynessMatrixOtm = buildNormalizedMoneynessMatrix(
+      matrixExps.map((e) => ({
+        expiryCode: e.expiryCode,
+        expiryLabel: e.expiryLabel,
+        daysToExpiry: e.days,
+        compositeOtmPoints: smileOtmMap.get(e.expiryCode)?.compositeOtmPoints ?? [],
+        fallbackAtmIvPct: e.ivAtm !== null && e.ivAtm > 0 ? e.ivAtm * 100 : null,
+      })),
+    );
+    const moneynessMatrixAll = buildNormalizedMoneynessMatrix(
+      matrixExps.map((e) => ({
+        expiryCode: e.expiryCode,
+        expiryLabel: e.expiryLabel,
+        daysToExpiry: e.days,
+        compositeOtmPoints: smileAllMap.get(e.expiryCode)?.compositeOtmPoints ?? [],
+        fallbackAtmIvPct: e.ivAtm !== null && e.ivAtm > 0 ? e.ivAtm * 100 : null,
+      })),
+    );
+
+    const hasDualAdr = DUAL_ADR_OPTIONS_TICKERS.has(underlying) && adrTicker !== null;
+    let dualSurface: VolAnalyticsSuiteResult['dualSurface'] = null;
+    if (
+      hasDualAdr &&
+      adrRatio !== null &&
+      adrRatio > 0 &&
+      primaryExp !== undefined &&
+      adrSnap !== null &&
+      adrSnap.volSurfaceSummary !== null
+    ) {
+      const adrSpotUsd = adrSnap.envelope.snapshot.metrics.spot;
+      const opraSlices = adrSnap.volSurfaceSummary.slices;
+      const matchedOpraSlice =
+        opraSlices.length > 0
+          ? opraSlices
+              .slice()
+              .sort(
+                (a, b) =>
+                  Math.abs(a.timeToExpiryDays - primaryExp.days) -
+                  Math.abs(b.timeToExpiryDays - primaryExp.days),
+              )[0] ?? null
+          : adrSnap.volSurfaceSummary.frontSlice;
+      if (adrSpotUsd !== null && adrSpotUsd > 0 && matchedOpraSlice !== null) {
+        const opraContracts = adrSnap.volSurfaceSummary.contracts.filter(
+          (c) => c.expirationDate === matchedOpraSlice.expirationDate,
+        );
+        const opraSmile = buildSeparatedOtmSmile(
+          {
+            spot: adrSpotUsd,
+            timeToExpiryYears: Math.max(1 / 365, matchedOpraSlice.timeToExpiryYears),
+            daysToExpiry: Math.max(1, matchedOpraSlice.timeToExpiryDays),
+            rate: matchedOpraSlice.rate ?? 0.045,
+            dividendYield: matchedOpraSlice.dividendYield ?? 0,
+            contracts: opraContracts.map((c) => ({
+              strike: c.strike,
+              contractType: c.contractType,
+              iv: c.ownIv ?? c.providerIv,
+              bid: c.bid,
+              ask: c.ask,
+              last: c.lastPrice,
+              mid: c.mid,
+              volume: c.volume,
+              openInterest: c.openInterest,
+              delta: c.delta,
+            })),
+          },
+          { onlyOtm: true },
+        );
+        const bymaSmilePts = smileOtmMap.get(primaryExp.expiryCode)?.compositeOtmPoints ?? [];
+        const cclStats = computeCclVolAndAdrCorrelation({
+          arBars: histInputs,
+          adrBars: adrBars.map((b) => ({ time: b.time, close: b.close })),
+          adrRatio,
+        });
+        const cclImplicit = (spot * adrRatio) / adrSpotUsd;
+        dualSurface = computeDualBymaVsOpraSurface({
+          arUnderlying: underlying,
+          adrTicker,
+          adrRatio,
+          bymaSpotArs: spot,
+          adrSpotUsd,
+          cclImplicit,
+          bymaExpiryCode: primaryExp.expiryCode,
+          bymaDays: primaryExp.days,
+          opraExpiryDate: matchedOpraSlice.expirationDate,
+          opraDays: matchedOpraSlice.timeToExpiryDays,
+          bymaCompositeOtmPoints: bymaSmilePts,
+          opraCompositeOtmPoints: opraSmile.compositeOtmPoints,
+          cclAnnualVolPct: cclStats.cclAnnualVolPct,
+          corrAdrCcl: cclStats.corrAdrCcl,
+        });
+      }
+    }
+
+    const frontBench = this.pickArCaucionBenchmarkTea({
+      bmbSnap,
+      macroVars,
+      continuousRate,
+      targetDays: primaryExp?.days ?? 30,
+    });
+
+    return {
+      status:
+        historicalConditional.status === 'OK' || expiries.length > 0 ? 'OK' : 'NO_DATA',
+      market: 'BYMA',
+      underlying,
+      spot,
+      rateContinuous: evalRate,
+      rateTeaPct: frontBench.teaPct,
+      benchmarkLabel: frontBench.label,
+      dividendYield,
+      activeExpiryCode: primaryExp?.expiryCode ?? null,
+      hasDualAdr,
+      nonDualMessage: hasDualAdr
+        ? null
+        : 'Activo sin ADR dual — Ver estructura completa en Tab 2',
+      moneynessMatrixOtm,
+      moneynessMatrixAll,
+      historicalConditional,
+      rvWindows,
+      dualSurface,
+      expiriesByCode,
+    };
+  }
+
   private resolveEffectiveUsRuntime(): UsRuntimeAdapter | null {
     if (this.usRuntime !== null) {
       return this.usRuntime;
@@ -5475,14 +5974,35 @@ export class ArgentinaMarketRuntime {
       cacheKey,
       async () => {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
-        const [optionsRes, overview, macroData, histRes] = await Promise.all([
-          this.getData912Live('/live/arg_options', forceRefresh),
-          preloadedOverviewCore !== undefined
-            ? Promise.resolve(preloadedOverviewCore)
-            : this.getOverviewCore(forceRefresh),
-          this.fetchBcraAndArgDatos(preloadedOverviewCore !== undefined ? false : forceRefresh),
-          this.getData912History('stocks', underlying, forceRefresh),
-        ]);
+        const dualMeta = STOCK_META_MAP.get(underlying);
+        const dualAdrTicker =
+          preloadedOverviewCore === undefined &&
+          dualMeta?.adrTicker !== undefined &&
+          DUAL_ADR_OPTIONS_TICKERS.has(underlying)
+            ? dualMeta.adrTicker
+            : null;
+        const dualUsRt = dualAdrTicker !== null ? this.resolveEffectiveUsRuntime() : null;
+        const bmbHealth = this.bmbClient.getSafeHealthStatus();
+        const bmbConfigured = bmbHealth.passwordConfigured && bmbHealth.status !== 'DISABLED_NO_PASSWORD';
+
+        const [optionsRes, overview, macroData, histRes, dualBmbSnap, dualAdrSnap, dualAdrBarsRes] =
+          await Promise.all([
+            this.getData912Live('/live/arg_options', forceRefresh),
+            preloadedOverviewCore !== undefined
+              ? Promise.resolve(preloadedOverviewCore)
+              : this.getOverviewCore(forceRefresh),
+            this.fetchBcraAndArgDatos(preloadedOverviewCore !== undefined ? false : forceRefresh),
+            this.getData912History('stocks', underlying, forceRefresh),
+            bmbConfigured
+              ? this.bmbClient.getSnapshot(undefined, null, forceRefresh).catch((): null => null)
+              : Promise.resolve(null),
+            dualAdrTicker !== null && dualUsRt !== null && typeof dualUsRt.getSnapshot === 'function'
+              ? dualUsRt.getSnapshot(dualAdrTicker, { forceRefresh: false }).catch((): null => null)
+              : Promise.resolve(null),
+            dualAdrTicker !== null && dualUsRt !== null
+              ? dualUsRt.getCachedDailyBars1d(dualAdrTicker, 320, false).catch((): null => null)
+              : Promise.resolve(null),
+          ]);
 
         const stock =
           overview.mervalStocks.find((s) => s.ticker === underlying) ??
@@ -6608,6 +7128,74 @@ export class ArgentinaMarketRuntime {
             quantEnginesByExpiry[e.expiryCode] = buildQuantEngines(e, nextExpiryAfter(e), e.ivAtm);
           }
         }
+
+        const qDistByExpiry = new Map<string, RiskNeutralDistributionResult | null>();
+        for (const [code, qe] of Object.entries(quantEnginesByExpiry)) {
+          const qd = qe?.qDistribution ?? null;
+          if (qd !== null) {
+            qDistByExpiry.set(code, {
+              ...qd,
+              rawArea: qd.rawArea ?? Number.NaN,
+              normalizedArea: qd.normalizedArea ?? Number.NaN,
+              meanQ: qd.meanQ ?? Number.NaN,
+              varianceQ: qd.varianceQ ?? Number.NaN,
+              stdDevQ: qd.stdDevQ ?? Number.NaN,
+              skewnessQ: qd.skewnessQ ?? Number.NaN,
+              excessKurtosisQ: qd.excessKurtosisQ ?? Number.NaN,
+              nodes: qd.nodes.map((n) => ({
+                strike: n.strike ?? Number.NaN,
+                iv: n.iv ?? Number.NaN,
+                callPrice: n.callPrice ?? Number.NaN,
+                dCdK: n.dCdK ?? Number.NaN,
+                d2CdK2: n.d2CdK2 ?? Number.NaN,
+                probAboveQ: n.probAboveQ ?? Number.NaN,
+                rawDensityQ: n.rawDensityQ ?? Number.NaN,
+                densityQ: n.densityQ ?? Number.NaN,
+              })),
+            });
+          }
+        }
+
+        const closedBarsVolSuite = normalizeClosedDailyBarsForEngines(
+          bars.slice(-760),
+          Math.floor(nowSec),
+        );
+        const volAnalyticsSuiteBase = this.buildArVolAnalyticsSuite({
+          underlying,
+          spot,
+          spotBid: stock?.bid ?? null,
+          spotAsk: stock?.ask ?? null,
+          evalRate,
+          continuousRate,
+          dividendYield,
+          nowSec: Math.floor(nowSec),
+          closedBars: closedBarsVolSuite,
+          expiries,
+          termExpiries,
+          primaryExp,
+          qDistByExpiry,
+          bmbSnap: dualBmbSnap,
+          macroVars: macroData.variables,
+          adrSnap: dualAdrSnap,
+          adrBars: dualAdrBarsRes?.bars ?? [],
+          adrTicker: dualAdrTicker,
+          adrRatio: dualMeta?.adrRatio ?? null,
+        });
+
+        if (volAnalyticsSuiteBase !== null) {
+          for (const [code, qe] of Object.entries(quantEnginesByExpiry)) {
+            if (qe !== null) {
+              quantEnginesByExpiry[code] = sanitizeJsonPayload({
+                ...qe,
+                volAnalyticsSuite: {
+                  ...volAnalyticsSuiteBase,
+                  activeExpiryCode: code,
+                },
+              });
+            }
+          }
+        }
+
         const quantEngines: ArOptionsQuantEnginesDto | null =
           primaryExp !== undefined ? (quantEnginesByExpiry[primaryExp.expiryCode] ?? null) : null;
 

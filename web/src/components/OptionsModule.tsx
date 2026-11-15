@@ -43,9 +43,10 @@ import {
   fk,
   makeMarket,
   ncdf,
+  priceLegs,
 } from './options/engine';
 import { InteractiveOptionPriceMap } from './options/map/InteractiveOptionPriceMap';
-import { VolatilitySurface } from './options/VolatilitySurface';
+import { VolatilitySuiteView } from './options/VolatilitySuiteView';
 import {
   type BidirectionalFlowRow,
   type BuilderLeg,
@@ -3051,122 +3052,21 @@ export const OptionsModule: React.FC<{
               />
             )}
             {activeSubView === 'volatilidad' && (
-              <div className="space-y-4">
-                <VolatilitySurface mkt={labMarket} expiries={GGAL_OPTION_EXPIRIES} />
-                {(() => {
-                  const qe = activeQuantEngines;
-                  const vc = qe?.volCone;
-                  const pq = qe?.pqDivergence;
-                  const sr = qe?.syntheticRates;
-                  const cr = qe?.conversionReversal;
-                  const bw = qe?.buyWrite;
-                  const cal = qe?.calendarRoll;
-                  const conf = qe?.confluenceClusters;
-                  return (
-                    <div className="rounded-[14px] bg-[#101218] border border-[#232733] p-5 space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-[15px] font-extrabold text-[#FFFFFF]">
-                          Cono de Volatilidad, Divergencia ℙ vs. ℚ &amp; Arbitraje Sintético / Calendars ({upperUnderlying})
-                        </h3>
-                        <span className="font-mono-num text-[11px] text-[#9CA3AF]">
-                          IV Rank: <strong className="text-[#FFFFFF]">{vc?.ivRank != null ? `${fmtNum(vc.ivRank, 1)}%` : '—'}</strong> ·
-                          IV Pct: <strong className="text-[#38BDF8]">{vc?.ivPercentile != null ? `${fmtNum(vc.ivPercentile, 1)}%` : '—'}</strong>
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px] font-mono-num">
-                        <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1.5">
-                          <div className="text-[10.5px] font-bold uppercase text-[#38BDF8]">
-                            DIVERGENCIA ℙ vs. ℚ (BREEDEN-LITZENBERGER)
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Media ℚ / Desv. ℚ</span>
-                            <span className="text-[#FFFFFF]">
-                              {qe?.qDistribution?.meanQ != null ? `$${fmtNum(qe.qDistribution.meanQ, 1)}` : '—'} ·{' '}
-                              {qe?.qDistribution?.stdDevQ != null ? `±$${fmtNum(qe.qDistribution.stdDevQ, 1)}` : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Colas &gt; 3σ (ℙ Empírica)</span>
-                            <span className="text-[#EAB308]">
-                              {qe?.pDistribution?.tailEventsCount ?? '—'} eventos (
-                              {qe?.pDistribution?.tailFrequencyPct != null ? `${fmtNum(qe.pDistribution.tailFrequencyPct, 1)}%` : '—'})
-                            </span>
-                          </div>
-                          {(pq?.levels ?? []).slice(0, 2).map((lv) => (
-                            <div key={lv.label} className="flex justify-between text-[11px] pt-1 border-t border-[#1E222D]">
-                              <span className="text-[#D1D4DC]">{lv.label}</span>
-                              <span className="text-[#22C55E]">
-                                P {lv.probP != null ? `${fmtNum(lv.probP * 100, 1)}%` : '—'} vs Q{' '}
-                                {lv.probQ != null ? `${fmtNum(lv.probQ * 100, 1)}%` : '—'}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1.5">
-                          <div className="text-[10.5px] font-bold uppercase text-[#C084FC]">
-                            TASA SINTÉTICA, BORROW &amp; CONV/REV
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Tasa Implícita TNA</span>
-                            <span className="text-[#FFFFFF]">
-                              {sr?.medianImpliedTna != null ? `${fmtNum(sr.medianImpliedTna * 100, 2)}%` : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Régimen Borrow</span>
-                            <span className="text-[#EAB308]">{sr?.borrowRegime ?? '—'}</span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Conv/Rev Edge (bps)</span>
-                            <span className="text-[#FFFFFF]">
-                              {cr?.netEdgeVsRiskFreeBps != null ? `${fmtNum(cr.netEdgeVsRiskFreeBps, 0)} pb (${cr.arbitrageSignal})` : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF] pt-1 border-t border-[#1E222D]">
-                            <span>Clusters &lt; 0,15 ATR</span>
-                            <span className="text-[#38BDF8]">
-                              {conf?.strongestClusterCentroid != null ? `$${fmtNum(conf.strongestClusterCentroid, 1)}` : '—'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1.5">
-                          <div className="text-[10.5px] font-bold uppercase text-[#22C55E]">
-                            BUY-WRITE (LANZAMIENTO) &amp; CALENDAR ROLL
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Buy-Write BE / Estática</span>
-                            <span className="text-[#FFFFFF]">
-                              {bw?.breakevenPrice != null ? `$${fmtNum(bw.breakevenPrice, 1)}` : '—'} ·{' '}
-                              {bw?.staticAnnualizedTna != null ? `${fmtNum(bw.staticAnnualizedTna * 100, 1)}%` : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>TNA Ejercida</span>
-                            <span className="text-[#22C55E]">
-                              {bw?.assignedAnnualizedTna != null ? `${fmtNum(bw.assignedAnnualizedTna * 100, 1)}%` : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF] pt-1 border-t border-[#1E222D]">
-                            <span>Calendar Roll Créd.</span>
-                            <span className="text-[#FFFFFF]">
-                              {cal?.netRollCredit != null ? `$${fmtNum(cal.netRollCredit, 2)}` : '—'}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-[#9CA3AF]">
-                            <span>Roll Yield Anual</span>
-                            <span className="text-[#38BDF8]">
-                              {cal?.annualizedRollYieldOnSpot != null ? `${fmtNum(cal.annualizedRollYieldOnSpot * 100, 1)}%` : '—'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
+              <VolatilitySuiteView
+                underlying={upperUnderlying}
+                stockName={stockName}
+                spot={displaySpot}
+                activeExpiry={activeExpiry}
+                expiries={GGAL_OPTION_EXPIRIES}
+                onSelectExpiry={setSelectedExpiryId}
+                effectiveTlrPct={effectiveTlrPct}
+                liveOptions={liveOptions}
+                activeQuantEngines={activeQuantEngines}
+                usSnapshot={liveMarket.usSnapshotsBySymbol[upperUnderlying]}
+                onSendToBuilder={(builderLegs) => {
+                  loadIntoBuilder(priceLegs(labMarket, builderLegs), 1);
+                }}
+              />
             )}
           </motion.div>
         )}

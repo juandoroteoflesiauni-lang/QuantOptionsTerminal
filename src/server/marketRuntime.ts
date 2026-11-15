@@ -134,6 +134,21 @@ import {
   type VolQuoteInput,
   type VolSlice,
 } from '../core/options/volSurface.js';
+import {
+  buildExpectedConeAndLognormalSummary,
+  buildNormalizedMoneynessMatrix,
+  buildSeparatedOtmSmile,
+  computeHistoricalVolConditionalTable,
+  computeParityAndSyntheticRatesByStrike,
+  computeRatiosAndStructureCosts,
+  computeRollingRvDistributionAtWindow,
+  type CompositeOtmSmilePoint,
+  type HistoricalDailyBarInput,
+  type SeparatedSmileResult,
+  type VolAnalyticsExpirySuiteResult,
+  type VolAnalyticsPriorSmileSnapshot,
+  type VolAnalyticsSuiteResult,
+} from '../core/options/volAnalyticsSuite.js';
 import { getMarketParts, MAX_TIME_SECONDS } from '../core/sessions.js';
 import { computeSessionVwap } from '../core/sessionVwap.js';
 import { evaluateTerminalConfluence } from '../core/terminal/confluenceOrchestrator.js';
@@ -681,6 +696,7 @@ export interface SerializedTerminalEngines {
   readonly structureOptimizerBullish: JsonSafeValue<OptimizeOptionStructuresResult> | null;
   readonly structureOptimizerBearish: JsonSafeValue<OptimizeOptionStructuresResult> | null;
   readonly structureCostPercentile: JsonSafeValue<StructureCostPercentileResult> | null;
+  readonly volAnalyticsSuite?: JsonSafeValue<VolAnalyticsSuiteResult> | null;
 }
 
 export interface TerminalSnapshotResponse {
@@ -3005,6 +3021,426 @@ export class MarketRuntime {
   private readonly subscribedOptionContracts = new Set<string>();
   private readonly wsListeners = new Set<(event: RuntimeWsBroadcast) => void>();
   private readonly wheelHistoryBySymbol = new Map<string, WheelSnapshotInput[]>();
+  private readonly usPriorSmileCache = new Map<
+    string,
+    readonly {
+      readonly dateKey: string;
+      readonly atmIvPct: number;
+      readonly compositeOtmPoints: readonly CompositeOtmSmilePoint[];
+    }[]
+  >();
+
+  private recordAndResolveUsPriorSmile(
+    cacheKey: string,
+    dateKey: string,
+    atmIvPct: number,
+    compositeOtmPoints: readonly CompositeOtmSmilePoint[],
+  ): VolAnalyticsPriorSmileSnapshot | null {
+    if (!Number.isFinite(atmIvPct) || atmIvPct <= 0 || compositeOtmPoints.length < 2) {
+      return null;
+    }
+    const existing = this.usPriorSmileCache.get(cacheKey) ?? [];
+    const filtered = existing.filter((e) => e.dateKey !== dateKey);
+    const updated = [...filtered, { dateKey, atmIvPct, compositeOtmPoints }]
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
+      .slice(-20);
+    this.usPriorSmileCache.set(cacheKey, updated);
+
+    const lastIdx = updated.length - 1;
+    let best: VolAnalyticsPriorSmileSnapshot | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < lastIdx; i += 1) {
+      const ago = lastIdx - i;
+      if (ago < 5 || ago > 10) continue;
+      const dist = Math.abs(ago - 7);
+      const entry = updated[i];
+      if (entry !== undefined && dist < bestDist) {
+        bestDist = dist;
+        best = {
+          dateKey: entry.dateKey,
+          tradingDaysAgo: ago,
+          atmIvPct: entry.atmIvPct,
+          compositeOtmPoints: entry.compositeOtmPoints,
+        };
+      }
+    }
+    return best;
+  }
+
+  private buildUsVolAnalyticsSuite(params: {
+    readonly canonicalSymbol: string;
+    readonly spot: number;
+    readonly spotBid: number;
+    readonly spotAsk: number;
+    readonly evalRateUs: number;
+    readonly evalDivUs: number;
+    readonly sofrRate: number;
+    readonly r30d: number;
+    readonly nowSec: number;
+    readonly closedDailyUs: readonly Bar[];
+    readonly contracts: readonly OptionSnapshotContract[];
+    readonly contractOwnIvMap: ReadonlyMap<string, number>;
+    readonly deltaByTicker: ReadonlyMap<string, number | null>;
+    readonly validSlices: readonly SlicePackage[];
+    readonly expiryParityMap: ReadonlyMap<number, ExpiryParityEvaluation>;
+    readonly qDistributionFront: RiskNeutralDistributionResult | null;
+  }): VolAnalyticsSuiteResult | null {
+    const {
+      canonicalSymbol,
+      spot,
+      spotBid,
+      spotAsk,
+      evalRateUs,
+      evalDivUs,
+      sofrRate,
+      r30d,
+      nowSec,
+      closedDailyUs,
+      contracts,
+      contractOwnIvMap,
+      deltaByTicker,
+      validSlices,
+      expiryParityMap,
+      qDistributionFront,
+    } = params;
+
+    if (!Number.isFinite(spot) || spot <= 0) {
+      return null;
+    }
+
+    const histInputs: HistoricalDailyBarInput[] = closedDailyUs.map((b) => ({
+      time: b.time,
+      close: b.close,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+    }));
+
+    const frontSlicePkg = validSlices[0];
+    const frontIvAtmPct =
+      frontSlicePkg !== undefined && Number.isFinite(frontSlicePkg.metrics.ivAtm) && frontSlicePkg.metrics.ivAtm > 0
+        ? frontSlicePkg.metrics.ivAtm * 100
+        : null;
+
+    const historicalConditional = computeHistoricalVolConditionalTable(
+      {
+        bars: histInputs,
+        currentIvAtmPct: frontIvAtmPct,
+      },
+      {
+        rvWindowDays: 23,
+        forwardTradingDays: 21,
+        maxHistoryPoints: 750,
+        tailSigmaThreshold: 3.0,
+      },
+    );
+
+    const rvWindows = {
+      rv20: computeRollingRvDistributionAtWindow(histInputs, 20, 750),
+      rv60: computeRollingRvDistributionAtWindow(histInputs, 60, 750),
+      rv120: computeRollingRvDistributionAtWindow(histInputs, 120, 750),
+    };
+
+    const histVolSeriesForCost = historicalConditional.historySeries
+      .slice(-252)
+      .map((p) => p.rvPct);
+
+    const benchmarkRateDec =
+      Number.isFinite(sofrRate) && sofrRate > 0
+        ? sofrRate
+        : Number.isFinite(r30d) && r30d > 0
+          ? r30d
+          : Number.isFinite(evalRateUs)
+            ? evalRateUs
+            : Number.NaN;
+    const benchmarkTeaPct = Number.isFinite(benchmarkRateDec)
+      ? Math.expm1(benchmarkRateDec) * 100
+      : Number.NaN;
+    const benchmarkLabel =
+      Number.isFinite(sofrRate) && sofrRate > 0 ? 'SOFR (USD)' : 'US Treasury 30D';
+
+    // Agrupar contratos por fecha de vencimiento (top 10 futuros)
+    const contractsByDate = new Map<string, OptionSnapshotContract[]>();
+    for (const c of contracts) {
+      if (c.expirationTime <= nowSec + 60) continue;
+      const list = contractsByDate.get(c.expirationDate) ?? [];
+      list.push(c);
+      contractsByDate.set(c.expirationDate, list);
+    }
+
+    const validSliceByDate = new Map<string, SlicePackage>();
+    for (const sp of validSlices) {
+      const dk = new Date(sp.parity.expirySec * 1_000).toISOString().slice(0, 10);
+      if (!validSliceByDate.has(dk)) {
+        validSliceByDate.set(dk, sp);
+      }
+    }
+
+    const sortedExpDates = [...contractsByDate.keys()].sort().slice(0, 10);
+    const dateKeyUtc = new Date(nowSec * 1_000).toISOString().slice(0, 10);
+
+    const smileOtmMap = new Map<string, SeparatedSmileResult>();
+    const smileAllMap = new Map<string, SeparatedSmileResult>();
+    const expDaysMap = new Map<string, number>();
+    const expFallbackAtmMap = new Map<string, number | null>();
+    const expiriesByCode: Record<string, VolAnalyticsExpirySuiteResult> = {};
+
+    for (const expDate of sortedExpDates) {
+      const list = contractsByDate.get(expDate) ?? [];
+      if (list.length === 0) continue;
+      const sampleExpTime = list[0]?.expirationTime ?? nowSec + 86_400;
+      const tExp = Math.max(1 / 365, timeToExpiryYears(nowSec, sampleExpTime));
+      const days = Math.max(1, Math.round((sampleExpTime - nowSec) / 86_400));
+      expDaysMap.set(expDate, days);
+
+      const slicePkg = validSliceByDate.get(expDate);
+      const parityInfo = slicePkg?.parity ?? expiryParityMap.get(sampleExpTime);
+      const rate = parityInfo !== undefined && Number.isFinite(parityInfo.rate) ? parityInfo.rate : evalRateUs;
+      const dividendYield =
+        parityInfo !== undefined && Number.isFinite(parityInfo.dividendYield)
+          ? parityInfo.dividendYield
+          : evalDivUs;
+
+      const smileContracts = list.map((c) => {
+        const ownIv = contractOwnIvMap.get(c.ticker);
+        const iv =
+          ownIv !== undefined && Number.isFinite(ownIv) && ownIv > 0
+            ? ownIv
+            : Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
+              ? c.impliedVolatility
+              : null;
+        const mid = resolveQuoteMid(c);
+        return {
+          strike: c.strikePrice,
+          contractType: c.contractType,
+          iv,
+          bid: Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0 ? c.lastQuote.bid : null,
+          ask: Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0 ? c.lastQuote.ask : null,
+          last: Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0 ? c.lastTrade.price : null,
+          mid: Number.isFinite(mid) && mid > 0 ? mid : null,
+          volume: Number.isFinite(c.day.volume) ? c.day.volume : null,
+          openInterest: Number.isFinite(c.openInterest) ? c.openInterest : null,
+          delta: deltaByTicker.get(c.ticker) ?? null,
+        };
+      });
+
+      const smileOtmOnly = buildSeparatedOtmSmile(
+        {
+          spot,
+          timeToExpiryYears: tExp,
+          daysToExpiry: days,
+          rate,
+          dividendYield,
+          contracts: smileContracts,
+        },
+        { onlyOtm: true },
+      );
+      const smileAll = buildSeparatedOtmSmile(
+        {
+          spot,
+          timeToExpiryYears: tExp,
+          daysToExpiry: days,
+          rate,
+          dividendYield,
+          contracts: smileContracts,
+        },
+        { onlyOtm: false },
+      );
+
+      smileOtmMap.set(expDate, smileOtmOnly);
+      smileAllMap.set(expDate, smileAll);
+      const fallbackAtm =
+        slicePkg !== undefined && Number.isFinite(slicePkg.metrics.ivAtm) && slicePkg.metrics.ivAtm > 0
+          ? slicePkg.metrics.ivAtm * 100
+          : null;
+      expFallbackAtmMap.set(expDate, fallbackAtm);
+
+      const priorSmile = this.recordAndResolveUsPriorSmile(
+        `${canonicalSymbol}:${expDate}`,
+        dateKeyUtc,
+        smileOtmOnly.atmIvPct,
+        smileOtmOnly.compositeOtmPoints,
+      );
+
+      let qDistForExp: RiskNeutralDistributionResult | null = null;
+      if (frontSlicePkg !== undefined && slicePkg === frontSlicePkg) {
+        qDistForExp = qDistributionFront;
+      } else if (slicePkg !== undefined) {
+        const qInputs: RiskNeutralInputNode[] = [];
+        for (const n of slicePkg.slice.nodes) {
+          if (Number.isFinite(n.iv) && n.iv > 0) {
+            qInputs.push({ strike: n.strike, iv: n.iv });
+          }
+        }
+        if (qInputs.length >= 3) {
+          qDistForExp = extractRiskNeutralDistributionQ({
+            spot,
+            timeToExpiry: slicePkg.parity.timeToExpiry,
+            rate: slicePkg.parity.rate,
+            dividendYield: slicePkg.parity.dividendYield,
+            nodes: qInputs,
+          });
+        }
+      }
+
+      const atmIvForCone =
+        Number.isFinite(smileOtmOnly.atmIvPct) && smileOtmOnly.atmIvPct > 0
+          ? smileOtmOnly.atmIvPct
+          : fallbackAtm ?? Number.NaN;
+
+      const expectedCone = buildExpectedConeAndLognormalSummary({
+        spot,
+        atmIvPct: atmIvForCone,
+        daysToExpiry: days,
+        rate,
+        dividendYield,
+        ...(qDistForExp !== null && qDistForExp.status === 'OK'
+          ? {
+              qNodes: qDistForExp.nodes.map((n) => ({
+                strike: n.strike,
+                densityQ: n.densityQ,
+                probAboveQ: n.probAboveQ,
+              })),
+            }
+          : {}),
+      });
+
+      const callByK = new Map<number, OptionSnapshotContract>();
+      const putByK = new Map<number, OptionSnapshotContract>();
+      const strikeSet = new Set<number>();
+      for (const c of list) {
+        strikeSet.add(c.strikePrice);
+        if (c.contractType === 'call') {
+          callByK.set(c.strikePrice, c);
+        } else {
+          putByK.set(c.strikePrice, c);
+        }
+      }
+      const sortedK = [...strikeSet].sort((a, b) => a - b);
+
+      const contractIvPct = (c: OptionSnapshotContract | undefined): number | null => {
+        if (c === undefined) return null;
+        const raw = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+        return Number.isFinite(raw) && raw > 0 ? raw * 100 : null;
+      };
+      const cleanQuote = (x: number): number | null => (Number.isFinite(x) && x > 0 ? x : null);
+      const contractMid = (c: OptionSnapshotContract | undefined): number | null => {
+        if (c === undefined) return null;
+        const m = resolveQuoteMid(c);
+        return Number.isFinite(m) && m > 0 ? m : null;
+      };
+
+      const parityPairs = sortedK.map((k) => {
+        const c = callByK.get(k);
+        const p = putByK.get(k);
+        return {
+          strike: k,
+          callBid: c !== undefined ? cleanQuote(c.lastQuote.bid) : null,
+          callAsk: c !== undefined ? cleanQuote(c.lastQuote.ask) : null,
+          callMid: contractMid(c),
+          callIvPct: contractIvPct(c),
+          putBid: p !== undefined ? cleanQuote(p.lastQuote.bid) : null,
+          putAsk: p !== undefined ? cleanQuote(p.lastQuote.ask) : null,
+          putMid: contractMid(p),
+          putIvPct: contractIvPct(p),
+          callVolume: c !== undefined && Number.isFinite(c.day.volume) ? c.day.volume : null,
+          putVolume: p !== undefined && Number.isFinite(p.day.volume) ? p.day.volume : null,
+        };
+      });
+
+      const parity = computeParityAndSyntheticRatesByStrike({
+        spotMid: spot,
+        spotBid,
+        spotAsk,
+        daysToExpiry: days,
+        dividendYield,
+        benchmarkTeaPct: Number.isFinite(benchmarkTeaPct) ? benchmarkTeaPct : null,
+        benchmarkLabel,
+        pairs: parityPairs,
+      });
+
+      const ratioStrikes = sortedK.map((k) => {
+        const c = callByK.get(k);
+        const p = putByK.get(k);
+        return {
+          strike: k,
+          callBid: c !== undefined ? cleanQuote(c.lastQuote.bid) : null,
+          callAsk: c !== undefined ? cleanQuote(c.lastQuote.ask) : null,
+          callMid: contractMid(c),
+          putBid: p !== undefined ? cleanQuote(p.lastQuote.bid) : null,
+          putAsk: p !== undefined ? cleanQuote(p.lastQuote.ask) : null,
+          putMid: contractMid(p),
+        };
+      });
+
+      const ratiosAndStructures = computeRatiosAndStructureCosts({
+        spot,
+        daysToExpiry: days,
+        rate,
+        dividendYield,
+        strikes: ratioStrikes,
+        historicalVolPctSeries: histVolSeriesForCost,
+      });
+
+      expiriesByCode[expDate] = {
+        expiryCode: expDate,
+        expirationDate: expDate,
+        daysToExpiry: days,
+        smileOtmOnly,
+        smileAll,
+        priorSmile,
+        expectedCone,
+        parity,
+        ratiosAndStructures,
+      };
+    }
+
+    const matrixExps = sortedExpDates.filter((d) => expDaysMap.has(d));
+    const moneynessMatrixOtm = buildNormalizedMoneynessMatrix(
+      matrixExps.map((d) => ({
+        expiryCode: d,
+        expiryLabel: `${d} (${String(expDaysMap.get(d) ?? 0)}d)`,
+        daysToExpiry: expDaysMap.get(d) ?? 1,
+        compositeOtmPoints: smileOtmMap.get(d)?.compositeOtmPoints ?? [],
+        fallbackAtmIvPct: expFallbackAtmMap.get(d) ?? null,
+      })),
+    );
+    const moneynessMatrixAll = buildNormalizedMoneynessMatrix(
+      matrixExps.map((d) => ({
+        expiryCode: d,
+        expiryLabel: `${d} (${String(expDaysMap.get(d) ?? 0)}d)`,
+        daysToExpiry: expDaysMap.get(d) ?? 1,
+        compositeOtmPoints: smileAllMap.get(d)?.compositeOtmPoints ?? [],
+        fallbackAtmIvPct: expFallbackAtmMap.get(d) ?? null,
+      })),
+    );
+
+    const frontDate =
+      frontSlicePkg !== undefined
+        ? new Date(frontSlicePkg.parity.expirySec * 1_000).toISOString().slice(0, 10)
+        : sortedExpDates[0] ?? null;
+
+    return {
+      status:
+        historicalConditional.status === 'OK' || sortedExpDates.length > 0 ? 'OK' : 'NO_DATA',
+      market: 'US',
+      underlying: canonicalSymbol,
+      spot,
+      rateContinuous: evalRateUs,
+      rateTeaPct: benchmarkTeaPct,
+      benchmarkLabel,
+      dividendYield: evalDivUs,
+      activeExpiryCode: frontDate,
+      hasDualAdr: false,
+      nonDualMessage: 'Activo sin ADR dual — Ver estructura completa en Tab 2',
+      moneynessMatrixOtm,
+      moneynessMatrixAll,
+      historicalConditional,
+      rvWindows,
+      dualSurface: null,
+      expiriesByCode,
+    };
+  }
 
   public constructor(deps: MarketRuntimeDeps = {}) {
     const auth = loadRuntimeAuth();
@@ -3600,7 +4036,7 @@ export class MarketRuntime {
         symbol: canonicalSymbol,
         timeframe: '1D',
         visibleBars: 60,
-        warmupBars: 210,
+        warmupBars: 720,
         maxPages: 3,
         now: nowSec,
         ...baseTransport,
@@ -4589,6 +5025,7 @@ export class MarketRuntime {
     let structureOptimizerBullishUs: OptimizeOptionStructuresResult | null = null;
     let structureOptimizerBearishUs: OptimizeOptionStructuresResult | null = null;
     let structureCostPercentileUs: StructureCostPercentileResult | null = null;
+    let volAnalyticsSuiteUs: VolAnalyticsSuiteResult | null = null;
 
     const evalRateUs =
       activeFrontParity !== undefined && Number.isFinite(activeFrontParity.rate)
@@ -5160,6 +5597,43 @@ export class MarketRuntime {
       }
     }
 
+    const underlyingQuoteSnap = stockByTicker.get(canonicalSymbol);
+    const underlyingBidUs =
+      underlyingQuoteSnap?.lastQuote !== null &&
+      underlyingQuoteSnap?.lastQuote !== undefined &&
+      Number.isFinite(underlyingQuoteSnap.lastQuote.bid) &&
+      underlyingQuoteSnap.lastQuote.bid > 0
+        ? underlyingQuoteSnap.lastQuote.bid
+        : spot;
+    const underlyingAskUs =
+      underlyingQuoteSnap?.lastQuote !== null &&
+      underlyingQuoteSnap?.lastQuote !== undefined &&
+      Number.isFinite(underlyingQuoteSnap.lastQuote.ask) &&
+      underlyingQuoteSnap.lastQuote.ask > 0
+        ? underlyingQuoteSnap.lastQuote.ask
+        : spot;
+    const deltaByTickerUs = new Map<string, number | null>(
+      (volSurfaceSummary?.contracts ?? []).map((sc) => [sc.ticker, sc.delta]),
+    );
+    volAnalyticsSuiteUs = this.buildUsVolAnalyticsSuite({
+      canonicalSymbol,
+      spot,
+      spotBid: underlyingBidUs,
+      spotAsk: underlyingAskUs,
+      evalRateUs,
+      evalDivUs,
+      sofrRate,
+      r30d,
+      nowSec: evalSecUs,
+      closedDailyUs,
+      contracts,
+      contractOwnIvMap,
+      deltaByTicker: deltaByTickerUs,
+      validSlices,
+      expiryParityMap,
+      qDistributionFront: qDistributionUs,
+    });
+
     const terminalEngines: SerializedTerminalEngines = sanitizeJsonValue({
       atr14d: sanitizeFinite(atrDaily14),
       cvdSlopeSign,
@@ -5193,6 +5667,7 @@ export class MarketRuntime {
       structureOptimizerBullish: structureOptimizerBullishUs,
       structureOptimizerBearish: structureOptimizerBearishUs,
       structureCostPercentile: structureCostPercentileUs,
+      volAnalyticsSuite: volAnalyticsSuiteUs,
     });
 
     const feedMode: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA' =
