@@ -112,6 +112,20 @@ import {
 import type { Bar } from '../core/types.js';
 import type { FetchResponse } from '../data/types.js';
 import {
+  BmbBridgeClient,
+  collectBrokerSecretsFromEnv,
+  computeCaucionTeaEffectivePct,
+  computeOrderBookL2Metrics,
+  computeSpreadVsBadlarBps,
+  PrimaryRofexClient,
+  type ArBrokerPositionsResponse,
+  type BmbBridgeSnapshotDto,
+  type BmbConnectorHealthDto,
+  type PrimaryConnectorHealthDto,
+  type PrimaryDlrContractDto,
+  type OrderBook5LevelsDto,
+} from './primaryRofexLoader.js';
+import {
   DEFAULT_RELATIONS_US_TICKERS,
   getSharedMarketRuntime,
   MarketRuntime,
@@ -137,6 +151,9 @@ export interface ArgentinaRuntimeDeps {
   readonly minData912IntervalMs?: number;
   readonly timeoutMs?: number;
   readonly secrets?: readonly string[];
+  readonly env?: NodeJS.ProcessEnv;
+  readonly primaryClient?: PrimaryRofexClient;
+  readonly bmbClient?: BmbBridgeClient;
   readonly data912BaseUrl?: string;
   readonly openBymaBaseUrl?: string;
   readonly bcraBaseUrl?: string;
@@ -318,6 +335,25 @@ export interface ArMacroResponse {
   }[];
   readonly sovereignCurve: readonly ArBondDto[];
   readonly syntheticFutures?: readonly ArSyntheticUsdFutureDto[];
+  readonly rofxFutures?: readonly PrimaryDlrContractDto[];
+  readonly rofxSpotA3500?: number | null;
+  readonly rofxSpotSource?: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE';
+}
+
+export interface ArCaucionCurveRowDto {
+  readonly termDays: number;
+  readonly label: string;
+  readonly currency: 'ARS' | 'USD';
+  readonly tnaWeighted: number | null;
+  readonly teaEffective: number | null;
+  readonly bidTna: number | null;
+  readonly askTna: number | null;
+  readonly volumeArs: number | null;
+  readonly spreadVsBadlarBps: number | null;
+  readonly referenceInstrument: string;
+  readonly originLabel: string;
+  readonly source: 'BMB_HOMEBROKER' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
+  readonly asOfUtcSec: number | null;
 }
 
 export interface ArMonitoringResponse {
@@ -334,6 +370,9 @@ export interface ArMonitoringResponse {
   readonly mepMedian: number | null;
   readonly cclMedian: number | null;
   readonly badlarTna: number | null;
+  readonly cauciones?: readonly ArCaucionCurveRowDto[];
+  readonly caucionesStatus?: 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
+  readonly bmbHealth?: BmbConnectorHealthDto;
 }
 
 export interface ArHistoricalBarDto {
@@ -407,6 +446,8 @@ export interface ArStockDetailResponse {
   readonly mtfRegime: string;
   readonly relatedOptionsCount: number;
   readonly institutionalEngines?: ArStockInstitutionalEnginesDto | null;
+  readonly orderBook5Levels?: OrderBook5LevelsDto | null;
+  readonly rofexFrontContract?: PrimaryDlrContractDto | null;
   readonly providerErrors: readonly string[];
 }
 
@@ -2340,6 +2381,127 @@ function normalizeHistoricalBars(raw: unknown): readonly Bar[] {
   return out;
 }
 
+/**
+ * Construye la tabla estructurada de cauciones desde BMB HomeBroker vivo o,
+ * en su ausencia (fin de semana / sin contraseña / sin pyhomebroker), una curva de
+ * referencia BCRA + Lecap sin inventar puntas Tomadora/Colocadora ni volumen.
+ */
+export function buildCaucionesLiquidityCurve(params: {
+  readonly bmbSnapshot: BmbBridgeSnapshotDto;
+  readonly tpmTna: number | null;
+  readonly badlarTna: number | null;
+  readonly tamarTna: number | null;
+  readonly plazoFijoTna: number | null;
+  readonly notes: readonly ArNoteOrCorpDto[];
+  readonly nowSec: number;
+}): {
+  readonly rows: readonly ArCaucionCurveRowDto[];
+  readonly status: 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
+} {
+  const { bmbSnapshot, tpmTna, badlarTna, tamarTna, plazoFijoTna, notes, nowSec } = params;
+
+  if (bmbSnapshot.health.status === 'READY' && bmbSnapshot.cauciones.length > 0) {
+    const rows: ArCaucionCurveRowDto[] = bmbSnapshot.cauciones.map((c) => {
+      const tea =
+        c.tnaWeighted !== null && Number.isFinite(c.tnaWeighted)
+          ? sanitizeFinite(computeCaucionTeaEffectivePct(c.tnaWeighted, c.termDays))
+          : sanitizeFinite(c.teaEffective);
+      const spreadBps =
+        c.tnaWeighted !== null && badlarTna !== null
+          ? sanitizeFinite(computeSpreadVsBadlarBps(c.tnaWeighted, badlarTna))
+          : sanitizeFinite(c.spreadVsBadlarBps);
+      return {
+        termDays: c.termDays,
+        label: c.termDays === 1 ? '1 día hábil' : `${String(c.termDays)} días`,
+        currency: c.currency,
+        tnaWeighted: sanitizeFinite(c.tnaWeighted),
+        teaEffective: tea,
+        bidTna: sanitizeFinite(c.bidTna),
+        askTna: sanitizeFinite(c.askTna),
+        volumeArs: sanitizeFinite(c.turnoverArs),
+        spreadVsBadlarBps: spreadBps,
+        referenceInstrument: c.symbol,
+        originLabel: 'Puntas vivas Bull Market HomeBroker',
+        source: 'BMB_HOMEBROKER',
+        asOfUtcSec: c.asOfUtcSec ?? nowSec,
+      };
+    });
+    return { rows, status: 'LIVE_BMB' };
+  }
+
+  const lecapTickers = notes
+    .filter((n) => n.kind === 'LECAP_BONCAP')
+    .slice(0, 3)
+    .map((n) => n.ticker)
+    .join(' / ');
+
+  const shortRate = tpmTna ?? tamarTna ?? badlarTna ?? plazoFijoTna;
+  const shortLabel =
+    tpmTna !== null
+      ? 'BCRA Pol. Monetaria'
+      : tamarTna !== null
+        ? 'BCRA TAMAR'
+        : badlarTna !== null
+          ? 'BCRA BADLAR'
+          : 'ArgentinaDatos PF';
+
+  const midRate = badlarTna ?? tamarTna ?? plazoFijoTna ?? tpmTna;
+  const midLabel =
+    badlarTna !== null
+      ? 'BCRA BADLAR'
+      : tamarTna !== null
+        ? 'BCRA TAMAR'
+        : plazoFijoTna !== null
+          ? 'ArgentinaDatos PF'
+          : 'BCRA Pol. Monetaria';
+
+  const longRate = tamarTna ?? badlarTna ?? plazoFijoTna ?? tpmTna;
+  const longBaseLabel =
+    tamarTna !== null
+      ? 'BCRA TAMAR'
+      : badlarTna !== null
+        ? 'BCRA BADLAR'
+        : plazoFijoTna !== null
+          ? 'ArgentinaDatos PF'
+          : 'BCRA Pol. Monetaria';
+  const longLabel = lecapTickers !== '' ? `${longBaseLabel} / ${lecapTickers}` : longBaseLabel;
+
+  const standardTenors = [1, 3, 7, 14, 30, 60, 90, 120] as const;
+  const rows: ArCaucionCurveRowDto[] = [];
+
+  for (const termDays of standardTenors) {
+    const rate = termDays <= 14 ? shortRate : termDays === 30 ? midRate : longRate;
+    const refInstrument = termDays <= 14 ? shortLabel : termDays === 30 ? midLabel : longLabel;
+    if (rate === null || !Number.isFinite(rate)) {
+      continue;
+    }
+    const tea = sanitizeFinite(computeCaucionTeaEffectivePct(rate, termDays));
+    const spreadBps =
+      badlarTna !== null ? sanitizeFinite(computeSpreadVsBadlarBps(rate, badlarTna)) : null;
+
+    rows.push({
+      termDays,
+      label: termDays === 1 ? '1 día hábil' : `${String(termDays)} días`,
+      currency: 'ARS',
+      tnaWeighted: rate,
+      teaEffective: tea,
+      bidTna: null,
+      askTna: null,
+      volumeArs: null,
+      spreadVsBadlarBps: spreadBps,
+      referenceInstrument: refInstrument,
+      originLabel: 'Referencia implícita BCRA / Lecap (sin libro BMB vivo)',
+      source: 'BCRA_LECAP_REF',
+      asOfUtcSec: nowSec,
+    });
+  }
+
+  return {
+    rows,
+    status: rows.length > 0 ? 'REFERENCE_BCRA_LECAP' : 'NO_DATA',
+  };
+}
+
 export class ArgentinaMarketRuntime {
   private readonly fetchFn: ArHttpFn;
   private readonly nowMsFn: () => number;
@@ -2351,6 +2513,8 @@ export class ArgentinaMarketRuntime {
   private readonly bcraBaseUrl: string;
   private readonly argDatosBaseUrl: string;
   private readonly nyfedBaseUrl: string;
+  private readonly primaryClient: PrimaryRofexClient;
+  private readonly bmbClient: BmbBridgeClient;
   private readonly usRuntime: Pick<MarketRuntime, 'getCachedDailyBars1d'> | null;
   private readonly usDailyBarsFn:
     | ((symbol: string, lookbackBars?: number, forceRefresh?: boolean) => Promise<CachedDailyBarsResult>)
@@ -2371,15 +2535,44 @@ export class ArgentinaMarketRuntime {
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.minData912IntervalMs = deps.minData912IntervalMs ?? DEFAULT_MIN_DATA912_INTERVAL_MS;
-    this.secrets = deps.secrets ?? [];
+
+    // Aislamiento de tests offline: si el caller inyecta fetchFn sin env explícito,
+    // evitamos leer process.env para no disparar peticiones reales no mockeadas.
+    const effectiveEnv: NodeJS.ProcessEnv =
+      deps.env !== undefined ? deps.env : deps.fetchFn !== undefined ? {} : process.env;
+
+    const secretSet = new Set<string>(deps.secrets ?? []);
+    for (const s of collectBrokerSecretsFromEnv(effectiveEnv)) {
+      secretSet.add(s);
+    }
+    this.secrets = [...secretSet];
+
     this.data912BaseUrl = (deps.data912BaseUrl ?? DEFAULT_DATA912_BASE).replace(/\/+$/, '');
     this.openBymaBaseUrl = (deps.openBymaBaseUrl ?? DEFAULT_OPEN_BYMA_BASE).replace(/\/+$/, '');
     this.bcraBaseUrl = (deps.bcraBaseUrl ?? DEFAULT_BCRA_BASE).replace(/\/+$/, '');
     this.argDatosBaseUrl = (deps.argentinaDatosBaseUrl ?? DEFAULT_ARGDATOS_BASE).replace(/\/+$/, '');
     this.nyfedBaseUrl = (deps.nyfedBaseUrl ?? DEFAULT_NYFED_BASE).replace(/\/+$/, '');
+
+    this.primaryClient =
+      deps.primaryClient ??
+      new PrimaryRofexClient({
+        env: effectiveEnv,
+        fetchFn: this.fetchFn,
+        nowMsFn: this.nowMsFn,
+        secrets: this.secrets,
+        timeoutMs: this.timeoutMs,
+      });
+    this.bmbClient =
+      deps.bmbClient ??
+      new BmbBridgeClient({
+        env: effectiveEnv,
+        fetchFn: this.fetchFn,
+        nowMsFn: this.nowMsFn,
+        secrets: this.secrets,
+      });
     this.usRuntime = deps.usRuntime ?? null;
     this.usDailyBarsFn = deps.usDailyBarsFn ?? null;
-    this.allowSharedUsRuntime = deps.fetchFn === undefined;
+    this.allowSharedUsRuntime = deps.fetchFn === undefined || deps.env !== undefined;
 
     const ttlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.liveCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
@@ -2388,8 +2581,32 @@ export class ArgentinaMarketRuntime {
     this.computedCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
   }
 
+  public getSecrets(): readonly string[] {
+    const out = new Set<string>(this.secrets);
+    for (const s of this.primaryClient.getSecrets()) {
+      out.add(s);
+    }
+    return [...out];
+  }
+
+  public getConnectorHealth(): {
+    readonly primaryRofex: PrimaryConnectorHealthDto;
+    readonly bullMarket: BmbConnectorHealthDto;
+  } {
+    return {
+      primaryRofex: this.primaryClient.getSafeHealthStatus(),
+      bullMarket: this.bmbClient.getSafeHealthStatus(),
+    };
+  }
+
+  public close(): void {
+    this.primaryClient.closeWebSocket();
+  }
+
   private async scheduleData912<T>(task: () => Promise<T>): Promise<T> {
-    const run = async (): Promise<T> => {
+    // Espaciamos únicamente el inicio de cada dispatch HTTP hacia Data912 para respetar
+    // su rate limit sin serializar las respuestas de red entre pares históricos o paneles.
+    const acquireDispatchSlot = async (): Promise<void> => {
       if (this.minData912IntervalMs > 0) {
         const now = this.nowMsFn();
         const waitMs = this.lastData912ReqMs + this.minData912IntervalMs - now;
@@ -2398,14 +2615,14 @@ export class ArgentinaMarketRuntime {
         }
       }
       this.lastData912ReqMs = this.nowMsFn();
-      return task();
     };
-    const next = this.data912Queue.then(run, run);
-    this.data912Queue = next.then(
+    const ticket = this.data912Queue.then(acquireDispatchSlot, acquireDispatchSlot);
+    this.data912Queue = ticket.then(
       () => undefined,
       () => undefined,
     );
-    return next;
+    await ticket;
+    return task();
   }
 
   private async fetchJsonSafe(
@@ -3195,12 +3412,17 @@ export class ArgentinaMarketRuntime {
   }
 
   public async warmup(forceRefresh = false): Promise<void> {
+    // Priorizamos panorama, macro y bonos para hidratar /inicio en < 1s antes de
+    // cargar cadenas de opciones e históricos de relaciones.
     await Promise.allSettled([
       this.getOverview(forceRefresh),
       this.getMacro(forceRefresh),
       this.getMonitoring('bonos', forceRefresh),
-      this.getRelations(forceRefresh),
+    ]);
+    await new Promise<void>((r) => setTimeout(r, 10));
+    await Promise.allSettled([
       this.getOptionsChain('GGAL', forceRefresh),
+      this.getRelations(forceRefresh),
     ]);
   }
 
@@ -3610,8 +3832,18 @@ export class ArgentinaMarketRuntime {
           ccl: vars.ccl,
         });
 
-        const providerErrors = [...macroData.errors, ...overview.providerErrors];
-        const hasAnyMacro = cards.some((c) => c.numericValue !== null);
+        const dlrRes = await this.primaryClient.getDlrFuturesAndDerivatives({
+          asOfUtcSec: nowSec,
+          a3500: vars.a3500,
+          forceRefresh,
+        });
+
+        const providerErrors = [
+          ...macroData.errors,
+          ...overview.providerErrors,
+          ...(dlrRes.error !== null ? [dlrRes.error] : []),
+        ];
+        const hasAnyMacro = cards.some((c) => c.numericValue !== null) || dlrRes.contracts.length > 0;
         const feedStatus: FeedStatus = !hasAnyMacro
           ? 'NO_DATA'
           : sovereignCurve.length > 0 && macroData.errors.length === 0
@@ -3627,6 +3859,9 @@ export class ArgentinaMarketRuntime {
           dolares: macroData.dolares,
           sovereignCurve,
           syntheticFutures,
+          rofxFutures: dlrRes.contracts,
+          rofxSpotA3500: dlrRes.spotUsed,
+          rofxSpotSource: dlrRes.spotSource,
         };
       },
       { forceRefresh },
@@ -3647,6 +3882,12 @@ export class ArgentinaMarketRuntime {
       this.getData912Live('/live/arg_corp', forceRefresh),
       this.fetchBcraAndArgDatos(forceRefresh),
     ]);
+
+    const bmbSnap = await this.bmbClient.getSnapshot(
+      undefined,
+      macroData.variables.badlarTna,
+      forceRefresh,
+    );
 
     let effectiveBondRows = bondsRes.rows;
     if (!hasPositiveLast(effectiveBondRows)) {
@@ -3684,6 +3925,15 @@ export class ArgentinaMarketRuntime {
 
     const notes = mapNoteOrCorp(notesRes.rows, 'LECAP_BONCAP');
     const corps = mapNoteOrCorp(corpRes.rows, 'ON_CORP');
+    const caucionesCurve = buildCaucionesLiquidityCurve({
+      bmbSnapshot: bmbSnap,
+      tpmTna: macroData.variables.tpmTna,
+      badlarTna: macroData.variables.badlarTna,
+      tamarTna: macroData.variables.tamarTna,
+      plazoFijoTna: macroData.variables.plazoFijoTna,
+      notes,
+      nowSec,
+    });
     const providerErrors = [
       ...overview.providerErrors,
       ...[bondsRes.error, notesRes.error, corpRes.error].filter((e): e is string => e !== null),
@@ -3703,6 +3953,9 @@ export class ArgentinaMarketRuntime {
       mepMedian: overview.mepMedian,
       cclMedian: overview.cclMedian,
       badlarTna: macroData.variables.badlarTna,
+      cauciones: caucionesCurve.rows,
+      caucionesStatus: caucionesCurve.status,
+      bmbHealth: bmbSnap.health,
     };
   }
 
@@ -3855,18 +4108,24 @@ export class ArgentinaMarketRuntime {
     const isCedear = symbol in CEDEAR_RATIOS && !STOCK_META_MAP.has(symbol);
     const kind: 'stocks' | 'cedears' | 'bonds' = isBond ? 'bonds' : isCedear ? 'cedears' : 'stocks';
 
-    const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData] = await Promise.all([
-      this.getData912History(kind, symbol, forceRefresh),
-      this.getOverview(forceRefresh),
-      this.getData912Live('/live/arg_options', forceRefresh),
-      isBond ? this.getData912Live('/live/arg_bonds', forceRefresh) : Promise.resolve({ rows: [] as readonly NormalizedQuoteRow[], error: null }),
-      symbol === 'SPY'
-        ? Promise.resolve({ bars: [] as readonly Bar[], error: null })
-        : this.getData912History('cedears', 'SPY', forceRefresh),
-      isBond
-        ? this.fetchBcraAndArgDatos(forceRefresh)
-        : Promise.resolve(null),
-    ]);
+    const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData, mervBook, bmbSnap, macroIfPrimary] =
+      await Promise.all([
+        this.getData912History(kind, symbol, forceRefresh),
+        this.getOverview(forceRefresh),
+        this.getData912Live('/live/arg_options', forceRefresh),
+        isBond
+          ? this.getData912Live('/live/arg_bonds', forceRefresh)
+          : Promise.resolve({ rows: [] as readonly NormalizedQuoteRow[], error: null }),
+        symbol === 'SPY'
+          ? Promise.resolve({ bars: [] as readonly Bar[], error: null })
+          : this.getData912History('cedears', 'SPY', forceRefresh),
+        isBond ? this.fetchBcraAndArgDatos(forceRefresh) : Promise.resolve(null),
+        this.primaryClient.getMervOrderBook5Levels(symbol, forceRefresh),
+        this.bmbClient.getSnapshot(symbol, null, forceRefresh),
+        this.primaryClient.isConfigured()
+          ? this.getMacro(forceRefresh).catch(() => null)
+          : Promise.resolve(null),
+      ]);
 
     const stock =
       overview.mervalStocks.find((s) => s.ticker === symbol) ??
@@ -3957,6 +4216,79 @@ export class ArgentinaMarketRuntime {
 
     const feedStatus: FeedStatus = stock === null && bond === null && bars.length === 0 ? 'NO_DATA' : overview.feedStatus;
 
+    const bmbBook = bmbSnap.orderBooksBySymbol[symbol] ?? null;
+    let orderBook5Levels: OrderBook5LevelsDto | null = null;
+    if (bmbBook !== null && (bmbBook.bids.length > 0 || bmbBook.asks.length > 0)) {
+      const l2 = computeOrderBookL2Metrics(bmbBook.bids, bmbBook.asks);
+      orderBook5Levels = {
+        symbol,
+        marketSymbol: `${symbol} - ${bmbBook.settlement}`,
+        settlement: bmbBook.settlement,
+        marketState: 'LIVE',
+        source: 'BMB_HOMEBROKER',
+        asOfUtcSec: bmbBook.asOfUtcSec,
+        bids: bmbBook.bids,
+        asks: bmbBook.asks,
+        bestBid: sanitizeFinite(l2.bestBid),
+        bestAsk: sanitizeFinite(l2.bestAsk),
+        mid: sanitizeFinite(l2.mid),
+        spreadArs: sanitizeFinite(l2.spread),
+        spreadPct: sanitizeFinite(l2.spreadPct),
+        bidDepthSize: sanitizeFinite(l2.bidDepthSize),
+        askDepthSize: sanitizeFinite(l2.askDepthSize),
+        vwapBid5: sanitizeFinite(l2.vwapBid5),
+        vwapAsk5: sanitizeFinite(l2.vwapAsk5),
+        vwapBook5: sanitizeFinite(l2.vwapBook5),
+        obi5: sanitizeFinite(l2.obi5),
+        last: stock?.last ?? bond?.priceArs ?? null,
+        open: null,
+        high: stock?.high ?? null,
+        low: stock?.low ?? null,
+        close: stock?.prevClose ?? null,
+        settlementPrice: null,
+        nominalVolume: null,
+      };
+    } else if (mervBook !== null) {
+      orderBook5Levels = mervBook;
+    } else if (stock !== null) {
+      const l1Bids = stock.bid !== null && Number.isFinite(stock.bid) && stock.bid > 0 ? [{ price: stock.bid, size: 0 }] : [];
+      const l1Asks = stock.ask !== null && Number.isFinite(stock.ask) && stock.ask > 0 ? [{ price: stock.ask, size: 0 }] : [];
+      const l1Metrics = computeOrderBookL2Metrics(l1Bids, l1Asks);
+      orderBook5Levels = {
+        symbol,
+        marketSymbol: `${symbol} - 24hs`,
+        settlement: '24hs',
+        marketState: l1Bids.length > 0 || l1Asks.length > 0 ? 'LIVE' : 'UNAVAILABLE',
+        source: 'BYMA_L1_ONLY',
+        asOfUtcSec: nowSec,
+        bids: l1Bids,
+        asks: l1Asks,
+        bestBid: sanitizeFinite(l1Metrics.bestBid),
+        bestAsk: sanitizeFinite(l1Metrics.bestAsk),
+        mid: sanitizeFinite(l1Metrics.mid),
+        spreadArs: sanitizeFinite(l1Metrics.spread),
+        spreadPct: sanitizeFinite(l1Metrics.spreadPct),
+        bidDepthSize: null,
+        askDepthSize: null,
+        vwapBid5: null,
+        vwapAsk5: null,
+        vwapBook5: null,
+        obi5: null,
+        last: stock.last,
+        open: null,
+        high: stock.high,
+        low: stock.low,
+        close: stock.prevClose,
+        settlementPrice: null,
+        nominalVolume: null,
+      };
+    }
+
+    const rofexFrontContract =
+      macroIfPrimary?.rofxFutures?.find((c) => c.category === 'OUTRIGHT' && c.price !== null) ??
+      macroIfPrimary?.rofxFutures?.find((c) => (c.category === 'OUTRIGHT' || c.category === 'MINI') && c.price !== null) ??
+      null;
+
     return {
       asOfUtcSec: nowSec,
       feedStatus,
@@ -3975,6 +4307,8 @@ export class ArgentinaMarketRuntime {
       mtfRegime: mtf?.regime1d ?? 'NO_DATA',
       relatedOptionsCount,
       institutionalEngines,
+      orderBook5Levels,
+      rofexFrontContract,
       providerErrors,
     };
   }
@@ -5517,6 +5851,34 @@ export class ArgentinaMarketRuntime {
     );
 
     return cached.value as ArRelationsResponse;
+  }
+
+  public async getPositionsAndAccount(forceRefresh = false): Promise<ArBrokerPositionsResponse> {
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const [primaryRes, bmbSnap] = await Promise.all([
+      this.primaryClient.getAccountPositionsAndReport(),
+      this.bmbClient.getSnapshot(undefined, null, forceRefresh),
+    ]);
+
+    const rawErrors: string[] = [];
+    if (primaryRes.summary.error !== null) {
+      rawErrors.push(primaryRes.summary.error);
+    }
+    if (bmbSnap.health.error !== null && bmbSnap.health.status !== 'DISABLED_NO_PASSWORD') {
+      rawErrors.push(bmbSnap.health.error);
+    }
+    const allSecrets = this.getSecrets();
+    const providerErrors = rawErrors.map((msg) => redactSecrets(msg, allSecrets));
+
+    return {
+      asOfUtcSec: nowSec,
+      primaryStatus: primaryRes.summary.status,
+      bmbStatus: bmbSnap.health.status,
+      primaryAccount: primaryRes.summary,
+      bmbAccountLabel: bmbSnap.health.accountLabel,
+      positions: primaryRes.positions,
+      providerErrors,
+    };
   }
 
   /** Helper puro exportado para pruebas de pricing americano BYMA en T+0 con derechos e IVA. */

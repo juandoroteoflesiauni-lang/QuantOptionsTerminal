@@ -6,6 +6,33 @@ import { HelpTooltip, DeltaPill, TickerChip } from './DesignSystem';
 
 type HistoryWindow = '15R' | '30R' | '60R';
 
+interface OrderBookLevelExt {
+  readonly price: number;
+  readonly size: number;
+}
+
+interface OrderBook5LevelsExt {
+  readonly symbol: string;
+  readonly marketSymbol: string;
+  readonly settlement: string;
+  readonly marketState: 'LIVE' | 'WEEKEND_CLOSED' | 'UNAVAILABLE';
+  readonly source: 'PRIMARY_MERV' | 'BMB_HOMEBROKER' | 'BYMA_L1_ONLY';
+  readonly bids: readonly OrderBookLevelExt[];
+  readonly asks: readonly OrderBookLevelExt[];
+  readonly spreadArs: number | null;
+  readonly spreadPct: number | null;
+  readonly vwapBook5: number | null;
+  readonly obi5: number | null;
+}
+
+interface RofexFrontContractExt {
+  readonly contract: string;
+  readonly price: number | null;
+  readonly priceBasis: 'LAST' | 'MID' | 'SETTLEMENT_EOD' | 'NONE';
+  readonly tnaImplicitaPct: number | null;
+  readonly devalDirectaPct: number | null;
+}
+
 export const StockDetailView: React.FC<{
   ticker: string;
   onSelectTicker: (t: string) => void;
@@ -29,7 +56,14 @@ export const StockDetailView: React.FC<{
     void requestStockDetail(upperTicker);
   }, [upperTicker]);
 
-  const stockDetail = liveMarket.stockDetailsBySymbol[upperTicker];
+  const stockDetail = liveMarket.stockDetailsBySymbol[upperTicker] as
+    | (NonNullable<(typeof liveMarket.stockDetailsBySymbol)[string]> & {
+        readonly orderBook5Levels?: OrderBook5LevelsExt | null;
+        readonly rofexFrontContract?: RofexFrontContractExt | null;
+      })
+    | undefined;
+  const orderBook5Levels = stockDetail?.orderBook5Levels ?? null;
+  const rofexFrontContract = stockDetail?.rofexFrontContract ?? null;
   const catalogStock = AR_STOCKS.find((s) => s.ticker === upperTicker) ?? AR_STOCKS[0];
   const overviewStock =
     liveMarket.overview?.mervalStocks.find((s) => s.ticker === upperTicker) ??
@@ -595,82 +629,216 @@ export const StockDetailView: React.FC<{
           </div>
         </div>
 
-        {/* CAJA DE PUNTAS LEVEL 1 BYMA + RESUMEN ESTADÍSTICO (4 columnas) */}
+        {/* CAJA DE PUNTAS NIVEL 2 (L2 5 PUNTAS / TOB L1) + RESUMEN ESTADÍSTICO (4 columnas) */}
         <div className="lg:col-span-4 rounded-[12px] bg-[#131722] border border-[#232733] p-5 flex flex-col justify-between gap-4">
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <h3 className="text-[14.5px] font-bold text-[#FFFFFF]">
-                  Caja de Puntas (Level 1 BYMA)
+                  {orderBook5Levels && orderBook5Levels.source !== 'BYMA_L1_ONLY'
+                    ? 'Caja de Puntas Nivel 2 (L2)'
+                    : 'Caja de Puntas (L1 BYMA)'}
                 </h3>
                 <HelpTooltip
-                  title="Mejor Punta (Top of Book)"
-                  text="Mejor oferta de compra y venta reportada en vivo por Data912 / Open BYMA. Click en el precio para precargar orden."
+                  title="Profundidad de Mercado (L2 / TOB)"
+                  text="Caja de 5 puntas en vivo vía Primary MERV / Bull Market HomeBroker, o Top of Book L1 cuando el mercado está cerrado. Click en precio para precargar orden."
                 />
               </div>
-              <span className="text-[11px] font-mono-num text-[#22C55E]">
-                Spread {Number.isFinite(spreadArs) ? `$ ${fmtNum(spreadArs, 2)}` : '—'}
-              </span>
+              <div className="flex items-center gap-1.5">
+                {orderBook5Levels && (
+                  <span className="px-1.5 py-0.5 rounded bg-[#0B0E14] border border-[#232733] text-[10px] font-mono-num text-[#38BDF8]">
+                    {orderBook5Levels.source === 'BMB_HOMEBROKER'
+                      ? 'BMB L2'
+                      : orderBook5Levels.source === 'PRIMARY_MERV'
+                        ? `MERV ${orderBook5Levels.settlement}`
+                        : 'BYMA L1'}
+                  </span>
+                )}
+                <span className="text-[11px] font-mono-num text-[#22C55E]">
+                  Spread{' '}
+                  {orderBook5Levels?.spreadArs != null && Number.isFinite(orderBook5Levels.spreadArs)
+                    ? `$ ${fmtNum(orderBook5Levels.spreadArs, 2)}`
+                    : Number.isFinite(spreadArs)
+                      ? `$ ${fmtNum(spreadArs, 2)}`
+                      : '—'}
+                </span>
+              </div>
             </div>
 
-            <table className="w-full font-mono-num text-[12px] border-collapse">
-              <thead>
-                <tr className="text-[10px] uppercase text-[#787B86] border-b border-[#232733]">
-                  <th className="py-2 text-left">Nivel</th>
-                  <th className="py-2 text-right pr-2.5 text-[#22C55E]">Precio Compra</th>
-                  <th className="py-2 text-left pl-2.5 text-[#F23645]">Precio Venta</th>
-                  <th className="py-2 text-right">Fuente</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#1E222D]">
-                <tr className="h-10">
-                  <td className="text-left text-[#9CA3AF]">TOB 1</td>
-                  <td
-                    onClick={() => {
-                      if (Number.isFinite(liveBid)) {
-                        onOpenOrderTicket({
-                          ticker: stockTicker,
-                          side: 'Venta',
-                          price: liveBid,
-                          qty: 100,
-                          instrumentLabel: `${stockName} Contado`,
-                        });
-                      }
-                    }}
-                    className={`text-right pr-2.5 font-bold text-[#22C55E] ${
-                      Number.isFinite(liveBid) ? 'cursor-pointer hover:brightness-125' : ''
-                    }`}
-                  >
-                    {Number.isFinite(liveBid) ? `$ ${fmtNum(liveBid, 2)}` : '—'}
-                  </td>
-                  <td
-                    onClick={() => {
-                      if (Number.isFinite(liveAsk)) {
-                        onOpenOrderTicket({
-                          ticker: stockTicker,
-                          side: 'Compra',
-                          price: liveAsk,
-                          qty: 100,
-                          instrumentLabel: `${stockName} Contado`,
-                        });
-                      }
-                    }}
-                    className={`text-left pl-2.5 font-bold text-[#F23645] border-l border-[#232733] ${
-                      Number.isFinite(liveAsk) ? 'cursor-pointer hover:brightness-125' : ''
-                    }`}
-                  >
-                    {Number.isFinite(liveAsk) ? `$ ${fmtNum(liveAsk, 2)}` : '—'}
-                  </td>
-                  <td className="text-right text-[#9CA3AF]">
-                    {liveStockDto?.source ?? 'BYMA'}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            {orderBook5Levels &&
+              (orderBook5Levels.vwapBook5 !== null || orderBook5Levels.obi5 !== null) && (
+                <div className="grid grid-cols-3 gap-2 p-2 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] text-[10.5px] font-mono-num">
+                  <div>
+                    <div className="text-[#787B86]">Spread %</div>
+                    <div className="text-[#FFFFFF] font-semibold">
+                      {orderBook5Levels.spreadPct !== null
+                        ? `${fmtNum(orderBook5Levels.spreadPct, 2)}%`
+                        : '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[#787B86]">VWAP 5P</div>
+                    <div className="text-[#38BDF8] font-semibold">
+                      {orderBook5Levels.vwapBook5 !== null
+                        ? `$ ${fmtNum(orderBook5Levels.vwapBook5, 2)}`
+                        : '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[#787B86]">Desbalance OBI</div>
+                    <div
+                      className={`font-semibold ${
+                        (orderBook5Levels.obi5 ?? 0) >= 0 ? 'text-[#22C55E]' : 'text-[#F23645]'
+                      }`}
+                    >
+                      {orderBook5Levels.obi5 !== null
+                        ? `${fmtNum(orderBook5Levels.obi5 * 100, 1)}%`
+                        : '—'}
+                    </div>
+                  </div>
+                </div>
+              )}
 
-            <div className="p-2.5 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] text-[11px] text-[#787B86]">
-              Profundidad L2 de 5 puntas y tamaño por nivel no provistos por el feed gratuito (solo Top of Book L1).
-            </div>
+            {orderBook5Levels &&
+            (orderBook5Levels.bids.length > 0 || orderBook5Levels.asks.length > 0) &&
+            orderBook5Levels.source !== 'BYMA_L1_ONLY' ? (
+              <table className="w-full font-mono-num text-[11.5px] border-collapse">
+                <thead>
+                  <tr className="text-[10px] uppercase text-[#787B86] border-b border-[#232733]">
+                    <th className="py-1.5 text-left">Niv</th>
+                    <th className="py-1.5 text-right pr-2">Vol Bid</th>
+                    <th className="py-1.5 text-right pr-2.5 text-[#22C55E]">Compra</th>
+                    <th className="py-1.5 text-left pl-2.5 text-[#F23645]">Venta</th>
+                    <th className="py-1.5 text-right">Vol Ask</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E222D]">
+                  {Array.from(
+                    {
+                      length: Math.min(
+                        5,
+                        Math.max(orderBook5Levels.bids.length, orderBook5Levels.asks.length),
+                      ),
+                    },
+                    (_, idx) => {
+                      const bidLvl = orderBook5Levels.bids[idx];
+                      const askLvl = orderBook5Levels.asks[idx];
+                      return (
+                        <tr key={idx} className="h-8 hover:bg-[#1A202E]">
+                          <td className="text-left text-[#787B86]">N{idx + 1}</td>
+                          <td className="text-right pr-2 text-[#9CA3AF]">
+                            {bidLvl ? bidLvl.size.toLocaleString('es-AR') : '—'}
+                          </td>
+                          <td
+                            onClick={() => {
+                              if (bidLvl) {
+                                onOpenOrderTicket({
+                                  ticker: stockTicker,
+                                  side: 'Venta',
+                                  price: bidLvl.price,
+                                  qty: Math.max(1, Math.round(bidLvl.size || 100)),
+                                  instrumentLabel: `${stockName} L2 N${String(idx + 1)}`,
+                                });
+                              }
+                            }}
+                            className={`text-right pr-2.5 font-bold text-[#22C55E] ${
+                              bidLvl ? 'cursor-pointer hover:brightness-125' : ''
+                            }`}
+                          >
+                            {bidLvl ? `$ ${fmtNum(bidLvl.price, 2)}` : '—'}
+                          </td>
+                          <td
+                            onClick={() => {
+                              if (askLvl) {
+                                onOpenOrderTicket({
+                                  ticker: stockTicker,
+                                  side: 'Compra',
+                                  price: askLvl.price,
+                                  qty: Math.max(1, Math.round(askLvl.size || 100)),
+                                  instrumentLabel: `${stockName} L2 N${String(idx + 1)}`,
+                                });
+                              }
+                            }}
+                            className={`text-left pl-2.5 font-bold text-[#F23645] border-l border-[#232733] ${
+                              askLvl ? 'cursor-pointer hover:brightness-125' : ''
+                            }`}
+                          >
+                            {askLvl ? `$ ${fmtNum(askLvl.price, 2)}` : '—'}
+                          </td>
+                          <td className="text-right text-[#9CA3AF]">
+                            {askLvl ? askLvl.size.toLocaleString('es-AR') : '—'}
+                          </td>
+                        </tr>
+                      );
+                    },
+                  )}
+                </tbody>
+              </table>
+            ) : (
+              <>
+                <table className="w-full font-mono-num text-[12px] border-collapse">
+                  <thead>
+                    <tr className="text-[10px] uppercase text-[#787B86] border-b border-[#232733]">
+                      <th className="py-2 text-left">Nivel</th>
+                      <th className="py-2 text-right pr-2.5 text-[#22C55E]">Precio Compra</th>
+                      <th className="py-2 text-left pl-2.5 text-[#F23645]">Precio Venta</th>
+                      <th className="py-2 text-right">Fuente</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1E222D]">
+                    <tr className="h-10">
+                      <td className="text-left text-[#9CA3AF]">TOB 1</td>
+                      <td
+                        onClick={() => {
+                          if (Number.isFinite(liveBid)) {
+                            onOpenOrderTicket({
+                              ticker: stockTicker,
+                              side: 'Venta',
+                              price: liveBid,
+                              qty: 100,
+                              instrumentLabel: `${stockName} Contado`,
+                            });
+                          }
+                        }}
+                        className={`text-right pr-2.5 font-bold text-[#22C55E] ${
+                          Number.isFinite(liveBid) ? 'cursor-pointer hover:brightness-125' : ''
+                        }`}
+                      >
+                        {Number.isFinite(liveBid) ? `$ ${fmtNum(liveBid, 2)}` : '—'}
+                      </td>
+                      <td
+                        onClick={() => {
+                          if (Number.isFinite(liveAsk)) {
+                            onOpenOrderTicket({
+                              ticker: stockTicker,
+                              side: 'Compra',
+                              price: liveAsk,
+                              qty: 100,
+                              instrumentLabel: `${stockName} Contado`,
+                            });
+                          }
+                        }}
+                        className={`text-left pl-2.5 font-bold text-[#F23645] border-l border-[#232733] ${
+                          Number.isFinite(liveAsk) ? 'cursor-pointer hover:brightness-125' : ''
+                        }`}
+                      >
+                        {Number.isFinite(liveAsk) ? `$ ${fmtNum(liveAsk, 2)}` : '—'}
+                      </td>
+                      <td className="text-right text-[#9CA3AF]">
+                        {liveStockDto?.source ?? 'BYMA'}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div className="p-2.5 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] text-[11px] text-[#9CA3AF]">
+                  {orderBook5Levels?.source === 'PRIMARY_MERV' &&
+                  orderBook5Levels.marketState === 'WEEKEND_CLOSED'
+                    ? `Mercado cerrado / sin puntas activas en Primary MERV (${orderBook5Levels.marketSymbol}). Mostrando Top of Book L1 de cierre.`
+                    : `Sin libro L2 activo (mercado cerrado o conector BMB pendiente). Top of Book L1 provisto por ${liveStockDto?.source ?? 'BYMA'}.`}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Resumen estadístico de la rueda */}
@@ -787,9 +955,19 @@ export const StockDetailView: React.FC<{
 
           <div className="p-3.5 rounded-[10px] bg-[#0B0E14] border border-[#1E222D] space-y-1">
             <div className="text-[11px] text-[#787B86]">DLR Futuro Rofex Prox.</div>
-            <div className="font-mono-num text-[17px] font-bold text-[#EAB308]">—</div>
+            <div className="font-mono-num text-[17px] font-bold text-[#EAB308]">
+              {rofexFrontContract?.price != null && Number.isFinite(rofexFrontContract.price)
+                ? `$ ${fmtNum(rofexFrontContract.price, 2)}`
+                : '—'}
+            </div>
             <div className="text-[10.5px] font-mono-num text-[#9CA3AF]">
-              Sin feed ROFEX en tiempo real
+              {rofexFrontContract && rofexFrontContract.price != null
+                ? `${rofexFrontContract.contract} (${rofexFrontContract.priceBasis})${
+                    rofexFrontContract.tnaImplicitaPct != null
+                      ? ` · TNA ${fmtNum(rofexFrontContract.tnaImplicitaPct, 1)}%`
+                      : ''
+                  }`
+                : 'Sin cotización ROFEX activa'}
             </div>
           </div>
         </div>

@@ -1,0 +1,281 @@
+{
+  "schemaVersion": 1,
+  "dlrCases": [
+    {
+      "id": "dlr_nov26_weekend_settlement_a3500",
+      "input": {
+        "asOfUtcSec": 1794690000,
+        "maturityDate": "20261130",
+        "last": null,
+        "bestBid": null,
+        "bestAsk": null,
+        "settlement": 1562.5,
+        "close": 1560.0,
+        "a3500": 1445.0,
+        "dlrSpot": 1448.0
+      },
+      "expected": {
+        "priceBasis": "SETTLEMENT_EOD",
+        "referencePrice": 1562.5,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1796061600,
+        "days": 16,
+        "devalDirectaPct": 8.131487889273359,
+        "tnaImplicitaPct": 185.4995674740485,
+        "teaImplicitaPct": 495.02344998656883,
+        "temImplicitaPct": 15.78714232173246
+      }
+    },
+    {
+      "id": "dlr_dic26_live_last_priority",
+      "input": {
+        "asOfUtcSec": 1794690000,
+        "maturityDate": "20261230",
+        "last": 1595.5,
+        "bestBid": 1593.0,
+        "bestAsk": 1594.0,
+        "settlement": 1590.0,
+        "close": 1588.0,
+        "a3500": 1445.0,
+        "dlrSpot": null
+      },
+      "expected": {
+        "priceBasis": "LAST",
+        "referencePrice": 1595.5,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1798653600,
+        "days": 46,
+        "devalDirectaPct": 10.415224913494804,
+        "tnaImplicitaPct": 82.64254550925224,
+        "teaImplicitaPct": 119.49541606448358,
+        "temImplicitaPct": 6.674929903412652
+      }
+    },
+    {
+      "id": "dlr_ene27_live_mid_priority",
+      "input": {
+        "asOfUtcSec": 1794690000,
+        "maturityDate": "20270129",
+        "last": null,
+        "bestBid": 1622.0,
+        "bestAsk": 1626.0,
+        "settlement": 1620.0,
+        "close": null,
+        "a3500": null,
+        "dlrSpot": 1450.25
+      },
+      "expected": {
+        "priceBasis": "MID",
+        "referencePrice": 1624.0,
+        "spotUsed": 1450.25,
+        "spotSource": "DLR_SPOT",
+        "maturityUtcSec": 1801245600,
+        "days": 76,
+        "devalDirectaPct": 11.98069298396829,
+        "tnaImplicitaPct": 57.53885446247927,
+        "teaImplicitaPct": 72.19337874414803,
+        "temImplicitaPct": 4.567954372081506
+      }
+    },
+    {
+      "id": "dlr_missing_spot_returns_null_nan",
+      "input": {
+        "asOfUtcSec": 1794690000,
+        "maturityDate": "20270429",
+        "last": null,
+        "bestBid": null,
+        "bestAsk": null,
+        "settlement": 1720.0,
+        "close": null,
+        "a3500": null,
+        "dlrSpot": null
+      },
+      "expected": {
+        "priceBasis": "SETTLEMENT_EOD",
+        "referencePrice": 1720.0,
+        "spotUsed": null,
+        "spotSource": "NONE",
+        "maturityUtcSec": 1809021600,
+        "days": 166,
+        "devalDirectaPct": null,
+        "tnaImplicitaPct": null,
+        "teaImplicitaPct": null,
+        "temImplicitaPct": null
+      }
+    },
+    {
+      "id": "dlr_expired_returns_null_nan_rates",
+      "input": {
+        "asOfUtcSec": 1794690000,
+        "maturityDate": "20261030",
+        "last": 1420.0,
+        "bestBid": null,
+        "bestAsk": null,
+        "settlement": 1420.0,
+        "close": null,
+        "a3500": 1445.0,
+        "dlrSpot": null
+      },
+      "expected": {
+        "priceBasis": "LAST",
+        "referencePrice": 1420.0,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1793383200,
+        "days": null,
+        "devalDirectaPct": null,
+        "tnaImplicitaPct": null,
+        "teaImplicitaPct": null,
+        "temImplicitaPct": null
+      }
+    }
+  ],
+  "l2Cases": [
+    {
+      "id": "ggal_5_levels_unsorted_input",
+      "input": {
+        "bids": [
+          {
+            "price": 7150.0,
+            "size": 500
+          },
+          {
+            "price": 7190.0,
+            "size": 1200
+          },
+          {
+            "price": 7175.0,
+            "size": 850
+          },
+          {
+            "price": 7120.0,
+            "size": 2500
+          },
+          {
+            "price": 7160.0,
+            "size": 400
+          },
+          {
+            "price": 7000.0,
+            "size": 9999
+          }
+        ],
+        "asks": [
+          {
+            "price": 7220.0,
+            "size": 900
+          },
+          {
+            "price": 7205.0,
+            "size": 600
+          },
+          {
+            "price": 7240.0,
+            "size": 1500
+          },
+          {
+            "price": 7210.0,
+            "size": 700
+          },
+          {
+            "price": 7260.0,
+            "size": 300
+          },
+          {
+            "price": 7300.0,
+            "size": 4000
+          }
+        ]
+      },
+      "expected": {
+        "bestBid": 7190.0,
+        "bestAsk": 7205.0,
+        "mid": 7197.5,
+        "spread": 15.0,
+        "spreadPct": 0.20840569642236886,
+        "bidDepthSize": 5450.0,
+        "askDepthSize": 4000.0,
+        "bidDepthNotional": 38965750.0,
+        "askDepthNotional": 28906000.0,
+        "vwapBid5": 7149.678899082569,
+        "vwapAsk5": 7226.5,
+        "vwapBook5": 7182.195767195767,
+        "obi5": 0.15343915343915343
+      }
+    },
+    {
+      "id": "empty_book_weekend",
+      "input": {
+        "bids": [],
+        "asks": []
+      },
+      "expected": {
+        "bestBid": null,
+        "bestAsk": null,
+        "mid": null,
+        "spread": null,
+        "spreadPct": null,
+        "bidDepthSize": null,
+        "askDepthSize": null,
+        "bidDepthNotional": null,
+        "askDepthNotional": null,
+        "vwapBid5": null,
+        "vwapAsk5": null,
+        "vwapBook5": null,
+        "obi5": null
+      }
+    }
+  ],
+  "caucionCases": [
+    {
+      "id": "caucion_1d",
+      "input": {
+        "tnaPct": 32.5,
+        "termDays": 1,
+        "badlarTnaPct": 34.75
+      },
+      "expected": {
+        "teaEffectivePct": 38.383052138700634,
+        "spreadVsBadlarBps": -225.0
+      }
+    },
+    {
+      "id": "caucion_7d",
+      "input": {
+        "tnaPct": 33.1,
+        "termDays": 7,
+        "badlarTnaPct": 34.75
+      },
+      "expected": {
+        "teaEffectivePct": 39.090392291955034,
+        "spreadVsBadlarBps": -164.99999999999986
+      }
+    },
+    {
+      "id": "caucion_30d",
+      "input": {
+        "tnaPct": 35.0,
+        "termDays": 30,
+        "badlarTnaPct": 34.75
+      },
+      "expected": {
+        "teaEffectivePct": 41.20750149532779,
+        "spreadVsBadlarBps": 25.0
+      }
+    },
+    {
+      "id": "caucion_invalid_zero_days",
+      "input": {
+        "tnaPct": 35.0,
+        "termDays": 0,
+        "badlarTnaPct": 34.75
+      },
+      "expected": {
+        "teaEffectivePct": null,
+        "spreadVsBadlarBps": 25.0
+      }
+    }
+  ]
+}

@@ -34,6 +34,7 @@ import {
   fmtMoneyCompact,
 } from '../data/marketData';
 import {
+  refreshMacro,
   requestMonitoringPanel,
   requestRelations,
   requestUsSnapshot,
@@ -214,11 +215,48 @@ export const MonitoringModule: React.FC<{
   const rowH =
     density === 'densa' ? 'h-8 text-[12px]' : density === 'comoda' ? 'h-11 text-[13px]' : 'h-9 text-[12px]';
 
+  interface ArCaucionRowExt {
+    readonly termDays: number;
+    readonly label: string;
+    readonly currency: 'ARS' | 'USD';
+    readonly tnaWeighted: number | null;
+    readonly teaEffective: number | null;
+    readonly bidTna: number | null;
+    readonly askTna: number | null;
+    readonly volumeArs: number | null;
+    readonly spreadVsBadlarBps: number | null;
+    readonly referenceInstrument: string;
+    readonly originLabel: string;
+    readonly source: 'BMB_HOMEBROKER' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
+  }
+
+  interface BmbHealthExt {
+    readonly status: string;
+    readonly error: string | null;
+  }
+
+  const monitoringExt = liveMarket.monitoring as
+    | (NonNullable<typeof liveMarket.monitoring> & {
+        readonly cauciones?: readonly ArCaucionRowExt[];
+        readonly caucionesStatus?: 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
+        readonly bmbHealth?: BmbHealthExt;
+      })
+    | null;
+
+  const liveCauciones: readonly ArCaucionRowExt[] = monitoringExt?.cauciones ?? [];
+  const caucionesStatus = monitoringExt?.caucionesStatus ?? 'NO_DATA';
+  const bmbHealth = monitoringExt?.bmbHealth;
+  const totalCaucionVol = liveCauciones.reduce(
+    (acc, r) => (r.volumeArs !== null && Number.isFinite(r.volumeArs) ? acc + r.volumeArs : acc),
+    0,
+  );
+  const caucionesCount = liveCauciones.length > 0 ? liveCauciones.length : CAUCIONES_DATA.length;
+
   const panels: { id: MonitorSubPanel; label: string; count: number }[] = [
     { id: 'acciones', label: 'Acciones Líderes', count: AR_STOCKS.length },
     { id: 'bonos', label: 'Bonos y Letras', count: BONDS_DATA.length },
     { id: 'cedears', label: 'CEDEARs y ADRs', count: US_MARKET_DATA.length },
-    { id: 'cauciones', label: 'Cauciones por Plazo', count: CAUCIONES_DATA.length },
+    { id: 'cauciones', label: 'Cauciones por Plazo', count: caucionesCount },
   ];
 
   const stockDeltas = AR_STOCKS.map((s) => s.deltaPct).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
@@ -279,13 +317,23 @@ export const MonitoringModule: React.FC<{
           </InsightBanner>
         )}
         {subPanel === 'cauciones' && (
-          <InsightBanner variant="warn" tag="Liquidez / Cauciones">
-            {CAUCIONES_DATA.length > 0
-              ? `Tasas de caución BYMA (${CAUCIONES_DATA.length} plazos activos).`
-              : `Sin feed gratuito directo de libro de cauciones BYMA · Tasa BADLAR BCRA: ${fmtNum(
-                  liveMarket.monitoring?.badlarTna ?? liveMarket.macro?.variables.badlarTna,
-                  2
-                )} % TNA.`}
+          <InsightBanner variant={caucionesStatus === 'LIVE_BMB' ? 'pos' : 'warn'} tag="Liquidez / Cauciones">
+            {caucionesStatus === 'LIVE_BMB' ? (
+              <>
+                Puntas vivas Tomadora/Colocadora vía <strong className="text-[#2EDC7E]">Bull Market HomeBroker</strong> ({liveCauciones.length} plazos activos).
+              </>
+            ) : liveCauciones.length > 0 ? (
+              <>
+                Conector BMB en estado <strong className="text-[#F5B544]">{bmbHealth?.status ?? 'OFFLINE'}</strong> — Mostrando{' '}
+                <strong>Curva de Referencia Implícita BCRA / Lecap</strong> ({liveCauciones.length} plazos · BADLAR:{' '}
+                <strong className="font-mono-num text-[var(--text-primary)]">
+                  {fmtNum(liveMarket.monitoring?.badlarTna ?? liveMarket.macro?.variables.badlarTna, 2)}% TNA
+                </strong>
+                ). Sin puntas simuladas.
+              </>
+            ) : (
+              `Sin libro vivo BMB (${bmbHealth?.status ?? 'NO_DATA'}) ni curva BCRA cargada todavía.`
+            )}
           </InsightBanner>
         )}
       </div>
@@ -587,39 +635,73 @@ export const MonitoringModule: React.FC<{
                   <th className="py-2.5 px-2.5">TEA Efectiva</th>
                   <th className="py-2.5 px-2.5 text-[#2EDC7E]">Tomadora (Bid)</th>
                   <th className="py-2.5 px-2.5 text-[#FF5C63]">Colocadora (Ask)</th>
-                  <th className="py-2.5 px-3 text-left">Participación de Volumen</th>
-                  <th className="py-2.5 px-3">Monto Operado</th>
+                  <th className="py-2.5 px-2.5">vs BADLAR</th>
+                  <th className="py-2.5 px-3">Volumen ARS</th>
+                  <th className="py-2.5 px-3 text-left">Origen / Instrumento Ref.</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-subtle)]">
-                {CAUCIONES_DATA.map((c) => (
-                  <tr key={c.termDays} className={`${rowH} hover:bg-[var(--surface-2)]`}>
-                    <td className="px-3 text-left font-bold text-[var(--text-primary)]">
-                      {c.termDays} {c.termDays === 1 ? 'día hábil' : 'días'}
-                    </td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{c.currency}</td>
-                    <td className="px-2.5 font-bold text-[#8B7CF6]">{fmtNum(c.tnaWeighted, 2)} %</td>
-                    <td className="px-2.5 text-[var(--text-primary)]">{fmtNum(c.teaEffective, 2)} %</td>
-                    <td className="px-2.5 text-[#2EDC7E]">{fmtNum(c.bidTna, 2)} %</td>
-                    <td className="px-2.5 text-[#FF5C63]">{fmtNum(c.askTna, 2)} %</td>
-                    <td className="px-3 text-left">
-                      <div className="flex items-center gap-2">
-                        <div className="w-28 h-2 rounded-full bg-[var(--surface-3)] overflow-hidden">
-                          <div
-                            style={{ width: `${c.shareOfTotalPct}%` }}
-                            className="h-full bg-[#2EDC7E]"
-                          />
-                        </div>
-                        <span className="text-[11px] text-[var(--text-secondary)]">
-                          {fmtNum(c.shareOfTotalPct, 1)}%
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-3 font-semibold text-[var(--text-primary)]">
-                      {fmtMoneyCompact(c.volumeM)}
+                {liveCauciones.length > 0 ? (
+                  liveCauciones.map((c, idx) => {
+                    const volSharePct =
+                      totalCaucionVol > 0 && c.volumeArs !== null && Number.isFinite(c.volumeArs)
+                        ? (c.volumeArs / totalCaucionVol) * 100
+                        : null;
+                    return (
+                      <tr key={`${c.currency}-${String(c.termDays)}-${String(idx)}`} className={`${rowH} hover:bg-[var(--surface-2)]`}>
+                        <td className="px-3 text-left font-bold text-[var(--text-primary)]">{c.label}</td>
+                        <td className="px-2.5 text-[var(--text-secondary)]">{c.currency}</td>
+                        <td className="px-2.5 font-bold text-[#8B7CF6]">
+                          {c.tnaWeighted !== null ? `${fmtNum(c.tnaWeighted, 2)} %` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[var(--text-primary)]">
+                          {c.teaEffective !== null ? `${fmtNum(c.teaEffective, 2)} %` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[#2EDC7E]">
+                          {c.bidTna !== null ? `${fmtNum(c.bidTna, 2)} %` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[#FF5C63]">
+                          {c.askTna !== null ? `${fmtNum(c.askTna, 2)} %` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[var(--text-secondary)]">
+                          {c.spreadVsBadlarBps !== null ? `${fmtNum(c.spreadVsBadlarBps, 0)} pb` : '—'}
+                        </td>
+                        <td className="px-3 font-semibold text-[var(--text-primary)]">
+                          {c.volumeArs !== null ? (
+                            <span>
+                              {fmtMoneyCompact(c.volumeArs / 1e6)}
+                              {volSharePct !== null ? ` (${fmtNum(volSharePct, 1)}%)` : ''}
+                            </span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="px-3 text-left font-sans text-[11px]">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider ${
+                                c.source === 'BMB_HOMEBROKER'
+                                  ? 'bg-[#0D221E] text-[#2EDC7E] border border-[#164E3F]'
+                                  : 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
+                              }`}
+                            >
+                              {c.source === 'BMB_HOMEBROKER' ? 'BMB VIVO' : 'REF. BCRA/LECAP'}
+                            </span>
+                            <span className="text-[var(--text-secondary)] truncate max-w-[200px]" title={c.originLabel}>
+                              {c.referenceInstrument}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={9} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                      Sin datos de cauciones ni tasas BCRA disponibles en este momento.
                     </td>
                   </tr>
-                ))}
+                )}
               </tbody>
             </table>
           </div>
@@ -1349,11 +1431,37 @@ function buildFallbackSyntheticUsdFutures(params: {
   return rows;
 }
 
+interface PrimaryDlrContractExt {
+  readonly contract: string;
+  readonly category: 'OUTRIGHT' | 'MINI' | 'SPREAD' | 'OPTION' | 'SPOT' | 'OTHER';
+  readonly marketId: string;
+  readonly maturity: string | null;
+  readonly days: number | null;
+  readonly price: number | null;
+  readonly priceBasis: 'LAST' | 'MID' | 'SETTLEMENT_EOD' | 'NONE';
+  readonly last: number | null;
+  readonly settlement: number | null;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly openInterest: number | null;
+  readonly nominalVolume: number | null;
+  readonly spotUsed: number | null;
+  readonly spotSource: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE';
+  readonly devalDirectaPct: number | null;
+  readonly tnaImplicitaPct: number | null;
+  readonly teaImplicitaPct: number | null;
+  readonly source: 'PRIMARY_ROFEX';
+}
+
+type FuturesTab = 'OUTRIGHT' | 'MINI' | 'DDF' | 'SINTETICO';
+
 export const FuturesModule: React.FC = () => {
   const liveMarket = useLiveMarketState();
+  const [futuresTab, setFuturesTab] = useState<FuturesTab>('OUTRIGHT');
 
   useEffect(() => {
     void requestUsSnapshot('SPY');
+    void refreshMacro(false);
   }, []);
 
   const macroExt = liveMarket.macro as
@@ -1362,8 +1470,19 @@ export const FuturesModule: React.FC = () => {
           readonly sofrUsdTna?: number | null;
         };
         readonly syntheticFutures?: readonly SyntheticUsdFutureRow[];
+        readonly rofxFutures?: readonly PrimaryDlrContractExt[];
+        readonly rofxSpotA3500?: number | null;
+        readonly rofxSpotSource?: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE';
       })
     | null;
+
+  const rofxContracts = macroExt?.rofxFutures ?? [];
+  const outrightRofx = rofxContracts.filter((c) => c.category === 'OUTRIGHT');
+  const miniRofx = rofxContracts.filter((c) => c.category === 'MINI');
+  const ddfDerivatives = rofxContracts.filter(
+    (c) => c.category === 'SPREAD' || c.category === 'OPTION' || c.category === 'SPOT' || c.category === 'OTHER',
+  );
+  const hasPrimaryRofx = rofxContracts.length > 0;
 
   const syntheticRows: readonly SyntheticUsdFutureRow[] = (() => {
     if (ROFEX_FUTURES.length > 0) return [];
@@ -1405,11 +1524,33 @@ export const FuturesModule: React.FC = () => {
   })();
 
   const firstSynth = syntheticRows[0] ?? null;
+  const visibleRofxRows =
+    futuresTab === 'OUTRIGHT'
+      ? outrightRofx
+      : futuresTab === 'MINI'
+        ? miniRofx
+        : futuresTab === 'DDF'
+          ? ddfDerivatives
+          : [];
+  const showPrimaryTable = hasPrimaryRofx && futuresTab !== 'SINTETICO';
 
   return (
     <div className="space-y-4 animate-module">
-      <InsightBanner variant={ROFEX_FUTURES.length > 0 ? 'pos' : 'warn'} tag="Curva Rofex / Sintético USD">
-        {ROFEX_FUTURES.length > 0 ? (
+      <InsightBanner
+        variant={hasPrimaryRofx || ROFEX_FUTURES.length > 0 ? 'pos' : 'warn'}
+        tag="Curva MATBA ROFEX / Sintético USD"
+      >
+        {hasPrimaryRofx ? (
+          <>
+            Conectado a <strong className="text-[#2EDC7E]">Primary API (MATBA-ROFEX)</strong>:{' '}
+            <strong>{outrightRofx.length}</strong> futuros DLR estándar ·{' '}
+            <strong>{miniRofx.length}</strong> minis · <strong>{ddfDerivatives.length}</strong> derivados DDF · Spot Ref. ({macroExt?.rofxSpotSource ?? 'NONE'}):{' '}
+            <strong className="font-mono-num text-[var(--text-primary)]">
+              {macroExt?.rofxSpotA3500 != null ? `$ ${fmtNum(macroExt.rofxSpotA3500, 2)}` : '—'}
+            </strong>
+            .
+          </>
+        ) : ROFEX_FUTURES.length > 0 ? (
           `Contratos activos de dólar futuro (${ROFEX_FUTURES.length} vencimientos).`
         ) : firstSynth ? (
           <>
@@ -1422,84 +1563,170 @@ export const FuturesModule: React.FC = () => {
             <strong className="font-mono-num text-[#2EDC7E]">{fmtNum(firstSynth.usdRatePct, 2)}%</strong>. Cero ticks simulados de Rofex.
           </>
         ) : (
-          `Sin feed gratuito directo de MATBA-ROFEX ni curva completa de tasas USD/ARS (${liveMarket.feedStatus}). Referencia TC Mayorista A3500 BCRA: ${
+          `Sin feed directo de MATBA-ROFEX ni curva completa de tasas USD/ARS (${liveMarket.feedStatus}). Referencia TC Mayorista A3500 BCRA: ${
             liveMarket.macro?.variables.a3500 != null ? `$ ${fmtNum(liveMarket.macro.variables.a3500, 2)}` : '—'
           }.`
         )}
       </InsightBanner>
 
+      {hasPrimaryRofx && (
+        <div className="flex flex-wrap items-center gap-1.5 p-1 rounded-[10px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)] w-fit">
+          {(
+            [
+              { id: 'OUTRIGHT', label: 'Futuros DLR (DLR/MMMYY)', count: outrightRofx.length },
+              { id: 'MINI', label: 'Mini (DLR/*M)', count: miniRofx.length },
+              { id: 'DDF', label: 'Pases / Opciones DDF', count: ddfDerivatives.length },
+              { id: 'SINTETICO', label: 'Curva Sintética CIP', count: syntheticRows.length },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setFuturesTab(t.id)}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-[8px] text-[12px] font-semibold cursor-pointer transition-all ${
+                futuresTab === t.id
+                  ? 'bg-[var(--accent-primary)] text-white'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <span>{t.label}</span>
+              <span className="text-[10px] font-mono-num px-1.5 py-0.2 rounded bg-black/25">
+                {t.count}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="qc-card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-right font-mono-num text-[12px]">
-            <thead>
-              <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
-                <th className="py-2.5 px-3 text-left">Contrato Rofex / Sintético</th>
-                <th className="py-2.5 px-2.5">Vencimiento</th>
-                <th className="py-2.5 px-2.5">Días</th>
-                <th className="py-2.5 px-2.5">Forward Teórico ($)</th>
-                <th className="py-2.5 px-2.5">Var. Día</th>
-                <th className="py-2.5 px-2.5">Deval. Directa</th>
-                <th className="py-2.5 px-2.5">TNA Implícita</th>
-                <th className="py-2.5 px-2.5">TEA Implícita</th>
-                <th className="py-2.5 px-2.5">Tasa ARS Ref.</th>
-                <th className="py-2.5 px-3 text-[#2EDC7E]">Tasa USD Ref.</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border-subtle)]">
-              {ROFEX_FUTURES.length > 0 ? (
-                ROFEX_FUTURES.map((f) => (
-                  <tr key={f.contract} className="h-9 hover:bg-[var(--surface-2)]">
-                    <td className="px-3 text-left font-bold text-[var(--text-primary)]">{f.contract}</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{f.maturity}</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{f.days}d</td>
-                    <td className="px-2.5 font-bold text-[var(--text-primary)]">$ {fmtNum(f.price, 1)}</td>
-                    <td className="px-2.5">
-                      <DeltaPill value={f.deltaPct} size="sm" />
-                    </td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{fmtPct(f.implicitDevalPct, 2)}</td>
-                    <td className="px-2.5 font-semibold text-[#8B7CF6]">{fmtNum(f.tnaImplicit, 1)} %</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{fmtNum(f.teaImplicit, 1)} %</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">
-                      {f.lecapRefTicker} ({fmtNum(f.lecapTna, 1)}%)
-                    </td>
-                    <td className="px-3 font-bold text-[#2EDC7E]">{fmtPct(f.syntheticUsdRatePct, 2)} TNA</td>
-                  </tr>
-                ))
-              ) : syntheticRows.length > 0 ? (
-                syntheticRows.map((s) => (
-                  <tr key={s.contract} className="h-9 hover:bg-[var(--surface-2)]">
-                    <td className="px-3 text-left font-bold text-[var(--text-primary)]">
-                      <span className="inline-flex items-center gap-2">
-                        <span>{s.contract}</span>
-                        <span className="px-1.5 py-0.5 rounded bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40 text-[9.5px] font-sans font-bold tracking-wider">
-                          {s.badge}
-                        </span>
-                      </span>
-                    </td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{s.maturity}</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{s.days}d</td>
-                    <td className="px-2.5 font-bold text-[var(--text-primary)]">$ {fmtNum(s.forwardPrice, 2)}</td>
-                    <td className="px-2.5 text-[var(--text-tertiary)]">—</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{fmtPct(s.impliedDevalPct, 2)}</td>
-                    <td className="px-2.5 font-semibold text-[#8B7CF6]">{fmtNum(s.tnaPct, 2)} %</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">{fmtNum(s.teaPct, 2)} %</td>
-                    <td className="px-2.5 text-[var(--text-secondary)]">
-                      {s.arsRateSource} ({fmtNum(s.arsRateTnaPct, 1)}%)
-                    </td>
-                    <td className="px-3 font-bold text-[#2EDC7E]">
-                      {fmtNum(s.usdRatePct, 2)}% ({s.usdRateSource})
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
-                    No hay contratos Rofex en los conectores públicos gratuitos (Data912 / Open BYMA / BCRA). Todos los campos muestran — sin valores simulados.
-                  </td>
+          {showPrimaryTable ? (
+            <table className="w-full border-collapse text-right font-mono-num text-[12px]">
+              <thead>
+                <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
+                  <th className="py-2.5 px-3 text-left">Contrato ROFEX</th>
+                  <th className="py-2.5 px-2.5">Vencimiento</th>
+                  <th className="py-2.5 px-2.5">Días</th>
+                  <th className="py-2.5 px-2.5">Último / Ajuste ($)</th>
+                  <th className="py-2.5 px-2.5">Puntas (BI / OF)</th>
+                  <th className="py-2.5 px-2.5">OI</th>
+                  <th className="py-2.5 px-2.5">Vol. Nom</th>
+                  <th className="py-2.5 px-2.5">Deval. Directa</th>
+                  <th className="py-2.5 px-2.5">TNA Implícita</th>
+                  <th className="py-2.5 px-3">TEA Implícita</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-[var(--border-subtle)]">
+                {visibleRofxRows.length > 0 ? (
+                  visibleRofxRows.map((c) => (
+                    <tr key={c.contract} className="h-9 hover:bg-[var(--surface-2)]">
+                      <td className="px-3 text-left font-bold text-[var(--text-primary)]">
+                        <span className="inline-flex items-center gap-2">
+                          <span>{c.contract}</span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9.5px] font-sans font-bold tracking-wider ${
+                              c.priceBasis === 'SETTLEMENT_EOD'
+                                ? 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
+                                : c.priceBasis === 'LAST' || c.priceBasis === 'MID'
+                                  ? 'bg-[#0D221E] text-[#2EDC7E] border border-[#164E3F]'
+                                  : 'bg-[#1E222D] text-[#9CA3AF] border border-[#2A3347]'
+                            }`}
+                          >
+                            {c.priceBasis}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">{c.maturity ?? '—'}</td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">
+                        {c.days !== null ? `${String(c.days)}d` : '—'}
+                      </td>
+                      <td className="px-2.5 font-bold text-[var(--text-primary)]">
+                        {c.price !== null ? `$ ${fmtNum(c.price, 2)}` : '—'}
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">
+                        {c.bid !== null || c.ask !== null
+                          ? `${c.bid !== null ? fmtNum(c.bid, 2) : '—'} / ${c.ask !== null ? fmtNum(c.ask, 2) : '—'}`
+                          : '—'}
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">
+                        {c.openInterest !== null ? c.openInterest.toLocaleString('es-AR') : '—'}
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">
+                        {c.nominalVolume !== null ? c.nominalVolume.toLocaleString('es-AR') : '—'}
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">
+                        {c.devalDirectaPct !== null ? fmtPct(c.devalDirectaPct, 2) : '—'}
+                      </td>
+                      <td className="px-2.5 font-semibold text-[#8B7CF6]">
+                        {c.tnaImplicitaPct !== null ? `${fmtNum(c.tnaImplicitaPct, 2)} %` : '—'}
+                      </td>
+                      <td className="px-3 text-[#2EDC7E] font-semibold">
+                        {c.teaImplicitaPct !== null ? `${fmtNum(c.teaImplicitaPct, 2)} %` : '—'}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                      No hay contratos cargados en la categoría seleccionada.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          ) : (
+            <table className="w-full border-collapse text-right font-mono-num text-[12px]">
+              <thead>
+                <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
+                  <th className="py-2.5 px-3 text-left">Contrato Rofex / Sintético</th>
+                  <th className="py-2.5 px-2.5">Vencimiento</th>
+                  <th className="py-2.5 px-2.5">Días</th>
+                  <th className="py-2.5 px-2.5">Forward Teórico ($)</th>
+                  <th className="py-2.5 px-2.5">Var. Día</th>
+                  <th className="py-2.5 px-2.5">Deval. Directa</th>
+                  <th className="py-2.5 px-2.5">TNA Implícita</th>
+                  <th className="py-2.5 px-2.5">TEA Implícita</th>
+                  <th className="py-2.5 px-2.5">Tasa ARS Ref.</th>
+                  <th className="py-2.5 px-3 text-[#2EDC7E]">Tasa USD Ref.</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border-subtle)]">
+                {syntheticRows.length > 0 ? (
+                  syntheticRows.map((s) => (
+                    <tr key={s.contract} className="h-9 hover:bg-[var(--surface-2)]">
+                      <td className="px-3 text-left font-bold text-[var(--text-primary)]">
+                        <span className="inline-flex items-center gap-2">
+                          <span>{s.contract}</span>
+                          <span className="px-1.5 py-0.5 rounded bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40 text-[9.5px] font-sans font-bold tracking-wider">
+                            {s.badge}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">{s.maturity}</td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">{s.days}d</td>
+                      <td className="px-2.5 font-bold text-[var(--text-primary)]">$ {fmtNum(s.forwardPrice, 2)}</td>
+                      <td className="px-2.5 text-[var(--text-tertiary)]">—</td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">{fmtPct(s.impliedDevalPct, 2)}</td>
+                      <td className="px-2.5 font-semibold text-[#8B7CF6]">{fmtNum(s.tnaPct, 2)} %</td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">{fmtNum(s.teaPct, 2)} %</td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">
+                        {s.arsRateSource} ({fmtNum(s.arsRateTnaPct, 1)}%)
+                      </td>
+                      <td className="px-3 font-bold text-[#2EDC7E]">
+                        {fmtNum(s.usdRatePct, 2)}% ({s.usdRateSource})
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                      No hay contratos Rofex ni curvas suficientes para calcular sintéticos. Todos los campos muestran — sin valores simulados.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </div>
@@ -1798,7 +2025,50 @@ export const RelationsModule: React.FC = () => {
 
 export const RatiosModule = RelationsModule;
 
-/* MÓDULO POSICIONES (CARTERA Y RIESGO AGREGADO) */
+/* MÓDULO POSICIONES (CARTERA Y RIESGO AGREGADO + CUENTA BROKER READ-ONLY) */
+interface BrokerCurrencyBalanceExt {
+  readonly currency: string;
+  readonly consumed: number | null;
+  readonly available: number | null;
+}
+
+interface BrokerAccountSummaryExt {
+  readonly broker: 'PRIMARY_REMARKETS' | 'BMB_HOMEBROKER';
+  readonly accountLabel: string | null;
+  readonly status: 'OK' | 'DISABLED' | 'UNAVAILABLE' | 'ERROR';
+  readonly collateral: number | null;
+  readonly margin: number | null;
+  readonly availableToCollateral: number | null;
+  readonly cashTotalArs: number | null;
+  readonly pendingMovementsArs: number | null;
+  readonly marketMember: string | null;
+  readonly currencyBalances: readonly BrokerCurrencyBalanceExt[];
+  readonly error: string | null;
+}
+
+interface BrokerPositionExt {
+  readonly symbol: string;
+  readonly marketId: string | null;
+  readonly buySize: number;
+  readonly sellSize: number;
+  readonly netSize: number;
+  readonly buyPrice: number | null;
+  readonly sellPrice: number | null;
+  readonly totalDailyDiffArs: number | null;
+  readonly totalDiffArs: number | null;
+  readonly source: 'PRIMARY_ROFEX' | 'BMB_HOMEBROKER';
+}
+
+interface BrokerPositionsResponseExt {
+  readonly asOfUtcSec: number;
+  readonly primaryStatus: 'OK' | 'DISABLED' | 'UNAVAILABLE' | 'ERROR';
+  readonly bmbStatus: string;
+  readonly primaryAccount: BrokerAccountSummaryExt;
+  readonly bmbAccountLabel: string | null;
+  readonly positions: readonly BrokerPositionExt[];
+  readonly providerErrors: readonly string[];
+}
+
 export const PositionsModule: React.FC<{
   positions: PortfolioPosition[];
   onOpenOrderTicket: (preset: {
@@ -1809,90 +2079,302 @@ export const PositionsModule: React.FC<{
     instrumentLabel: string;
   }) => void;
 }> = ({ positions, onOpenOrderTicket }) => {
+  const [activeTab, setActiveTab] = useState<'TERMINAL' | 'BROKER'>('TERMINAL');
+  const [brokerData, setBrokerData] = useState<BrokerPositionsResponseExt | null>(null);
+  const [brokerLoading, setBrokerLoading] = useState(false);
+  const [brokerError, setBrokerError] = useState<string | null>(null);
+
+  const loadBrokerAccount = async (forceRefresh = false): Promise<void> => {
+    setBrokerLoading(true);
+    setBrokerError(null);
+    try {
+      const qs = forceRefresh ? '?refresh=1' : '';
+      const res = await fetch(`/api/ar/positions${qs}`, {
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${String(res.status)}`);
+      }
+      const parsed = (await res.json()) as BrokerPositionsResponseExt;
+      setBrokerData(parsed);
+    } catch (err: unknown) {
+      setBrokerError(err instanceof Error ? err.message : 'Error consultando /api/ar/positions');
+    } finally {
+      setBrokerLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'BROKER' && brokerData === null && !brokerLoading) {
+      void loadBrokerAccount(false);
+    }
+  }, [activeTab]);
+
   const totalVal = positions.reduce((acc, p) => acc + p.marketValueArs, 0);
   const totalPnlDay = positions.reduce((acc, p) => acc + p.pnlDayArs, 0);
   const totalTheta = positions.reduce((acc, p) => acc + p.thetaDayArs, 0);
   const dayPct = totalVal > 0 ? (totalPnlDay / totalVal) * 100 : Number.NaN;
 
+  const primaryLabel = brokerData?.primaryAccount.accountLabel ?? 'REM22710';
+  const bmbLabel = brokerData?.bmbAccountLabel ?? 'BMB 266758';
+
   return (
     <div className="space-y-4 animate-module">
-      <InsightBanner variant="pos" tag="Cartera Consolidada">
-        {positions.length === 0 ? (
-          <>Tu portafolio está vacío. Enviá órdenes reales desde el Ticket de Orden para trackear tenencia y riesgo.</>
-        ) : (
-          <>
-            Tu portafolio suma <strong className="text-[var(--text-primary)] font-mono-num">$ {fmtNum(totalVal / 1e6, 2)} M</strong>{' '}
-            con variación diaria de{' '}
-            <strong className="text-[#2EDC7E] font-mono-num">
-              $ {fmtNum(totalPnlDay / 1e6, 2)} M ({fmtPct(dayPct, 2)})
-            </strong>{' '}
-            y Theta de <strong className="text-[#2EDC7E] font-mono-num">$ {fmtNum(totalTheta, 0)} / día</strong>.
-          </>
-        )}
-      </InsightBanner>
-
-      <div className="qc-card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-right font-mono-num text-[12px]">
-            <thead>
-              <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
-                <th className="py-2.5 px-3 text-left">Instrumento</th>
-                <th className="py-2.5 px-2 text-left">Tipo</th>
-                <th className="py-2.5 px-2.5">Cantidad</th>
-                <th className="py-2.5 px-2.5">PPC ($)</th>
-                <th className="py-2.5 px-2.5">Último ($)</th>
-                <th className="py-2.5 px-2.5">Valuación ARS</th>
-                <th className="py-2.5 px-2.5">P&L Rueda</th>
-                <th className="py-2.5 px-2.5">P&L Total</th>
-                <th className="py-2.5 px-2.5">Theta / Día</th>
-                <th className="py-2.5 px-3">Cerrar / Ajustar</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border-subtle)]">
-              {positions.map((p) => (
-                <tr key={p.id} className="h-10 hover:bg-[var(--surface-2)]">
-                  <td className="px-3 text-left font-bold text-[var(--text-primary)]">{p.ticker}</td>
-                  <td className="px-2 text-left font-sans text-[11px] text-[var(--text-secondary)]">
-                    {p.instrumentType}
-                  </td>
-                  <td className={p.qty < 0 ? 'px-2.5 text-[#FF5C63] font-semibold' : 'px-2.5 text-[#2EDC7E] font-semibold'}>
-                    {p.qty.toLocaleString('es-AR')}
-                  </td>
-                  <td className="px-2.5 text-[var(--text-secondary)]">$ {fmtNum(p.avgPrice, 2)}</td>
-                  <td className="px-2.5 font-bold text-[var(--text-primary)]">$ {fmtNum(p.lastPrice, 2)}</td>
-                  <td className="px-2.5 font-semibold text-[var(--text-primary)]">
-                    $ {fmtNum(p.marketValueArs, 0)}
-                  </td>
-                  <td className="px-2.5">
-                    <DeltaPill value={p.pnlDayPct} size="sm" />
-                  </td>
-                  <td className={p.pnlTotalArs >= 0 ? 'px-2.5 text-[#2EDC7E] font-semibold' : 'px-2.5 text-[#FF5C63]'}>
-                    +$ {fmtNum(p.pnlTotalArs, 0)} ({fmtPct(p.pnlTotalPct)})
-                  </td>
-                  <td className="px-2.5 text-[#2EDC7E]">+$ {fmtNum(p.thetaDayArs, 0)}</td>
-                  <td className="px-3">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onOpenOrderTicket({
-                          ticker: p.ticker,
-                          side: p.qty > 0 ? 'Venta' : 'Compra',
-                          price: p.lastPrice,
-                          qty: Math.abs(p.qty),
-                          instrumentLabel: `Cerrar/Ajustar ${p.ticker}`,
-                        })
-                      }
-                      className="px-2.5 py-1 rounded text-[11px] font-sans font-semibold bg-[var(--surface-2)] hover:bg-[var(--accent-primary)] hover:text-white border border-[var(--border-subtle)] cursor-pointer"
-                    >
-                      {p.qty > 0 ? 'Vender' : 'Recomprar'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 p-1 rounded-[10px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)]">
+          <button
+            type="button"
+            onClick={() => setActiveTab('TERMINAL')}
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-[8px] text-[12px] font-semibold cursor-pointer transition-all ${
+              activeTab === 'TERMINAL'
+                ? 'bg-[var(--accent-primary)] text-white'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <span>Cartera Terminal</span>
+            <span className="text-[10px] font-mono-num px-1.5 rounded bg-black/25">
+              {positions.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('BROKER')}
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-[8px] text-[12px] font-semibold cursor-pointer transition-all ${
+              activeTab === 'BROKER'
+                ? 'bg-[var(--accent-primary)] text-white'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <span>{`Cuenta Broker (${primaryLabel} / ${bmbLabel})`}</span>
+            {brokerData && (
+              <span className="text-[10px] font-mono-num px-1.5 rounded bg-black/25">
+                {brokerData.positions.length}
+              </span>
+            )}
+          </button>
         </div>
+
+        {activeTab === 'BROKER' && (
+          <button
+            type="button"
+            onClick={() => void loadBrokerAccount(true)}
+            disabled={brokerLoading}
+            className="px-3 py-1.5 rounded-[8px] text-[11.5px] font-semibold bg-[var(--surface-2)] hover:bg-[var(--accent-primary)] hover:text-white border border-[var(--border-subtle)] cursor-pointer disabled:opacity-50"
+          >
+            {brokerLoading ? 'Sincronizando...' : 'Actualizar Cuenta'}
+          </button>
+        )}
       </div>
+
+      {activeTab === 'TERMINAL' ? (
+        <>
+          <InsightBanner variant="pos" tag="Cartera Consolidada">
+            {positions.length === 0 ? (
+              <>Tu portafolio está vacío. Enviá órdenes reales desde el Ticket de Orden para trackear tenencia y riesgo.</>
+            ) : (
+              <>
+                Tu portafolio suma <strong className="text-[var(--text-primary)] font-mono-num">$ {fmtNum(totalVal / 1e6, 2)} M</strong>{' '}
+                con variación diaria de{' '}
+                <strong className="text-[#2EDC7E] font-mono-num">
+                  $ {fmtNum(totalPnlDay / 1e6, 2)} M ({fmtPct(dayPct, 2)})
+                </strong>{' '}
+                y Theta de <strong className="text-[#2EDC7E] font-mono-num">$ {fmtNum(totalTheta, 0)} / día</strong>.
+              </>
+            )}
+          </InsightBanner>
+
+          <div className="qc-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-right font-mono-num text-[12px]">
+                <thead>
+                  <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
+                    <th className="py-2.5 px-3 text-left">Instrumento</th>
+                    <th className="py-2.5 px-2 text-left">Tipo</th>
+                    <th className="py-2.5 px-2.5">Cantidad</th>
+                    <th className="py-2.5 px-2.5">PPC ($)</th>
+                    <th className="py-2.5 px-2.5">Último ($)</th>
+                    <th className="py-2.5 px-2.5">Valuación ARS</th>
+                    <th className="py-2.5 px-2.5">P&L Rueda</th>
+                    <th className="py-2.5 px-2.5">P&L Total</th>
+                    <th className="py-2.5 px-2.5">Theta / Día</th>
+                    <th className="py-2.5 px-3">Cerrar / Ajustar</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)]">
+                  {positions.map((p) => (
+                    <tr key={p.id} className="h-10 hover:bg-[var(--surface-2)]">
+                      <td className="px-3 text-left font-bold text-[var(--text-primary)]">{p.ticker}</td>
+                      <td className="px-2 text-left font-sans text-[11px] text-[var(--text-secondary)]">
+                        {p.instrumentType}
+                      </td>
+                      <td className={p.qty < 0 ? 'px-2.5 text-[#FF5C63] font-semibold' : 'px-2.5 text-[#2EDC7E] font-semibold'}>
+                        {p.qty.toLocaleString('es-AR')}
+                      </td>
+                      <td className="px-2.5 text-[var(--text-secondary)]">$ {fmtNum(p.avgPrice, 2)}</td>
+                      <td className="px-2.5 font-bold text-[var(--text-primary)]">$ {fmtNum(p.lastPrice, 2)}</td>
+                      <td className="px-2.5 font-semibold text-[var(--text-primary)]">
+                        $ {fmtNum(p.marketValueArs, 0)}
+                      </td>
+                      <td className="px-2.5">
+                        <DeltaPill value={p.pnlDayPct} size="sm" />
+                      </td>
+                      <td className={p.pnlTotalArs >= 0 ? 'px-2.5 text-[#2EDC7E] font-semibold' : 'px-2.5 text-[#FF5C63]'}>
+                        +$ {fmtNum(p.pnlTotalArs, 0)} ({fmtPct(p.pnlTotalPct)})
+                      </td>
+                      <td className="px-2.5 text-[#2EDC7E]">+$ {fmtNum(p.thetaDayArs, 0)}</td>
+                      <td className="px-3">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenOrderTicket({
+                              ticker: p.ticker,
+                              side: p.qty > 0 ? 'Venta' : 'Compra',
+                              price: p.lastPrice,
+                              qty: Math.abs(p.qty),
+                              instrumentLabel: `Cerrar/Ajustar ${p.ticker}`,
+                            })
+                          }
+                          className="px-2.5 py-1 rounded text-[11px] font-sans font-semibold bg-[var(--surface-2)] hover:bg-[var(--accent-primary)] hover:text-white border border-[var(--border-subtle)] cursor-pointer"
+                        >
+                          {p.qty > 0 ? 'Vender' : 'Recomprar'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="space-y-4">
+          <InsightBanner
+            variant={brokerData?.primaryStatus === 'OK' ? 'pos' : 'warn'}
+            tag="Consulta Read-Only Broker"
+          >
+            {brokerError ? (
+              `Error consultando cuenta broker: ${brokerError}`
+            ) : brokerData ? (
+              <>
+                Primary reMarkets ({primaryLabel}): <strong>{brokerData.primaryStatus}</strong> · Bull Market ({bmbLabel}):{' '}
+                <strong>{brokerData.bmbStatus}</strong> · Posiciones abiertas:{' '}
+                <strong className="font-mono-num">{brokerData.positions.length}</strong>.
+              </>
+            ) : (
+              'Sincronizando cuenta Primary reMarkets (getPositions / accountReport) y estado Bull Market...'
+            )}
+          </InsightBanner>
+
+          {brokerData && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+              <div className="qc-card p-4 space-y-1">
+                <div className="text-[11px] text-[var(--text-tertiary)]">Efectivo ARS ({primaryLabel})</div>
+                <div className="font-mono-num text-[18px] font-bold text-[#2EDC7E]">
+                  {brokerData.primaryAccount.cashTotalArs !== null
+                    ? `$ ${fmtNum(brokerData.primaryAccount.cashTotalArs, 2)}`
+                    : '—'}
+                </div>
+                <div className="text-[11px] text-[var(--text-secondary)]">
+                  Miembro: {brokerData.primaryAccount.marketMember ?? '—'}
+                </div>
+              </div>
+              <div className="qc-card p-4 space-y-1">
+                <div className="text-[11px] text-[var(--text-tertiary)]">Disponible Garantías</div>
+                <div className="font-mono-num text-[18px] font-bold text-[var(--text-primary)]">
+                  {brokerData.primaryAccount.availableToCollateral !== null
+                    ? `$ ${fmtNum(brokerData.primaryAccount.availableToCollateral, 2)}`
+                    : '—'}
+                </div>
+                <div className="text-[11px] text-[var(--text-secondary)]">
+                  Colateral: {brokerData.primaryAccount.collateral !== null ? `$ ${fmtNum(brokerData.primaryAccount.collateral, 2)}` : '—'}
+                </div>
+              </div>
+              <div className="qc-card p-4 space-y-1">
+                <div className="text-[11px] text-[var(--text-tertiary)]">Margen Consumido</div>
+                <div className="font-mono-num text-[18px] font-bold text-[#F5B544]">
+                  {brokerData.primaryAccount.margin !== null
+                    ? `$ ${fmtNum(brokerData.primaryAccount.margin, 2)}`
+                    : '—'}
+                </div>
+                <div className="text-[11px] text-[var(--text-secondary)]">
+                  Mov. Pendientes:{' '}
+                  {brokerData.primaryAccount.pendingMovementsArs !== null
+                    ? `$ ${fmtNum(brokerData.primaryAccount.pendingMovementsArs, 2)}`
+                    : '—'}
+                </div>
+              </div>
+              <div className="qc-card p-4 space-y-1">
+                <div className="text-[11px] text-[var(--text-tertiary)]">Conector BMB ({bmbLabel})</div>
+                <div className="font-mono-num text-[16px] font-bold text-[#38BDF8]">
+                  {brokerData.bmbStatus}
+                </div>
+                <div className="text-[11px] text-[var(--text-secondary)] truncate">
+                  {brokerData.bmbStatus === 'READY'
+                    ? 'HomeBroker SignalR activo (127.0.0.1:8788)'
+                    : 'Degradado explícito (solo lectura)'}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="qc-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-right font-mono-num text-[12px]">
+                <thead>
+                  <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
+                    <th className="py-2.5 px-3 text-left">Instrumento</th>
+                    <th className="py-2.5 px-2.5 text-left">Mercado</th>
+                    <th className="py-2.5 px-2.5">Compra</th>
+                    <th className="py-2.5 px-2.5">Venta</th>
+                    <th className="py-2.5 px-2.5">Neto</th>
+                    <th className="py-2.5 px-2.5">Precio Compra</th>
+                    <th className="py-2.5 px-2.5">Precio Venta</th>
+                    <th className="py-2.5 px-2.5">Diff. Diaria</th>
+                    <th className="py-2.5 px-2.5">Diff. Total</th>
+                    <th className="py-2.5 px-3 text-left">Fuente</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)]">
+                  {brokerData && brokerData.positions.length > 0 ? (
+                    brokerData.positions.map((pos, idx) => (
+                      <tr key={`${pos.symbol}-${String(idx)}`} className="h-10 hover:bg-[var(--surface-2)]">
+                        <td className="px-3 text-left font-bold text-[var(--text-primary)]">{pos.symbol}</td>
+                        <td className="px-2.5 text-left text-[var(--text-secondary)]">{pos.marketId ?? 'ROFX'}</td>
+                        <td className="px-2.5 text-[#2EDC7E]">{pos.buySize.toLocaleString('es-AR')}</td>
+                        <td className="px-2.5 text-[#FF5C63]">{pos.sellSize.toLocaleString('es-AR')}</td>
+                        <td className={`px-2.5 font-bold ${pos.netSize >= 0 ? 'text-[#2EDC7E]' : 'text-[#FF5C63]'}`}>
+                          {pos.netSize.toLocaleString('es-AR')}
+                        </td>
+                        <td className="px-2.5 text-[var(--text-secondary)]">
+                          {pos.buyPrice !== null ? `$ ${fmtNum(pos.buyPrice, 2)}` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[var(--text-secondary)]">
+                          {pos.sellPrice !== null ? `$ ${fmtNum(pos.sellPrice, 2)}` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[var(--text-primary)]">
+                          {pos.totalDailyDiffArs !== null ? `$ ${fmtNum(pos.totalDailyDiffArs, 2)}` : '—'}
+                        </td>
+                        <td className="px-2.5 text-[var(--text-primary)]">
+                          {pos.totalDiffArs !== null ? `$ ${fmtNum(pos.totalDiffArs, 2)}` : '—'}
+                        </td>
+                        <td className="px-3 text-left text-[11px] text-[#38BDF8]">{pos.source}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                        {brokerLoading
+                          ? 'Consultando getPositions / accountReport en Primary...'
+                          : `Sin posiciones abiertas en cuenta ${primaryLabel} (o conector deshabilitado).`}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

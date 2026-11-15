@@ -12,6 +12,7 @@
  *  - `GET /api/ar/stock?symbol=GGAL`
  *  - `GET /api/ar/options?underlying=GGAL`
  *  - `GET /api/ar/relations`
+ *  - `GET /api/ar/positions`
  *  - `GET /api/ar/ggal-specialist/overview`
  *  - `GET /api/ar/ggal-specialist/parity-gap`
  *  - `GET /api/ar/ggal-specialist/vol-triangle`
@@ -44,6 +45,7 @@ import {
   loadRuntimeAuth,
   type RuntimeWsBroadcast,
 } from './marketRuntime.js';
+import { collectBrokerSecretsFromEnv } from './primaryRofexLoader.js';
 import { redactSecrets } from './runtimeCache.js';
 
 const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i;
@@ -55,6 +57,7 @@ export interface HttpWsServerOptions {
   readonly host?: string;
   readonly port?: number;
   readonly secrets?: readonly string[];
+  readonly env?: NodeJS.ProcessEnv;
   readonly startRuntimeWs?: boolean;
   readonly enableBackgroundWarmup?: boolean;
 }
@@ -228,10 +231,17 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 }
 
 export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsServerHandle {
-  const auth = loadRuntimeAuth();
+  const auth = loadRuntimeAuth(options.env ?? process.env);
   const runtime = options.runtime ?? new MarketRuntime();
-  const secrets = options.secrets ?? auth.secrets;
-  const arRuntime = options.arRuntime ?? new ArgentinaMarketRuntime({ secrets });
+  const brokerSecrets = collectBrokerSecretsFromEnv(options.env ?? process.env);
+  const secrets = [...new Set([...(options.secrets ?? auth.secrets), ...brokerSecrets])];
+  const arRuntime = options.arRuntime ?? new ArgentinaMarketRuntime({
+    secrets,
+    env: options.env ?? process.env,
+  });
+  const getAllSecrets = (): readonly string[] => [
+    ...new Set([...secrets, ...arRuntime.getSecrets()]),
+  ];
   const ggalRuntime = options.ggalRuntime ?? new GgalSpecialistRuntime({ runtime, arRuntime, secrets });
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
@@ -277,9 +287,29 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
     try {
       if (pathname === '/api/health') {
+        const activeSecrets = getAllSecrets();
+        const rawConnectors = arRuntime.getConnectorHealth();
+        const safePrimary = {
+          ...rawConnectors.primaryRofex,
+          lastError:
+            rawConnectors.primaryRofex.lastError !== null
+              ? redactSecrets(rawConnectors.primaryRofex.lastError, activeSecrets)
+              : null,
+        };
+        const safeBmb = {
+          ...rawConnectors.bullMarket,
+          error:
+            rawConnectors.bullMarket.error !== null
+              ? redactSecrets(rawConnectors.bullMarket.error, activeSecrets)
+              : null,
+        };
         sendJson(res, 200, {
           ...runtime.getHealth(),
           warmupStatus,
+          connectors: {
+            primaryRofex: safePrimary,
+            bullMarket: safeBmb,
+          },
         });
         return;
       }
@@ -379,6 +409,13 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const relations = await arRuntime.getRelations(forceRefresh);
         sendJson(res, 200, relations);
+        return;
+      }
+
+      if (pathname === '/api/ar/positions') {
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const brokerPositions = await arRuntime.getPositionsAndAccount(forceRefresh);
+        sendJson(res, 200, brokerPositions);
         return;
       }
 
@@ -485,7 +522,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         sendJson(res, err.httpStatus, err.toPayload());
         return;
       }
-      const message = redactSecrets(extractErrorMessage(err, 'Internal runtime error'), secrets);
+      const message = redactSecrets(extractErrorMessage(err, 'Internal runtime error'), getAllSecrets());
       sendJson(res, 503, {
         status: 'NO_DATA',
         reason: 'PROVIDER_ERROR',
@@ -595,6 +632,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     },
     async stop(): Promise<void> {
       ggalRuntime.stop();
+      arRuntime.close();
       removeListener();
       runtime.stopWs();
       for (const client of wss.clients) {

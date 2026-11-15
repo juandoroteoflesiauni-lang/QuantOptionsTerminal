@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:server": "vite-node --script src/server/index.ts",
-    "dev:terminal": "vite-node --script src/server/index.ts --with-web",
+    "dev:server": "node --env-file-if-exists=.env node_modules/vite-node/vite-node.mjs --script src/server/index.ts",
+    "dev:terminal": "node --env-file-if-exists=.env node_modules/vite-node/vite-node.mjs --script src/server/index.ts --with-web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
