@@ -37,6 +37,9 @@ import {
   DEFAULT_RELATIONS_US_TICKERS,
   MarketRuntime,
   type TerminalSnapshotResponse,
+  US_EQUITY_UNIVERSE,
+  computeEquityRiskAndReturnMetrics,
+  computePanelVolumeAndVolSeries,
 } from '../src/server/marketRuntime.js';
 
 interface BondReferenceCase {
@@ -1522,5 +1525,520 @@ describe('Pieza 22 — Módulo /relaciones (Rotación Sectorial, Liquidez, OU Ha
     expect(rel.relationSummary?.topCapitalFlowPairId).not.toBeNull();
     expect(rel.relationSummary?.topCapitalFlowSector).not.toBeNull();
     expect(rel.relationSummary?.topCapitalFlowDeltaPct).not.toBeNull();
+  });
+});
+
+describe('Universo EE.UU. (~73 acciones), 6 paneles analíticos AR/US y Radar CEDEARs/ADRs', () => {
+  const assertNoNonFiniteNumbers = (value: unknown, pathLabel: string): void => {
+    if (typeof value === 'number') {
+      expect(Number.isFinite(value), `${pathLabel} must be finite`).toBe(true);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        assertNoNonFiniteNumbers(value[i], `${pathLabel}[${String(i)}]`);
+      }
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        assertNoNonFiniteNumbers(v, `${pathLabel}.${k}`);
+      }
+    }
+  };
+
+  it('matches Python independent float64 risk/return, beta, 40D volume and rolling panel vol (tol 1e-9) without silent fallbacks', () => {
+    const t0 = 1_764_046_800; // 2025-11-25T05:00:00Z
+    const count = 75;
+    const asOfUtcSec = t0 + (count + 2) * 86_400;
+
+    const benchBars: Bar[] = Array.from({ length: count }, (_, i) => {
+      const close = 100.0 * Math.exp(0.0012 * i + 0.015 * Math.sin(i * 0.4));
+      return {
+        time: t0 + i * 86_400,
+        open: close * 0.998,
+        high: close * 1.01,
+        low: close * 0.99,
+        close,
+        volume: 2_000_000 + i * 10_000,
+        vw: close,
+      };
+    });
+
+    const stockBars: Bar[] = Array.from({ length: count }, (_, i) => {
+      const close = 50.0 * Math.exp(0.002 * i + 0.025 * Math.sin(i * 0.4) + 0.006 * Math.cos(i * 0.7));
+      return {
+        time: t0 + i * 86_400,
+        open: close * 0.995,
+        high: close * 1.02,
+        low: close * 0.97,
+        close,
+        volume: 1_200_000 + (i % 7) * 50_000,
+        vw: close,
+      };
+    });
+
+    const m = computeEquityRiskAndReturnMetrics({
+      bars: stockBars,
+      benchmarkBars: benchBars,
+      asOfUtcSec,
+    });
+
+    // Referencia independiente en Python (tol 1e-9)
+    expect(Math.abs((m.last ?? Number.NaN) - 56.59881151642575)).toBeLessThan(1e-9);
+    expect(Math.abs((m.dayRangePos ?? Number.NaN) - 0.599999999999999)).toBeLessThan(1e-9);
+    expect(Math.abs((m.return1dPct ?? Number.NaN) - -0.6070194379604543)).toBeLessThan(1e-9);
+    expect(Math.abs((m.return30dPct ?? Number.NaN) - 5.631735206379984)).toBeLessThan(1e-9);
+    expect(Math.abs((m.returnYtdOr252dPct ?? Number.NaN) - 2.2077277909192228)).toBeLessThan(1e-9);
+    expect(Math.abs((m.realizedVol30dPct ?? Number.NaN) - 11.788345342203339)).toBeLessThan(1e-9);
+    expect(Math.abs((m.beta ?? Number.NaN) - 1.6706788884602637)).toBeLessThan(1e-9);
+    expect(Math.abs((m.avgVolume40dM ?? Number.NaN) - 75.02824039060542)).toBeLessThan(1e-9);
+
+    // Panel de 7 activos (verifica Top-6 + RESTO, volumen medio 40D y volatilidad histórica 20D)
+    const scales = [5.0, 4.0, 3.0, 2.5, 2.0, 1.5, 0.8];
+    const panelItems = scales.map((scale, k) => ({
+      symbol: `S${String(k)}`,
+      name: `Stock ${String(k)}`,
+      color: '#3B82F6',
+      bars: Array.from({ length: count }, (_, i): Bar => {
+        const close =
+          (40.0 + k * 10.0) *
+          Math.exp(0.001 * (1 + k * 0.2) * i + 0.02 * Math.sin(i * 0.35 + k));
+        return {
+          time: t0 + i * 86_400,
+          open: close * 0.995,
+          high: close * 1.01,
+          low: close * 0.99,
+          close,
+          volume: Math.round(500_000 * scale * (1.0 + 0.1 * Math.cos(i * 0.5 + k))),
+          vw: close,
+        };
+      }),
+    }));
+
+    const panelSeries = computePanelVolumeAndVolSeries({
+      items: panelItems,
+      asOfUtcSec,
+      maxVolumeDays: 40,
+      rollingVolWindow: 20,
+    });
+
+    expect(panelSeries.panelVolume40d.length).toBe(40);
+    expect(Math.abs((panelSeries.volumeAvg40dM ?? Number.NaN) - 614.0906280477836)).toBeLessThan(1e-9);
+    expect(
+      Math.abs(
+        (panelSeries.panelVolume40d[39]?.totalVolumeM ?? Number.NaN) - 639.029490800818,
+      ),
+    ).toBeLessThan(1e-9);
+
+    // Cómo se repartió: Top-6 + RESTO debe sumar 100 %
+    expect(panelSeries.volumeShareBreakdown.length).toBe(7);
+    expect(panelSeries.volumeShareBreakdown[0]?.symbol).toBe('S1');
+    expect(
+      Math.abs((panelSeries.volumeShareBreakdown[0]?.sharePct ?? Number.NaN) - 17.514673489510074),
+    ).toBeLessThan(1e-9);
+    const restoItem = panelSeries.volumeShareBreakdown.find((s) => s.symbol === 'RESTO');
+    expect(restoItem).toBeDefined();
+    expect(Math.abs((restoItem?.sharePct ?? Number.NaN) - 7.352401672777536)).toBeLessThan(1e-9);
+    const sumShare = panelSeries.volumeShareBreakdown.reduce((acc, s) => acc + s.sharePct, 0);
+    expect(Math.abs(sumShare - 100)).toBeLessThan(1e-9);
+
+    expect(panelSeries.panelVolHistory.length).toBe(55);
+    const lastHist = panelSeries.panelVolHistory[panelSeries.panelVolHistory.length - 1];
+    expect(Math.abs((lastHist?.panelVolPct ?? Number.NaN) - 0.8648250007429041)).toBeLessThan(1e-9);
+    expect(Math.abs((lastHist?.avgStockVolPct ?? Number.NaN) - 8.008856253827135)).toBeLessThan(1e-9);
+
+    // Zero Silent Fallbacks: historial insuficiente (< 15 ruedas) devuelve null estricto, nunca NaN ni fallback
+    const sparse = computeEquityRiskAndReturnMetrics({
+      bars: stockBars.slice(-5),
+      benchmarkBars: benchBars,
+      asOfUtcSec,
+    });
+    expect(sparse.return30dPct).toBeNull();
+    expect(sparse.returnYtdOr252dPct).toBeNull();
+    expect(sparse.realizedVol30dPct).toBeNull();
+    expect(sparse.beta).toBeNull();
+    expect(sparse.avgVolume40dM).toBeNull();
+    assertNoNonFiniteNumbers(sparse, 'sparseMetrics');
+  });
+
+  it('loads expanded ~73-stock US universe across 8 sectors via Massive snapshot + 1D bars with SPY beta and 40D analytics', async () => {
+    expect(US_EQUITY_UNIVERSE.length).toBeGreaterThanOrEqual(65);
+    const sectorsCovered = new Set(US_EQUITY_UNIVERSE.map((u) => u.sector));
+    expect(sectorsCovered).toEqual(
+      new Set([
+        'Mega Caps / Tech',
+        'Semiconductores',
+        'Finanzas',
+        'Consumo',
+        'Energía',
+        'Salud',
+        'Industrial',
+        'Índices / ETF',
+      ]),
+    );
+
+    const asOfUtcSec = FIXTURE.asOfUtcSec;
+    const endDayMs = Math.floor(asOfUtcSec / 86_400) * 86_400_000;
+
+    const usMockFetch: FetchFn = (url) => {
+      const u = new URL(url);
+      if (u.pathname === '/v3/snapshot') {
+        const results = US_EQUITY_UNIVERSE.map((meta, idx) => {
+          const basePx = 45 + (idx % 12) * 35;
+          const prevClose = Number((basePx * 0.99).toFixed(4));
+          const close = Number((basePx * (idx % 5 === 0 ? 1.022 : idx % 5 === 1 ? 0.978 : 1.004)).toFixed(4));
+          return {
+            ticker: meta.symbol,
+            type: 'stocks',
+            market_status: 'open',
+            session: {
+              open: prevClose,
+              high: Number((close * 1.015).toFixed(4)),
+              low: Number((close * 0.982).toFixed(4)),
+              close,
+              price: close,
+              previous_close: prevClose,
+              change: Number((close - prevClose).toFixed(4)),
+              change_percent: Number((((close / prevClose) - 1) * 100).toFixed(4)),
+              volume: 1_500_000 + idx * 120_000,
+              vwap: close,
+            },
+            last_trade: { price: close, size: 100, sip_timestamp: String(asOfUtcSec * 1_000_000_000) },
+          };
+        });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', results }),
+          headers: {},
+        });
+      }
+      if (u.pathname.startsWith('/v2/aggs/ticker/')) {
+        const sym = decodeURIComponent(u.pathname.split('/')[4] ?? 'SPY').toUpperCase();
+        const universeIdx = US_EQUITY_UNIVERSE.findIndex((m) => m.symbol === sym);
+        const seed = universeIdx >= 0 ? universeIdx : 0;
+        const count = 80;
+        const results = Array.from({ length: count }, (_, idx) => {
+          const dayMs = endDayMs - (count - idx) * 86_400_000;
+          const betaFactor = sym === 'SPY' ? 1.0 : 0.7 + (seed % 5) * 0.25;
+          const base = 45 + (seed % 12) * 35;
+          const close = Number(
+            (base * Math.exp(0.0012 * idx + 0.015 * betaFactor * Math.sin(idx * 0.35))).toFixed(4),
+          );
+          return {
+            t: dayMs,
+            o: Number((close * 0.996).toFixed(4)),
+            h: Number((close * 1.014).toFixed(4)),
+            l: Number((close * 0.986).toFixed(4)),
+            c: close,
+            v: Math.round((1_500_000 + seed * 120_000) * (idx >= count - 5 ? 1.15 : 1.0)),
+            vw: close,
+          };
+        });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', ticker: sym, resultsCount: results.length, results }),
+          headers: {},
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, text: JSON.stringify({ error: 'Not mocked' }), headers: {} });
+    };
+
+    const usRuntime = new MarketRuntime({
+      apiKey: 'test-massive-key',
+      nowMsFn: () => asOfUtcSec * 1_000,
+      enableWs: false,
+      fetchFn: usMockFetch,
+    });
+
+    const panel = await usRuntime.getUsEquityPanelAnalytics(true);
+    expect(panel.currency).toBe('USD');
+    expect(panel.benchmarkSymbol).toBe('SPY');
+    expect(panel.rows.length).toBe(US_EQUITY_UNIVERSE.length);
+    expect(panel.panelVolume40d.length).toBe(40);
+    expect(panel.volumeAvg40dM).not.toBeNull();
+    expect(panel.volumeShareBreakdown.length).toBe(7);
+    expect(panel.panelVolHistory.length).toBeGreaterThanOrEqual(20);
+    expect(panel.topGainers.length).toBeGreaterThan(0);
+    expect(panel.topLosers.length).toBeGreaterThan(0);
+
+    const spyRow = panel.rows.find((r) => r.symbol === 'SPY');
+    expect(spyRow).toBeDefined();
+    expect(Math.abs((spyRow?.beta ?? Number.NaN) - 1.0)).toBeLessThan(1e-6);
+    expect(spyRow?.realizedVol30dPct).not.toBeNull();
+    expect(spyRow?.avgVolume40dM).not.toBeNull();
+    expect(spyRow?.dayRangePos).not.toBeNull();
+
+    const amdRow = panel.rows.find((r) => r.symbol === 'AMD');
+    expect(amdRow?.sector).toBe('Semiconductores');
+    expect(amdRow?.beta).not.toBeNull();
+
+    assertNoNonFiniteNumbers(JSON.parse(JSON.stringify(panel)), 'usEquityPanel');
+  });
+
+  it('enriches Monitoreo Acciones AR 6 panels and CEDEARs/ADRs with Vol. Relativo, VI 30d (OPRA/RV30), Desfase ARS vs. CCL & honest null degradation', async () => {
+    const asOfUtcSec = FIXTURE.asOfUtcSec;
+    const endDayMs = Math.floor(asOfUtcSec / 86_400) * 86_400_000;
+    const baseArFetch = createOfflineArgentinaHttp({ asOfUtcSec });
+
+    const usMockFetch: FetchFn = (url) => {
+      const u = new URL(url);
+      if (u.pathname === '/v3/snapshot') {
+        const prices: Readonly<Record<string, number>> = {
+          AAPL: 232.0,
+          MSFT: 450.0,
+          VIST: 50.37,
+          SPY: 595.0,
+          GGAL: 42.0,
+        };
+        const results = US_EQUITY_UNIVERSE.map((meta, idx) => {
+          const px = prices[meta.symbol] ?? 80 + idx * 2;
+          const prevClose = Number((px * 0.992).toFixed(4));
+          return {
+            ticker: meta.symbol,
+            type: 'stocks',
+            market_status: 'open',
+            session: {
+              open: prevClose,
+              high: Number((px * 1.012).toFixed(4)),
+              low: Number((px * 0.986).toFixed(4)),
+              close: px,
+              price: px,
+              previous_close: prevClose,
+              change: Number((px - prevClose).toFixed(4)),
+              change_percent: Number((((px / prevClose) - 1) * 100).toFixed(4)),
+              volume: 1_800_000 + idx * 50_000,
+              vwap: px,
+            },
+            last_trade: { price: px, size: 100, sip_timestamp: String(asOfUtcSec * 1_000_000_000) },
+          };
+        });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', results }),
+          headers: {},
+        });
+      }
+      if (u.pathname.startsWith('/v2/aggs/ticker/')) {
+        const sym = decodeURIComponent(u.pathname.split('/')[4] ?? 'SPY').toUpperCase();
+        const baseMap: Readonly<Record<string, number>> = {
+          AAPL: 232.0,
+          MSFT: 450.0,
+          VIST: 50.37,
+          SPY: 595.0,
+          GGAL: 42.0,
+        };
+        const base = baseMap[sym] ?? 80;
+        const count = 80;
+        const results = Array.from({ length: count }, (_, idx) => {
+          const dayMs = endDayMs - (count - idx) * 86_400_000;
+          const close = Number(
+            (base * (0.96 + 0.04 * (idx / count) + 0.015 * Math.sin(idx * 0.4 + sym.length))).toFixed(4),
+          );
+          return {
+            t: dayMs,
+            o: Number((close * 0.996).toFixed(4)),
+            h: Number((close * 1.01).toFixed(4)),
+            l: Number((close * 0.99).toFixed(4)),
+            c: close,
+            v: 1_400_000,
+            vw: close,
+          };
+        });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', ticker: sym, resultsCount: results.length, results }),
+          headers: {},
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, text: JSON.stringify({ error: 'Not mocked' }), headers: {} });
+    };
+
+    const usRuntime = new MarketRuntime({
+      apiKey: 'test-massive-key',
+      nowMsFn: () => asOfUtcSec * 1_000,
+      enableWs: false,
+      fetchFn: usMockFetch,
+    });
+    const cachedPanel = await usRuntime.getUsEquityPanelAnalytics(true);
+    // Combinamos runtime real de EE.UU. con IV OPRA implícita cacheada en AAPL para probar precedencia OPRA_IV vs MASSIVE_RV30D
+    const usRuntimeAdapter = {
+      getCachedDailyBars1d: (sym: string, lookbackBars?: number, forceRefresh?: boolean) =>
+        usRuntime.getCachedDailyBars1d(sym, lookbackBars, forceRefresh),
+      getUsEquityPanelAnalytics: (forceRefresh?: boolean) => usRuntime.getUsEquityPanelAnalytics(forceRefresh),
+      getCachedDailyBars1dBatch: (
+        tickers: readonly string[],
+        lookbackBars?: number,
+        forceRefresh?: boolean,
+      ) => usRuntime.getCachedDailyBars1dBatch(tickers, lookbackBars, forceRefresh),
+      getCachedIv30Map: (): ReadonlyMap<string, number> => new Map([['AAPL', 0.345]]),
+    };
+
+    const arCustomFetch: FetchFn = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/live/arg_cedears') {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify([
+            // AAPL ratio 20, US=232, CCL~1215 -> paridad ~14.094 -> precio 13.450 = DESCUENTO > 4%
+            { symbol: 'AAPL', c: 13_450, px_bid: 13_420, px_ask: 13_480, prev_close: 13_600, v: 260_000, v_ars: 3_497_000_000 },
+            // MSFT ratio 30, US=450, CCL~1215 -> paridad ~18.225 -> precio 19.350 = PRIMA > 6%
+            { symbol: 'MSFT', c: 19_350, px_bid: 19_300, px_ask: 19_400, prev_close: 19_100, v: 180_000, v_ars: 3_483_000_000 },
+            // VISTA (alias VIST) con volumen alto hoy -> volMultiple > 1.5
+            { symbol: 'VISTA', c: 20_400, px_bid: 20_350, px_ask: 20_450, prev_close: 20_100, v: 420_000, v_ars: 8_568_000_000 },
+            { symbol: 'SPY', c: 36_146, px_bid: 36_100, px_ask: 36_180, prev_close: 35_900, v: 95_000, v_ars: 3_433_870_000 },
+          ]),
+          headers: {},
+        };
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/live/usa_stocks') {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify([
+            { symbol: 'AAPL', c: 232.0, prev_close: 230.0, pct_change: 0.87 },
+            { symbol: 'MSFT', c: 450.0, prev_close: 447.0, pct_change: 0.67 },
+            { symbol: 'VIST', c: 50.37, prev_close: 49.8, pct_change: 1.14 },
+            { symbol: 'SPY', c: 595.0, prev_close: 592.5, pct_change: 0.42 },
+            { symbol: 'GGAL', c: 42.0, prev_close: 41.5, pct_change: 1.2 },
+          ]),
+          headers: {},
+        };
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/historical/cedears/VISTA') {
+        return { ok: true, status: 200, text: JSON.stringify({ Error: 'Nahh no tengo ese ticker loko' }), headers: {} };
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname.startsWith('/historical/cedears/')) {
+        const ticker = (parsed.pathname.split('/').pop() ?? 'AAPL').toUpperCase();
+        const basePx = ticker === 'AAPL' ? 13_600 : ticker === 'MSFT' ? 18_800 : ticker === 'VIST' ? 20_100 : 35_900;
+        const rows = Array.from({ length: 70 }, (_, idx) => {
+          const dayMs = endDayMs - (70 - idx) * 86_400_000;
+          const c = Number((basePx + idx * 12).toFixed(2));
+          return {
+            date: new Date(dayMs).toISOString().slice(0, 10),
+            o: Number((c * 0.995).toFixed(2)),
+            h: Number((c * 1.01).toFixed(2)),
+            l: Number((c * 0.99).toFixed(2)),
+            c,
+            v: ticker === 'VIST' ? 250_000 : 140_000,
+          };
+        });
+        return { ok: true, status: 200, text: JSON.stringify(rows), headers: {} };
+      }
+      if (parsed.hostname.includes('data912') && parsed.pathname.startsWith('/historical/stocks/')) {
+        const ticker = (parsed.pathname.split('/').pop() ?? 'GGAL').toUpperCase();
+        const basePx = ticker === 'GGAL' ? 4_850 : ticker === 'YPFD' ? 40_000 : 3_200;
+        const rows = Array.from({ length: 75 }, (_, idx) => {
+          const dayMs = endDayMs - (75 - idx) * 86_400_000;
+          const c = Number((basePx * (0.95 + 0.05 * (idx / 75) + 0.02 * Math.sin(idx * 0.35 + ticker.length))).toFixed(2));
+          return {
+            date: new Date(dayMs).toISOString().slice(0, 10),
+            o: Number((c * 0.994).toFixed(2)),
+            h: Number((c * 1.012).toFixed(2)),
+            l: Number((c * 0.988).toFixed(2)),
+            c,
+            v: 400_000 + idx * 2_000,
+          };
+        });
+        return { ok: true, status: 200, text: JSON.stringify(rows), headers: {} };
+      }
+      return baseArFetch(url);
+    };
+
+    const arRt = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: arCustomFetch,
+      usRuntime: usRuntimeAdapter,
+    });
+
+    // 1) Monitoreo -> Acciones (AR): 6 paneles analíticos
+    const monAcciones = await arRt.getMonitoring('acciones', true);
+    expect(monAcciones.arPanelAnalytics).toBeDefined();
+    expect(monAcciones.arPanelAnalytics).not.toBeNull();
+    expect(monAcciones.arPanelAnalytics?.currency).toBe('ARS');
+    expect(monAcciones.arPanelAnalytics?.panelVolume40d.length).toBe(40);
+    expect(monAcciones.arPanelAnalytics?.volumeShareBreakdown.length).toBeGreaterThan(0);
+    expect(monAcciones.arPanelAnalytics?.panelVolHistory.length).toBeGreaterThanOrEqual(20);
+    expect(monAcciones.arPanelAnalytics?.topGainers.length).toBeGreaterThan(0);
+    const ggalAccion = monAcciones.stocks.find((s) => s.ticker === 'GGAL');
+    expect(ggalAccion?.realizedVol30dPct).not.toBeNull();
+    expect(ggalAccion?.beta).not.toBeNull();
+    expect(ggalAccion?.avgVolume40dM).not.toBeNull();
+    assertNoNonFiniteNumbers(JSON.parse(JSON.stringify(monAcciones.arPanelAnalytics)), 'arPanelAnalytics');
+
+    // 2) Monitoreo -> CEDEARs y ADRs: Vol. Relativo, VI 30d (OPRA/RV30), Desfase ARS vs. CCL & Radar ADRs
+    const monCedears = await arRt.getMonitoring('cedears', true);
+    expect(monCedears.usEquityPanel?.rows.length).toBe(cachedPanel.rows.length);
+
+    const aaplCed = monCedears.cedears.find((c) => c.ticker === 'AAPL');
+    expect(aaplCed?.ivSource).toBe('OPRA_IV');
+    expect(aaplCed?.iv30d).toBeCloseTo(34.5, 4);
+    expect(aaplCed?.cclMismatchPct).not.toBeNull();
+    expect(aaplCed?.cclMismatchPct).toBeLessThan(-1.2);
+    expect(aaplCed?.cclMismatchArs).not.toBeNull();
+    expect(aaplCed?.cclMismatchArs).toBeLessThan(0);
+    expect(aaplCed?.fairArsPrice).not.toBeNull();
+    expect(aaplCed?.arbitrageSignal).toContain('DESCUENTO');
+    expect(aaplCed?.hasUsOptions).toBe(true);
+
+    const msftCed = monCedears.cedears.find((c) => c.ticker === 'MSFT');
+    expect(msftCed?.ivSource).toBe('MASSIVE_RV30D');
+    expect(msftCed?.iv30d).not.toBeNull();
+    expect(msftCed?.cclMismatchPct).toBeGreaterThan(1.2);
+    expect(msftCed?.cclMismatchArs).toBeGreaterThan(0);
+    expect(msftCed?.arbitrageSignal).toContain('PRIMA');
+
+    const vistaCed = monCedears.cedears.find((c) => c.ticker === 'VISTA');
+    expect(vistaCed?.volMultiple).toBeCloseTo(420_000 / 250_000, 6);
+    expect(vistaCed?.ivSource).toBe('MASSIVE_RV30D');
+    expect(vistaCed?.iv30d).not.toBeNull();
+
+    const ggalAdr = monCedears.stocks.find((s) => s.ticker === 'GGAL');
+    expect(ggalAdr?.hasBymaOptions).toBe(true);
+    expect(ggalAdr?.hasUsOptions).toBe(true);
+    expect(ggalAdr?.cclMismatchPct).not.toBeNull();
+    expect(ggalAdr?.fairArsPrice).not.toBeNull();
+    expect(ggalAdr?.iv30d).not.toBeNull();
+
+    assertNoNonFiniteNumbers(JSON.parse(JSON.stringify(monCedears.cedears)), 'cedearsDto');
+
+    // 3) Degradación honesta cuando Massive + feed USD fallan: iv30d=null, ivSource='NONE', sin fallbacks silenciosos
+    const brokenArFetch: FetchFn = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/live/usa_stocks') {
+        return { ok: false, status: 503, text: JSON.stringify({ error: 'Down' }), headers: {} };
+      }
+      return arCustomFetch(url);
+    };
+    const brokenUsRuntime = new MarketRuntime({
+      apiKey: 'broken-massive-key',
+      nowMsFn: () => asOfUtcSec * 1_000,
+      enableWs: false,
+      fetchFn: () =>
+        Promise.resolve({
+          ok: false,
+          status: 503,
+          text: JSON.stringify({ error: 'Down' }),
+          headers: {},
+        }),
+    });
+    const degradedRt = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: brokenArFetch,
+      usRuntime: brokenUsRuntime,
+    });
+    const monDegraded = await degradedRt.getMonitoring('cedears', true);
+    const degradedAapl = monDegraded.cedears.find((c) => c.ticker === 'AAPL');
+    expect(degradedAapl?.iv30d).toBeNull();
+    expect(degradedAapl?.ivSource).toBe('NONE');
+    expect(degradedAapl?.cclMismatchPct).toBeNull();
+    expect(degradedAapl?.fairArsPrice).toBeNull();
   });
 });

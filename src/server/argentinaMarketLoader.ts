@@ -127,10 +127,16 @@ import {
   type OrderBook5LevelsDto,
 } from './primaryRofexLoader.js';
 import {
+  computeEquityRiskAndReturnMetrics,
+  computePanelVolumeAndVolSeries,
   DEFAULT_RELATIONS_US_TICKERS,
   getSharedMarketRuntime,
   MarketRuntime,
+  US_EQUITY_META_MAP,
+  US_LIQUID_OPTION_UNDERLYINGS,
   type CachedDailyBarsResult,
+  type EquityPanelAnalyticsDto,
+  type EquityPanelRowDto,
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 
@@ -144,6 +150,14 @@ export interface ArHttpRequestInit {
 }
 
 export type ArHttpFn = (url: string, init?: ArHttpRequestInit) => Promise<FetchResponse>;
+
+export type UsRuntimeAdapter = Pick<MarketRuntime, 'getCachedDailyBars1d'> &
+  Partial<
+    Pick<
+      MarketRuntime,
+      'getUsEquityPanelAnalytics' | 'getCachedIv30Map' | 'getCachedDailyBars1dBatch'
+    >
+  >;
 
 export interface ArgentinaRuntimeDeps {
   readonly fetchFn?: ArHttpFn;
@@ -160,7 +174,7 @@ export interface ArgentinaRuntimeDeps {
   readonly bcraBaseUrl?: string;
   readonly argentinaDatosBaseUrl?: string;
   readonly nyfedBaseUrl?: string;
-  readonly usRuntime?: Pick<MarketRuntime, 'getCachedDailyBars1d'>;
+  readonly usRuntime?: UsRuntimeAdapter;
   readonly usDailyBarsFn?: (
     symbol: string,
     lookbackBars?: number,
@@ -193,9 +207,15 @@ export interface ArStockDto {
   readonly prevClose: number | null;
   readonly low: number | null;
   readonly high: number | null;
+  readonly dayRangePos?: number | null;
   readonly vwap: number | null;
   readonly volumeM: number | null;
   readonly volMultiple: number | null;
+  readonly return30dPct?: number | null;
+  readonly returnYtdOr252dPct?: number | null;
+  readonly realizedVol30dPct?: number | null;
+  readonly beta?: number | null;
+  readonly avgVolume40dM?: number | null;
   readonly signalText: string;
   readonly adrTicker?: string;
   readonly adrRatio?: number;
@@ -203,9 +223,16 @@ export interface ArStockDto {
   readonly adrDeltaPct?: number | null;
   readonly cclImplicit?: number | null;
   readonly cclZScore?: number | null;
+  readonly cclMismatchPct?: number | null;
+  readonly cclMismatchArs?: number | null;
+  readonly fairArsPrice?: number | null;
   readonly iv30d?: number | null;
+  readonly ivSource?: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
   readonly ivRank?: 'barata' | 'rango' | 'cara';
   readonly ivPercentile?: number | null;
+  readonly hasUsOptions?: boolean;
+  readonly hasBymaOptions?: boolean;
+  readonly arbitrageSignal?: string | null;
   readonly sparkline: readonly number[];
   readonly source: string;
 }
@@ -379,6 +406,8 @@ export interface ArMonitoringResponse {
   readonly cauciones?: readonly ArCaucionCurveRowDto[];
   readonly caucionesStatus?: 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
   readonly bmbHealth?: BmbConnectorHealthDto;
+  readonly arPanelAnalytics?: EquityPanelAnalyticsDto | null;
+  readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
 }
 
 export interface ArHistoricalBarDto {
@@ -749,7 +778,58 @@ const CEDEAR_RATIOS: Readonly<Record<string, { readonly usTicker: string; readon
   EWZ: { usTicker: 'EWZ', ratio: 2, name: 'iShares MSCI Brazil ETF' },
   IWM: { usTicker: 'IWM', ratio: 10, name: 'iShares Russell 2000 ETF' },
   DIA: { usTicker: 'DIA', ratio: 20, name: 'SPDR Dow Jones Industrial' },
+  AVGO: { usTicker: 'AVGO', ratio: 39, name: 'Broadcom Inc.' },
+  TSM: { usTicker: 'TSM', ratio: 9, name: 'Taiwan Semiconductor' },
+  INTC: { usTicker: 'INTC', ratio: 5, name: 'Intel Corp.' },
+  QCOM: { usTicker: 'QCOM', ratio: 11, name: 'Qualcomm Inc.' },
+  MU: { usTicker: 'MU', ratio: 5, name: 'Micron Technology' },
+  CRM: { usTicker: 'CRM', ratio: 18, name: 'Salesforce Inc.' },
+  ORCL: { usTicker: 'ORCL', ratio: 3, name: 'Oracle Corp.' },
+  WFC: { usTicker: 'WFC', ratio: 5, name: 'Wells Fargo & Co.' },
+  GS: { usTicker: 'GS', ratio: 13, name: 'Goldman Sachs Group' },
+  MS: { usTicker: 'MS', ratio: 41, name: 'Morgan Stanley' },
+  V: { usTicker: 'V', ratio: 18, name: 'Visa Inc.' },
+  MA: { usTicker: 'MA', ratio: 33, name: 'Mastercard Inc.' },
+  BLK: { usTicker: 'BLK', ratio: 30, name: 'BlackRock Inc.' },
+  COST: { usTicker: 'COST', ratio: 48, name: 'Costco Wholesale' },
+  PEP: { usTicker: 'PEP', ratio: 18, name: 'PepsiCo Inc.' },
+  MCD: { usTicker: 'MCD', ratio: 24, name: "McDonald's Corp." },
+  NKE: { usTicker: 'NKE', ratio: 12, name: 'Nike Inc.' },
+  HD: { usTicker: 'HD', ratio: 32, name: 'Home Depot Inc.' },
+  PG: { usTicker: 'PG', ratio: 15, name: 'Procter & Gamble' },
+  CVX: { usTicker: 'CVX', ratio: 16, name: 'Chevron Corp.' },
+  COP: { usTicker: 'COP', ratio: 25, name: 'ConocoPhillips' },
+  OXY: { usTicker: 'OXY', ratio: 5, name: 'Occidental Petroleum' },
+  LLY: { usTicker: 'LLY', ratio: 56, name: 'Eli Lilly & Co.' },
+  UNH: { usTicker: 'UNH', ratio: 33, name: 'UnitedHealth Group' },
+  JNJ: { usTicker: 'JNJ', ratio: 15, name: 'Johnson & Johnson' },
+  PFE: { usTicker: 'PFE', ratio: 4, name: 'Pfizer Inc.' },
+  ABBV: { usTicker: 'ABBV', ratio: 10, name: 'AbbVie Inc.' },
+  MRK: { usTicker: 'MRK', ratio: 5, name: 'Merck & Co.' },
+  CAT: { usTicker: 'CAT', ratio: 20, name: 'Caterpillar Inc.' },
+  BA: { usTicker: 'BA', ratio: 24, name: 'Boeing Co.' },
+  GE: { usTicker: 'GE', ratio: 8, name: 'GE Aerospace' },
+  HON: { usTicker: 'HON', ratio: 4, name: 'Honeywell Intl.' },
+  DE: { usTicker: 'DE', ratio: 40, name: 'Deere & Co.' },
+  LMT: { usTicker: 'LMT', ratio: 20, name: 'Lockheed Martin' },
+  GLD: { usTicker: 'GLD', ratio: 50, name: 'SPDR Gold Shares' },
+  SLV: { usTicker: 'SLV', ratio: 6, name: 'iShares Silver Trust' },
+  NU: { usTicker: 'NU', ratio: 2, name: 'Nu Holdings' },
+  PBR: { usTicker: 'PBR', ratio: 1, name: 'Petrobras ADR' },
 };
+
+const BYMA_OPTION_UNDERLYINGS: ReadonlySet<string> = new Set([
+  'GGAL',
+  'YPFD',
+  'PAMP',
+  'BMA',
+  'COME',
+  'ALUA',
+  'TXAR',
+  'EDN',
+  'TGSU2',
+  'CRES',
+]);
 
 /** Alias de tickers CEDEAR para consultar `/historical/cedears/{ticker}` (clave local -> ticker BYMA canónico). */
 const CEDEAR_TICKER_ALIASES: Readonly<Record<string, string>> = {
@@ -2638,7 +2718,7 @@ export class ArgentinaMarketRuntime {
   private readonly nyfedBaseUrl: string;
   private readonly primaryClient: PrimaryRofexClient;
   private readonly bmbClient: BmbBridgeClient;
-  private readonly usRuntime: Pick<MarketRuntime, 'getCachedDailyBars1d'> | null;
+  private readonly usRuntime: UsRuntimeAdapter | null;
   private readonly usDailyBarsFn:
     | ((symbol: string, lookbackBars?: number, forceRefresh?: boolean) => Promise<CachedDailyBarsResult>)
     | null;
@@ -3267,6 +3347,133 @@ export class ArgentinaMarketRuntime {
     return { mepMedian, cclMedian, rows };
   }
 
+  private computeParityMismatchAndArb(params: {
+    readonly usTicker?: string | undefined;
+    readonly ratio?: number | undefined;
+    readonly localLast: number | null;
+    readonly usLast: number | null;
+    readonly cclImplicit: number | null;
+    readonly cclMedian: number | null;
+    readonly hasBymaOptions: boolean;
+  }): {
+    readonly cclMismatchPct: number | null;
+    readonly cclMismatchArs: number | null;
+    readonly fairArsPrice: number | null;
+    readonly hasUsOptions: boolean;
+    readonly hasBymaOptions: boolean;
+    readonly arbitrageSignal: string | null;
+  } {
+    const cleanUs = params.usTicker?.replace(/ US$/i, '').trim().toUpperCase();
+    const hasUsOptions = cleanUs !== undefined && US_LIQUID_OPTION_UNDERLYINGS.has(cleanUs);
+    const fairArsPrice =
+      params.usLast !== null &&
+      params.usLast > 0 &&
+      params.cclMedian !== null &&
+      params.cclMedian > 0 &&
+      params.ratio !== undefined &&
+      params.ratio > 0
+        ? sanitizeFinite((params.usLast * params.cclMedian) / params.ratio)
+        : null;
+    const cclMismatchPct =
+      params.cclImplicit !== null &&
+      params.cclImplicit > 0 &&
+      params.cclMedian !== null &&
+      params.cclMedian > 0
+        ? sanitizeFinite(((params.cclImplicit - params.cclMedian) / params.cclMedian) * 100)
+        : null;
+    const cclMismatchArs =
+      params.localLast !== null && params.localLast > 0 && fairArsPrice !== null
+        ? sanitizeFinite(params.localLast - fairArsPrice)
+        : null;
+
+    let arbitrageSignal: string | null = null;
+    if (cclMismatchPct !== null) {
+      if (cclMismatchPct <= -1.2) {
+        arbitrageSignal = `DESCUENTO ${cclMismatchPct.toFixed(1)}% · Long ARS${hasUsOptions ? ' / Put US (OPRA)' : ''}${params.hasBymaOptions ? ' / Call BYMA' : ''}`;
+      } else if (cclMismatchPct >= 1.2) {
+        arbitrageSignal = `PRIMA +${cclMismatchPct.toFixed(1)}% · Short ARS${hasUsOptions ? ' / Call US (OPRA)' : ''}${params.hasBymaOptions ? ' / Lanzar BYMA' : ''}`;
+      } else {
+        arbitrageSignal = `En paridad (${cclMismatchPct >= 0 ? '+' : ''}${cclMismatchPct.toFixed(1)}%)${params.hasBymaOptions ? ' · OPRA + BYMA' : hasUsOptions ? ' · OPRA' : ''}`;
+      }
+    }
+
+    return {
+      cclMismatchPct,
+      cclMismatchArs,
+      fairArsPrice,
+      hasUsOptions,
+      hasBymaOptions: params.hasBymaOptions,
+      arbitrageSignal,
+    };
+  }
+
+  private computeRelativeVolumeMultiple(params: {
+    readonly todayShares: number | null;
+    readonly bars: readonly Bar[];
+    readonly asOfUtcSec: number;
+  }): number | null {
+    const { todayShares, bars, asOfUtcSec } = params;
+    if (todayShares === null || !Number.isFinite(todayShares) || todayShares <= 0 || bars.length < 11) {
+      return null;
+    }
+    const todayKey = new Date(asOfUtcSec * 1_000).toISOString().slice(0, 10);
+    const lastBar = bars[bars.length - 1];
+    if (lastBar === undefined) {
+      return null;
+    }
+    const lastDateKey = new Date(lastBar.time * 1_000).toISOString().slice(0, 10);
+    const excludeLast = lastDateKey === todayKey || Math.abs(lastBar.volume - todayShares) <= 1e-6;
+    const candidateBars = (excludeLast ? bars.slice(0, -1) : bars).slice(-20);
+    const posVols = candidateBars.map((b) => b.volume).filter((v) => Number.isFinite(v) && v > 0);
+    if (posVols.length < 10) {
+      return null;
+    }
+    const avgVol20 = posVols.reduce((acc, v) => acc + v, 0) / posVols.length;
+    return avgVol20 > 0 ? sanitizeFinite(todayShares / avgVol20) : null;
+  }
+
+  private buildEqualWeightIndexBars(seriesList: readonly (readonly Bar[])[]): readonly Bar[] {
+    const retByDate = new Map<string, number[]>();
+    const timeByDate = new Map<string, number>();
+
+    for (const bars of seriesList) {
+      for (let i = 1; i < bars.length; i += 1) {
+        const prev = bars[i - 1];
+        const cur = bars[i];
+        if (prev !== undefined && cur !== undefined && prev.close > 0 && cur.close > 0) {
+          const day = new Date(cur.time * 1_000).toISOString().slice(0, 10);
+          const list = retByDate.get(day) ?? [];
+          list.push(cur.close / prev.close - 1);
+          retByDate.set(day, list);
+          timeByDate.set(day, cur.time);
+        }
+      }
+    }
+
+    const dates = Array.from(retByDate.keys()).sort();
+    const out: Bar[] = [];
+    let level = 100;
+    for (const d of dates) {
+      const rets = retByDate.get(d);
+      const t = timeByDate.get(d);
+      if (rets === undefined || rets.length < 3 || t === undefined) {
+        continue;
+      }
+      const avgRet = rets.reduce((acc, r) => acc + r, 0) / rets.length;
+      const prevLevel = level;
+      level = Math.max(0.01, prevLevel * (1 + avgRet));
+      out.push({
+        time: t,
+        open: prevLevel,
+        high: Math.max(prevLevel, level),
+        low: Math.min(prevLevel, level),
+        close: level,
+        volume: 0,
+      });
+    }
+    return out;
+  }
+
   private buildStockDtos(params: {
     readonly argStocks: readonly NormalizedQuoteRow[];
     readonly bymaRows: readonly NormalizedQuoteRow[];
@@ -3291,6 +3498,10 @@ export class ArgentinaMarketRuntime {
       const deltaPct = primary?.deltaPct ?? d912?.deltaPct ?? null;
       const low = primary?.low ?? d912?.low ?? null;
       const high = primary?.high ?? d912?.high ?? null;
+      const dayRangePos =
+        last !== null && low !== null && high !== null && high > low
+          ? sanitizeFinite((last - low) / (high - low))
+          : null;
       const vwap = primary?.vwap ?? d912?.vwap ?? null;
       const volumeArs = primary?.volumeArs ?? d912?.volumeArs ?? null;
       const volumeM = volumeArs !== null ? volumeArs / 1_000_000 : null;
@@ -3306,6 +3517,17 @@ export class ArgentinaMarketRuntime {
           cclImplicit = (last * meta.adrRatio) / adrPrice;
         }
       }
+
+      const hasBymaOptions = BYMA_OPTION_UNDERLYINGS.has(meta.ticker);
+      const parity = this.computeParityMismatchAndArb({
+        usTicker: meta.adrTicker,
+        ratio: meta.adrRatio,
+        localLast: last,
+        usLast: adrPrice,
+        cclImplicit,
+        cclMedian: params.cclMedian,
+        hasBymaOptions,
+      });
 
       const signalText =
         deltaPct === null
@@ -3333,6 +3555,7 @@ export class ArgentinaMarketRuntime {
         prevClose: sanitizeFinite(prevClose),
         low: sanitizeFinite(low),
         high: sanitizeFinite(high),
+        dayRangePos,
         vwap: sanitizeFinite(vwap),
         volumeM: sanitizeFinite(volumeM),
         volMultiple: null,
@@ -3345,6 +3568,12 @@ export class ArgentinaMarketRuntime {
           cclImplicit !== null && params.cclMedian !== null && params.cclMedian > 0
             ? sanitizeFinite(((cclImplicit - params.cclMedian) / params.cclMedian) * 100)
             : null,
+        cclMismatchPct: parity.cclMismatchPct,
+        cclMismatchArs: parity.cclMismatchArs,
+        fairArsPrice: parity.fairArsPrice,
+        hasUsOptions: parity.hasUsOptions,
+        hasBymaOptions: parity.hasBymaOptions,
+        arbitrageSignal: parity.arbitrageSignal,
         sparkline: [prevClose, low, high, last].filter((v): v is number => v !== null && Number.isFinite(v)),
         source,
       };
@@ -3355,6 +3584,7 @@ export class ArgentinaMarketRuntime {
     readonly argCedears: readonly NormalizedQuoteRow[];
     readonly usaStocks: readonly NormalizedQuoteRow[];
     readonly usaAdrs: readonly NormalizedQuoteRow[];
+    readonly cclMedian: number | null;
   }): readonly ArStockDto[] {
     const cedearMap = new Map(params.argCedears.map((r) => [r.symbol, r]));
     const usaMap = new Map(params.usaStocks.map((r) => [r.symbol, r]));
@@ -3379,6 +3609,23 @@ export class ArgentinaMarketRuntime {
         last !== null && last > 0 && usLast !== null && usLast > 0
           ? (last * info.ratio) / usLast
           : null;
+      const dayRangePos =
+        last !== null &&
+        row !== undefined &&
+        row.low !== null &&
+        row.high !== null &&
+        row.high > row.low
+          ? sanitizeFinite((last - row.low) / (row.high - row.low))
+          : null;
+      const parity = this.computeParityMismatchAndArb({
+        usTicker: info.usTicker,
+        ratio: info.ratio,
+        localLast: last,
+        usLast,
+        cclImplicit,
+        cclMedian: params.cclMedian,
+        hasBymaOptions: false,
+      });
 
       return {
         ticker,
@@ -3393,6 +3640,7 @@ export class ArgentinaMarketRuntime {
         prevClose: sanitizeFinite(row?.prevClose),
         low: sanitizeFinite(row?.low),
         high: sanitizeFinite(row?.high),
+        dayRangePos,
         vwap: sanitizeFinite(row?.vwap),
         volumeM: row?.volumeArs !== null && row?.volumeArs !== undefined ? sanitizeFinite(row.volumeArs / 1_000_000) : null,
         volMultiple: null,
@@ -3402,6 +3650,14 @@ export class ArgentinaMarketRuntime {
         adrPrice: sanitizeFinite(usLast),
         adrDeltaPct: sanitizeFinite(usRow?.deltaPct),
         cclImplicit: sanitizeFinite(cclImplicit),
+        cclZScore: parity.cclMismatchPct,
+        cclMismatchPct: parity.cclMismatchPct,
+        cclMismatchArs: parity.cclMismatchArs,
+        fairArsPrice: parity.fairArsPrice,
+        ivSource: 'NONE',
+        hasUsOptions: parity.hasUsOptions,
+        hasBymaOptions: false,
+        arbitrageSignal: parity.arbitrageSignal,
         sparkline: [row?.prevClose ?? null, row?.low ?? null, row?.high ?? null, last].filter(
           (v): v is number => v !== null && Number.isFinite(v),
         ),
@@ -3527,7 +3783,10 @@ export class ArgentinaMarketRuntime {
   ): Promise<readonly NormalizedQuoteRow[]> {
     const results = await Promise.all(
       tickers.map(async (ticker) => {
-        const hist = await this.getData912History(kind, ticker, forceRefresh);
+        const hist =
+          kind === 'cedears'
+            ? await this.getCedearHistoryWithAlias(ticker, forceRefresh)
+            : await this.getData912History(kind, ticker, forceRefresh);
         return this.historyBarsToQuoteRow(ticker, hist.bars);
       }),
     );
@@ -3599,7 +3858,11 @@ export class ArgentinaMarketRuntime {
               )
             : Promise.resolve([] as readonly NormalizedQuoteRow[]),
           needCedearsEod
-            ? this.populateEodRowsFromHistorical('cedears', Object.keys(CEDEAR_RATIOS), forceRefresh)
+            ? this.populateEodRowsFromHistorical(
+                'cedears',
+                Object.keys(CEDEAR_RATIOS).filter((t) => t !== 'VIST'),
+                forceRefresh,
+              )
             : Promise.resolve([] as readonly NormalizedQuoteRow[]),
           needBondsEod
             ? this.populateEodRowsFromHistorical(
@@ -3661,6 +3924,7 @@ export class ArgentinaMarketRuntime {
           argCedears: effectiveCedears,
           usaStocks: usaStocksRes.rows,
           usaAdrs: adrsRes.rows,
+          cclMedian: matrix.cclMedian,
         });
 
         const usaMap = new Map(usaStocksRes.rows.map((u) => [u.symbol, u]));
@@ -4098,15 +4362,46 @@ export class ArgentinaMarketRuntime {
       ...[bondsRes.error, notesRes.error, corpRes.error].filter((e): e is string => e !== null),
     ];
 
+    let enrichedMerval = overview.mervalStocks;
+    let enrichedGeneral = overview.generalPanelStocks;
+    let enrichedCedears = overview.cedears;
+    let arPanelAnalytics: EquityPanelAnalyticsDto | null =
+      (this.computedCache.peek('ar:panel:acciones:analytics')?.value as EquityPanelAnalyticsDto | undefined) ??
+      null;
+    let usEquityPanel: EquityPanelAnalyticsDto | null = null;
+
+    if (panel === 'acciones') {
+      const arPanelRes = await this.buildArPanelAnalytics({
+        overview,
+        argStocks: (await this.getData912Live('/live/arg_stocks', forceRefresh)).rows,
+        nowSec,
+        forceRefresh,
+      });
+      enrichedMerval = arPanelRes.mervalStocks;
+      enrichedGeneral = arPanelRes.generalPanelStocks;
+      arPanelAnalytics = arPanelRes.analytics;
+      providerErrors.push(...arPanelRes.errors);
+    } else if (panel === 'cedears') {
+      const cedEnrichment = await this.enrichCedearsAndAdrsMonitoring({
+        overview,
+        nowSec,
+        forceRefresh,
+      });
+      enrichedCedears = cedEnrichment.cedears;
+      enrichedMerval = cedEnrichment.enrichedMervalStocks;
+      usEquityPanel = cedEnrichment.usEquityPanel;
+      providerErrors.push(...cedEnrichment.errors);
+    }
+
     return {
       asOfUtcSec: nowSec,
       feedStatus: overview.feedStatus,
       panel,
       providerErrors,
-      stocks: overview.mervalStocks,
-      generalPanel: overview.generalPanelStocks,
+      stocks: enrichedMerval,
+      generalPanel: enrichedGeneral,
       bonds,
-      cedears: overview.cedears,
+      cedears: enrichedCedears,
       notes,
       corps,
       mepMedian: overview.mepMedian,
@@ -4115,6 +4410,409 @@ export class ArgentinaMarketRuntime {
       cauciones: caucionesCurve.rows,
       caucionesStatus: caucionesCurve.status,
       bmbHealth: bmbSnap.health,
+      arPanelAnalytics,
+      usEquityPanel,
+    };
+  }
+
+  private resolveEffectiveUsRuntime(): UsRuntimeAdapter | null {
+    if (this.usRuntime !== null) {
+      return this.usRuntime;
+    }
+    if (!this.allowSharedUsRuntime) {
+      return null;
+    }
+    const shared = getSharedMarketRuntime();
+    if (shared !== null) {
+      return shared;
+    }
+    this.lazyUsRuntime ??= new MarketRuntime({ enableWs: false, secrets: this.secrets });
+    return this.lazyUsRuntime;
+  }
+
+  private async buildArPanelAnalytics(params: {
+    readonly overview: ArOverviewResponse;
+    readonly argStocks: readonly NormalizedQuoteRow[];
+    readonly nowSec: number;
+    readonly forceRefresh: boolean;
+  }): Promise<{
+    readonly mervalStocks: readonly ArStockDto[];
+    readonly generalPanelStocks: readonly ArStockDto[];
+    readonly analytics: EquityPanelAnalyticsDto;
+    readonly errors: readonly string[];
+  }> {
+    const cached = await this.computedCache.getOrCompute(
+      'ar:panel:acciones:analytics',
+      async () => {
+        const errors: string[] = [];
+        const rawByTicker = new Map(params.argStocks.map((r) => [r.symbol, r]));
+        const histEntries = await Promise.all(
+          AR_STOCK_META.map(async (meta) => {
+            const res = await this.getData912History('stocks', meta.ticker, params.forceRefresh);
+            return [meta.ticker, res] as const;
+          }),
+        );
+        const barsByTicker = new Map<string, readonly Bar[]>();
+        const liderSeries: (readonly Bar[])[] = [];
+        for (const [ticker, res] of histEntries) {
+          barsByTicker.set(ticker, res.bars);
+          if (res.error !== null && res.bars.length === 0) {
+            errors.push(`Data912 hist ${ticker}: ${res.error}`);
+          }
+          if (STOCK_META_MAP.get(ticker)?.panel === 'Líder' && res.bars.length >= 2) {
+            liderSeries.push(res.bars);
+          }
+        }
+        const benchmarkBars = this.buildEqualWeightIndexBars(liderSeries);
+
+        const enrichList = (list: readonly ArStockDto[]): readonly ArStockDto[] =>
+          list.map((dto) => {
+            const bars = barsByTicker.get(dto.ticker) ?? [];
+            const raw = rawByTicker.get(dto.ticker);
+            const metrics = computeEquityRiskAndReturnMetrics({
+              bars,
+              benchmarkBars,
+              liveLast: dto.last,
+              livePrevClose: dto.prevClose,
+              liveLow: dto.low,
+              liveHigh: dto.high,
+              liveChangePct: dto.deltaPct,
+              liveVolumeM: dto.volumeM,
+              asOfUtcSec: params.nowSec,
+            });
+            const lastBar = bars[bars.length - 1];
+            const todayShares =
+              raw?.nominalVol !== null && raw?.nominalVol !== undefined && raw.nominalVol > 0
+                ? raw.nominalVol
+                : dto.volumeM !== null && dto.volumeM > 0 && dto.last !== null && dto.last > 0
+                  ? (dto.volumeM * 1_000_000) / dto.last
+                  : lastBar !== undefined && lastBar.volume > 0
+                    ? lastBar.volume
+                    : null;
+            const volMultiple =
+              this.computeRelativeVolumeMultiple({
+                todayShares,
+                bars,
+                asOfUtcSec: params.nowSec,
+              }) ?? dto.volMultiple;
+            return {
+              ...dto,
+              dayRangePos: metrics.dayRangePos,
+              volMultiple,
+              return30dPct: metrics.return30dPct,
+              returnYtdOr252dPct: metrics.returnYtdOr252dPct,
+              realizedVol30dPct: metrics.realizedVol30dPct,
+              beta: metrics.beta,
+              avgVolume40dM: metrics.avgVolume40dM,
+            };
+          });
+
+        const enrichedMerval = enrichList(params.overview.mervalStocks);
+        const enrichedGeneral = enrichList(params.overview.generalPanelStocks);
+        const combined = [...enrichedMerval, ...enrichedGeneral];
+
+        const panelRows: EquityPanelRowDto[] = combined.map((s) => ({
+          symbol: s.ticker,
+          name: s.name,
+          sector: s.sector,
+          panel: s.panel === 'Líder' ? 'Líder' : 'General',
+          color: s.color,
+          last: s.last,
+          prevClose: s.prevClose,
+          dayLow: s.low,
+          dayHigh: s.high,
+          dayRangePos: s.dayRangePos ?? null,
+          volumeM: s.volumeM,
+          return1dPct: s.deltaPct,
+          return30dPct: s.return30dPct ?? null,
+          returnYtdOr252dPct: s.returnYtdOr252dPct ?? null,
+          realizedVol30dPct: s.realizedVol30dPct ?? null,
+          beta: s.beta ?? null,
+          avgVolume40dM: s.avgVolume40dM ?? null,
+          iv30d: s.iv30d ?? null,
+          hasUsOptions: s.hasUsOptions ?? false,
+        }));
+
+        const panelSeries = computePanelVolumeAndVolSeries({
+          items: combined.map((s) => ({
+            symbol: s.ticker,
+            name: s.name,
+            color: s.color,
+            bars: barsByTicker.get(s.ticker) ?? [],
+          })),
+          asOfUtcSec: params.nowSec,
+          maxVolumeDays: 40,
+          rollingVolWindow: 20,
+        });
+
+        const topGainers = [...panelRows]
+          .filter((r) => r.return1dPct !== null && r.return1dPct > 0)
+          .sort((a, b) => (b.return1dPct ?? 0) - (a.return1dPct ?? 0))
+          .slice(0, 8);
+        const topLosers = [...panelRows]
+          .filter((r) => r.return1dPct !== null && r.return1dPct < 0)
+          .sort((a, b) => (a.return1dPct ?? 0) - (b.return1dPct ?? 0))
+          .slice(0, 8);
+
+        return {
+          mervalStocks: enrichedMerval,
+          generalPanelStocks: enrichedGeneral,
+          analytics: {
+            asOfUtcSec: params.nowSec,
+            benchmarkSymbol: 'PANEL_LIDER_EW',
+            panelLabel: 'BYMA · Panel Líder y General (Data912)',
+            currency: 'ARS' as const,
+            rows: panelRows,
+            panelVolume40d: panelSeries.panelVolume40d,
+            volumeAvg40dM: panelSeries.volumeAvg40dM,
+            volumeShareBreakdown: panelSeries.volumeShareBreakdown,
+            panelVolHistory: panelSeries.panelVolHistory,
+            topGainers,
+            topLosers,
+            errors,
+          },
+          errors,
+        };
+      },
+      { forceRefresh: params.forceRefresh },
+    );
+
+    return cached.value as {
+      readonly mervalStocks: readonly ArStockDto[];
+      readonly generalPanelStocks: readonly ArStockDto[];
+      readonly analytics: EquityPanelAnalyticsDto;
+      readonly errors: readonly string[];
+    };
+  }
+
+  private async enrichCedearsAndAdrsMonitoring(params: {
+    readonly overview: ArOverviewResponse;
+    readonly nowSec: number;
+    readonly forceRefresh: boolean;
+  }): Promise<{
+    readonly cedears: readonly ArStockDto[];
+    readonly enrichedMervalStocks: readonly ArStockDto[];
+    readonly usEquityPanel: EquityPanelAnalyticsDto | null;
+    readonly errors: readonly string[];
+  }> {
+    const errors: string[] = [];
+    const usRt = this.resolveEffectiveUsRuntime();
+
+    let usEquityPanel: EquityPanelAnalyticsDto | null = null;
+    if (usRt?.getUsEquityPanelAnalytics !== undefined) {
+      try {
+        usEquityPanel = await usRt.getUsEquityPanelAnalytics(params.forceRefresh);
+        errors.push(...usEquityPanel.errors);
+      } catch (err: unknown) {
+        errors.push(
+          redactSecrets(err instanceof Error ? err.message : 'Massive US equity panel error', this.secrets),
+        );
+      }
+    }
+
+    const usRowMap = new Map<string, EquityPanelRowDto>(
+      (usEquityPanel?.rows ?? []).map((r) => [r.symbol.toUpperCase(), r]),
+    );
+    const cachedIvMap = usRt?.getCachedIv30Map?.() ?? new Map<string, number>();
+
+    const allUsUnderlyings = [
+      ...new Set([
+        ...params.overview.cedears
+          .map((c) => c.adrTicker?.replace(/ US$/i, '').trim().toUpperCase())
+          .filter((s): s is string => s !== undefined && s !== ''),
+        ...AR_STOCK_META.map((m) => m.adrTicker).filter((s): s is string => s !== undefined),
+      ]),
+    ];
+
+    const missingRvUsTickers = allUsUnderlyings.filter((sym) => {
+      const panelRow = usRowMap.get(sym);
+      return panelRow === undefined || panelRow.realizedVol30dPct === null;
+    });
+
+    const fallbackRv30ByUs = new Map<string, { readonly last: number | null; readonly deltaPct: number | null; readonly rv30: number | null }>();
+    if (missingRvUsTickers.length > 0 && (this.usDailyBarsFn !== null || usRt !== null)) {
+      const dailyRes = await this.getUsDailyBars1dMap(missingRvUsTickers, 90, params.forceRefresh);
+      errors.push(...dailyRes.errors);
+      for (const [sym, bars] of dailyRes.bySymbol.entries()) {
+        if (bars.length > 0) {
+          const m = computeEquityRiskAndReturnMetrics({
+            bars,
+            benchmarkBars: bars,
+            asOfUtcSec: params.nowSec,
+          });
+          fallbackRv30ByUs.set(sym, {
+            last: m.last,
+            deltaPct: m.return1dPct,
+            rv30: m.realizedVol30dPct,
+          });
+        }
+      }
+    }
+
+    const cedLiveRes = await this.getData912Live('/live/arg_cedears', params.forceRefresh);
+    const cedLiveMap = new Map(cedLiveRes.rows.map((r) => [r.symbol, r]));
+    const activeCedearTickers = params.overview.cedears
+      .filter((c) => c.last !== null && c.last > 0)
+      .map((c) => c.ticker);
+    const cedHistEntries = await Promise.all(
+      activeCedearTickers.map(async (ticker) => {
+        const res = await this.getCedearHistoryWithAlias(ticker, params.forceRefresh);
+        return [ticker, res.bars] as const;
+      }),
+    );
+    const cedHistMap = new Map<string, readonly Bar[]>(cedHistEntries);
+
+    const resolveIvAndPriceForUs = (
+      usSym: string | undefined,
+    ): {
+      readonly usLast: number | null;
+      readonly usDeltaPct: number | null;
+      readonly iv30d: number | null;
+      readonly ivSource: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
+    } => {
+      if (usSym === undefined || usSym === '') {
+        return { usLast: null, usDeltaPct: null, iv30d: null, ivSource: 'NONE' };
+      }
+      const panelRow = usRowMap.get(usSym);
+      const fb = fallbackRv30ByUs.get(usSym);
+      const cachedIvDec = cachedIvMap.get(usSym) ?? null;
+      const opraIvPct =
+        cachedIvDec !== null && Number.isFinite(cachedIvDec) && cachedIvDec > 0
+          ? sanitizeFinite(cachedIvDec * 100)
+          : panelRow?.iv30d !== undefined && panelRow.iv30d !== null && panelRow.iv30d > 0
+            ? sanitizeFinite(panelRow.iv30d)
+            : null;
+      const rv30Pct = panelRow?.realizedVol30dPct ?? fb?.rv30 ?? null;
+      const iv30d = opraIvPct ?? sanitizeFinite(rv30Pct);
+      const ivSource: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE' =
+        opraIvPct !== null ? 'OPRA_IV' : rv30Pct !== null ? 'MASSIVE_RV30D' : 'NONE';
+      const usLast = panelRow?.last ?? fb?.last ?? null;
+      const usDeltaPct = panelRow?.return1dPct ?? fb?.deltaPct ?? null;
+      return { usLast, usDeltaPct, iv30d, ivSource };
+    };
+
+    const enrichedCedears: ArStockDto[] = params.overview.cedears.map((c) => {
+      const usSym = c.adrTicker?.replace(/ US$/i, '').trim().toUpperCase();
+      const usInfo = resolveIvAndPriceForUs(usSym);
+      const effectiveUsLast: number | null =
+        c.adrPrice !== undefined && c.adrPrice !== null && c.adrPrice > 0
+          ? c.adrPrice
+          : usInfo.usLast;
+      const effectiveUsDelta: number | null =
+        c.adrDeltaPct !== undefined && c.adrDeltaPct !== null
+          ? c.adrDeltaPct
+          : usInfo.usDeltaPct;
+      const ratio = c.adrRatio;
+      const cclImplicit =
+        c.cclImplicit !== null && c.cclImplicit !== undefined && c.cclImplicit > 0
+          ? c.cclImplicit
+          : c.last !== null &&
+              c.last > 0 &&
+              effectiveUsLast !== null &&
+              effectiveUsLast > 0 &&
+              ratio !== undefined &&
+              ratio > 0
+            ? sanitizeFinite((c.last * ratio) / effectiveUsLast)
+            : null;
+      const parity = this.computeParityMismatchAndArb({
+        usTicker: usSym,
+        ratio,
+        localLast: c.last,
+        usLast: effectiveUsLast,
+        cclImplicit,
+        cclMedian: params.overview.cclMedian,
+        hasBymaOptions: false,
+      });
+
+      const liveRow = cedLiveMap.get(c.ticker);
+      const bars = cedHistMap.get(c.ticker) ?? [];
+      const lastBar = bars[bars.length - 1];
+      const todayShares =
+        liveRow?.nominalVol !== null && liveRow?.nominalVol !== undefined && liveRow.nominalVol > 0
+          ? liveRow.nominalVol
+          : c.volumeM !== null && c.volumeM > 0 && c.last !== null && c.last > 0
+            ? (c.volumeM * 1_000_000) / c.last
+            : lastBar !== undefined && lastBar.volume > 0
+              ? lastBar.volume
+              : null;
+      const volMultiple =
+        this.computeRelativeVolumeMultiple({
+          todayShares,
+          bars,
+          asOfUtcSec: params.nowSec,
+        }) ?? c.volMultiple;
+
+      const usMeta = usSym !== undefined ? US_EQUITY_META_MAP.get(usSym) : undefined;
+      return {
+        ...c,
+        adrPrice: sanitizeFinite(effectiveUsLast),
+        adrDeltaPct: sanitizeFinite(effectiveUsDelta),
+        cclImplicit: sanitizeFinite(cclImplicit),
+        cclZScore: parity.cclMismatchPct ?? c.cclZScore ?? null,
+        cclMismatchPct: parity.cclMismatchPct,
+        cclMismatchArs: parity.cclMismatchArs,
+        fairArsPrice: parity.fairArsPrice,
+        volMultiple,
+        iv30d: usInfo.iv30d ?? c.iv30d ?? null,
+        ivSource: usInfo.iv30d !== null ? usInfo.ivSource : c.ivSource ?? 'NONE',
+        hasUsOptions: parity.hasUsOptions || (usMeta?.hasUsOptions ?? false),
+        hasBymaOptions: false,
+        arbitrageSignal: parity.arbitrageSignal,
+      };
+    });
+
+    const enrichedMervalStocks: ArStockDto[] = params.overview.mervalStocks.map((s) => {
+      if (s.adrTicker === undefined) {
+        return s;
+      }
+      const usSym = s.adrTicker.replace(/ US$/i, '').trim().toUpperCase();
+      const usInfo = resolveIvAndPriceForUs(usSym);
+      const effectiveUsLast: number | null =
+        s.adrPrice !== undefined && s.adrPrice !== null && s.adrPrice > 0
+          ? s.adrPrice
+          : usInfo.usLast;
+      const cclImplicit =
+        s.cclImplicit !== null && s.cclImplicit !== undefined && s.cclImplicit > 0
+          ? s.cclImplicit
+          : s.last !== null &&
+              s.last > 0 &&
+              effectiveUsLast !== null &&
+              effectiveUsLast > 0 &&
+              s.adrRatio !== undefined &&
+              s.adrRatio > 0
+            ? sanitizeFinite((s.last * s.adrRatio) / effectiveUsLast)
+            : null;
+      const hasBymaOptions = BYMA_OPTION_UNDERLYINGS.has(s.ticker);
+      const parity = this.computeParityMismatchAndArb({
+        usTicker: usSym,
+        ratio: s.adrRatio,
+        localLast: s.last,
+        usLast: effectiveUsLast,
+        cclImplicit,
+        cclMedian: params.overview.cclMedian,
+        hasBymaOptions,
+      });
+      return {
+        ...s,
+        adrPrice: sanitizeFinite(effectiveUsLast),
+        adrDeltaPct: sanitizeFinite(s.adrDeltaPct ?? usInfo.usDeltaPct),
+        cclImplicit: sanitizeFinite(cclImplicit),
+        cclMismatchPct: parity.cclMismatchPct,
+        cclMismatchArs: parity.cclMismatchArs,
+        fairArsPrice: parity.fairArsPrice,
+        iv30d: s.iv30d ?? usInfo.iv30d ?? null,
+        ivSource: s.iv30d !== undefined && s.iv30d !== null ? (s.ivSource ?? 'OPRA_IV') : usInfo.ivSource,
+        hasUsOptions: parity.hasUsOptions,
+        hasBymaOptions,
+        arbitrageSignal: parity.arbitrageSignal,
+      };
+    });
+
+    return {
+      cedears: enrichedCedears,
+      enrichedMervalStocks,
+      usEquityPanel,
+      errors,
     };
   }
 

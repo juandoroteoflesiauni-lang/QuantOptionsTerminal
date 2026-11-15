@@ -473,6 +473,11 @@ export interface SerializedUnifiedQuote {
   readonly change: number | null;
   readonly changePct: number | null;
   readonly previousClose: number | null;
+  readonly dayLow: number | null;
+  readonly dayHigh: number | null;
+  readonly dayRangePos: number | null;
+  readonly volumeM: number | null;
+  readonly iv30d: number | null;
   readonly marketStatus: string | null;
   readonly volume: number | null;
 }
@@ -686,6 +691,7 @@ export interface TerminalSnapshotResponse {
   readonly microstructure: SerializedMicrostructureSummary;
   readonly marketContext: SerializedMarketContext;
   readonly terminalEngines?: SerializedTerminalEngines | null;
+  readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
   readonly dataQuality: SnapshotDataQuality;
 }
 
@@ -880,6 +886,196 @@ export const DEFAULT_RELATIONS_US_TICKERS = [
   'BMA',
   'PAM',
 ] as const;
+
+export type UsEquitySector =
+  | 'Mega Caps / Tech'
+  | 'Semiconductores'
+  | 'Finanzas'
+  | 'Consumo'
+  | 'Energía'
+  | 'Salud'
+  | 'Industrial'
+  | 'Índices / ETF';
+
+export interface UsEquityUniverseMeta {
+  readonly symbol: string;
+  readonly name: string;
+  readonly sector: UsEquitySector;
+  readonly panel: 'Líder' | 'General';
+  readonly color: string;
+  readonly hasUsOptions: boolean;
+}
+
+/**
+ * Universo líquido US (~73 acciones, ETFs sectoriales y ADRs) para análisis
+ * sectorial, volatilidad, beta contra SPY y rotación de volumen 40 ruedas.
+ */
+export const US_EQUITY_UNIVERSE: readonly UsEquityUniverseMeta[] = [
+  // Mega Caps / Tech
+  { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#4BA3FF', hasUsOptions: true },
+  { symbol: 'MSFT', name: 'Microsoft Corp.', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#00A4EF', hasUsOptions: true },
+  { symbol: 'NVDA', name: 'NVIDIA Corp.', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#2EDC7E', hasUsOptions: true },
+  { symbol: 'AMZN', name: 'Amazon.com Inc.', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#FF9900', hasUsOptions: true },
+  { symbol: 'GOOGL', name: 'Alphabet Inc.', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#F5B544', hasUsOptions: true },
+  { symbol: 'META', name: 'Meta Platforms', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#38BDF8', hasUsOptions: true },
+  { symbol: 'TSLA', name: 'Tesla Inc.', sector: 'Mega Caps / Tech', panel: 'Líder', color: '#E82127', hasUsOptions: true },
+  { symbol: 'CRM', name: 'Salesforce Inc.', sector: 'Mega Caps / Tech', panel: 'General', color: '#00A1E0', hasUsOptions: true },
+  { symbol: 'ORCL', name: 'Oracle Corp.', sector: 'Mega Caps / Tech', panel: 'General', color: '#F80000', hasUsOptions: true },
+  { symbol: 'NFLX', name: 'Netflix Inc.', sector: 'Mega Caps / Tech', panel: 'General', color: '#E50914', hasUsOptions: true },
+  // Semiconductores
+  { symbol: 'AVGO', name: 'Broadcom Inc.', sector: 'Semiconductores', panel: 'Líder', color: '#CC092F', hasUsOptions: true },
+  { symbol: 'AMD', name: 'Advanced Micro Devices', sector: 'Semiconductores', panel: 'Líder', color: '#8B7CF6', hasUsOptions: true },
+  { symbol: 'TSM', name: 'Taiwan Semiconductor', sector: 'Semiconductores', panel: 'Líder', color: '#6366F1', hasUsOptions: true },
+  { symbol: 'INTC', name: 'Intel Corp.', sector: 'Semiconductores', panel: 'General', color: '#0071C5', hasUsOptions: true },
+  { symbol: 'QCOM', name: 'Qualcomm Inc.', sector: 'Semiconductores', panel: 'General', color: '#3253DC', hasUsOptions: true },
+  { symbol: 'MU', name: 'Micron Technology', sector: 'Semiconductores', panel: 'General', color: '#06B6D4', hasUsOptions: true },
+  // Finanzas
+  { symbol: 'JPM', name: 'JPMorgan Chase', sector: 'Finanzas', panel: 'Líder', color: '#60A5FA', hasUsOptions: true },
+  { symbol: 'BAC', name: 'Bank of America', sector: 'Finanzas', panel: 'Líder', color: '#E31837', hasUsOptions: true },
+  { symbol: 'WFC', name: 'Wells Fargo & Co.', sector: 'Finanzas', panel: 'General', color: '#D71E28', hasUsOptions: true },
+  { symbol: 'GS', name: 'Goldman Sachs Group', sector: 'Finanzas', panel: 'Líder', color: '#7399C6', hasUsOptions: true },
+  { symbol: 'MS', name: 'Morgan Stanley', sector: 'Finanzas', panel: 'General', color: '#3B82F6', hasUsOptions: true },
+  { symbol: 'C', name: 'Citigroup Inc.', sector: 'Finanzas', panel: 'General', color: '#003B70', hasUsOptions: true },
+  { symbol: 'V', name: 'Visa Inc.', sector: 'Finanzas', panel: 'Líder', color: '#1A1F71', hasUsOptions: true },
+  { symbol: 'MA', name: 'Mastercard Inc.', sector: 'Finanzas', panel: 'Líder', color: '#EB001B', hasUsOptions: true },
+  { symbol: 'BRK.B', name: 'Berkshire Hathaway B', sector: 'Finanzas', panel: 'Líder', color: '#A78BFA', hasUsOptions: true },
+  { symbol: 'BLK', name: 'BlackRock Inc.', sector: 'Finanzas', panel: 'General', color: '#94A3B8', hasUsOptions: true },
+  { symbol: 'NU', name: 'Nu Holdings', sector: 'Finanzas', panel: 'General', color: '#820AD1', hasUsOptions: true },
+  { symbol: 'GGAL', name: 'Grupo Fin. Galicia ADR', sector: 'Finanzas', panel: 'General', color: '#4BA3FF', hasUsOptions: true },
+  { symbol: 'BMA', name: 'Banco Macro ADR', sector: 'Finanzas', panel: 'General', color: '#8B7CF6', hasUsOptions: true },
+  // Consumo
+  { symbol: 'WMT', name: 'Walmart Inc.', sector: 'Consumo', panel: 'Líder', color: '#0071CE', hasUsOptions: true },
+  { symbol: 'COST', name: 'Costco Wholesale', sector: 'Consumo', panel: 'Líder', color: '#E31837', hasUsOptions: true },
+  { symbol: 'KO', name: 'Coca-Cola Co.', sector: 'Consumo', panel: 'Líder', color: '#F40009', hasUsOptions: true },
+  { symbol: 'PEP', name: 'PepsiCo Inc.', sector: 'Consumo', panel: 'General', color: '#004B93', hasUsOptions: true },
+  { symbol: 'MCD', name: "McDonald's Corp.", sector: 'Consumo', panel: 'General', color: '#FFC72C', hasUsOptions: true },
+  { symbol: 'NKE', name: 'Nike Inc.', sector: 'Consumo', panel: 'General', color: '#F97316', hasUsOptions: true },
+  { symbol: 'HD', name: 'Home Depot Inc.', sector: 'Consumo', panel: 'General', color: '#F96302', hasUsOptions: true },
+  { symbol: 'DIS', name: 'Walt Disney Co.', sector: 'Consumo', panel: 'General', color: '#38BDF8', hasUsOptions: true },
+  { symbol: 'PG', name: 'Procter & Gamble', sector: 'Consumo', panel: 'General', color: '#003DA5', hasUsOptions: true },
+  { symbol: 'MELI', name: 'MercadoLibre Inc.', sector: 'Consumo', panel: 'Líder', color: '#FFE600', hasUsOptions: true },
+  // Energía
+  { symbol: 'XOM', name: 'Exxon Mobil Corp.', sector: 'Energía', panel: 'Líder', color: '#FF5468', hasUsOptions: true },
+  { symbol: 'CVX', name: 'Chevron Corp.', sector: 'Energía', panel: 'Líder', color: '#005A9C', hasUsOptions: true },
+  { symbol: 'SLB', name: 'SLB (Schlumberger)', sector: 'Energía', panel: 'General', color: '#004B87', hasUsOptions: true },
+  { symbol: 'COP', name: 'ConocoPhillips', sector: 'Energía', panel: 'General', color: '#DC2626', hasUsOptions: true },
+  { symbol: 'OXY', name: 'Occidental Petroleum', sector: 'Energía', panel: 'General', color: '#EF4444', hasUsOptions: true },
+  { symbol: 'PBR', name: 'Petrobras ADR', sector: 'Energía', panel: 'General', color: '#10B981', hasUsOptions: true },
+  { symbol: 'YPF', name: 'YPF S.A. ADR', sector: 'Energía', panel: 'General', color: '#38BDF8', hasUsOptions: true },
+  { symbol: 'VIST', name: 'Vista Energy ADR', sector: 'Energía', panel: 'General', color: '#2EDC7E', hasUsOptions: true },
+  { symbol: 'PAM', name: 'Pampa Energía ADR', sector: 'Energía', panel: 'General', color: '#F59E0B', hasUsOptions: true },
+  // Salud
+  { symbol: 'LLY', name: 'Eli Lilly & Co.', sector: 'Salud', panel: 'Líder', color: '#D52B1E', hasUsOptions: true },
+  { symbol: 'UNH', name: 'UnitedHealth Group', sector: 'Salud', panel: 'Líder', color: '#002677', hasUsOptions: true },
+  { symbol: 'JNJ', name: 'Johnson & Johnson', sector: 'Salud', panel: 'General', color: '#D51900', hasUsOptions: true },
+  { symbol: 'PFE', name: 'Pfizer Inc.', sector: 'Salud', panel: 'General', color: '#0093D0', hasUsOptions: true },
+  { symbol: 'ABBV', name: 'AbbVie Inc.', sector: 'Salud', panel: 'General', color: '#071D49', hasUsOptions: true },
+  { symbol: 'MRK', name: 'Merck & Co.', sector: 'Salud', panel: 'General', color: '#00857C', hasUsOptions: true },
+  // Industrial
+  { symbol: 'CAT', name: 'Caterpillar Inc.', sector: 'Industrial', panel: 'Líder', color: '#FFCD11', hasUsOptions: true },
+  { symbol: 'BA', name: 'Boeing Co.', sector: 'Industrial', panel: 'Líder', color: '#1D4ED8', hasUsOptions: true },
+  { symbol: 'GE', name: 'GE Aerospace', sector: 'Industrial', panel: 'General', color: '#3B82F6', hasUsOptions: true },
+  { symbol: 'HON', name: 'Honeywell Intl.', sector: 'Industrial', panel: 'General', color: '#EE3124', hasUsOptions: true },
+  { symbol: 'UPS', name: 'United Parcel Service', sector: 'Industrial', panel: 'General', color: '#92400E', hasUsOptions: true },
+  { symbol: 'DE', name: 'Deere & Co.', sector: 'Industrial', panel: 'General', color: '#367C2B', hasUsOptions: true },
+  { symbol: 'LMT', name: 'Lockheed Martin', sector: 'Industrial', panel: 'General', color: '#0EA5E9', hasUsOptions: true },
+  // Índices / ETF
+  { symbol: 'SPY', name: 'SPDR S&P 500 ETF', sector: 'Índices / ETF', panel: 'Líder', color: '#2EDC7E', hasUsOptions: true },
+  { symbol: 'QQQ', name: 'Invesco QQQ Trust', sector: 'Índices / ETF', panel: 'Líder', color: '#8B7CF6', hasUsOptions: true },
+  { symbol: 'IWM', name: 'iShares Russell 2000', sector: 'Índices / ETF', panel: 'Líder', color: '#F59E0B', hasUsOptions: true },
+  { symbol: 'DIA', name: 'SPDR Dow Jones ETF', sector: 'Índices / ETF', panel: 'Líder', color: '#60A5FA', hasUsOptions: true },
+  { symbol: 'XLF', name: 'Financial Select ETF', sector: 'Índices / ETF', panel: 'General', color: '#3B82F6', hasUsOptions: true },
+  { symbol: 'XLE', name: 'Energy Select ETF', sector: 'Índices / ETF', panel: 'General', color: '#EF4444', hasUsOptions: true },
+  { symbol: 'XLK', name: 'Technology Select ETF', sector: 'Índices / ETF', panel: 'General', color: '#8B5CF6', hasUsOptions: true },
+  { symbol: 'XLV', name: 'Health Care Select ETF', sector: 'Índices / ETF', panel: 'General', color: '#14B8A6', hasUsOptions: true },
+  { symbol: 'XLI', name: 'Industrial Select ETF', sector: 'Índices / ETF', panel: 'General', color: '#F97316', hasUsOptions: true },
+  { symbol: 'GLD', name: 'SPDR Gold Shares', sector: 'Índices / ETF', panel: 'General', color: '#F5B544', hasUsOptions: true },
+  { symbol: 'SLV', name: 'iShares Silver Trust', sector: 'Índices / ETF', panel: 'General', color: '#94A3B8', hasUsOptions: true },
+  { symbol: 'EWZ', name: 'iShares MSCI Brazil', sector: 'Índices / ETF', panel: 'General', color: '#22C55E', hasUsOptions: true },
+] as const;
+
+export const US_EQUITY_META_MAP: ReadonlyMap<string, UsEquityUniverseMeta> = new Map(
+  US_EQUITY_UNIVERSE.map((m) => [m.symbol, m]),
+);
+
+export const US_LIQUID_OPTION_UNDERLYINGS: ReadonlySet<string> = new Set([
+  ...US_EQUITY_UNIVERSE.filter((u) => u.hasUsOptions).map((u) => u.symbol),
+  'BABA',
+  'GLOB',
+]);
+
+export interface EquityRiskReturnMetrics {
+  readonly last: number | null;
+  readonly prevClose: number | null;
+  readonly dayLow: number | null;
+  readonly dayHigh: number | null;
+  readonly dayRangePos: number | null;
+  readonly volumeM: number | null;
+  readonly return1dPct: number | null;
+  readonly return30dPct: number | null;
+  readonly returnYtdOr252dPct: number | null;
+  readonly realizedVol30dPct: number | null;
+  readonly beta: number | null;
+  readonly avgVolume40dM: number | null;
+  readonly observationCount: number;
+}
+
+export interface PanelVolumeDayPoint {
+  readonly date: string;
+  readonly totalVolumeM: number;
+}
+
+export interface PanelVolumeShareItem {
+  readonly symbol: string;
+  readonly name: string;
+  readonly color: string;
+  readonly volumeM: number;
+  readonly sharePct: number;
+}
+
+export interface PanelVolHistoryPoint {
+  readonly date: string;
+  readonly panelVolPct: number;
+  readonly avgStockVolPct: number | null;
+  readonly constituents: number;
+}
+
+export interface EquityPanelRowDto {
+  readonly symbol: string;
+  readonly name: string;
+  readonly sector: string;
+  readonly panel: 'Líder' | 'General';
+  readonly color: string;
+  readonly last: number | null;
+  readonly prevClose: number | null;
+  readonly dayLow: number | null;
+  readonly dayHigh: number | null;
+  readonly dayRangePos: number | null;
+  readonly volumeM: number | null;
+  readonly return1dPct: number | null;
+  readonly return30dPct: number | null;
+  readonly returnYtdOr252dPct: number | null;
+  readonly realizedVol30dPct: number | null;
+  readonly beta: number | null;
+  readonly avgVolume40dM: number | null;
+  readonly iv30d: number | null;
+  readonly hasUsOptions: boolean;
+}
+
+export interface EquityPanelAnalyticsDto {
+  readonly asOfUtcSec: number;
+  readonly benchmarkSymbol: string;
+  readonly panelLabel: string;
+  readonly currency: 'USD' | 'ARS';
+  readonly rows: readonly EquityPanelRowDto[];
+  readonly panelVolume40d: readonly PanelVolumeDayPoint[];
+  readonly volumeAvg40dM: number | null;
+  readonly volumeShareBreakdown: readonly PanelVolumeShareItem[];
+  readonly panelVolHistory: readonly PanelVolHistoryPoint[];
+  readonly topGainers: readonly EquityPanelRowDto[];
+  readonly topLosers: readonly EquityPanelRowDto[];
+  readonly errors: readonly string[];
+}
 
 export interface CachedDailyBarsResult {
   readonly symbol: string;
@@ -1709,6 +1905,524 @@ function buildKeyLevelsFromAuctionAndHma(params: {
   return out;
 }
 
+function toUtcDateKey(sec: number): string {
+  return new Date(Math.floor(sec) * 1_000).toISOString().slice(0, 10);
+}
+
+function normalizeEquityDailyBars(bars: readonly Bar[], asOfUtcSec?: number): readonly Bar[] {
+  const closedInput =
+    asOfUtcSec !== undefined && Number.isFinite(asOfUtcSec)
+      ? normalizeClosedDailyBarsUs(bars, asOfUtcSec)
+      : bars;
+  const byDay = new Map<string, Bar>();
+  for (const b of closedInput) {
+    if (
+      !Number.isFinite(b.time) ||
+      !Number.isFinite(b.open) ||
+      !Number.isFinite(b.high) ||
+      !Number.isFinite(b.low) ||
+      !Number.isFinite(b.close) ||
+      !Number.isFinite(b.volume) ||
+      b.open <= 0 ||
+      b.high <= 0 ||
+      b.low <= 0 ||
+      b.close <= 0 ||
+      b.high < b.low ||
+      b.volume < 0
+    ) {
+      continue;
+    }
+    byDay.set(toUtcDateKey(b.time), b);
+  }
+  return Array.from(byDay.values()).sort((a, b) => a.time - b.time);
+}
+
+function barNotionalMillions(bar: Bar): number {
+  const px = bar.vw !== undefined && Number.isFinite(bar.vw) && bar.vw > 0 ? bar.vw : bar.close;
+  return (px * bar.volume) / 1_000_000;
+}
+
+function computeSampleStdDev(values: readonly number[]): number | null {
+  if (values.length < 2) {
+    return null;
+  }
+  let sum = 0;
+  for (const v of values) {
+    sum += v;
+  }
+  const mean = sum / values.length;
+  let sqSum = 0;
+  for (const v of values) {
+    const d = v - mean;
+    sqSum += d * d;
+  }
+  const variance = sqSum / (values.length - 1);
+  return Number.isFinite(variance) && variance >= 0 ? Math.sqrt(variance) : null;
+}
+
+/**
+ * Calcula métricas puras de retorno, rango diario, volatilidad realizada 30D (anualizada),
+ * beta contra benchmark (`SPY` o índice local) y volumen promedio de 40 ruedas.
+ */
+export function computeEquityRiskAndReturnMetrics(params: {
+  readonly bars: readonly Bar[];
+  readonly benchmarkBars: readonly Bar[];
+  readonly liveLast?: number | null;
+  readonly livePrevClose?: number | null;
+  readonly liveLow?: number | null;
+  readonly liveHigh?: number | null;
+  readonly liveChangePct?: number | null;
+  readonly liveVolumeM?: number | null;
+  readonly asOfUtcSec?: number;
+}): EquityRiskReturnMetrics {
+  const closed = normalizeEquityDailyBars(params.bars, params.asOfUtcSec);
+  const benchClosed = normalizeEquityDailyBars(params.benchmarkBars, params.asOfUtcSec);
+  const n = closed.length;
+  const lastClosed = n > 0 ? closed[n - 1] : undefined;
+  const prevClosed = n >= 2 ? closed[n - 2] : undefined;
+
+  const last = sanitizeFinite(
+    params.liveLast !== null && params.liveLast !== undefined && Number.isFinite(params.liveLast) && params.liveLast > 0
+      ? params.liveLast
+      : lastClosed?.close,
+  );
+  const prevClose = sanitizeFinite(
+    params.livePrevClose !== null &&
+      params.livePrevClose !== undefined &&
+      Number.isFinite(params.livePrevClose) &&
+      params.livePrevClose > 0
+      ? params.livePrevClose
+      : prevClosed?.close,
+  );
+  const dayLow = sanitizeFinite(
+    params.liveLow !== null && params.liveLow !== undefined && Number.isFinite(params.liveLow) && params.liveLow > 0
+      ? params.liveLow
+      : lastClosed?.low,
+  );
+  const dayHigh = sanitizeFinite(
+    params.liveHigh !== null && params.liveHigh !== undefined && Number.isFinite(params.liveHigh) && params.liveHigh > 0
+      ? params.liveHigh
+      : lastClosed?.high,
+  );
+  const dayRangePos =
+    last !== null && dayLow !== null && dayHigh !== null && dayHigh > dayLow
+      ? sanitizeFinite((last - dayLow) / (dayHigh - dayLow))
+      : null;
+
+  const histLastVolM =
+    lastClosed !== undefined && lastClosed.volume > 0 ? sanitizeFinite(barNotionalMillions(lastClosed)) : null;
+  const volumeM = sanitizeFinite(
+    params.liveVolumeM !== null &&
+      params.liveVolumeM !== undefined &&
+      Number.isFinite(params.liveVolumeM) &&
+      params.liveVolumeM >= 0
+      ? params.liveVolumeM
+      : histLastVolM,
+  );
+
+  const return1dPct =
+    params.liveChangePct !== null &&
+    params.liveChangePct !== undefined &&
+    Number.isFinite(params.liveChangePct)
+      ? sanitizeFinite(params.liveChangePct)
+      : last !== null && prevClose !== null && prevClose > 0
+        ? sanitizeFinite(((last / prevClose) - 1) * 100)
+        : null;
+
+  let return30dPct: number | null = null;
+  if (last !== null && lastClosed !== undefined && n >= 20) {
+    const target30Sec = lastClosed.time - 30 * 86_400;
+    let idx30 = -1;
+    for (let i = n - 1; i >= 0; i -= 1) {
+      const b = closed[i];
+      if (b !== undefined && b.time <= target30Sec) {
+        idx30 = i;
+        break;
+      }
+    }
+    const anchorBar30 = idx30 >= 0 ? closed[idx30] : undefined;
+    if (anchorBar30 !== undefined && n - 1 - idx30 >= 15 && anchorBar30.close > 0) {
+      return30dPct = sanitizeFinite(((last / anchorBar30.close) - 1) * 100);
+    }
+  }
+
+  let returnYtdOr252dPct: number | null = null;
+  const firstClosed = closed[0];
+  if (last !== null && lastClosed !== undefined && firstClosed !== undefined && n >= 15) {
+    if (n >= 240 && lastClosed.time - firstClosed.time >= 350 * 86_400) {
+      const target1ySec = lastClosed.time - 365 * 86_400;
+      let idx1y = 0;
+      for (let i = n - 1; i >= 0; i -= 1) {
+        const b = closed[i];
+        if (b !== undefined && b.time <= target1ySec) {
+          idx1y = i;
+          break;
+        }
+      }
+      const anchorBar1y = closed[idx1y];
+      if (anchorBar1y !== undefined && anchorBar1y.close > 0) {
+        returnYtdOr252dPct = sanitizeFinite(((last / anchorBar1y.close) - 1) * 100);
+      }
+    } else {
+      const curYear = new Date(lastClosed.time * 1_000).getUTCFullYear();
+      const firstInYearIdx = closed.findIndex((b) => new Date(b.time * 1_000).getUTCFullYear() === curYear);
+      let anchorIdx = -1;
+      if (firstInYearIdx >= 1 && n - 1 - (firstInYearIdx - 1) >= 10) {
+        anchorIdx = firstInYearIdx - 1;
+      } else if (firstInYearIdx === 0 && n >= 15) {
+        const d0 = new Date(firstClosed.time * 1_000);
+        if (d0.getUTCMonth() === 0 && d0.getUTCDate() <= 10) {
+          anchorIdx = 0;
+        }
+      }
+      const anchorBarYtd = anchorIdx >= 0 ? closed[anchorIdx] : undefined;
+      if (anchorBarYtd !== undefined && anchorBarYtd.close > 0) {
+        returnYtdOr252dPct = sanitizeFinite(((last / anchorBarYtd.close) - 1) * 100);
+      }
+    }
+  }
+
+  let realizedVol30dPct: number | null = null;
+  if (n >= 21) {
+    const volBars = closed.slice(-31);
+    const logReturns: number[] = [];
+    for (let i = 1; i < volBars.length; i += 1) {
+      const prevBar = volBars[i - 1];
+      const curBar = volBars[i];
+      if (prevBar !== undefined && curBar !== undefined && prevBar.close > 0 && curBar.close > 0) {
+        logReturns.push(Math.log(curBar.close / prevBar.close));
+      }
+    }
+    if (logReturns.length >= 20) {
+      const sd = computeSampleStdDev(logReturns);
+      if (sd !== null) {
+        realizedVol30dPct = sanitizeFinite(sd * Math.sqrt(252) * 100);
+      }
+    }
+  }
+
+  let beta: number | null = null;
+  if (n >= 21 && benchClosed.length >= 21) {
+    const stockRetByDay = new Map<string, number>();
+    const startStock = Math.max(1, n - 60);
+    for (let i = startStock; i < n; i += 1) {
+      const prevBar = closed[i - 1];
+      const curBar = closed[i];
+      if (prevBar !== undefined && curBar !== undefined && prevBar.close > 0 && curBar.close > 0) {
+        stockRetByDay.set(toUtcDateKey(curBar.time), curBar.close / prevBar.close - 1);
+      }
+    }
+    const benchRetByDay = new Map<string, number>();
+    for (let i = 1; i < benchClosed.length; i += 1) {
+      const prevBar = benchClosed[i - 1];
+      const curBar = benchClosed[i];
+      if (prevBar !== undefined && curBar !== undefined && prevBar.close > 0 && curBar.close > 0) {
+        benchRetByDay.set(toUtcDateKey(curBar.time), curBar.close / prevBar.close - 1);
+      }
+    }
+    const aligned: Array<readonly [number, number]> = [];
+    for (const [day, ri] of stockRetByDay.entries()) {
+      const rb = benchRetByDay.get(day);
+      if (rb !== undefined && Number.isFinite(ri) && Number.isFinite(rb)) {
+        aligned.push([ri, rb]);
+      }
+    }
+    if (aligned.length >= 20) {
+      const m = aligned.length;
+      let sumI = 0;
+      let sumB = 0;
+      for (const [ri, rb] of aligned) {
+        sumI += ri;
+        sumB += rb;
+      }
+      const meanI = sumI / m;
+      const meanB = sumB / m;
+      let covSum = 0;
+      let varSumB = 0;
+      for (const [ri, rb] of aligned) {
+        const di = ri - meanI;
+        const db = rb - meanB;
+        covSum += di * db;
+        varSumB += db * db;
+      }
+      if (varSumB > 1e-12) {
+        beta = sanitizeFinite(covSum / varSumB);
+      }
+    }
+  }
+
+  let avgVolume40dM: number | null = null;
+  if (n >= 20) {
+    const volWindow = closed.slice(-40);
+    let totalVolM = 0;
+    let positiveCount = 0;
+    for (const b of volWindow) {
+      const mVal = barNotionalMillions(b);
+      if (Number.isFinite(mVal) && mVal >= 0) {
+        totalVolM += mVal;
+        if (mVal > 0) {
+          positiveCount += 1;
+        }
+      }
+    }
+    if (positiveCount > 0) {
+      avgVolume40dM = sanitizeFinite(totalVolM / volWindow.length);
+    }
+  }
+
+  return {
+    last,
+    prevClose,
+    dayLow,
+    dayHigh,
+    dayRangePos,
+    volumeM,
+    return1dPct,
+    return30dPct,
+    returnYtdOr252dPct,
+    realizedVol30dPct,
+    beta,
+    avgVolume40dM,
+    observationCount: n,
+  };
+}
+
+/**
+ * Construye series agregadas de volumen diario de las últimas 40 ruedas,
+ * participación porcentual por papel (`Cómo se repartió`) y volatilidad
+ * histórica del panel equiponderado en el tiempo.
+ */
+export function computePanelVolumeAndVolSeries(params: {
+  readonly items: readonly {
+    readonly symbol: string;
+    readonly name: string;
+    readonly color: string;
+    readonly bars: readonly Bar[];
+  }[];
+  readonly asOfUtcSec?: number;
+  readonly maxVolumeDays?: number;
+  readonly rollingVolWindow?: number;
+}): {
+  readonly panelVolume40d: readonly PanelVolumeDayPoint[];
+  readonly volumeAvg40dM: number | null;
+  readonly volumeShareBreakdown: readonly PanelVolumeShareItem[];
+  readonly panelVolHistory: readonly PanelVolHistoryPoint[];
+} {
+  const maxDays = params.maxVolumeDays ?? 40;
+  const rollingW = params.rollingVolWindow ?? 20;
+
+  const dailyVolumeByDate = new Map<string, number>();
+  const symbolVolByDate = new Map<string, Map<string, number>>();
+  const dateSet = new Set<string>();
+
+  interface CleanSeries {
+    readonly symbol: string;
+    readonly name: string;
+    readonly color: string;
+    readonly simpleRetByDate: Map<string, number>;
+    readonly logRetByDate: Map<string, number>;
+  }
+  const cleanSeriesList: CleanSeries[] = [];
+
+  for (const item of params.items) {
+    const closed = normalizeEquityDailyBars(item.bars, params.asOfUtcSec);
+    const volMap = new Map<string, number>();
+    const simpleRetByDate = new Map<string, number>();
+    const logRetByDate = new Map<string, number>();
+
+    for (let i = 0; i < closed.length; i += 1) {
+      const b = closed[i];
+      if (b === undefined) {
+        continue;
+      }
+      const day = toUtcDateKey(b.time);
+      dateSet.add(day);
+      const vm = barNotionalMillions(b);
+      if (Number.isFinite(vm) && vm > 0) {
+        volMap.set(day, vm);
+        dailyVolumeByDate.set(day, (dailyVolumeByDate.get(day) ?? 0) + vm);
+      }
+      if (i > 0) {
+        const prevBar = closed[i - 1];
+        if (prevBar !== undefined && prevBar.close > 0 && b.close > 0) {
+          simpleRetByDate.set(day, b.close / prevBar.close - 1);
+          logRetByDate.set(day, Math.log(b.close / prevBar.close));
+        }
+      }
+    }
+
+    symbolVolByDate.set(item.symbol, volMap);
+    cleanSeriesList.push({
+      symbol: item.symbol,
+      name: item.name,
+      color: item.color,
+      simpleRetByDate,
+      logRetByDate,
+    });
+  }
+
+  const allDates = Array.from(dateSet).sort();
+  const volDates = allDates.filter((d) => (dailyVolumeByDate.get(d) ?? 0) > 0).slice(-maxDays);
+  const panelVolume40d: PanelVolumeDayPoint[] = volDates.map((d) => ({
+    date: d,
+    totalVolumeM: sanitizeFinite(dailyVolumeByDate.get(d)) ?? 0,
+  }));
+
+  const volumeAvg40dM =
+    panelVolume40d.length > 0
+      ? sanitizeFinite(
+          panelVolume40d.reduce((acc, p) => acc + p.totalVolumeM, 0) / panelVolume40d.length,
+        )
+      : null;
+
+  const volDateSet = new Set(volDates);
+  const perStockTotals: Array<{
+    readonly symbol: string;
+    readonly name: string;
+    readonly color: string;
+    readonly volumeM: number;
+  }> = [];
+  let grandTotalVolM = 0;
+  for (const item of params.items) {
+    const map = symbolVolByDate.get(item.symbol);
+    let sumM = 0;
+    if (map !== undefined) {
+      for (const d of volDateSet) {
+        sumM += map.get(d) ?? 0;
+      }
+    }
+    if (sumM > 0) {
+      perStockTotals.push({
+        symbol: item.symbol,
+        name: item.name,
+        color: item.color,
+        volumeM: sumM,
+      });
+      grandTotalVolM += sumM;
+    }
+  }
+  perStockTotals.sort((a, b) => b.volumeM - a.volumeM);
+
+  const volumeShareBreakdown: PanelVolumeShareItem[] = [];
+  if (grandTotalVolM > 0) {
+    const topItems = perStockTotals.slice(0, 6);
+    for (const s of topItems) {
+      volumeShareBreakdown.push({
+        symbol: s.symbol,
+        name: s.name,
+        color: s.color,
+        volumeM: sanitizeFinite(s.volumeM) ?? 0,
+        sharePct: sanitizeFinite((s.volumeM / grandTotalVolM) * 100) ?? 0,
+      });
+    }
+    const restSumM = perStockTotals.slice(6).reduce((acc, s) => acc + s.volumeM, 0);
+    if (restSumM > 0) {
+      volumeShareBreakdown.push({
+        symbol: 'RESTO',
+        name: 'Resto del panel',
+        color: '#52526B',
+        volumeM: sanitizeFinite(restSumM) ?? 0,
+        sharePct: sanitizeFinite((restSumM / grandTotalVolM) * 100) ?? 0,
+      });
+    }
+  }
+
+  const panelReturnSeries: Array<{ readonly date: string; readonly logRet: number; readonly constituents: number }> = [];
+  for (const d of allDates) {
+    let sumRet = 0;
+    let count = 0;
+    for (const s of cleanSeriesList) {
+      const r = s.simpleRetByDate.get(d);
+      if (r !== undefined && Number.isFinite(r)) {
+        sumRet += r;
+        count += 1;
+      }
+    }
+    if (count >= 3) {
+      const avgSimple = sumRet / count;
+      if (1 + avgSimple > 0) {
+        panelReturnSeries.push({
+          date: d,
+          logRet: Math.log(1 + avgSimple),
+          constituents: count,
+        });
+      }
+    }
+  }
+
+  const panelVolHistoryAll: PanelVolHistoryPoint[] = [];
+  for (let idx = rollingW - 1; idx < panelReturnSeries.length; idx += 1) {
+    const slice = panelReturnSeries.slice(idx - rollingW + 1, idx + 1);
+    const sliceDates = slice.map((p) => p.date);
+    const panelSd = computeSampleStdDev(slice.map((p) => p.logRet));
+    if (panelSd === null) {
+      continue;
+    }
+    const panelVolPct = sanitizeFinite(panelSd * Math.sqrt(252) * 100);
+    if (panelVolPct === null) {
+      continue;
+    }
+
+    let sumStockVol = 0;
+    let stockVolCount = 0;
+    for (const s of cleanSeriesList) {
+      const logs: number[] = [];
+      for (const sdDate of sliceDates) {
+        const lr = s.logRetByDate.get(sdDate);
+        if (lr !== undefined && Number.isFinite(lr)) {
+          logs.push(lr);
+        }
+      }
+      if (logs.length >= Math.max(12, Math.floor(rollingW * 0.7))) {
+        const sd = computeSampleStdDev(logs);
+        if (sd !== null) {
+          sumStockVol += sd * Math.sqrt(252) * 100;
+          stockVolCount += 1;
+        }
+      }
+    }
+
+    const curPanelPoint = panelReturnSeries[idx];
+    if (curPanelPoint !== undefined) {
+      panelVolHistoryAll.push({
+        date: curPanelPoint.date,
+        panelVolPct,
+        avgStockVolPct: stockVolCount > 0 ? sanitizeFinite(sumStockVol / stockVolCount) : null,
+        constituents: curPanelPoint.constituents,
+      });
+    }
+  }
+
+  return {
+    panelVolume40d,
+    volumeAvg40dM,
+    volumeShareBreakdown,
+    panelVolHistory: panelVolHistoryAll.slice(-180),
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIdx = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  const runWorker = async (): Promise<void> => {
+    while (nextIdx < items.length) {
+      const idx = nextIdx;
+      nextIdx += 1;
+      const item = items[idx];
+      if (item !== undefined) {
+        results[idx] = await fn(item, idx);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results;
+}
+
 /**
  * Runtime central en servidor para datos de mercado, cálculos cuantitativos y WebSocket live.
  */
@@ -1737,6 +2451,7 @@ export class MarketRuntime {
   private readonly fundingCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadFundingConditions>>>;
   private readonly unifiedCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadUnifiedSnapshot>>>;
   private readonly daily1dCache: SingleFlightRuntimeCache<readonly Bar[]>;
+  private readonly usPanelCache: SingleFlightRuntimeCache<EquityPanelAnalyticsDto>;
 
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
@@ -1814,6 +2529,10 @@ export class MarketRuntime {
     this.daily1dCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
       ttlResolver: deps.ttlResolver ?? (() => DEFAULT_DAILY_1D_CACHE_TTL_MS),
+    });
+    this.usPanelCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: deps.ttlResolver ?? (() => 120_000),
     });
 
     if (
@@ -2230,32 +2949,17 @@ export class MarketRuntime {
       ...new Set([
         canonicalSymbol,
         correlatedSymbol,
-        'SPY',
-        'QQQ',
-        'IWM',
-        'NVDA',
-        'AAPL',
-        'MSFT',
-        'AMZN',
-        'GOOGL',
-        'META',
-        'TSLA',
-        'AMD',
-        'JPM',
-        'BAC',
-        'BRK.B',
-        'MELI',
-        'KO',
-        'WMT',
-        'XOM',
-        'SLB',
-        'EWZ',
-        'XLE',
-        'XLF',
-        'GGAL',
+        ...US_EQUITY_UNIVERSE.map((u) => u.symbol),
+        'TLT',
+        'HYG',
+        'LQD',
+        'XLY',
         'I:SPX',
         'I:VIX',
         'I:SKEW',
+        'I:VVIX',
+        'I:OVX',
+        'I:DXY',
       ]),
     ];
 
@@ -3046,17 +3750,43 @@ export class MarketRuntime {
       asOfUtcSec: nowSec,
     });
 
+    const cachedIvMap = this.getCachedIv30Map(
+      canonicalSymbol,
+      volSurfaceSummary?.iv30d ?? null,
+    );
     const unifiedQuotes: SerializedUnifiedQuote[] = [
-      ...unifiedRes.stocks.map((s) => ({
-        ticker: s.ticker,
-        assetType: 'stock' as const,
-        price: sanitizeFinite(resolveUnifiedStockPrice(s)),
-        change: sanitizeFinite(s.session.change),
-        changePct: sanitizeFinite(s.session.changePercent),
-        previousClose: sanitizeFinite(s.session.previousClose),
-        marketStatus: s.marketStatus,
-        volume: sanitizeFinite(s.session.volume),
-      })),
+      ...unifiedRes.stocks.map((s) => {
+        const px = resolveUnifiedStockPrice(s);
+        const dayLow = sanitizeFinite(s.session.low > 0 ? s.session.low : null);
+        const dayHigh = sanitizeFinite(s.session.high > 0 ? s.session.high : null);
+        const dayRangePos =
+          Number.isFinite(px) && dayLow !== null && dayHigh !== null && dayHigh > dayLow
+            ? sanitizeFinite((px - dayLow) / (dayHigh - dayLow))
+            : null;
+        const refVw = Number.isFinite(s.session.vwap) && s.session.vwap > 0 ? s.session.vwap : px;
+        const volumeM =
+          Number.isFinite(s.session.volume) &&
+          s.session.volume > 0 &&
+          Number.isFinite(refVw) &&
+          refVw > 0
+            ? sanitizeFinite((s.session.volume * refVw) / 1_000_000)
+            : null;
+        return {
+          ticker: s.ticker,
+          assetType: 'stock' as const,
+          price: sanitizeFinite(px),
+          change: sanitizeFinite(s.session.change),
+          changePct: sanitizeFinite(s.session.changePercent),
+          previousClose: sanitizeFinite(s.session.previousClose),
+          dayLow,
+          dayHigh,
+          dayRangePos,
+          volumeM,
+          iv30d: sanitizeFinite(cachedIvMap.get(s.ticker.toUpperCase()) ?? null),
+          marketStatus: s.marketStatus,
+          volume: sanitizeFinite(s.session.volume),
+        };
+      }),
       ...unifiedRes.indices.map((idx) => ({
         ticker: idx.ticker,
         assetType: 'index' as const,
@@ -3064,6 +3794,11 @@ export class MarketRuntime {
         change: sanitizeFinite(idx.session.change),
         changePct: sanitizeFinite(idx.session.changePercent),
         previousClose: sanitizeFinite(idx.session.previousClose),
+        dayLow: sanitizeFinite(idx.session.low > 0 ? idx.session.low : null),
+        dayHigh: sanitizeFinite(idx.session.high > 0 ? idx.session.high : null),
+        dayRangePos: null,
+        volumeM: null,
+        iv30d: null,
         marketStatus: idx.marketStatus,
         volume: null,
       })),
@@ -3804,6 +4539,7 @@ export class MarketRuntime {
         tailRiskAlert: macroVol?.tailRiskAlert ?? null,
       },
       terminalEngines,
+      usEquityPanel: this.usPanelCache.peek('us:equity:panel')?.value ?? null,
       dataQuality: {
         ownSolvedIvContracts,
         providerFallbackIvContracts,
@@ -4167,6 +4903,272 @@ export class MarketRuntime {
     forceRefresh = false,
   ): Promise<ReadonlyMap<string, CachedDailyBarsResult>> {
     return fetchCachedUsDailyBars1dMap(this, symbols, lookbackBars, forceRefresh);
+  }
+
+  /**
+   * Devuelve un mapa `ticker -> iv30d` (decimal, ej. `0.24` = 24%) leído únicamente
+   * desde snapshots de cadenas de opciones ya cacheados en memoria, sin provocar
+   * peticiones de red adicionales.
+   */
+  public getCachedIv30Map(
+    extraSymbol?: string,
+    extraIv30d?: number | null,
+  ): ReadonlyMap<string, number> {
+    const out = new Map<string, number>();
+    const candidates = new Set<string>([
+      ...US_EQUITY_UNIVERSE.map((u) => u.symbol),
+      'BABA',
+      'GLOB',
+    ]);
+    if (extraSymbol !== undefined && extraIv30d !== undefined && extraIv30d !== null && Number.isFinite(extraIv30d) && extraIv30d > 0) {
+      out.set(extraSymbol.trim().toUpperCase(), extraIv30d);
+    }
+    for (const sym of candidates) {
+      if (out.has(sym)) {
+        continue;
+      }
+      const cached = this.snapshotCache.peek(`snapshot:${sym}`);
+      const iv = cached?.value.volSurfaceSummary?.iv30d;
+      if (iv !== undefined && iv !== null && Number.isFinite(iv) && iv > 0) {
+        out.set(sym, iv);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Calcula y cachea la analítica completa de las ~73 acciones líquidas de EE.UU.
+   * usando un batch `/v3/snapshot` + barras diarias `1D` cacheadas (hasta 265 ruedas).
+   */
+  public async getUsEquityPanelAnalytics(
+    forceRefresh = false,
+  ): Promise<EquityPanelAnalyticsDto> {
+    const cached = await this.usPanelCache.getOrCompute(
+      'us:equity:panel',
+      async () => {
+        const nowSec = Math.floor(this.nowMsFn() / 1_000);
+        const errors: string[] = [];
+        const universeSymbols = US_EQUITY_UNIVERSE.map((u) => u.symbol);
+
+        if (!this.apiKey) {
+          return {
+            asOfUtcSec: nowSec,
+            benchmarkSymbol: 'SPY',
+            panelLabel: 'Panel EE.UU. (Massive 1D)',
+            currency: 'USD' as const,
+            rows: [],
+            panelVolume40d: [],
+            volumeAvg40dM: null,
+            volumeShareBreakdown: [],
+            panelVolHistory: [],
+            topGainers: [],
+            topLosers: [],
+            errors: ['Falta MASSIVE_API_KEY en el servidor'],
+          };
+        }
+
+        const baseTransport = {
+          apiKey: this.apiKey,
+          fetchFn: this.fetchFn,
+          ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+        };
+
+        const unifiedTickers = [
+          ...new Set([
+            ...universeSymbols,
+            'SPY',
+            'QQQ',
+            'TLT',
+            'HYG',
+            'LQD',
+            'XLY',
+            'I:SPX',
+            'I:VIX',
+            'I:SKEW',
+            'I:VVIX',
+            'I:OVX',
+            'I:DXY',
+          ]),
+        ];
+
+        const [unifiedRes, barsResults] = await Promise.all([
+          this.unifiedCache
+            .getOrCompute(
+              `unified:${[...unifiedTickers].sort().join(',')}`,
+              () =>
+                this.loadUnifiedSnapshotFn({
+                  ...baseTransport,
+                  tickers: unifiedTickers,
+                  limit: 250,
+                  maxPages: 1,
+                }),
+              { forceRefresh },
+            )
+            .then((r) => r.value)
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : 'Massive unified snapshot failed';
+              errors.push(redactSecrets(msg, this.secrets));
+              return null;
+            }),
+          mapWithConcurrency(universeSymbols, 8, (sym) =>
+            this.getCachedDailyBars1d(sym, 265, forceRefresh),
+          ),
+        ]);
+
+        const barsBySymbol = new Map<string, readonly Bar[]>();
+        for (const res of barsResults) {
+          barsBySymbol.set(res.symbol, res.bars);
+          if (res.error !== null) {
+            errors.push(`Massive 1D ${res.symbol}: ${res.error}`);
+          }
+        }
+
+        const unifiedBySymbol = new Map<string, UnifiedStockSnapshot>();
+        if (unifiedRes !== null) {
+          for (const s of unifiedRes.stocks) {
+            unifiedBySymbol.set(s.ticker.toUpperCase(), s);
+          }
+        }
+
+        const benchmarkBars = barsBySymbol.get('SPY') ?? [];
+        const cachedIvMap = this.getCachedIv30Map();
+        const rows: EquityPanelRowDto[] = [];
+        const seriesInputs: Array<{
+          readonly symbol: string;
+          readonly name: string;
+          readonly color: string;
+          readonly bars: readonly Bar[];
+        }> = [];
+
+        for (const meta of US_EQUITY_UNIVERSE) {
+          const bars = barsBySymbol.get(meta.symbol) ?? [];
+          const snapQuote = unifiedBySymbol.get(meta.symbol);
+          const snapPx =
+            snapQuote !== undefined
+              ? resolveUnifiedStockPrice(snapQuote)
+              : Number.NaN;
+          const liveLast = Number.isFinite(snapPx) && snapPx > 0 ? snapPx : null;
+          const livePrevClose =
+            snapQuote !== undefined &&
+            Number.isFinite(snapQuote.session.previousClose) &&
+            snapQuote.session.previousClose > 0
+              ? snapQuote.session.previousClose
+              : null;
+          const liveLow =
+            snapQuote !== undefined &&
+            Number.isFinite(snapQuote.session.low) &&
+            snapQuote.session.low > 0
+              ? snapQuote.session.low
+              : null;
+          const liveHigh =
+            snapQuote !== undefined &&
+            Number.isFinite(snapQuote.session.high) &&
+            snapQuote.session.high > 0
+              ? snapQuote.session.high
+              : null;
+          const liveChangePct =
+            snapQuote !== undefined && Number.isFinite(snapQuote.session.changePercent)
+              ? snapQuote.session.changePercent
+              : null;
+          const refVw =
+            snapQuote !== undefined &&
+            Number.isFinite(snapQuote.session.vwap) &&
+            snapQuote.session.vwap > 0
+              ? snapQuote.session.vwap
+              : liveLast;
+          const liveVolumeM =
+            snapQuote !== undefined &&
+            Number.isFinite(snapQuote.session.volume) &&
+            snapQuote.session.volume > 0 &&
+            refVw !== null &&
+            refVw > 0
+              ? (snapQuote.session.volume * refVw) / 1_000_000
+              : null;
+
+          const metrics = computeEquityRiskAndReturnMetrics({
+            bars,
+            benchmarkBars,
+            liveLast,
+            livePrevClose,
+            liveLow,
+            liveHigh,
+            liveChangePct,
+            liveVolumeM,
+            asOfUtcSec: nowSec,
+          });
+
+          const rawIv = cachedIvMap.get(meta.symbol) ?? null;
+          const iv30d =
+            rawIv !== null && Number.isFinite(rawIv) && rawIv > 0
+              ? sanitizeFinite(rawIv * 100)
+              : null;
+
+          rows.push({
+            symbol: meta.symbol,
+            name: meta.name,
+            sector: meta.sector,
+            panel: meta.panel,
+            color: meta.color,
+            last: metrics.last,
+            prevClose: metrics.prevClose,
+            dayLow: metrics.dayLow,
+            dayHigh: metrics.dayHigh,
+            dayRangePos: metrics.dayRangePos,
+            volumeM: metrics.volumeM,
+            return1dPct: metrics.return1dPct,
+            return30dPct: metrics.return30dPct,
+            returnYtdOr252dPct: metrics.returnYtdOr252dPct,
+            realizedVol30dPct: metrics.realizedVol30dPct,
+            beta: metrics.beta,
+            avgVolume40dM: metrics.avgVolume40dM,
+            iv30d,
+            hasUsOptions: meta.hasUsOptions,
+          });
+
+          if (bars.length > 0) {
+            seriesInputs.push({
+              symbol: meta.symbol,
+              name: meta.name,
+              color: meta.color,
+              bars,
+            });
+          }
+        }
+
+        const panelSeries = computePanelVolumeAndVolSeries({
+          items: seriesInputs,
+          asOfUtcSec: nowSec,
+          maxVolumeDays: 40,
+          rollingVolWindow: 20,
+        });
+
+        const topGainers = [...rows]
+          .filter((r) => r.return1dPct !== null && r.return1dPct > 0)
+          .sort((a, b) => (b.return1dPct ?? 0) - (a.return1dPct ?? 0))
+          .slice(0, 8);
+        const topLosers = [...rows]
+          .filter((r) => r.return1dPct !== null && r.return1dPct < 0)
+          .sort((a, b) => (a.return1dPct ?? 0) - (b.return1dPct ?? 0))
+          .slice(0, 8);
+
+        return {
+          asOfUtcSec: nowSec,
+          benchmarkSymbol: 'SPY',
+          panelLabel: 'EE.UU. · NYSE / NASDAQ (Massive 1D)',
+          currency: 'USD' as const,
+          rows,
+          panelVolume40d: panelSeries.panelVolume40d,
+          volumeAvg40dM: panelSeries.volumeAvg40dM,
+          volumeShareBreakdown: panelSeries.volumeShareBreakdown,
+          panelVolHistory: panelSeries.panelVolHistory,
+          topGainers,
+          topLosers,
+          errors,
+        };
+      },
+      { forceRefresh },
+    );
+    return cached.value;
   }
 }
 

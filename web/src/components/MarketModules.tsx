@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   TrendingUp,
   ArrowUpRight,
@@ -19,10 +19,12 @@ import {
   GLOBAL_INDICATORS,
   AR_STOCKS,
   AR_GENERAL_PANEL_STOCKS,
+  AR_PANEL_ANALYTICS,
   BONDS_DATA,
   GGAL_OPTION_EXPIRIES,
   MACRO_CARDS,
   US_MARKET_DATA,
+  US_PANEL_ANALYTICS,
   ROFEX_FUTURES,
   CAUCIONES_DATA,
   RATIO_PAIRS,
@@ -33,6 +35,7 @@ import {
   fmtPct,
   fmtMoneyCompact,
 } from '../data/marketData';
+import type { EquityPanelAnalyticsDto, EquityPanelRowDto } from '../data/liveTypes';
 import {
   refreshMacro,
   requestMonitoringPanel,
@@ -52,6 +55,709 @@ import {
 } from './DesignSystem';
 
 export type MonitorSubPanel = 'acciones' | 'bonos' | 'cedears' | 'cauciones';
+
+interface NormalizedPanelRow {
+  readonly symbol: string;
+  readonly name: string;
+  readonly sector: string;
+  readonly panel: 'Líder' | 'General';
+  readonly color: string;
+  readonly last: number;
+  readonly prevClose: number;
+  readonly dayLow: number;
+  readonly dayHigh: number;
+  readonly dayRangePos: number;
+  readonly volumeM: number;
+  readonly return1dPct: number;
+  readonly return30dPct: number;
+  readonly returnYtdOr252dPct: number;
+  readonly realizedVol30dPct: number;
+  readonly beta: number;
+  readonly avgVolume40dM: number;
+  readonly subtitleRight?: string;
+}
+
+const formatRangeBar = (row: NormalizedPanelRow): React.ReactNode => {
+  const hasRange =
+    Number.isFinite(row.dayLow) &&
+    Number.isFinite(row.dayHigh) &&
+    row.dayHigh > row.dayLow &&
+    Number.isFinite(row.last);
+  const rawPos = Number.isFinite(row.dayRangePos)
+    ? row.dayRangePos
+    : hasRange
+      ? (row.last - row.dayLow) / (row.dayHigh - row.dayLow)
+      : Number.NaN;
+  if (!Number.isFinite(rawPos)) {
+    return <span className="text-[var(--text-tertiary)] font-mono-num">—</span>;
+  }
+  const pct = Math.max(0, Math.min(100, rawPos * 100));
+  const up = Number.isFinite(row.return1dPct) ? row.return1dPct >= 0 : true;
+  const barColor = up ? '#2EDC7E' : '#FF5468';
+  return (
+    <div
+      className="inline-flex items-center gap-2 w-[88px] justify-end"
+      title={hasRange ? `Mín ${fmtNum(row.dayLow, 2)} · Máx ${fmtNum(row.dayHigh, 2)}` : undefined}
+    >
+      <div className="relative w-full h-1.5 rounded-full bg-[#1C1C28] overflow-visible">
+        <div
+          className="absolute top-0 bottom-0 left-0 rounded-full opacity-65"
+          style={{ width: `${Math.max(4, pct)}%`, backgroundColor: barColor }}
+        />
+        <span
+          className="absolute -top-0.5 w-2 h-2.5 rounded-full border border-[#08080D]"
+          style={{ left: `calc(${pct}% - 4px)`, backgroundColor: barColor }}
+        />
+      </div>
+    </div>
+  );
+};
+
+const EquitySixPanelsGrid: React.FC<{
+  readonly mode: 'AR' | 'US';
+  readonly rows: readonly NormalizedPanelRow[];
+  readonly analytics: EquityPanelAnalyticsDto | null;
+  readonly currencyPrefix: string;
+  readonly benchmarkLabel: string;
+  readonly sectorOptions?: readonly string[];
+  readonly onSelectRow: (symbol: string) => void;
+  readonly denseRowClass?: string;
+}> = ({
+  mode,
+  rows,
+  analytics,
+  currencyPrefix,
+  benchmarkLabel,
+  sectorOptions,
+  onSelectRow,
+  denseRowClass = 'h-8 text-[12px]',
+}) => {
+  const [selectedSector, setSelectedSector] = useState<string>('Todos');
+  const [restSearch, setRestSearch] = useState<string>('');
+  const [rankHorizon, setRankHorizon] = useState<'Día' | 'Mes' | 'Año'>('Día');
+
+  const leaderRows = useMemo(() => {
+    if (mode === 'US' && selectedSector !== 'Todos') {
+      return rows.filter((r) => r.sector === selectedSector);
+    }
+    return rows.filter((r) => r.panel === 'Líder');
+  }, [mode, rows, selectedSector]);
+
+  const leaderSymbols = useMemo(() => new Set(leaderRows.map((r) => r.symbol)), [leaderRows]);
+
+  const restRows = useMemo(() => {
+    const q = restSearch.trim().toLowerCase();
+    if (q) {
+      return rows.filter(
+        (r) =>
+          r.symbol.toLowerCase().includes(q) ||
+          r.name.toLowerCase().includes(q) ||
+          r.sector.toLowerCase().includes(q),
+      );
+    }
+    return rows.filter((r) => !leaderSymbols.has(r.symbol));
+  }, [rows, leaderSymbols, restSearch]);
+
+  const countAdvDec = (list: readonly NormalizedPanelRow[]) => {
+    let adv = 0;
+    let dec = 0;
+    for (const r of list) {
+      if (Number.isFinite(r.return1dPct)) {
+        if (r.return1dPct > 0) adv += 1;
+        else if (r.return1dPct < 0) dec += 1;
+      }
+    }
+    return { adv, dec };
+  };
+
+  const leaderStats = countAdvDec(leaderRows);
+  const restStats = countAdvDec(restRows);
+
+  const rankedRows = useMemo(() => {
+    const pick = (r: NormalizedPanelRow) =>
+      rankHorizon === 'Día'
+        ? r.return1dPct
+        : rankHorizon === 'Mes'
+          ? r.return30dPct
+          : r.returnYtdOr252dPct;
+    return rows
+      .map((r) => ({ row: r, val: pick(r) }))
+      .filter((x) => Number.isFinite(x.val))
+      .sort((a, b) => b.val - a.val);
+  }, [rows, rankHorizon]);
+
+  const maxAbsRank = useMemo(() => {
+    if (rankedRows.length === 0) return 1;
+    return Math.max(0.5, ...rankedRows.map((x) => Math.abs(x.val)));
+  }, [rankedRows]);
+
+  const riskRows = useMemo(
+    () =>
+      [...rows].sort((a, b) => {
+        const va = Number.isFinite(a.avgVolume40dM) ? a.avgVolume40dM : -1;
+        const vb = Number.isFinite(b.avgVolume40dM) ? b.avgVolume40dM : -1;
+        return vb - va;
+      }),
+    [rows],
+  );
+
+  const topGainers = useMemo(() => {
+    if (analytics?.topGainers && analytics.topGainers.length > 0) {
+      return analytics.topGainers.slice(0, 6);
+    }
+    return [...rows]
+      .filter((r) => Number.isFinite(r.return1dPct) && r.return1dPct > 0)
+      .sort((a, b) => b.return1dPct - a.return1dPct)
+      .slice(0, 6)
+      .map((r) => ({
+        symbol: r.symbol,
+        name: r.name,
+        color: r.color,
+        last: Number.isFinite(r.last) ? r.last : null,
+        volumeM: Number.isFinite(r.volumeM) ? r.volumeM : null,
+        return1dPct: r.return1dPct,
+      }));
+  }, [analytics, rows]);
+
+  const topLosers = useMemo(() => {
+    if (analytics?.topLosers && analytics.topLosers.length > 0) {
+      return analytics.topLosers.slice(0, 6);
+    }
+    return [...rows]
+      .filter((r) => Number.isFinite(r.return1dPct) && r.return1dPct < 0)
+      .sort((a, b) => a.return1dPct - b.return1dPct)
+      .slice(0, 6)
+      .map((r) => ({
+        symbol: r.symbol,
+        name: r.name,
+        color: r.color,
+        last: Number.isFinite(r.last) ? r.last : null,
+        volumeM: Number.isFinite(r.volumeM) ? r.volumeM : null,
+        return1dPct: r.return1dPct,
+      }));
+  }, [analytics, rows]);
+
+  const volDays = analytics?.panelVolume40d ?? [];
+  const maxDayVol = Math.max(1, ...volDays.map((d) => d.totalVolumeM));
+  const volShares = analytics?.volumeShareBreakdown ?? [];
+  const volHist = analytics?.panelVolHistory ?? [];
+
+  const formatVolMillions = (m: number | null | undefined) => {
+    if (m === null || m === undefined || !Number.isFinite(m)) return '—';
+    if (Math.abs(m) >= 1_000) return `${currencyPrefix}${fmtNum(m / 1_000, 2)}B`;
+    return `${currencyPrefix}${fmtNum(m, 1)}M`;
+  };
+
+  const renderPanelTable = (list: readonly NormalizedPanelRow[], maxHeightClass?: string) => (
+    <div className={`overflow-x-auto ${maxHeightClass ?? ''}`}>
+      <table className="w-full border-collapse text-right">
+        <thead className="sticky top-0 bg-[#0D0D14] z-10">
+          <tr className="border-b border-[#1E1E2B] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
+            <th className="py-2 px-3 text-left">papel</th>
+            <th className="py-2 px-2.5">precio</th>
+            <th className="py-2 px-2.5">var</th>
+            <th className="py-2 px-2.5">operado</th>
+            <th className="py-2 px-3">rango del día</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[#1A1A26] font-mono-num">
+          {list.length === 0 ? (
+            <tr>
+              <td colSpan={5} className="py-6 text-center text-[12px] text-[#787B86] font-sans">
+                Sin especies coincidentes en esta selección.
+              </td>
+            </tr>
+          ) : (
+            list.map((r) => (
+              <tr
+                key={r.symbol}
+                onClick={() => onSelectRow(r.symbol)}
+                className={`${denseRowClass} hover:bg-[#171724] transition-colors cursor-pointer`}
+              >
+                <td className="px-3 text-left">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: r.color }}
+                    />
+                    <span className="font-bold text-[#F3F4F6] tracking-tight">{r.symbol}</span>
+                    <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">
+                      {r.name}
+                    </span>
+                  </div>
+                </td>
+                <td className="px-2.5 font-semibold text-[#F3F4F6]">
+                  {Number.isFinite(r.last) ? `${currencyPrefix}${fmtNum(r.last, r.last >= 1000 ? 0 : 2)}` : '—'}
+                </td>
+                <td className="px-2.5">
+                  <DeltaPill value={r.return1dPct} size="sm" />
+                </td>
+                <td className="px-2.5 text-[#A5A6BA]">{formatVolMillions(r.volumeM)}</td>
+                <td className="px-3 text-right">{formatRangeBar(r)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {sectorOptions && sectorOptions.length > 0 && (
+        <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[#8E90A6]">
+            Filtro Sectorial EE.UU. ({rows.length} acciones)
+          </span>
+          <div className="flex items-center gap-1 flex-wrap">
+            {sectorOptions.map((sec) => (
+              <button
+                key={sec}
+                type="button"
+                onClick={() => setSelectedSector(sec)}
+                className={`px-2.5 py-1 rounded-[6px] text-[11px] font-semibold cursor-pointer transition-colors ${
+                  selectedSector === sec
+                    ? 'bg-[#8B7CF6] text-white'
+                    : 'bg-[#0B0B11] text-[#8E90A6] hover:text-[#F3F4F6] border border-[#1E1E2B]'
+                }`}
+              >
+                {sec}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* BLOQUE 1 (2 Columnas): Panel líder / Sectorial + Resto del panel */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <div className="xl:col-span-6 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b border-[#1E1E2B] flex items-center justify-between gap-2 bg-[#0D0D14]">
+            <div className="flex items-center gap-2">
+              <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
+                {mode === 'US'
+                  ? selectedSector === 'Todos'
+                    ? 'Panel líder / Sectorial'
+                    : `Sector · ${selectedSector}`
+                  : 'Panel líder'}
+              </h3>
+              <span className="text-[11px] font-mono-num text-[#787B86]">
+                {leaderRows.length}
+              </span>
+            </div>
+            <div className="text-[11px] font-mono-num">
+              <span className="text-[#2EDC7E] font-semibold">{leaderStats.adv} suben</span>
+              <span className="text-[#6D6D84]"> · </span>
+              <span className="text-[#FF5468] font-semibold">{leaderStats.dec} bajan</span>
+            </div>
+          </div>
+          {renderPanelTable(leaderRows, 'max-h-[520px] overflow-y-auto')}
+        </div>
+
+        <div className="xl:col-span-6 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden flex flex-col">
+          <div className="px-4 py-2.5 border-b border-[#1E1E2B] flex flex-wrap items-center justify-between gap-2 bg-[#0D0D14]">
+            <div className="flex items-center gap-2">
+              <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">Resto del panel</h3>
+              <span className="text-[11px] font-mono-num text-[#787B86]">
+                {restRows.length}
+              </span>
+              <span className="text-[11px] font-mono-num ml-1">
+                <span className="text-[#2EDC7E]">{restStats.adv}↑</span>{' '}
+                <span className="text-[#FF5468]">{restStats.dec}↓</span>
+              </span>
+            </div>
+            <input
+              type="text"
+              value={restSearch}
+              onChange={(e) => setRestSearch(e.target.value)}
+              placeholder="Buscar una acción..."
+              className="px-2.5 py-1 rounded-[7px] bg-[#08080D] border border-[#242436] text-[11.5px] text-[#F3F4F6] placeholder:text-[#6D6D84] outline-none focus:border-[#8B7CF6] w-44"
+            />
+          </div>
+          {renderPanelTable(restRows, 'max-h-[520px] overflow-y-auto')}
+        </div>
+      </div>
+
+      {/* BLOQUE 2 (2 Columnas): Ranking del panel (Día|Mes|Año) + Volatilidad y beta */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <div className="xl:col-span-5 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">Ranking del panel</h3>
+              <p className="text-[11px] text-[#6D6D84]">Retorno ordenado sobre ruedas reales</p>
+            </div>
+            <div className="inline-flex items-center rounded-[7px] bg-[#08080D] border border-[#1E1E2B] p-0.5">
+              {(['Día', 'Mes', 'Año'] as const).map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setRankHorizon(h)}
+                  className={`px-2.5 py-1 rounded-[5px] text-[11px] font-semibold cursor-pointer transition-colors ${
+                    rankHorizon === h
+                      ? 'bg-[#8B7CF6] text-white'
+                      : 'text-[#8E90A6] hover:text-[#F3F4F6]'
+                  }`}
+                >
+                  {h}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-1.5 max-h-[380px] overflow-y-auto pr-1">
+            {rankedRows.length === 0 ? (
+              <div className="py-10 text-center text-[12px] text-[#6D6D84]">
+                Sin datos cerrados suficientes para {rankHorizon} — sin fallback.
+              </div>
+            ) : (
+              rankedRows.map(({ row, val }) => {
+                const pos = val >= 0;
+                const widthPct = Math.max(4, Math.min(100, (Math.abs(val) / maxAbsRank) * 100));
+                return (
+                  <button
+                    key={row.symbol}
+                    type="button"
+                    onClick={() => onSelectRow(row.symbol)}
+                    className="w-full flex items-center gap-2.5 px-2 py-1 rounded-[6px] hover:bg-[#171724] text-left cursor-pointer transition-colors"
+                  >
+                    <span className="w-14 font-mono-num text-[11.5px] font-bold text-[#F3F4F6] shrink-0">
+                      {row.symbol}
+                    </span>
+                    <div className="flex-1 h-2 rounded-full bg-[#181824] overflow-hidden">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${widthPct}%`,
+                          backgroundColor: pos ? '#2EDC7E' : '#FF5468',
+                        }}
+                      />
+                    </div>
+                    <span
+                      className={`w-16 text-right font-mono-num text-[11.5px] font-semibold shrink-0 ${
+                        pos ? 'text-[#2EDC7E]' : 'text-[#FF5468]'
+                      }`}
+                    >
+                      {fmtPct(val, 2)}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="xl:col-span-7 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b border-[#1E1E2B] flex items-center justify-between gap-2 bg-[#0D0D14]">
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">Volatilidad y beta</h3>
+              <HelpTooltip
+                title={`Riesgo histórico vs ${benchmarkLabel}`}
+                text={`Volatilidad realizada anualizada de 30 ruedas (desvío estándar muestral de log-retornos × √252) y Beta de 60 ruedas frente a ${benchmarkLabel}. Sin fallbacks ante ausencia histórica.`}
+              />
+            </div>
+            <span className="text-[11px] font-mono-num text-[#6D6D84]">Benchmark: {benchmarkLabel}</span>
+          </div>
+          <div className="overflow-x-auto max-h-[395px] overflow-y-auto">
+            <table className="w-full border-collapse text-right">
+              <thead className="sticky top-0 bg-[#0D0D14] z-10">
+                <tr className="border-b border-[#1E1E2B] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
+                  <th className="py-2 px-3 text-left">papel</th>
+                  <th className="py-2 px-2.5">volatilidad</th>
+                  <th className="py-2 px-2.5">beta</th>
+                  <th className="py-2 px-2.5">mes</th>
+                  <th className="py-2 px-2.5">año</th>
+                  <th className="py-2 px-3">promedio 40</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#1A1A26] font-mono-num text-[12px]">
+                {riskRows.map((r) => (
+                  <tr
+                    key={r.symbol}
+                    onClick={() => onSelectRow(r.symbol)}
+                    className="h-8 hover:bg-[#171724] cursor-pointer transition-colors"
+                  >
+                    <td className="px-3 text-left">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
+                        <span className="font-bold text-[#F3F4F6]">{r.symbol}</span>
+                      </div>
+                    </td>
+                    <td
+                      className={`px-2.5 ${
+                        Number.isFinite(r.realizedVol30dPct) && r.realizedVol30dPct >= 45
+                          ? 'text-[#F5B544] font-semibold'
+                          : 'text-[#D1D4DC]'
+                      }`}
+                    >
+                      {Number.isFinite(r.realizedVol30dPct) ? `${fmtNum(r.realizedVol30dPct, 1)}%` : '—'}
+                    </td>
+                    <td
+                      className={`px-2.5 font-semibold ${
+                        !Number.isFinite(r.beta)
+                          ? 'text-[#6D6D84]'
+                          : r.beta >= 1.25
+                            ? 'text-[#8B7CF6]'
+                            : r.beta < 0.7
+                              ? 'text-[#38BDF8]'
+                              : 'text-[#D1D4DC]'
+                      }`}
+                    >
+                      {fmtNum(r.beta, 2)}
+                    </td>
+                    <td className="px-2.5">
+                      <DeltaPill value={r.return30dPct} size="sm" />
+                    </td>
+                    <td className="px-2.5">
+                      <DeltaPill value={r.returnYtdOr252dPct} size="sm" />
+                    </td>
+                    <td className="px-3 text-[#A5A6BA]">{formatVolMillions(r.avgVolume40dM)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* BLOQUE 3: Volumen 40 ruedas + Cómo se repartió + Volatilidad en el tiempo + Lo que más se movió hoy */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <div className="xl:col-span-5 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 flex flex-col justify-between gap-4">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
+                Volumen de las últimas 40 ruedas
+              </h3>
+              <p className="text-[11px] text-[#6D6D84]">Monto diario agregado del panel</p>
+            </div>
+            <div className="text-right">
+              <div className="text-[10px] uppercase tracking-[0.06em] text-[#787B86]">Promedio por rueda</div>
+              <div className="font-mono-num text-[14px] font-bold text-[#38BDF8]">
+                {formatVolMillions(analytics?.volumeAvg40dM)}
+              </div>
+            </div>
+          </div>
+
+          {volDays.length === 0 ? (
+            <div className="h-36 flex items-center justify-center text-[12px] text-[#6D6D84]">
+              Sin serie histórica de volumen cargada todavía.
+            </div>
+          ) : (
+            <div className="h-36 flex items-end gap-[3px] pt-3 border-b border-[#1E1E2B] pb-1.5">
+              {volDays.map((pt) => {
+                const hPct = Math.max(4, (pt.totalVolumeM / maxDayVol) * 100);
+                return (
+                  <div
+                    key={pt.date}
+                    className="flex-1 h-full flex items-end group"
+                    title={`${pt.date}: ${formatVolMillions(pt.totalVolumeM)}`}
+                  >
+                    <div
+                      className="w-full rounded-t-[2px] bg-[#38BDF8]/70 group-hover:bg-[#8B7CF6] transition-colors"
+                      style={{ height: `${hPct}%` }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {volDays.length > 0 && (
+            <div className="flex justify-between text-[10px] font-mono-num text-[#6D6D84] -mt-2">
+              <span>{volDays[0]?.date}</span>
+              <span>{volDays[volDays.length - 1]?.date}</span>
+            </div>
+          )}
+
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center justify-between text-[11.5px]">
+              <span className="font-semibold text-[#D1D4DC]">Cómo se repartió</span>
+              <span className="text-[10.5px] font-mono-num text-[#6D6D84]">Participación 40R</span>
+            </div>
+            {volShares.length === 0 ? (
+              <div className="text-[11.5px] text-[#6D6D84]">—</div>
+            ) : (
+              <>
+                <div className="h-2.5 w-full rounded-full overflow-hidden flex bg-[#181824]">
+                  {volShares.map((s) => (
+                    <div
+                      key={s.symbol}
+                      title={`${s.symbol}: ${fmtNum(s.sharePct, 1)}%`}
+                      style={{
+                        width: `${Math.max(1.5, s.sharePct)}%`,
+                        backgroundColor: s.color,
+                      }}
+                      className="h-full border-r border-[#08080D]/60 last:border-r-0"
+                    />
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono-num">
+                  {volShares.map((s) => (
+                    <span key={s.symbol} className="inline-flex items-center gap-1.5 text-[#A5A6BA]">
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
+                      <span className="font-bold text-[#F3F4F6]">{s.symbol}</span>
+                      <span>{fmtNum(s.sharePct, 1)}%</span>
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="xl:col-span-7 flex flex-col gap-4">
+          <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
+                  Volatilidad del panel en el tiempo
+                </h3>
+                <p className="text-[11px] text-[#6D6D84]">
+                  Volatilidad realizada rolling 20 ruedas (anualizada %)
+                </p>
+              </div>
+              {volHist.length > 0 && (
+                <div className="flex items-center gap-3 text-[11px] font-mono-num">
+                  <span className="text-[#8B7CF6] font-bold">
+                    Panel: {fmtNum(volHist[volHist.length - 1]?.panelVolPct, 1)}%
+                  </span>
+                  {volHist[volHist.length - 1]?.avgStockVolPct !== null && (
+                    <span className="text-[#38BDF8]">
+                      Prom. papel: {fmtNum(volHist[volHist.length - 1]?.avgStockVolPct, 1)}%
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {volHist.length < 2 ? (
+              <div className="h-36 flex items-center justify-center text-[12px] text-[#6D6D84]">
+                Sin suficientes ruedas históricas para calcular volatilidad rolling del panel.
+              </div>
+            ) : (
+              (() => {
+                const allV = volHist.flatMap((p) =>
+                  p.avgStockVolPct !== null ? [p.panelVolPct, p.avgStockVolPct] : [p.panelVolPct],
+                );
+                const minV = Math.max(0, Math.floor(Math.min(...allV) - 2));
+                const maxV = Math.ceil(Math.max(...allV) + 2);
+                const spanV = Math.max(1, maxV - minV);
+                const mapX = (i: number) => 40 + (i / Math.max(1, volHist.length - 1)) * 500;
+                const mapY = (v: number) => 125 - ((v - minV) / spanV) * 105;
+                const panelPts = volHist.map((p, i) => `${mapX(i).toFixed(1)},${mapY(p.panelVolPct).toFixed(1)}`);
+                const stockPts = volHist
+                  .map((p, i) =>
+                    p.avgStockVolPct !== null ? `${mapX(i).toFixed(1)},${mapY(p.avgStockVolPct).toFixed(1)}` : null,
+                  )
+                  .filter((x): x is string => x !== null);
+                const ticks = [0, 0.5, 1].map((f) => minV + f * spanV);
+                return (
+                  <div className="h-36 w-full">
+                    <svg viewBox="0 0 555 145" className="w-full h-full overflow-visible">
+                      {ticks.map((t) => {
+                        const y = mapY(t);
+                        return (
+                          <g key={t}>
+                            <line x1="40" y1={y} x2="540" y2={y} stroke="#1E1E2B" strokeDasharray="3 3" />
+                            <text x="34" y={y + 3} textAnchor="end" fill="#6D6D84" fontSize="9.5" className="font-mono-num">
+                              {fmtNum(t, 0)}%
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {stockPts.length >= 2 && (
+                        <polyline
+                          points={stockPts.join(' ')}
+                          fill="none"
+                          stroke="#38BDF8"
+                          strokeWidth="1.4"
+                          strokeDasharray="4 3"
+                          opacity="0.75"
+                        />
+                      )}
+                      <polyline
+                        points={`40,125 ${panelPts.join(' ')} 540,125`}
+                        fill="rgba(139,124,246,0.12)"
+                        stroke="none"
+                      />
+                      <polyline
+                        points={panelPts.join(' ')}
+                        fill="none"
+                        stroke="#8B7CF6"
+                        strokeWidth="2.1"
+                      />
+                      <text x="40" y="140" fill="#6D6D84" fontSize="9.5" className="font-mono-num">
+                        {volHist[0]?.date}
+                      </text>
+                      <text x="540" y="140" textAnchor="end" fill="#6D6D84" fontSize="9.5" className="font-mono-num">
+                        {volHist[volHist.length - 1]?.date}
+                      </text>
+                    </svg>
+                  </div>
+                );
+              })()
+            )}
+          </div>
+
+          <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-3">
+            <h3 className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
+              Lo que más se movió hoy
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[#2EDC7E] border-b border-[#1E1E2B] pb-1">
+                  Suben
+                </div>
+                {topGainers.length === 0 ? (
+                  <div className="text-[11.5px] text-[#6D6D84] py-2">Sin alzas en esta rueda.</div>
+                ) : (
+                  topGainers.map((g) => (
+                    <button
+                      key={g.symbol}
+                      type="button"
+                      onClick={() => onSelectRow(g.symbol)}
+                      className="w-full flex items-center justify-between px-2 py-1 rounded-[6px] hover:bg-[#171724] cursor-pointer text-[12px] font-mono-num"
+                    >
+                      <span className="font-bold text-[#F3F4F6]">{g.symbol}</span>
+                      <span className="text-[#8E90A6] text-[11px]">
+                        {g.last !== null ? `${currencyPrefix}${fmtNum(g.last, 2)}` : '—'}
+                      </span>
+                      <span className="text-[#6D6D84] text-[11px]">{formatVolMillions(g.volumeM)}</span>
+                      <span className="font-bold text-[#2EDC7E]">{fmtPct(g.return1dPct, 2)}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[#FF5468] border-b border-[#1E1E2B] pb-1">
+                  Bajan
+                </div>
+                {topLosers.length === 0 ? (
+                  <div className="text-[11.5px] text-[#6D6D84] py-2">Sin bajas en esta rueda.</div>
+                ) : (
+                  topLosers.map((l) => (
+                    <button
+                      key={l.symbol}
+                      type="button"
+                      onClick={() => onSelectRow(l.symbol)}
+                      className="w-full flex items-center justify-between px-2 py-1 rounded-[6px] hover:bg-[#171724] cursor-pointer text-[12px] font-mono-num"
+                    >
+                      <span className="font-bold text-[#F3F4F6]">{l.symbol}</span>
+                      <span className="text-[#8E90A6] text-[11px]">
+                        {l.last !== null ? `${currencyPrefix}${fmtNum(l.last, 2)}` : '—'}
+                      </span>
+                      <span className="text-[#6D6D84] text-[11px]">{formatVolMillions(l.volumeM)}</span>
+                      <span className="font-bold text-[#FF5468]">{fmtPct(l.return1dPct, 2)}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const HomeDashboard: React.FC<{
   tickFlashes: Readonly<Record<string, 'up' | 'down' | null>>;
@@ -280,18 +986,371 @@ export const MonitoringModule: React.FC<{
     0,
   );
   const caucionesCount = liveCauciones.length > 0 ? liveCauciones.length : CAUCIONES_DATA.length;
+  const cclMedian = liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
+  const [cedearFilterMode, setCedearFilterMode] = useState<'all' | 'mispriced' | 'byma_opts' | 'adrs'>('all');
+  const [cedearSearch, setCedearSearch] = useState<string>('');
+
+  interface CedearAdrDisplayRow {
+    readonly key: string;
+    readonly kind: 'CEDEAR' | 'ADR';
+    readonly ticker: string;
+    readonly usTicker: string;
+    readonly name: string;
+    readonly sector: string;
+    readonly color: string;
+    readonly usLast: number;
+    readonly usDeltaPct: number;
+    readonly ratioStr: string;
+    readonly ratioNum: number;
+    readonly localArs: number;
+    readonly fairArsPrice: number;
+    readonly cclImplicit: number;
+    readonly cclMismatchPct: number;
+    readonly cclMismatchArs: number;
+    readonly iv30d: number;
+    readonly ivSource: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
+    readonly volMultiple: number;
+    readonly hasUsOptions: boolean;
+    readonly hasBymaOptions: boolean;
+    readonly arbitrageSignal: string;
+  }
+
+  const combinedCedearsAndAdrs: readonly CedearAdrDisplayRow[] = useMemo(() => {
+    const usMetaMap = new Map(US_MARKET_DATA.map((u) => [u.ticker.toUpperCase(), u]));
+    const usMetaNoDotMap = new Map(
+      US_MARKET_DATA.map((u) => [u.ticker.replace(/\./g, '').toUpperCase(), u]),
+    );
+    const lookupUsMeta = (sym: string) => {
+      const upper = sym.toUpperCase();
+      return usMetaMap.get(upper) ?? usMetaNoDotMap.get(upper.replace(/\./g, ''));
+    };
+
+    const rawCedears = liveMarket.monitoring?.cedears ?? [];
+    const cedearRows: CedearAdrDisplayRow[] =
+      rawCedears.length > 0
+        ? rawCedears.map((ced) => {
+            const usSym = (ced.adrTicker?.replace(/ US$/i, '') ?? ced.ticker).trim().toUpperCase();
+            const meta = lookupUsMeta(usSym) ?? lookupUsMeta(ced.ticker);
+            const ratioNum =
+              ced.adrRatio !== undefined && ced.adrRatio !== null && Number.isFinite(ced.adrRatio)
+                ? ced.adrRatio
+                : meta?.cedearRatioNum ?? Number.NaN;
+            return {
+              key: `CEDEAR:${ced.ticker}`,
+              kind: 'CEDEAR',
+              ticker: ced.ticker,
+              usTicker: usSym,
+              name: ced.name || meta?.name || ced.ticker,
+              sector: ced.sector || meta?.sector || 'CEDEAR',
+              color: meta?.color ?? '#38BDF8',
+              usLast:
+                ced.adrPrice !== undefined && ced.adrPrice !== null && Number.isFinite(ced.adrPrice)
+                  ? ced.adrPrice
+                  : meta?.price ?? Number.NaN,
+              usDeltaPct:
+                ced.adrDeltaPct !== undefined &&
+                ced.adrDeltaPct !== null &&
+                Number.isFinite(ced.adrDeltaPct)
+                  ? ced.adrDeltaPct
+                  : meta?.deltaPct ?? Number.NaN,
+              ratioStr: Number.isFinite(ratioNum) ? `${ratioNum}:1` : meta?.cedearRatio ?? '—',
+              ratioNum,
+              localArs: ced.last !== null && Number.isFinite(ced.last) ? ced.last : Number.NaN,
+              fairArsPrice:
+                ced.fairArsPrice !== undefined &&
+                ced.fairArsPrice !== null &&
+                Number.isFinite(ced.fairArsPrice)
+                  ? ced.fairArsPrice
+                  : Number.NaN,
+              cclImplicit:
+                ced.cclImplicit !== undefined &&
+                ced.cclImplicit !== null &&
+                Number.isFinite(ced.cclImplicit)
+                  ? ced.cclImplicit
+                  : Number.NaN,
+              cclMismatchPct:
+                ced.cclMismatchPct !== undefined &&
+                ced.cclMismatchPct !== null &&
+                Number.isFinite(ced.cclMismatchPct)
+                  ? ced.cclMismatchPct
+                  : Number.NaN,
+              cclMismatchArs:
+                ced.cclMismatchArs !== undefined &&
+                ced.cclMismatchArs !== null &&
+                Number.isFinite(ced.cclMismatchArs)
+                  ? ced.cclMismatchArs
+                  : Number.NaN,
+              iv30d:
+                ced.iv30d !== undefined && ced.iv30d !== null && Number.isFinite(ced.iv30d)
+                  ? ced.iv30d
+                  : meta?.iv30d ?? Number.NaN,
+              ivSource: ced.ivSource ?? 'NONE',
+              volMultiple:
+                ced.volMultiple !== null && Number.isFinite(ced.volMultiple)
+                  ? ced.volMultiple
+                  : meta?.volMultiple ?? Number.NaN,
+              hasUsOptions: Boolean(ced.hasUsOptions ?? meta?.hasUsOptions),
+              hasBymaOptions: Boolean(ced.hasBymaOptions),
+              arbitrageSignal: ced.arbitrageSignal ?? '—',
+            };
+          })
+        : US_MARKET_DATA.map((u) => ({
+            key: `CEDEAR:${u.ticker}`,
+            kind: 'CEDEAR',
+            ticker: u.ticker,
+            usTicker: u.ticker,
+            name: u.name,
+            sector: u.sector,
+            color: u.color,
+            usLast: u.price,
+            usDeltaPct: u.deltaPct,
+            ratioStr: u.cedearRatio,
+            ratioNum: u.cedearRatioNum,
+            localArs: u.cedearArsPrice,
+            fairArsPrice:
+              cclMedian !== null &&
+              Number.isFinite(cclMedian) &&
+              Number.isFinite(u.price) &&
+              Number.isFinite(u.cedearRatioNum) &&
+              u.cedearRatioNum > 0
+                ? (u.price * cclMedian) / u.cedearRatioNum
+                : Number.NaN,
+            cclImplicit: u.cclImplicit,
+            cclMismatchPct:
+              cclMedian !== null &&
+              Number.isFinite(cclMedian) &&
+              cclMedian > 0 &&
+              Number.isFinite(u.cclImplicit)
+                ? ((u.cclImplicit - cclMedian) / cclMedian) * 100
+                : Number.NaN,
+            cclMismatchArs:
+              cclMedian !== null &&
+              Number.isFinite(cclMedian) &&
+              Number.isFinite(u.price) &&
+              Number.isFinite(u.cedearArsPrice) &&
+              Number.isFinite(u.cedearRatioNum) &&
+              u.cedearRatioNum > 0
+                ? u.cedearArsPrice - (u.price * cclMedian) / u.cedearRatioNum
+                : Number.NaN,
+            iv30d: u.iv30d,
+            ivSource: Number.isFinite(u.iv30d) ? 'OPRA_IV' : 'NONE',
+            volMultiple: u.volMultiple,
+            hasUsOptions: u.hasUsOptions,
+            hasBymaOptions: false,
+            arbitrageSignal: u.signal,
+          }));
+
+    const arMetaMap = new Map(AR_STOCKS.map((s) => [s.ticker, s]));
+    const adrSourceStocks =
+      liveMarket.monitoring?.stocks && liveMarket.monitoring.stocks.length > 0
+        ? liveMarket.monitoring.stocks.filter((s) => s.adrTicker !== undefined)
+        : [];
+
+    const adrRows: CedearAdrDisplayRow[] =
+      adrSourceStocks.length > 0
+        ? adrSourceStocks.map((s) => {
+            const meta = arMetaMap.get(s.ticker);
+            const usSym = (s.adrTicker ?? '').replace(/ US$/i, '').trim().toUpperCase();
+            const ratioNum =
+              s.adrRatio !== undefined && s.adrRatio !== null && Number.isFinite(s.adrRatio)
+                ? s.adrRatio
+                : Number.NaN;
+            return {
+              key: `ADR:${s.ticker}`,
+              kind: 'ADR',
+              ticker: s.ticker,
+              usTicker: usSym || s.ticker,
+              name: s.name,
+              sector: s.sector,
+              color: meta?.color ?? '#22C55E',
+              usLast:
+                s.adrPrice !== undefined && s.adrPrice !== null && Number.isFinite(s.adrPrice)
+                  ? s.adrPrice
+                  : Number.NaN,
+              usDeltaPct:
+                s.adrDeltaPct !== undefined &&
+                s.adrDeltaPct !== null &&
+                Number.isFinite(s.adrDeltaPct)
+                  ? s.adrDeltaPct
+                  : Number.NaN,
+              ratioStr: Number.isFinite(ratioNum) ? `${ratioNum}:1 ADR` : '—',
+              ratioNum,
+              localArs: s.last !== null && Number.isFinite(s.last) ? s.last : Number.NaN,
+              fairArsPrice:
+                s.fairArsPrice !== undefined &&
+                s.fairArsPrice !== null &&
+                Number.isFinite(s.fairArsPrice)
+                  ? s.fairArsPrice
+                  : Number.NaN,
+              cclImplicit:
+                s.cclImplicit !== undefined &&
+                s.cclImplicit !== null &&
+                Number.isFinite(s.cclImplicit)
+                  ? s.cclImplicit
+                  : Number.NaN,
+              cclMismatchPct:
+                s.cclMismatchPct !== undefined &&
+                s.cclMismatchPct !== null &&
+                Number.isFinite(s.cclMismatchPct)
+                  ? s.cclMismatchPct
+                  : Number.NaN,
+              cclMismatchArs:
+                s.cclMismatchArs !== undefined &&
+                s.cclMismatchArs !== null &&
+                Number.isFinite(s.cclMismatchArs)
+                  ? s.cclMismatchArs
+                  : Number.NaN,
+              iv30d:
+                s.iv30d !== undefined && s.iv30d !== null && Number.isFinite(s.iv30d)
+                  ? s.iv30d
+                  : Number.NaN,
+              ivSource: s.ivSource ?? 'NONE',
+              volMultiple:
+                s.volMultiple !== null && Number.isFinite(s.volMultiple) ? s.volMultiple : Number.NaN,
+              hasUsOptions: Boolean(s.hasUsOptions),
+              hasBymaOptions: Boolean(s.hasBymaOptions),
+              arbitrageSignal: s.arbitrageSignal ?? '—',
+            };
+          })
+        : AR_STOCKS.filter((s) => s.adrTicker && s.adrTicker.length > 0).map((s) => ({
+            key: `ADR:${s.ticker}`,
+            kind: 'ADR',
+            ticker: s.ticker,
+            usTicker: (s.adrTicker ?? '').replace(/ US$/i, '').trim().toUpperCase(),
+            name: s.name,
+            sector: s.sector,
+            color: s.color,
+            usLast: s.adrPrice ?? Number.NaN,
+            usDeltaPct: s.adrDeltaPct ?? Number.NaN,
+            ratioStr: Number.isFinite(s.adrRatio ?? Number.NaN) ? `${s.adrRatio}:1 ADR` : '—',
+            ratioNum: s.adrRatio ?? Number.NaN,
+            localArs: s.last,
+            fairArsPrice: s.fairArsPrice ?? Number.NaN,
+            cclImplicit: s.cclImplicit ?? Number.NaN,
+            cclMismatchPct: s.cclMismatchPct ?? Number.NaN,
+            cclMismatchArs: s.cclMismatchArs ?? Number.NaN,
+            iv30d: s.iv30d ?? Number.NaN,
+            ivSource: s.ivSource ?? 'NONE',
+            volMultiple: s.volMultiple ?? Number.NaN,
+            hasUsOptions: Boolean(s.hasUsOptions),
+            hasBymaOptions: Boolean(s.hasBymaOptions),
+            arbitrageSignal: s.arbitrageSignal ?? '—',
+          }));
+
+    return [...adrRows, ...cedearRows];
+  }, [liveMarket.monitoring?.cedears, liveMarket.monitoring?.stocks, cclMedian, liveMarket.version]);
+
+  const cedearRadarSummary = useMemo(() => {
+    const discounts = [...combinedCedearsAndAdrs]
+      .filter((r) => Number.isFinite(r.cclMismatchPct) && r.cclMismatchPct <= -0.5)
+      .sort((a, b) => a.cclMismatchPct - b.cclMismatchPct)
+      .slice(0, 3);
+    const premiums = [...combinedCedearsAndAdrs]
+      .filter((r) => Number.isFinite(r.cclMismatchPct) && r.cclMismatchPct >= 0.5)
+      .sort((a, b) => b.cclMismatchPct - a.cclMismatchPct)
+      .slice(0, 3);
+    const highVolRows = [...combinedCedearsAndAdrs]
+      .filter((r) => Number.isFinite(r.volMultiple) && r.volMultiple > 0)
+      .sort((a, b) => b.volMultiple - a.volMultiple)
+      .slice(0, 3);
+    const opraCount = combinedCedearsAndAdrs.filter((r) => r.hasUsOptions).length;
+    const bymaCount = combinedCedearsAndAdrs.filter((r) => r.hasBymaOptions).length;
+    const mispricedCount = combinedCedearsAndAdrs.filter(
+      (r) => Number.isFinite(r.cclMismatchPct) && Math.abs(r.cclMismatchPct) >= 1.2,
+    ).length;
+    const validIvs = combinedCedearsAndAdrs
+      .map((r) => r.iv30d)
+      .filter((v) => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    const medianIv = validIvs.length > 0 ? validIvs[Math.floor(validIvs.length / 2)] : Number.NaN;
+    return {
+      discounts,
+      premiums,
+      highVolRows,
+      opraCount,
+      bymaCount,
+      mispricedCount,
+      medianIv,
+      adrCount: combinedCedearsAndAdrs.filter((r) => r.kind === 'ADR').length,
+    };
+  }, [combinedCedearsAndAdrs]);
+
+  const filteredCedearsAndAdrs = useMemo(() => {
+    const q = cedearSearch.trim().toLowerCase();
+    return combinedCedearsAndAdrs.filter((r) => {
+      if (
+        cedearFilterMode === 'mispriced' &&
+        (!Number.isFinite(r.cclMismatchPct) || Math.abs(r.cclMismatchPct) < 1.2)
+      ) {
+        return false;
+      }
+      if (cedearFilterMode === 'byma_opts' && !r.hasBymaOptions) return false;
+      if (cedearFilterMode === 'adrs' && r.kind !== 'ADR') return false;
+      if (!q) return true;
+      return (
+        r.ticker.toLowerCase().includes(q) ||
+        r.usTicker.toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
+        r.sector.toLowerCase().includes(q)
+      );
+    });
+  }, [combinedCedearsAndAdrs, cedearFilterMode, cedearSearch]);
 
   const panels: { id: MonitorSubPanel; label: string; count: number }[] = [
     { id: 'acciones', label: 'Acciones Líderes', count: AR_STOCKS.length },
     { id: 'bonos', label: 'Bonos y Letras', count: BONDS_DATA.length },
-    { id: 'cedears', label: 'CEDEARs y ADRs', count: US_MARKET_DATA.length },
+    { id: 'cedears', label: 'CEDEARs y ADRs', count: combinedCedearsAndAdrs.length },
     { id: 'cauciones', label: 'Cauciones por Plazo', count: caucionesCount },
   ];
 
   const stockDeltas = AR_STOCKS.map((s) => s.deltaPct).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const medianStockDelta = stockDeltas.length > 0 ? stockDeltas[Math.floor(stockDeltas.length / 2)] : Number.NaN;
   const stockAdv = stockDeltas.filter((d) => d > 0).length;
-  const cclMedian = liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
+
+  const arCombinedPanelRows: NormalizedPanelRow[] = useMemo(() => {
+    const arAnalytics = liveMarket.monitoring?.arPanelAnalytics ?? AR_PANEL_ANALYTICS;
+    const analyticsMap = new Map<string, EquityPanelRowDto>(
+      (arAnalytics?.rows ?? []).map((r) => [r.symbol, r]),
+    );
+    return [...AR_STOCKS, ...AR_GENERAL_PANEL_STOCKS].map((s) => {
+      const extra = analyticsMap.get(s.ticker);
+      return {
+        symbol: s.ticker,
+        name: s.name,
+        sector: s.sector,
+        panel: s.panel === 'General' ? 'General' : 'Líder',
+        color: s.color,
+        last: s.last,
+        prevClose: s.prevClose,
+        dayLow: s.low,
+        dayHigh: s.high,
+        dayRangePos:
+          extra?.dayRangePos !== undefined && extra.dayRangePos !== null
+            ? extra.dayRangePos
+            : s.dayRangePos ?? Number.NaN,
+        volumeM: s.volumeM,
+        return1dPct: s.deltaPct,
+        return30dPct:
+          extra?.return30dPct !== undefined && extra.return30dPct !== null
+            ? extra.return30dPct
+            : s.return30dPct ?? Number.NaN,
+        returnYtdOr252dPct:
+          extra?.returnYtdOr252dPct !== undefined && extra.returnYtdOr252dPct !== null
+            ? extra.returnYtdOr252dPct
+            : s.returnYtdOr252dPct ?? Number.NaN,
+        realizedVol30dPct:
+          extra?.realizedVol30dPct !== undefined && extra.realizedVol30dPct !== null
+            ? extra.realizedVol30dPct
+            : s.realizedVol30dPct ?? Number.NaN,
+        beta:
+          extra?.beta !== undefined && extra.beta !== null ? extra.beta : s.beta ?? Number.NaN,
+        avgVolume40dM:
+          extra?.avgVolume40dM !== undefined && extra.avgVolume40dM !== null
+            ? extra.avgVolume40dM
+            : s.avgVolume40dM ?? Number.NaN,
+      };
+    });
+  }, [liveMarket.monitoring?.arPanelAnalytics, AR_STOCKS.length, AR_GENERAL_PANEL_STOCKS.length, liveMarket.version]);
 
   return (
     <div className="space-y-4 animate-module">
@@ -367,81 +1426,17 @@ export const MonitoringModule: React.FC<{
         )}
       </div>
 
-      {/* TABLA 1: ACCIONES CON LOGOS, RANGO DEL DÍA, SEÑAL Y MÚLTIPLO DE VOLUMEN */}
+      {/* ACCIONES AR: LOS 6 PANELES ANALÍTICOS */}
       {subPanel === 'acciones' && (
-        <div className="qc-card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-right">
-              <thead>
-                <tr className="bg-[var(--bg-sidebar)] border-b border-[var(--border-subtle)] text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)]">
-                  <th className="py-2.5 px-4 text-left">Especie / Papel</th>
-                  <th className="py-2.5 px-4">Último ARS</th>
-                  <th className="py-2.5 px-4">Variación</th>
-                  <th className="py-2.5 px-4">Tendencia</th>
-                  <th className="py-2.5 px-4">Volumen / Múltiplo</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--border-subtle)]">
-                {AR_STOCKS.map((s) => (
-                  <tr
-                    key={s.ticker}
-                    onClick={() => onSelectStock(s.ticker)}
-                    className={`${rowH} hover:bg-[var(--surface-2)] transition-colors cursor-pointer`}
-                  >
-                    <td className="px-4 text-left">
-                      <div className="flex items-center gap-2.5">
-                        <span
-                          className="w-6 h-6 rounded-full inline-flex items-center justify-center text-[10px] font-bold text-white shrink-0"
-                          style={{ backgroundColor: s.color }}
-                        >
-                          {s.ticker.slice(0, 2)}
-                        </span>
-                        <div>
-                          <div className="font-mono-num font-bold text-[var(--text-primary)] leading-tight">
-                            {s.ticker}
-                          </div>
-                          <div className="text-[11px] text-[var(--text-tertiary)] truncate max-w-[220px]">
-                            {s.name}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4">
-                      <PriceCell
-                        value={s.last}
-                        decimals={2}
-                        flashDirection={tickFlashes[s.ticker] ?? null}
-                        className="font-bold text-[var(--text-primary)]"
-                      />
-                    </td>
-                    <td className="px-4">
-                      <DeltaPill value={s.deltaPct} size="sm" />
-                    </td>
-                    <td className="px-4">
-                      <div className="flex justify-end">
-                        <MiniSparkline data={s.sparkline} positive={s.deltaPct >= 0} width={68} height={22} />
-                      </div>
-                    </td>
-                    <td className="px-4 font-mono-num">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <span className="text-[var(--text-primary)]">{fmtMoneyCompact(s.volumeM)}</span>
-                        <span
-                          className={`text-[11px] font-semibold ${
-                            s.volMultiple >= 1.8
-                              ? 'text-[#8B7CF6]'
-                              : 'text-[var(--text-tertiary)]'
-                          }`}
-                        >
-                          {fmtNum(s.volMultiple, 1)}×
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <EquitySixPanelsGrid
+          mode="AR"
+          rows={arCombinedPanelRows}
+          analytics={liveMarket.monitoring?.arPanelAnalytics ?? AR_PANEL_ANALYTICS}
+          currencyPrefix="$ "
+          benchmarkLabel="Panel Líder"
+          onSelectRow={(ticker) => onSelectStock(ticker)}
+          denseRowClass={rowH}
+        />
       )}
 
       {/* TABLA 2: BONOS Y LETRAS CON GRUPOS Y BARRAS EN LÍNEA */}
@@ -560,93 +1555,396 @@ export const MonitoringModule: React.FC<{
         </div>
       )}
 
-      {/* TABLA 3: CEDEARS Y CONVERSIÓN CCL */}
+      {/* TABLA 3: CEDEARS, ADRs Y RADAR DE ARBITRAJE CCL / OPCIONES */}
       {subPanel === 'cedears' && (
-        <div className="rounded-[10px] bg-[#131722] border border-[#232733] overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-right">
-              <thead>
-                <tr className="bg-[#0B0E14] border-b border-[#232733] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
-                  <th className="py-2.5 px-3.5 text-left">Ticker / Compañía</th>
-                  <th className="py-2.5 px-2 text-left">Sector</th>
-                  <th className="py-2.5 px-2.5">Precio NYSE (USD)</th>
-                  <th className="py-2.5 px-2.5">Var. USD</th>
-                  <th className="py-2.5 px-2.5">Ratio Conv.</th>
-                  <th className="py-2.5 px-2.5">CEDEAR BYMA (ARS)</th>
-                  <th className="py-2.5 px-2.5">CCL Implícito</th>
-                  <th className="py-2.5 px-2.5">VI 30d</th>
-                  <th className="py-2.5 px-2.5">Vol. Relativo</th>
-                  <th className="py-2.5 px-3.5 text-left">Señal / Radar</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#1E222D] font-mono-num">
-                {US_MARKET_DATA.map((u) => (
-                  <tr
-                    key={u.ticker}
-                    onClick={() =>
-                      onOpenOrderTicket({
-                        ticker: u.ticker,
-                        side: 'Compra',
-                        price: u.cedearArsPrice,
-                        qty: 10,
-                        instrumentLabel: `CEDEAR ${u.name} (Ratio ${u.cedearRatio})`,
-                      })
-                    }
-                    className={`${rowH} hover:bg-[#181C27] transition-colors cursor-pointer`}
-                  >
-                    <td className="px-3.5 text-left">
-                      <div className="flex items-center gap-2.5">
-                        <span
-                          className="w-6 h-6 rounded-full inline-flex items-center justify-center text-[9.5px] font-extrabold text-white shrink-0"
-                          style={{ backgroundColor: u.color }}
-                        >
-                          {u.ticker.slice(0, 2)}
-                        </span>
-                        <div>
-                          <div className="font-bold text-[#FFFFFF] leading-tight">{u.ticker}</div>
-                          <div className="text-[11px] font-sans text-[#787B86] truncate max-w-[165px]">
-                            {u.name}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-2 text-left font-sans text-[11.5px] text-[#787B86]">
-                      {u.sector}
-                    </td>
-                    <td className="px-2.5 font-bold text-[#FFFFFF]">
-                      {Number.isFinite(u.price) ? `US$ ${fmtNum(u.price, 2)}` : '—'}
-                    </td>
-                    <td className="px-2.5">
-                      <DeltaPill value={u.deltaPct} size="sm" />
-                    </td>
-                    <td className="px-2.5 text-[#9CA3AF]">{u.cedearRatio}</td>
-                    <td className="px-2.5 font-bold text-[#38BDF8]">
-                      {Number.isFinite(u.cedearArsPrice) ? `$ ${fmtNum(u.cedearArsPrice, 0)}` : '—'}
-                    </td>
-                    <td className="px-2.5 text-[#D1D4DC]">
-                      {Number.isFinite(u.cedearArsPrice) && Number.isFinite(u.price) && u.price > 0
-                        ? `$ ${fmtNum((u.cedearArsPrice * u.cedearRatioNum) / u.price, 2)}`
-                        : '—'}
-                    </td>
-                    <td className="px-2.5 text-[#9CA3AF]">
-                      {Number.isFinite(u.iv30d) ? `${fmtNum(u.iv30d, 1)} %` : '—'}
-                    </td>
-                    <td className="px-2.5">
-                      <span
-                        className={`text-[11.5px] font-semibold ${
-                          u.volMultiple >= 1.5 ? 'text-[#8B7CF6]' : 'text-[#787B86]'
-                        }`}
+        <div className="space-y-4">
+          {/* Radar de Arbitraje de Opciones & Ratios */}
+          <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
+                  Radar de Arbitraje de Opciones & Ratios (BYMA vs. NYSE)
+                </div>
+                <div className="text-[11px] text-[#787B86]">
+                  Desfase ARS vs. CCL Implícito · Volatilidad 30D (OPRA / Realizada Massive) · Vol. Relativo vs. 20D
+                </div>
+              </div>
+              <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                CCL Ref:{' '}
+                <strong className="text-[#F3F4F6]">
+                  {cclMedian !== null && Number.isFinite(cclMedian) ? `$ ${fmtNum(cclMedian, 2)}` : '—'}
+                </strong>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              {/* Card 1: Descuentos (BYMA barato vs CCL) */}
+              <div className="rounded-[10px] bg-[#0B0B11] border border-[#1E1E2B] p-3 space-y-2">
+                <div className="flex items-center justify-between text-[10.5px] uppercase tracking-[0.05em] text-[#2EDC7E] font-semibold">
+                  <span>Descuentos vs. CCL</span>
+                  <span className="font-mono-num">{cedearRadarSummary.discounts.length}</span>
+                </div>
+                {cedearRadarSummary.discounts.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {cedearRadarSummary.discounts.map((d) => (
+                      <div
+                        key={`disc-${d.key}`}
+                        className="flex items-center justify-between text-[11.5px] font-mono-num"
                       >
-                        {fmtNum(u.volMultiple, 1)}×
-                      </span>
-                    </td>
-                    <td className="px-3.5 text-left font-sans text-[12px] text-[#9CA3AF]">
-                      {u.signal}
-                    </td>
-                  </tr>
+                        <span className="font-bold text-[#F3F4F6]">
+                          {d.ticker}{' '}
+                          <span className="text-[10px] font-sans text-[#787B86]">{d.kind}</span>
+                        </span>
+                        <span className="text-[#2EDC7E] font-semibold">
+                          {fmtPct(d.cclMismatchPct, 2)} (
+                          {Number.isFinite(d.cclMismatchArs) ? `$ ${fmtNum(d.cclMismatchArs, 0)}` : '—'})
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#787B86]">Sin descuentos &ge; 0,5%</div>
+                )}
+              </div>
+
+              {/* Card 2: Primas (BYMA caro vs CCL) */}
+              <div className="rounded-[10px] bg-[#0B0B11] border border-[#1E1E2B] p-3 space-y-2">
+                <div className="flex items-center justify-between text-[10.5px] uppercase tracking-[0.05em] text-[#F5B544] font-semibold">
+                  <span>Primas / Sobreprecio vs. CCL</span>
+                  <span className="font-mono-num">{cedearRadarSummary.premiums.length}</span>
+                </div>
+                {cedearRadarSummary.premiums.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {cedearRadarSummary.premiums.map((p) => (
+                      <div
+                        key={`prem-${p.key}`}
+                        className="flex items-center justify-between text-[11.5px] font-mono-num"
+                      >
+                        <span className="font-bold text-[#F3F4F6]">
+                          {p.ticker}{' '}
+                          <span className="text-[10px] font-sans text-[#787B86]">{p.kind}</span>
+                        </span>
+                        <span className="text-[#F5B544] font-semibold">
+                          +{fmtNum(p.cclMismatchPct, 2)}% (+$ {fmtNum(p.cclMismatchArs, 0)})
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#787B86]">Sin primas &ge; 0,5%</div>
+                )}
+              </div>
+
+              {/* Card 3: Cobertura Opciones (OPRA & BYMA) */}
+              <div className="rounded-[10px] bg-[#0B0B11] border border-[#1E1E2B] p-3 space-y-2">
+                <div className="flex items-center justify-between text-[10.5px] uppercase tracking-[0.05em] text-[#60A5FA] font-semibold">
+                  <span>Cobertura Opciones</span>
+                  <span className="font-mono-num">OPRA / BYMA</span>
+                </div>
+                <div className="space-y-1 text-[11.5px] font-mono-num">
+                  <div className="flex justify-between">
+                    <span className="text-[#9CA3AF] font-sans">Cadenas EE.UU. (OPRA):</span>
+                    <span className="text-[#F3F4F6] font-bold">{cedearRadarSummary.opraCount}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#9CA3AF] font-sans">Lotes BYMA (ADRs):</span>
+                    <span className="text-[#F3F4F6] font-bold">{cedearRadarSummary.bymaCount}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#9CA3AF] font-sans">VI 30D Mediana panel:</span>
+                    <span className="text-[#F3F4F6] font-bold">
+                      {Number.isFinite(cedearRadarSummary.medianIv)
+                        ? `${fmtNum(cedearRadarSummary.medianIv, 1)} %`
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 4: Mayor Vol. Relativo */}
+              <div className="rounded-[10px] bg-[#0B0B11] border border-[#1E1E2B] p-3 space-y-2">
+                <div className="flex items-center justify-between text-[10.5px] uppercase tracking-[0.05em] text-[#A78BFA] font-semibold">
+                  <span>Flujo &amp; Vol. Relativo 20D</span>
+                  <span className="font-mono-num">Top 3</span>
+                </div>
+                {cedearRadarSummary.highVolRows.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {cedearRadarSummary.highVolRows.map((v) => (
+                      <div
+                        key={`vol-${v.key}`}
+                        className="flex items-center justify-between text-[11.5px] font-mono-num"
+                      >
+                        <span className="font-bold text-[#F3F4F6]">
+                          {v.ticker}{' '}
+                          <span className="text-[10px] font-sans text-[#787B86]">{v.kind}</span>
+                        </span>
+                        <span
+                          className={`font-semibold ${
+                            v.volMultiple >= 1.5 ? 'text-[#A78BFA]' : 'text-[#D1D4DC]'
+                          }`}
+                        >
+                          {fmtNum(v.volMultiple, 1)}×
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#787B86]">Sin histórico de volumen relativo</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Barra de Filtros y Buscador */}
+          <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden">
+            <div className="px-4 py-3 border-b border-[#1E1E2B] flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5 bg-[#0B0B11] p-1 rounded-[8px] border border-[#1E1E2B]">
+                {(
+                  [
+                    { id: 'all', label: `Todos (${combinedCedearsAndAdrs.length})` },
+                    {
+                      id: 'mispriced',
+                      label: `Desfasajes ≥ 1,2% (${cedearRadarSummary.mispricedCount})`,
+                    },
+                    { id: 'adrs', label: `ADRs Locales (${cedearRadarSummary.adrCount})` },
+                    { id: 'byma_opts', label: `Con Opciones BYMA (${cedearRadarSummary.bymaCount})` },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setCedearFilterMode(tab.id)}
+                    className={`px-2.5 py-1 rounded-[6px] text-[11px] font-semibold cursor-pointer transition-colors ${
+                      cedearFilterMode === tab.id
+                        ? 'bg-[#1F2637] text-[#F3F4F6]'
+                        : 'text-[#787B86] hover:text-[#D1D4DC]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+              <input
+                type="text"
+                value={cedearSearch}
+                onChange={(e) => setCedearSearch(e.target.value)}
+                placeholder="Buscar ticker, subyacente o ADR..."
+                className="w-60 px-3 py-1.5 rounded-[8px] bg-[#0B0B11] border border-[#1E1E2B] text-[12px] text-[#F3F4F6] placeholder:text-[#787B86] outline-none focus:border-[#3B82F6]"
+              />
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-right">
+                <thead>
+                  <tr className="bg-[#0B0E14] border-b border-[#1E1E2B] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
+                    <th className="py-2.5 px-3.5 text-left">Ticker / Subyacente</th>
+                    <th className="py-2.5 px-2 text-left">Tipo / Sector</th>
+                    <th className="py-2.5 px-2.5">NYSE (USD)</th>
+                    <th className="py-2.5 px-2.5">Var. USD</th>
+                    <th className="py-2.5 px-2.5">Ratio</th>
+                    <th className="py-2.5 px-2.5">Local BYMA (ARS)</th>
+                    <th className="py-2.5 px-2.5">CCL Implícito &amp; Desfase ARS</th>
+                    <th className="py-2.5 px-2.5">VI 30d</th>
+                    <th className="py-2.5 px-2.5">Vol. Relativo</th>
+                    <th className="py-2.5 px-3.5 text-left">Señal Arbitraje / Opciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#181824] font-mono-num">
+                  {filteredCedearsAndAdrs.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[#787B86]">
+                        Sin instrumentos para el filtro seleccionado.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredCedearsAndAdrs.map((r) => {
+                      const hasMismatch = Number.isFinite(r.cclMismatchPct);
+                      const isDiscount = hasMismatch && r.cclMismatchPct <= -1.2;
+                      const isPremium = hasMismatch && r.cclMismatchPct >= 1.2;
+                      const mismatchBadgeCls = isDiscount
+                        ? 'text-[#2EDC7E] bg-[#2EDC7E]/12 border-[#2EDC7E]/30'
+                        : isPremium
+                        ? 'text-[#F5B544] bg-[#F5B544]/12 border-[#F5B544]/30'
+                        : 'text-[#9CA3AF] bg-[#1A1A26] border-[#262636]';
+
+                      return (
+                        <tr
+                          key={r.key}
+                          onClick={() =>
+                            onOpenOrderTicket({
+                              ticker: r.ticker,
+                              side: 'Compra',
+                              price: Number.isFinite(r.localArs) ? r.localArs : 0,
+                              qty: 10,
+                              instrumentLabel:
+                                r.kind === 'ADR'
+                                  ? `${r.ticker} BYMA (ADR ${r.usTicker} · ${r.ratioStr})`
+                                  : `CEDEAR ${r.name} (Ratio ${r.ratioStr})`,
+                            })
+                          }
+                          className={`${rowH} hover:bg-[#181C27] transition-colors cursor-pointer`}
+                        >
+                          <td className="px-3.5 text-left">
+                            <div className="flex items-center gap-2.5">
+                              <span
+                                className="w-6 h-6 rounded-full inline-flex items-center justify-center text-[9.5px] font-extrabold text-white shrink-0"
+                                style={{ backgroundColor: r.color }}
+                              >
+                                {r.ticker.slice(0, 2)}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-[#F3F4F6] leading-tight">
+                                    {r.ticker}
+                                  </span>
+                                  {r.usTicker && r.usTicker !== r.ticker && (
+                                    <span className="text-[10px] text-[#787B86] font-mono-num">
+                                      ({r.usTicker})
+                                    </span>
+                                  )}
+                                  {r.kind === 'ADR' && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onSelectStock(r.ticker);
+                                      }}
+                                      className="text-[9.5px] px-1.5 py-0.2 rounded bg-[#1F2637] text-[#60A5FA] hover:bg-[#2A334A] font-sans font-semibold cursor-pointer"
+                                    >
+                                      Ficha
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="text-[11px] font-sans text-[#787B86] truncate max-w-[165px]">
+                                  {r.name}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-2 text-left font-sans">
+                            <div className="flex flex-col gap-0.5">
+                              <span
+                                className={`inline-flex w-fit px-1.5 py-0.2 rounded text-[9.5px] font-semibold ${
+                                  r.kind === 'ADR'
+                                    ? 'bg-[#2EDC7E]/15 text-[#2EDC7E]'
+                                    : 'bg-[#38BDF8]/12 text-[#38BDF8]'
+                                }`}
+                              >
+                                {r.kind === 'ADR' ? 'ADR BYMA' : 'CEDEAR'}
+                              </span>
+                              <span className="text-[10.5px] text-[#787B86] truncate max-w-[120px]">
+                                {r.sector}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-2.5 font-bold text-[#F3F4F6]">
+                            {Number.isFinite(r.usLast) ? `US$ ${fmtNum(r.usLast, 2)}` : '—'}
+                          </td>
+                          <td className="px-2.5">
+                            <DeltaPill value={r.usDeltaPct} size="sm" />
+                          </td>
+                          <td className="px-2.5 text-[#9CA3AF] text-[11px]">{r.ratioStr}</td>
+                          <td className="px-2.5">
+                            <div className="font-bold text-[#38BDF8]">
+                              {Number.isFinite(r.localArs) ? `$ ${fmtNum(r.localArs, 0)}` : '—'}
+                            </div>
+                            {Number.isFinite(r.fairArsPrice) && (
+                              <div className="text-[10px] text-[#787B86]">
+                                Par: $ {fmtNum(r.fairArsPrice, 0)}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-2.5">
+                            <div className="font-semibold text-[#D1D4DC]">
+                              {Number.isFinite(r.cclImplicit)
+                                ? `$ ${fmtNum(r.cclImplicit, 2)}`
+                                : '—'}
+                            </div>
+                            {hasMismatch ? (
+                              <div className="mt-0.5 inline-flex items-center gap-1">
+                                <span
+                                  className={`px-1.5 py-0.2 rounded border text-[9.5px] font-semibold ${mismatchBadgeCls}`}
+                                >
+                                  {isDiscount ? 'DESC ' : isPremium ? 'PRIMA ' : ''}
+                                  {r.cclMismatchPct >= 0 ? '+' : ''}
+                                  {fmtNum(r.cclMismatchPct, 2)}%
+                                  {Number.isFinite(r.cclMismatchArs)
+                                    ? ` (${r.cclMismatchArs >= 0 ? '+' : '-'}$ ${fmtNum(
+                                        Math.abs(r.cclMismatchArs),
+                                        0,
+                                      )})`
+                                    : ''}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-[#787B86]">—</div>
+                            )}
+                          </td>
+                          <td className="px-2.5">
+                            {Number.isFinite(r.iv30d) ? (
+                              <div className="inline-flex items-center gap-1">
+                                <span className="text-[#E5E7EB] font-semibold">
+                                  {fmtNum(r.iv30d, 1)} %
+                                </span>
+                                {r.ivSource !== 'NONE' && (
+                                  <span className="text-[9px] px-1 py-0.2 rounded bg-[#181C27] text-[#9CA3AF] border border-[#232733]">
+                                    {r.ivSource === 'OPRA_IV' ? 'IV' : 'RV30'}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[#787B86]">—</span>
+                            )}
+                          </td>
+                          <td className="px-2.5">
+                            {Number.isFinite(r.volMultiple) ? (
+                              <span
+                                className={`text-[11.5px] font-semibold ${
+                                  r.volMultiple >= 1.5
+                                    ? 'text-[#A78BFA]'
+                                    : r.volMultiple >= 1.2
+                                    ? 'text-[#2EDC7E]'
+                                    : 'text-[#9CA3AF]'
+                                }`}
+                              >
+                                {fmtNum(r.volMultiple, 1)}×
+                              </span>
+                            ) : (
+                              <span className="text-[#787B86]">—</span>
+                            )}
+                          </td>
+                          <td className="px-3.5 text-left font-sans text-[11.5px]">
+                            <div className="flex flex-wrap items-center gap-1">
+                              {r.hasUsOptions && (
+                                <span className="px-1.5 py-0.2 rounded bg-[#3B82F6]/15 text-[#60A5FA] text-[9.5px] font-semibold font-mono-num">
+                                  OPRA
+                                </span>
+                              )}
+                              {r.hasBymaOptions && (
+                                <span className="px-1.5 py-0.2 rounded bg-[#2EDC7E]/15 text-[#2EDC7E] text-[9.5px] font-semibold font-mono-num">
+                                  BYMA OPC
+                                </span>
+                              )}
+                              <span
+                                className={
+                                  isDiscount
+                                    ? 'text-[#2EDC7E] font-semibold'
+                                    : isPremium
+                                    ? 'text-[#F5B544] font-semibold'
+                                    : 'text-[#9CA3AF]'
+                                }
+                              >
+                                {r.arbitrageSignal || '—'}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -893,23 +2191,20 @@ export const USMarketModule: React.FC<{
   }) => void;
 }> = ({ onOpenOrderTicket }) => {
   const liveMarket = useLiveMarketState();
-  const [selectedSector, setSelectedSector] = useState<string>('Todos');
-  const [searchQ, setSearchQ] = useState<string>('');
 
   useEffect(() => {
     void Promise.all([
       requestUsSnapshot('SPY'),
       requestUsSnapshot('QQQ'),
       requestUsSnapshot('IWM'),
-      requestUsSnapshot('MSFT'),
-      requestUsSnapshot('AMZN'),
-      requestUsSnapshot('TSLA'),
+      requestMonitoringPanel('cedears'),
     ]);
   }, []);
 
-  const sectors = [
+  const usSectors: readonly string[] = [
     'Todos',
     'Mega Caps / Tech',
+    'Semiconductores',
     'Finanzas',
     'Consumo',
     'Energía',
@@ -918,13 +2213,75 @@ export const USMarketModule: React.FC<{
     'Índices / ETF',
   ];
 
-  const filteredUS = US_MARKET_DATA.filter((item) => {
-    const matchSec = selectedSector === 'Todos' || item.sector === selectedSector;
-    const q = searchQ.trim().toLowerCase();
-    const matchQ =
-      !q || item.ticker.toLowerCase().includes(q) || item.name.toLowerCase().includes(q);
-    return matchSec && matchQ;
-  });
+  const usPanelAnalytics =
+    liveMarket.usSnapshotsBySymbol['SPY']?.usEquityPanel ??
+    liveMarket.monitoring?.usEquityPanel ??
+    US_PANEL_ANALYTICS;
+
+  const usPanelRows: NormalizedPanelRow[] = useMemo(() => {
+    const analyticsMap = new Map<string, EquityPanelRowDto>(
+      (usPanelAnalytics?.rows ?? []).map((r) => [r.symbol, r]),
+    );
+    return US_MARKET_DATA.map((u) => {
+      const extra = analyticsMap.get(u.ticker);
+      return {
+        symbol: u.ticker,
+        name: u.name,
+        sector: u.sector,
+        panel: u.panel,
+        color: u.color,
+        last: extra?.last !== undefined && extra.last !== null ? extra.last : u.price,
+        prevClose:
+          extra?.prevClose !== undefined && extra.prevClose !== null ? extra.prevClose : u.prevClose,
+        dayLow: extra?.dayLow !== undefined && extra.dayLow !== null ? extra.dayLow : u.low,
+        dayHigh: extra?.dayHigh !== undefined && extra.dayHigh !== null ? extra.dayHigh : u.high,
+        dayRangePos:
+          extra?.dayRangePos !== undefined && extra.dayRangePos !== null
+            ? extra.dayRangePos
+            : u.dayRangePos,
+        volumeM: extra?.volumeM !== undefined && extra.volumeM !== null ? extra.volumeM : u.volumeM,
+        return1dPct:
+          extra?.return1dPct !== undefined && extra.return1dPct !== null
+            ? extra.return1dPct
+            : u.deltaPct,
+        return30dPct:
+          extra?.return30dPct !== undefined && extra.return30dPct !== null
+            ? extra.return30dPct
+            : u.return30dPct,
+        returnYtdOr252dPct:
+          extra?.returnYtdOr252dPct !== undefined && extra.returnYtdOr252dPct !== null
+            ? extra.returnYtdOr252dPct
+            : u.returnYtdOr252dPct,
+        realizedVol30dPct:
+          extra?.realizedVol30dPct !== undefined && extra.realizedVol30dPct !== null
+            ? extra.realizedVol30dPct
+            : u.realizedVol30dPct,
+        beta: extra?.beta !== undefined && extra.beta !== null ? extra.beta : u.beta,
+        avgVolume40dM:
+          extra?.avgVolume40dM !== undefined && extra.avgVolume40dM !== null
+            ? extra.avgVolume40dM
+            : u.avgVolume40dM,
+      };
+    });
+  }, [usPanelAnalytics, liveMarket.version]);
+
+  const handleSelectUsRow = (symbol: string) => {
+    const item = US_MARKET_DATA.find((u) => u.ticker === symbol);
+    if (!item) return;
+    onOpenOrderTicket({
+      ticker: item.ticker,
+      side: 'Compra',
+      price: Number.isFinite(item.cedearArsPrice)
+        ? item.cedearArsPrice
+        : Number.isFinite(item.price)
+        ? item.price
+        : 0,
+      qty: 10,
+      instrumentLabel: Number.isFinite(item.cedearRatioNum)
+        ? `CEDEAR ${item.name} (Ratio ${item.cedearRatio})`
+        : `${item.name} (NYSE / NASDAQ)`,
+    });
+  };
 
   const spy = US_MARKET_DATA.find((u) => u.ticker === 'SPY');
   const qqq = US_MARKET_DATA.find((u) => u.ticker === 'QQQ');
@@ -1179,73 +2536,16 @@ export const USMarketModule: React.FC<{
         );
       })()}
 
-      {/* Universo de Acciones más líquidas (Heat Tiles apaisadas segmentables por sector) */}
-      <div className="rounded-[10px] bg-[#131722] border border-[#232733] p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-[15px] font-bold text-[#FFFFFF] tracking-tight">
-              Top Acciones Más Líquidas de EE.UU. (NYSE / NASDAQ)
-            </h3>
-            <p className="text-[11.5px] text-[#787B86]">
-              Click en cualquier acción para operar su CEDEAR o inspeccionar paridad CCL implícita
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              value={searchQ}
-              onChange={(e) => setSearchQ(e.target.value)}
-              placeholder="Filtrar ticker (NVDA, AAPL...)"
-              className="px-3 py-1.5 rounded-[8px] bg-[#0B0E14] border border-[#232733] text-[12px] text-[#FFFFFF] placeholder:text-[#787B86] outline-none focus:border-[#3B82F6]"
-            />
-            <div className="flex items-center gap-1 bg-[#0B0E14] p-1 rounded-[8px] border border-[#232733] overflow-x-auto">
-              {sectors.map((sec) => (
-                <button
-                  key={sec}
-                  type="button"
-                  onClick={() => setSelectedSector(sec)}
-                  className={`px-2.5 py-1 rounded-[6px] text-[11px] font-semibold cursor-pointer whitespace-nowrap transition-colors ${
-                    selectedSector === sec
-                      ? 'bg-[#1F2637] text-[#FFFFFF]'
-                      : 'text-[#787B86] hover:text-[#D1D4DC]'
-                  }`}
-                >
-                  {sec}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-          {filteredUS.map((item) => (
-            <HeatTile
-              key={item.ticker}
-              ticker={item.ticker}
-              color={item.color}
-              deltaPct={item.deltaPct}
-              price={Number.isFinite(item.price) ? `US$ ${fmtNum(item.price, 2)}` : '—'}
-              subtitle={
-                Number.isFinite(item.volMultiple)
-                  ? `${fmtNum(item.volMultiple, 1)}x`
-                  : Number.isFinite(item.cedearArsPrice)
-                  ? `$${fmtNum(item.cedearArsPrice, 0)}`
-                  : '—'
-              }
-              onClick={() =>
-                onOpenOrderTicket({
-                  ticker: item.ticker,
-                  side: 'Compra',
-                  price: item.cedearArsPrice,
-                  qty: 10,
-                  instrumentLabel: `CEDEAR ${item.name} (Ratio ${item.cedearRatio})`,
-                })
-              }
-            />
-          ))}
-        </div>
-      </div>
+      {/* Universo ampliado EE.UU. (~73 acciones & ETFs en 6 paneles analíticos) */}
+      <EquitySixPanelsGrid
+        mode="US"
+        rows={usPanelRows}
+        analytics={usPanelAnalytics}
+        currencyPrefix="US$ "
+        benchmarkLabel="SPY"
+        sectorOptions={usSectors}
+        onSelectRow={handleSelectUsRow}
+      />
     </div>
   );
 };

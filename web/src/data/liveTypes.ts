@@ -25,9 +25,15 @@ export interface ArStockDto {
   readonly prevClose: number | null;
   readonly low: number | null;
   readonly high: number | null;
+  readonly dayRangePos?: number | null;
   readonly vwap: number | null;
   readonly volumeM: number | null;
   readonly volMultiple: number | null;
+  readonly return30dPct?: number | null;
+  readonly returnYtdOr252dPct?: number | null;
+  readonly realizedVol30dPct?: number | null;
+  readonly beta?: number | null;
+  readonly avgVolume40dM?: number | null;
   readonly signalText: string;
   readonly adrTicker?: string;
   readonly adrRatio?: number;
@@ -35,9 +41,16 @@ export interface ArStockDto {
   readonly adrDeltaPct?: number | null;
   readonly cclImplicit?: number | null;
   readonly cclZScore?: number | null;
+  readonly cclMismatchPct?: number | null;
+  readonly cclMismatchArs?: number | null;
+  readonly fairArsPrice?: number | null;
   readonly iv30d?: number | null;
+  readonly ivSource?: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
   readonly ivRank?: 'barata' | 'rango' | 'cara';
   readonly ivPercentile?: number | null;
+  readonly hasUsOptions?: boolean;
+  readonly hasBymaOptions?: boolean;
+  readonly arbitrageSignal?: string | null;
   readonly sparkline: readonly number[];
   readonly source: string;
 }
@@ -149,6 +162,63 @@ export interface ArMacroResponse {
   readonly sovereignCurve: readonly ArBondDto[];
 }
 
+export interface PanelVolumeDayPoint {
+  readonly date: string;
+  readonly totalVolumeM: number;
+}
+
+export interface PanelVolumeShareItem {
+  readonly symbol: string;
+  readonly name: string;
+  readonly color: string;
+  readonly volumeM: number;
+  readonly sharePct: number;
+}
+
+export interface PanelVolHistoryPoint {
+  readonly date: string;
+  readonly panelVolPct: number;
+  readonly avgStockVolPct: number | null;
+  readonly constituents: number;
+}
+
+export interface EquityPanelRowDto {
+  readonly symbol: string;
+  readonly name: string;
+  readonly sector: string;
+  readonly panel: 'Líder' | 'General';
+  readonly color: string;
+  readonly last: number | null;
+  readonly prevClose: number | null;
+  readonly dayLow: number | null;
+  readonly dayHigh: number | null;
+  readonly dayRangePos: number | null;
+  readonly volumeM: number | null;
+  readonly return1dPct: number | null;
+  readonly return30dPct: number | null;
+  readonly returnYtdOr252dPct: number | null;
+  readonly realizedVol30dPct: number | null;
+  readonly beta: number | null;
+  readonly avgVolume40dM: number | null;
+  readonly iv30d: number | null;
+  readonly hasUsOptions: boolean;
+}
+
+export interface EquityPanelAnalyticsDto {
+  readonly asOfUtcSec: number;
+  readonly benchmarkSymbol: string;
+  readonly panelLabel: string;
+  readonly currency: 'USD' | 'ARS';
+  readonly rows: readonly EquityPanelRowDto[];
+  readonly panelVolume40d: readonly PanelVolumeDayPoint[];
+  readonly volumeAvg40dM: number | null;
+  readonly volumeShareBreakdown: readonly PanelVolumeShareItem[];
+  readonly panelVolHistory: readonly PanelVolHistoryPoint[];
+  readonly topGainers: readonly EquityPanelRowDto[];
+  readonly topLosers: readonly EquityPanelRowDto[];
+  readonly errors: readonly string[];
+}
+
 export interface ArMonitoringResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
@@ -158,6 +228,8 @@ export interface ArMonitoringResponse {
   readonly generalPanel: readonly ArStockDto[];
   readonly bonds: readonly ArBondDto[];
   readonly cedears: readonly ArStockDto[];
+  readonly arPanelAnalytics?: EquityPanelAnalyticsDto | null;
+  readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
   readonly notes: readonly ArNoteOrCorpDto[];
   readonly corps: readonly ArNoteOrCorpDto[];
   readonly mepMedian: number | null;
@@ -722,6 +794,11 @@ export interface UsUnifiedQuoteDto {
   readonly change: number | null;
   readonly changePct: number | null;
   readonly previousClose: number | null;
+  readonly dayLow?: number | null;
+  readonly dayHigh?: number | null;
+  readonly dayRangePos?: number | null;
+  readonly volumeM?: number | null;
+  readonly iv30d?: number | null;
   readonly marketStatus: string | null;
   readonly volume: number | null;
 }
@@ -829,4 +906,5 @@ export interface UsSnapshotResponseDto {
     };
   };
   readonly terminalEngines?: SerializedTerminalEnginesDto | null;
+  readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
 }

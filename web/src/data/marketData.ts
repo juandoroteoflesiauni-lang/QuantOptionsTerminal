@@ -8,6 +8,7 @@ import type {
   ArOverviewResponse,
   ArRelationsResponse,
   ArStockDto,
+  EquityPanelAnalyticsDto,
   UsSnapshotResponseDto,
 } from './liveTypes';
 
@@ -81,18 +82,31 @@ export interface StockRow {
   prevClose: number;
   low: number;
   high: number;
+  dayRangePos?: number;
   vwap: number;
   volumeM: number; // millones ARS
   volMultiple: number;
+  return30dPct?: number;
+  returnYtdOr252dPct?: number;
+  realizedVol30dPct?: number;
+  beta?: number;
+  avgVolume40dM?: number;
   signalText: string;
   adrTicker?: string;
   adrRatio?: number;
   adrPrice?: number;
   adrDeltaPct?: number;
   cclImplicit?: number;
+  cclMismatchPct?: number;
+  cclMismatchArs?: number;
+  fairArsPrice?: number;
   iv30d?: number;
+  ivSource?: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
   ivRank?: 'barata' | 'rango' | 'cara';
   ivPercentile?: number;
+  hasUsOptions?: boolean;
+  hasBymaOptions?: boolean;
+  arbitrageSignal?: string | null;
   sparkline: number[];
 }
 
@@ -117,17 +131,30 @@ const makeSkeletonStock = (
   prevClose: Number.NaN,
   low: Number.NaN,
   high: Number.NaN,
+  dayRangePos: Number.NaN,
   vwap: Number.NaN,
   volumeM: Number.NaN,
   volMultiple: Number.NaN,
+  return30dPct: Number.NaN,
+  returnYtdOr252dPct: Number.NaN,
+  realizedVol30dPct: Number.NaN,
+  beta: Number.NaN,
+  avgVolume40dM: Number.NaN,
   signalText: '—',
   ...(adrTicker !== undefined ? { adrTicker } : {}),
   ...(adrRatio !== undefined ? { adrRatio } : {}),
   adrPrice: Number.NaN,
   adrDeltaPct: Number.NaN,
   cclImplicit: Number.NaN,
+  cclMismatchPct: Number.NaN,
+  cclMismatchArs: Number.NaN,
+  fairArsPrice: Number.NaN,
   iv30d: Number.NaN,
+  ivSource: 'NONE',
   ivRank: 'rango',
+  hasUsOptions: adrTicker !== undefined,
+  hasBymaOptions: false,
+  arbitrageSignal: null,
   sparkline: [],
 });
 
@@ -392,18 +419,29 @@ export interface USStockItem {
   name: string;
   sector:
     | 'Mega Caps / Tech'
+    | 'Semiconductores'
     | 'Finanzas'
     | 'Consumo'
     | 'Energía'
     | 'Salud'
     | 'Industrial'
     | 'Índices / ETF';
+  panel: 'Líder' | 'General';
   color: string;
   price: number;
+  prevClose: number;
   deltaPct: number;
   low: number;
   high: number;
+  dayRangePos: number;
+  volumeM: number;
   volMultiple: number;
+  return30dPct: number;
+  returnYtdOr252dPct: number;
+  realizedVol30dPct: number;
+  beta: number;
+  avgVolume40dM: number;
+  hasUsOptions: boolean;
   cedearRatio: string;
   cedearRatioNum: number;
   cedearArsPrice: number;
@@ -416,19 +454,31 @@ const makeSkeletonUsStock = (
   ticker: string,
   name: string,
   sector: USStockItem['sector'],
+  panel: 'Líder' | 'General',
   color: string,
-  cedearRatioNum: number
+  cedearRatioNum: number,
+  hasUsOptions = true
 ): USStockItem => ({
   ticker,
   name,
   sector,
+  panel,
   color,
   price: Number.NaN,
+  prevClose: Number.NaN,
   deltaPct: Number.NaN,
   low: Number.NaN,
   high: Number.NaN,
+  dayRangePos: Number.NaN,
+  volumeM: Number.NaN,
   volMultiple: Number.NaN,
-  cedearRatio: `${cedearRatioNum}:1`,
+  return30dPct: Number.NaN,
+  returnYtdOr252dPct: Number.NaN,
+  realizedVol30dPct: Number.NaN,
+  beta: Number.NaN,
+  avgVolume40dM: Number.NaN,
+  hasUsOptions,
+  cedearRatio: Number.isFinite(cedearRatioNum) && cedearRatioNum > 0 ? `${cedearRatioNum}:1` : '—',
   cedearRatioNum,
   cedearArsPrice: Number.NaN,
   cclImplicit: Number.NaN,
@@ -437,29 +487,91 @@ const makeSkeletonUsStock = (
 });
 
 export const US_MARKET_DATA: USStockItem[] = [
-  makeSkeletonUsStock('NVDA', 'NVIDIA Corporation', 'Mega Caps / Tech', '#10B981', 24),
-  makeSkeletonUsStock('AAPL', 'Apple Inc.', 'Mega Caps / Tech', '#64748B', 20),
-  makeSkeletonUsStock('MSFT', 'Microsoft Corporation', 'Mega Caps / Tech', '#0EA5E9', 30),
-  makeSkeletonUsStock('AMZN', 'Amazon.com Inc.', 'Mega Caps / Tech', '#F59E0B', 144),
-  makeSkeletonUsStock('GOOGL', 'Alphabet Inc. Class A', 'Mega Caps / Tech', '#3B82F6', 58),
-  makeSkeletonUsStock('META', 'Meta Platforms Inc.', 'Mega Caps / Tech', '#2563EB', 24),
-  makeSkeletonUsStock('TSLA', 'Tesla Inc.', 'Mega Caps / Tech', '#EF4444', 15),
-  makeSkeletonUsStock('AMD', 'Advanced Micro Devices', 'Mega Caps / Tech', '#14B8A6', 10),
-  makeSkeletonUsStock('JPM', 'JPMorgan Chase & Co.', 'Finanzas', '#1D4ED8', 15),
-  makeSkeletonUsStock('BAC', 'Bank of America Corp.', 'Finanzas', '#2563EB', 4),
-  makeSkeletonUsStock('BRK.B', 'Berkshire Hathaway', 'Finanzas', '#6366F1', 22),
-  makeSkeletonUsStock('MELI', 'MercadoLibre Inc.', 'Consumo', '#FACC15', 120),
-  makeSkeletonUsStock('KO', 'Coca-Cola Co.', 'Consumo', '#EF4444', 5),
-  makeSkeletonUsStock('WMT', 'Walmart Inc.', 'Consumo', '#2563EB', 18),
-  makeSkeletonUsStock('XOM', 'Exxon Mobil Corp.', 'Energía', '#DC2626', 10),
-  makeSkeletonUsStock('SLB', 'SLB (Schlumberger)', 'Energía', '#0284C7', 3),
-  makeSkeletonUsStock('SPY', 'SPDR S&P 500 ETF', 'Índices / ETF', '#8B7CF6', 20),
-  makeSkeletonUsStock('QQQ', 'Invesco QQQ Trust', 'Índices / ETF', '#06B6D4', 20),
-  makeSkeletonUsStock('IWM', 'iShares Russell 2000', 'Índices / ETF', '#F59E0B', 10),
-  makeSkeletonUsStock('EWZ', 'iShares MSCI Brazil', 'Índices / ETF', '#10B981', 2),
-  makeSkeletonUsStock('XLE', 'Energy Select Sector SPDR', 'Índices / ETF', '#EA580C', 2),
-  makeSkeletonUsStock('XLF', 'Financial Select Sector SPDR', 'Índices / ETF', '#3B82F6', 2),
+  // Mega Caps / Tech
+  makeSkeletonUsStock('AAPL', 'Apple Inc.', 'Mega Caps / Tech', 'Líder', '#4BA3FF', 20),
+  makeSkeletonUsStock('MSFT', 'Microsoft Corporation', 'Mega Caps / Tech', 'Líder', '#00A4EF', 30),
+  makeSkeletonUsStock('NVDA', 'NVIDIA Corporation', 'Mega Caps / Tech', 'Líder', '#2EDC7E', 24),
+  makeSkeletonUsStock('AMZN', 'Amazon.com Inc.', 'Mega Caps / Tech', 'Líder', '#FF9900', 144),
+  makeSkeletonUsStock('GOOGL', 'Alphabet Inc. Class A', 'Mega Caps / Tech', 'Líder', '#F5B544', 58),
+  makeSkeletonUsStock('META', 'Meta Platforms Inc.', 'Mega Caps / Tech', 'Líder', '#38BDF8', 24),
+  makeSkeletonUsStock('TSLA', 'Tesla Inc.', 'Mega Caps / Tech', 'Líder', '#E82127', 15),
+  makeSkeletonUsStock('CRM', 'Salesforce Inc.', 'Mega Caps / Tech', 'General', '#00A1E0', 18),
+  makeSkeletonUsStock('ORCL', 'Oracle Corp.', 'Mega Caps / Tech', 'General', '#F80000', 3),
+  makeSkeletonUsStock('NFLX', 'Netflix Inc.', 'Mega Caps / Tech', 'General', '#E50914', 48),
+  // Semiconductores
+  makeSkeletonUsStock('AVGO', 'Broadcom Inc.', 'Semiconductores', 'Líder', '#CC092F', 39),
+  makeSkeletonUsStock('AMD', 'Advanced Micro Devices', 'Semiconductores', 'Líder', '#8B7CF6', 10),
+  makeSkeletonUsStock('TSM', 'Taiwan Semiconductor', 'Semiconductores', 'Líder', '#6366F1', 9),
+  makeSkeletonUsStock('INTC', 'Intel Corp.', 'Semiconductores', 'General', '#0071C5', 5),
+  makeSkeletonUsStock('QCOM', 'Qualcomm Inc.', 'Semiconductores', 'General', '#3253DC', 11),
+  makeSkeletonUsStock('MU', 'Micron Technology', 'Semiconductores', 'General', '#06B6D4', 5),
+  // Finanzas
+  makeSkeletonUsStock('JPM', 'JPMorgan Chase & Co.', 'Finanzas', 'Líder', '#60A5FA', 15),
+  makeSkeletonUsStock('BAC', 'Bank of America Corp.', 'Finanzas', 'Líder', '#E31837', 4),
+  makeSkeletonUsStock('WFC', 'Wells Fargo & Co.', 'Finanzas', 'General', '#D71E28', 5),
+  makeSkeletonUsStock('GS', 'Goldman Sachs Group', 'Finanzas', 'Líder', '#7399C6', 13),
+  makeSkeletonUsStock('MS', 'Morgan Stanley', 'Finanzas', 'General', '#3B82F6', 41),
+  makeSkeletonUsStock('C', 'Citigroup Inc.', 'Finanzas', 'General', '#003B70', Number.NaN),
+  makeSkeletonUsStock('V', 'Visa Inc.', 'Finanzas', 'Líder', '#1A1F71', 18),
+  makeSkeletonUsStock('MA', 'Mastercard Inc.', 'Finanzas', 'Líder', '#EB001B', 33),
+  makeSkeletonUsStock('BRK.B', 'Berkshire Hathaway', 'Finanzas', 'Líder', '#A78BFA', 22),
+  makeSkeletonUsStock('BLK', 'BlackRock Inc.', 'Finanzas', 'General', '#94A3B8', 30),
+  makeSkeletonUsStock('NU', 'Nu Holdings', 'Finanzas', 'General', '#820AD1', 2),
+  makeSkeletonUsStock('GGAL', 'Grupo Fin. Galicia ADR', 'Finanzas', 'General', '#4BA3FF', Number.NaN),
+  makeSkeletonUsStock('BMA', 'Banco Macro ADR', 'Finanzas', 'General', '#8B7CF6', Number.NaN),
+  // Consumo
+  makeSkeletonUsStock('WMT', 'Walmart Inc.', 'Consumo', 'Líder', '#0071CE', 18),
+  makeSkeletonUsStock('COST', 'Costco Wholesale', 'Consumo', 'Líder', '#E31837', 48),
+  makeSkeletonUsStock('KO', 'Coca-Cola Co.', 'Consumo', 'Líder', '#F40009', 5),
+  makeSkeletonUsStock('PEP', 'PepsiCo Inc.', 'Consumo', 'General', '#004B93', 18),
+  makeSkeletonUsStock('MCD', "McDonald's Corp.", 'Consumo', 'General', '#FFC72C', 24),
+  makeSkeletonUsStock('NKE', 'Nike Inc.', 'Consumo', 'General', '#F97316', 12),
+  makeSkeletonUsStock('HD', 'Home Depot Inc.', 'Consumo', 'General', '#F96302', 32),
+  makeSkeletonUsStock('DIS', 'Walt Disney Co.', 'Consumo', 'General', '#38BDF8', 12),
+  makeSkeletonUsStock('PG', 'Procter & Gamble', 'Consumo', 'General', '#003DA5', 15),
+  makeSkeletonUsStock('MELI', 'MercadoLibre Inc.', 'Consumo', 'Líder', '#FFE600', 120),
+  // Energía
+  makeSkeletonUsStock('XOM', 'Exxon Mobil Corp.', 'Energía', 'Líder', '#FF5468', 10),
+  makeSkeletonUsStock('CVX', 'Chevron Corp.', 'Energía', 'Líder', '#005A9C', 16),
+  makeSkeletonUsStock('SLB', 'SLB (Schlumberger)', 'Energía', 'General', '#004B87', 3),
+  makeSkeletonUsStock('COP', 'ConocoPhillips', 'Energía', 'General', '#DC2626', 25),
+  makeSkeletonUsStock('OXY', 'Occidental Petroleum', 'Energía', 'General', '#EF4444', 5),
+  makeSkeletonUsStock('PBR', 'Petrobras ADR', 'Energía', 'General', '#10B981', 1),
+  makeSkeletonUsStock('YPF', 'YPF S.A. ADR', 'Energía', 'General', '#38BDF8', Number.NaN),
+  makeSkeletonUsStock('VIST', 'Vista Energy ADR', 'Energía', 'General', '#2EDC7E', 3),
+  makeSkeletonUsStock('PAM', 'Pampa Energía ADR', 'Energía', 'General', '#F59E0B', Number.NaN),
+  // Salud
+  makeSkeletonUsStock('LLY', 'Eli Lilly & Co.', 'Salud', 'Líder', '#D52B1E', 56),
+  makeSkeletonUsStock('UNH', 'UnitedHealth Group', 'Salud', 'Líder', '#002677', 33),
+  makeSkeletonUsStock('JNJ', 'Johnson & Johnson', 'Salud', 'General', '#D51900', 15),
+  makeSkeletonUsStock('PFE', 'Pfizer Inc.', 'Salud', 'General', '#0093D0', 4),
+  makeSkeletonUsStock('ABBV', 'AbbVie Inc.', 'Salud', 'General', '#071D49', 10),
+  makeSkeletonUsStock('MRK', 'Merck & Co.', 'Salud', 'General', '#00857C', 5),
+  // Industrial
+  makeSkeletonUsStock('CAT', 'Caterpillar Inc.', 'Industrial', 'Líder', '#FFCD11', 20),
+  makeSkeletonUsStock('BA', 'Boeing Co.', 'Industrial', 'Líder', '#1D4ED8', 24),
+  makeSkeletonUsStock('GE', 'GE Aerospace', 'Industrial', 'General', '#3B82F6', 8),
+  makeSkeletonUsStock('HON', 'Honeywell Intl.', 'Industrial', 'General', '#EE3124', 4),
+  makeSkeletonUsStock('UPS', 'United Parcel Service', 'Industrial', 'General', '#92400E', Number.NaN),
+  makeSkeletonUsStock('DE', 'Deere & Co.', 'Industrial', 'General', '#367C2B', 40),
+  makeSkeletonUsStock('LMT', 'Lockheed Martin', 'Industrial', 'General', '#0EA5E9', 20),
+  // Índices / ETF
+  makeSkeletonUsStock('SPY', 'SPDR S&P 500 ETF', 'Índices / ETF', 'Líder', '#2EDC7E', 20),
+  makeSkeletonUsStock('QQQ', 'Invesco QQQ Trust', 'Índices / ETF', 'Líder', '#8B7CF6', 20),
+  makeSkeletonUsStock('IWM', 'iShares Russell 2000', 'Índices / ETF', 'Líder', '#F59E0B', 10),
+  makeSkeletonUsStock('DIA', 'SPDR Dow Jones ETF', 'Índices / ETF', 'Líder', '#60A5FA', 20),
+  makeSkeletonUsStock('XLF', 'Financial Select ETF', 'Índices / ETF', 'General', '#3B82F6', 2),
+  makeSkeletonUsStock('XLE', 'Energy Select ETF', 'Índices / ETF', 'General', '#EF4444', 2),
+  makeSkeletonUsStock('XLK', 'Technology Select ETF', 'Índices / ETF', 'General', '#8B5CF6', Number.NaN),
+  makeSkeletonUsStock('XLV', 'Health Care Select ETF', 'Índices / ETF', 'General', '#14B8A6', Number.NaN),
+  makeSkeletonUsStock('XLI', 'Industrial Select ETF', 'Índices / ETF', 'General', '#F97316', Number.NaN),
+  makeSkeletonUsStock('GLD', 'SPDR Gold Shares', 'Índices / ETF', 'General', '#F5B544', 50),
+  makeSkeletonUsStock('SLV', 'iShares Silver Trust', 'Índices / ETF', 'General', '#94A3B8', 6),
+  makeSkeletonUsStock('EWZ', 'iShares MSCI Brazil', 'Índices / ETF', 'General', '#22C55E', 2),
 ];
+
+export let AR_PANEL_ANALYTICS: import('./liveTypes').EquityPanelAnalyticsDto | null = null;
+export let US_PANEL_ANALYTICS: import('./liveTypes').EquityPanelAnalyticsDto | null = null;
 
 export interface FutureContractRow {
   contract: string;
@@ -596,18 +708,31 @@ function dtoToStockRow(dto: ArStockDto): StockRow {
     prevClose: toNumOrNaN(dto.prevClose),
     low: toNumOrNaN(dto.low),
     high: toNumOrNaN(dto.high),
+    dayRangePos: toNumOrNaN(dto.dayRangePos),
     vwap: toNumOrNaN(dto.vwap),
     volumeM: toNumOrNaN(dto.volumeM),
     volMultiple: toNumOrNaN(dto.volMultiple),
+    return30dPct: toNumOrNaN(dto.return30dPct),
+    returnYtdOr252dPct: toNumOrNaN(dto.returnYtdOr252dPct),
+    realizedVol30dPct: toNumOrNaN(dto.realizedVol30dPct),
+    beta: toNumOrNaN(dto.beta),
+    avgVolume40dM: toNumOrNaN(dto.avgVolume40dM),
     signalText: dto.signalText || '—',
     ...(dto.adrTicker !== undefined ? { adrTicker: dto.adrTicker } : {}),
     ...(dto.adrRatio !== undefined ? { adrRatio: dto.adrRatio } : {}),
     adrPrice: toNumOrNaN(dto.adrPrice),
     adrDeltaPct: toNumOrNaN(dto.adrDeltaPct),
     cclImplicit: toNumOrNaN(dto.cclImplicit),
+    cclMismatchPct: toNumOrNaN(dto.cclMismatchPct),
+    cclMismatchArs: toNumOrNaN(dto.cclMismatchArs),
+    fairArsPrice: toNumOrNaN(dto.fairArsPrice),
     iv30d: toNumOrNaN(dto.iv30d),
+    ivSource: dto.ivSource ?? 'NONE',
     ...(dto.ivRank !== undefined ? { ivRank: dto.ivRank } : {}),
     ...(dto.ivPercentile !== null && dto.ivPercentile !== undefined ? { ivPercentile: dto.ivPercentile } : {}),
+    hasUsOptions: dto.hasUsOptions ?? false,
+    hasBymaOptions: dto.hasBymaOptions ?? false,
+    arbitrageSignal: dto.arbitrageSignal ?? null,
     sparkline: Array.isArray(dto.sparkline) ? dto.sparkline.filter((v) => Number.isFinite(v)) : [],
   };
 }
@@ -798,12 +923,75 @@ export function hydrateFromArMacro(macro: ArMacroResponse): void {
   }
 }
 
+function applyUsEquityPanelAnalytics(panel: EquityPanelAnalyticsDto): void {
+  US_PANEL_ANALYTICS = panel;
+  for (const r of panel.rows) {
+    const existing = US_MARKET_DATA.find((u) => u.ticker === r.symbol.toUpperCase());
+    if (!existing) continue;
+    if (r.last !== null && Number.isFinite(r.last)) existing.price = r.last;
+    if (r.prevClose !== null && Number.isFinite(r.prevClose)) existing.prevClose = r.prevClose;
+    if (r.dayLow !== null && Number.isFinite(r.dayLow)) existing.low = r.dayLow;
+    if (r.dayHigh !== null && Number.isFinite(r.dayHigh)) existing.high = r.dayHigh;
+    if (r.dayRangePos !== null && Number.isFinite(r.dayRangePos)) existing.dayRangePos = r.dayRangePos;
+    if (r.volumeM !== null && Number.isFinite(r.volumeM)) existing.volumeM = r.volumeM;
+    if (r.return1dPct !== null && Number.isFinite(r.return1dPct)) existing.deltaPct = r.return1dPct;
+    if (r.return30dPct !== null && Number.isFinite(r.return30dPct)) existing.return30dPct = r.return30dPct;
+    if (r.returnYtdOr252dPct !== null && Number.isFinite(r.returnYtdOr252dPct)) {
+      existing.returnYtdOr252dPct = r.returnYtdOr252dPct;
+    }
+    if (r.realizedVol30dPct !== null && Number.isFinite(r.realizedVol30dPct)) {
+      existing.realizedVol30dPct = r.realizedVol30dPct;
+    }
+    if (r.beta !== null && Number.isFinite(r.beta)) existing.beta = r.beta;
+    if (r.avgVolume40dM !== null && Number.isFinite(r.avgVolume40dM)) existing.avgVolume40dM = r.avgVolume40dM;
+    if (r.iv30d !== null && Number.isFinite(r.iv30d)) existing.iv30d = r.iv30d;
+    existing.hasUsOptions = r.hasUsOptions;
+    if (
+      Number.isFinite(existing.price) &&
+      existing.price > 0 &&
+      Number.isFinite(existing.cedearArsPrice) &&
+      existing.cedearRatioNum > 0
+    ) {
+      existing.cclImplicit = Number(((existing.cedearArsPrice * existing.cedearRatioNum) / existing.price).toFixed(2));
+    }
+  }
+}
+
 export function hydrateFromArMonitoring(mon: ArMonitoringResponse): void {
   if (mon.stocks.length > 0) {
     AR_STOCKS.splice(0, AR_STOCKS.length, ...mon.stocks.map(dtoToStockRow));
   }
   if (mon.generalPanel.length > 0) {
     AR_GENERAL_PANEL_STOCKS.splice(0, AR_GENERAL_PANEL_STOCKS.length, ...mon.generalPanel.map(dtoToStockRow));
+  }
+  for (const ced of mon.cedears) {
+    const existing = US_MARKET_DATA.find(
+      (u) =>
+        u.ticker === ced.ticker ||
+        u.ticker.replace('.', '') === ced.ticker ||
+        (ced.adrTicker !== undefined && u.ticker === ced.adrTicker.replace(' US', '')),
+    );
+    if (existing) {
+      if (ced.last !== null && Number.isFinite(ced.last)) existing.cedearArsPrice = ced.last;
+      if (ced.adrPrice !== null && ced.adrPrice !== undefined && Number.isFinite(ced.adrPrice)) {
+        existing.price = ced.adrPrice;
+      }
+      if (ced.iv30d !== null && ced.iv30d !== undefined && Number.isFinite(ced.iv30d)) {
+        existing.iv30d = ced.iv30d;
+      }
+      if (ced.volMultiple !== null && Number.isFinite(ced.volMultiple)) {
+        existing.volMultiple = ced.volMultiple;
+      }
+      if (ced.cclImplicit !== null && ced.cclImplicit !== undefined && Number.isFinite(ced.cclImplicit)) {
+        existing.cclImplicit = ced.cclImplicit;
+      }
+    }
+  }
+  if (mon.arPanelAnalytics !== undefined && mon.arPanelAnalytics !== null) {
+    AR_PANEL_ANALYTICS = mon.arPanelAnalytics;
+  }
+  if (mon.usEquityPanel !== undefined && mon.usEquityPanel !== null) {
+    applyUsEquityPanelAnalytics(mon.usEquityPanel);
   }
   const combinedBonds: BondRow[] = [
     ...mon.bonds.map(mapBondDtoToRow),
@@ -1128,10 +1316,26 @@ export function hydrateFromUsSnapshot(snap: UsSnapshotResponseDto): void {
     const row = US_MARKET_DATA.find((u) => u.ticker === cleanTicker);
     if (row) {
       if (q.price !== null && Number.isFinite(q.price)) row.price = q.price;
+      if (q.previousClose !== null && Number.isFinite(q.previousClose)) row.prevClose = q.previousClose;
       if (q.changePct !== null && Number.isFinite(q.changePct)) row.deltaPct = q.changePct;
-      if (Number.isFinite(row.price) && row.price > 0 && Number.isFinite(row.cedearArsPrice)) {
+      if (q.dayLow !== undefined && q.dayLow !== null && Number.isFinite(q.dayLow)) row.low = q.dayLow;
+      if (q.dayHigh !== undefined && q.dayHigh !== null && Number.isFinite(q.dayHigh)) row.high = q.dayHigh;
+      if (q.dayRangePos !== undefined && q.dayRangePos !== null && Number.isFinite(q.dayRangePos)) {
+        row.dayRangePos = q.dayRangePos;
+      }
+      if (q.volumeM !== undefined && q.volumeM !== null && Number.isFinite(q.volumeM)) row.volumeM = q.volumeM;
+      if (q.iv30d !== undefined && q.iv30d !== null && Number.isFinite(q.iv30d)) row.iv30d = q.iv30d * 100;
+      if (
+        Number.isFinite(row.price) &&
+        row.price > 0 &&
+        Number.isFinite(row.cedearArsPrice) &&
+        row.cedearRatioNum > 0
+      ) {
         row.cclImplicit = (row.cedearArsPrice * row.cedearRatioNum) / row.price;
       }
     }
+  }
+  if (snap.usEquityPanel !== undefined && snap.usEquityPanel !== null) {
+    applyUsEquityPanelAnalytics(snap.usEquityPanel);
   }
 }
