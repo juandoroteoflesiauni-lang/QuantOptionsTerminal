@@ -51,8 +51,91 @@ import {
   RangeBar,
   MiniSparkline,
   KPICard,
-  HeatTile,
 } from './DesignSystem';
+import { CompanyLogo } from './common/CompanyLogo';
+
+const LogoHeatTile: React.FC<{
+  readonly ticker: string;
+  readonly name?: string;
+  readonly deltaPct: number;
+  readonly price?: string;
+  readonly onClick?: () => void;
+}> = ({ ticker, name, deltaPct, price, onClick }) => {
+  const finiteDelta = Number.isFinite(deltaPct);
+  const isPos = finiteDelta && deltaPct > 0.001;
+  const isNeg = finiteDelta && deltaPct < -0.001;
+
+  let bgStyle = 'bg-[#1A1E29] border-[#262B3B]';
+  if (isPos) {
+    bgStyle =
+      deltaPct >= 2.5
+        ? 'bg-[#0E382B]/90 border-[#165B43]/70'
+        : 'bg-[#0D281E]/85 border-[#144634]/60';
+  } else if (isNeg) {
+    bgStyle =
+      deltaPct <= -2.0
+        ? 'bg-[#381419]/90 border-[#63222B]/70'
+        : 'bg-[#2D1418]/85 border-[#4D1E26]/60';
+  }
+
+  const pctColor = isPos ? 'text-[#22C55E]' : isNeg ? 'text-[#F23645]' : 'text-[#787B86]';
+  const sign = isPos ? '+' : isNeg ? '-' : '';
+  const formattedPct = finiteDelta ? `${sign}${Math.abs(deltaPct).toFixed(2).replace('.', ',')} %` : '—';
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative px-3.5 py-2.5 rounded-[8px] text-left transition-all duration-150 cursor-pointer flex flex-col justify-between min-h-[64px] border hover:border-[#3B82F6]/80 hover:brightness-110 ${bgStyle}`}
+    >
+      <div className="flex items-center justify-between gap-2 w-full">
+        <div className="flex items-center gap-2 min-w-0">
+          <CompanyLogo ticker={ticker} name={name} size="sm" />
+          <span className="font-bold text-[13.5px] text-[#FFFFFF] tracking-tight truncate">
+            {ticker}
+          </span>
+        </div>
+        {price && (
+          <span className="font-mono-num text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] transition-colors shrink-0">
+            {price}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 flex items-center justify-between w-full">
+        <span className={`font-mono-num text-[12.5px] font-semibold ${pctColor}`}>
+          {formattedPct}
+        </span>
+      </div>
+    </button>
+  );
+};
+
+const UsIndexLogoKpiCard: React.FC<{
+  readonly logoTicker?: string;
+  readonly iconNode?: React.ReactNode;
+  readonly title: string;
+  readonly heroValue: string;
+  readonly deltaPct?: number;
+  readonly subtitle: string;
+}> = ({ logoTicker, iconNode, title, heroValue, deltaPct, subtitle }) => (
+  <div className="px-4 py-3.5 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
+    <div className="flex items-center gap-2.5 min-w-0">
+      {logoTicker ? (
+        <CompanyLogo ticker={logoTicker} name={title} size="md" />
+      ) : (
+        iconNode
+      )}
+      <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">{title}</span>
+    </div>
+    <div className="flex items-baseline gap-2.5 pt-0.5">
+      <div className="font-mono-num text-[22px] leading-[26px] font-bold text-[#FFFFFF] tracking-tight">
+        {heroValue}
+      </div>
+      {deltaPct !== undefined && <DeltaPill value={deltaPct} size="md" />}
+    </div>
+    <div className="text-[11.5px] text-[#787B86] leading-snug truncate">{subtitle}</div>
+  </div>
+);
 
 export type MonitorSubPanel = 'acciones' | 'bonos' | 'cedears' | 'cauciones';
 
@@ -276,9 +359,10 @@ const EquitySixPanelsGrid: React.FC<{
               >
                 <td className="px-3 text-left">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: r.color }}
+                    <CompanyLogo
+                      ticker={r.symbol}
+                      name={r.name}
+                      size={denseRowClass.includes('h-8') ? 'xs' : 'sm'}
                     />
                     <span className="font-bold text-[#F3F4F6] tracking-tight">{r.symbol}</span>
                     <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">
@@ -419,6 +503,7 @@ const EquitySixPanelsGrid: React.FC<{
                     onClick={() => onSelectRow(row.symbol)}
                     className="w-full flex items-center gap-2.5 px-2 py-1 rounded-[6px] hover:bg-[#171724] text-left cursor-pointer transition-colors"
                   >
+                    <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
                     <span className="w-14 font-mono-num text-[11.5px] font-bold text-[#F3F4F6] shrink-0">
                       {row.symbol}
                     </span>
@@ -477,7 +562,7 @@ const EquitySixPanelsGrid: React.FC<{
                   >
                     <td className="px-3 text-left">
                       <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
+                        <CompanyLogo ticker={r.symbol} name={r.name} size="xs" />
                         <span className="font-bold text-[#F3F4F6]">{r.symbol}</span>
                       </div>
                     </td>
@@ -592,7 +677,8 @@ const EquitySixPanelsGrid: React.FC<{
                 <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono-num">
                   {volShares.map((s) => (
                     <span key={s.symbol} className="inline-flex items-center gap-1.5 text-[#A5A6BA]">
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                      {s.symbol !== 'Resto' && <CompanyLogo ticker={s.symbol} size="xs" />}
                       <span className="font-bold text-[#F3F4F6]">{s.symbol}</span>
                       <span>{fmtNum(s.sharePct, 1)}%</span>
                     </span>
@@ -716,7 +802,10 @@ const EquitySixPanelsGrid: React.FC<{
                       onClick={() => onSelectRow(g.symbol)}
                       className="w-full flex items-center justify-between px-2 py-1 rounded-[6px] hover:bg-[#171724] cursor-pointer text-[12px] font-mono-num"
                     >
-                      <span className="font-bold text-[#F3F4F6]">{g.symbol}</span>
+                      <span className="inline-flex items-center gap-1.5 min-w-[76px] text-left">
+                        <CompanyLogo ticker={g.symbol} name={g.name} size="xs" />
+                        <span className="font-bold text-[#F3F4F6]">{g.symbol}</span>
+                      </span>
                       <span className="text-[#8E90A6] text-[11px]">
                         {g.last !== null ? `${currencyPrefix}${fmtNum(g.last, 2)}` : '—'}
                       </span>
@@ -741,7 +830,10 @@ const EquitySixPanelsGrid: React.FC<{
                       onClick={() => onSelectRow(l.symbol)}
                       className="w-full flex items-center justify-between px-2 py-1 rounded-[6px] hover:bg-[#171724] cursor-pointer text-[12px] font-mono-num"
                     >
-                      <span className="font-bold text-[#F3F4F6]">{l.symbol}</span>
+                      <span className="inline-flex items-center gap-1.5 min-w-[76px] text-left">
+                        <CompanyLogo ticker={l.symbol} name={l.name} size="xs" />
+                        <span className="font-bold text-[#F3F4F6]">{l.symbol}</span>
+                      </span>
                       <span className="text-[#8E90A6] text-[11px]">
                         {l.last !== null ? `${currencyPrefix}${fmtNum(l.last, 2)}` : '—'}
                       </span>
@@ -907,10 +999,10 @@ export const HomeDashboard: React.FC<{
         {/* Grid de tarjetas rectangulares — Panel Líder */}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
           {AR_STOCKS.map((st) => (
-            <HeatTile
+            <LogoHeatTile
               key={st.ticker}
               ticker={st.ticker}
-              color={st.color}
+              name={st.name}
               deltaPct={st.deltaPct}
               price={Number.isFinite(st.last) ? `$${fmtNum(st.last, st.last < 1000 ? 1 : 0)}` : '—'}
               onClick={() => onSelectStock(st.ticker)}
@@ -931,10 +1023,10 @@ export const HomeDashboard: React.FC<{
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
             {AR_GENERAL_PANEL_STOCKS.map((st) => (
-              <HeatTile
+              <LogoHeatTile
                 key={st.ticker}
                 ticker={st.ticker}
-                color={st.color}
+                name={st.name}
                 deltaPct={st.deltaPct}
                 price={Number.isFinite(st.last) ? `$${fmtNum(st.last, st.last < 1000 ? 1 : 0)}` : '—'}
                 onClick={() => onSelectStock(st.ticker)}
@@ -1616,8 +1708,9 @@ export const MonitoringModule: React.FC<{
                         key={`disc-${d.key}`}
                         className="flex items-center justify-between text-[11.5px] font-mono-num"
                       >
-                        <span className="font-bold text-[#F3F4F6]">
-                          {d.ticker}{' '}
+                        <span className="inline-flex items-center gap-1.5 font-bold text-[#F3F4F6]">
+                          <CompanyLogo ticker={d.usTicker || d.ticker} name={d.name} size="xs" />
+                          <span>{d.ticker}</span>
                           <span className="text-[10px] font-sans text-[#787B86]">{d.kind}</span>
                         </span>
                         <span className="text-[#2EDC7E] font-semibold">
@@ -1645,8 +1738,9 @@ export const MonitoringModule: React.FC<{
                         key={`prem-${p.key}`}
                         className="flex items-center justify-between text-[11.5px] font-mono-num"
                       >
-                        <span className="font-bold text-[#F3F4F6]">
-                          {p.ticker}{' '}
+                        <span className="inline-flex items-center gap-1.5 font-bold text-[#F3F4F6]">
+                          <CompanyLogo ticker={p.usTicker || p.ticker} name={p.name} size="xs" />
+                          <span>{p.ticker}</span>
                           <span className="text-[10px] font-sans text-[#787B86]">{p.kind}</span>
                         </span>
                         <span className="text-[#F5B544] font-semibold">
@@ -1699,8 +1793,9 @@ export const MonitoringModule: React.FC<{
                         key={`vol-${v.key}`}
                         className="flex items-center justify-between text-[11.5px] font-mono-num"
                       >
-                        <span className="font-bold text-[#F3F4F6]">
-                          {v.ticker}{' '}
+                        <span className="inline-flex items-center gap-1.5 font-bold text-[#F3F4F6]">
+                          <CompanyLogo ticker={v.usTicker || v.ticker} name={v.name} size="xs" />
+                          <span>{v.ticker}</span>
                           <span className="text-[10px] font-sans text-[#787B86]">{v.kind}</span>
                         </span>
                         <span
@@ -1811,12 +1906,11 @@ export const MonitoringModule: React.FC<{
                         >
                           <td className="px-3.5 text-left">
                             <div className="flex items-center gap-2.5">
-                              <span
-                                className="w-6 h-6 rounded-full inline-flex items-center justify-center text-[9.5px] font-extrabold text-white shrink-0"
-                                style={{ backgroundColor: r.color }}
-                              >
-                                {r.ticker.slice(0, 2)}
-                              </span>
+                              <CompanyLogo
+                                ticker={r.usTicker || r.ticker}
+                                name={r.name}
+                                size={rowH.startsWith('h-8') ? 'xs' : 'sm'}
+                              />
                               <div className="min-w-0">
                                 <div className="flex items-center gap-1.5">
                                   <span className="font-bold text-[#F3F4F6] leading-tight">
@@ -2375,30 +2469,39 @@ export const USMarketModule: React.FC<{
 
       {/* Estructura superior de 5 índices macro alargados */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-        <KPICard
+        <UsIndexLogoKpiCard
+          logoTicker="SPY"
           title="S&P 500 (SPY)"
           heroValue={spy && Number.isFinite(spy.price) ? `US$ ${fmtNum(spy.price, 2)}` : '—'}
           deltaPct={spy?.deltaPct}
           subtitle={`CEDEAR SPY: $ ${fmtNum(spy?.cedearArsPrice, 0)} · Ratio 20:1`}
         />
-        <KPICard
+        <UsIndexLogoKpiCard
+          logoTicker="QQQ"
           title="Nasdaq 100 (QQQ)"
           heroValue={qqq && Number.isFinite(qqq.price) ? `US$ ${fmtNum(qqq.price, 2)}` : '—'}
           deltaPct={qqq?.deltaPct}
           subtitle={`CEDEAR QQQ: $ ${fmtNum(qqq?.cedearArsPrice, 0)} · Ratio 20:1`}
         />
-        <KPICard
+        <UsIndexLogoKpiCard
+          logoTicker="IWM"
           title="Russell 2000 (IWM)"
           heroValue={iwm && Number.isFinite(iwm.price) ? `US$ ${fmtNum(iwm.price, 2)}` : '—'}
           deltaPct={iwm?.deltaPct}
           subtitle={`CEDEAR IWM: $ ${fmtNum(iwm?.cedearArsPrice, 0)} · Ratio 10:1`}
         />
-        <KPICard
+        <UsIndexLogoKpiCard
+          iconNode={
+            <div className="w-[26px] h-[26px] rounded-full bg-[#151520] border border-[#262636] shrink-0 flex items-center justify-center">
+              <Landmark className="w-3.5 h-3.5 text-[#38BDF8]" />
+            </div>
+          }
           title="US Treasury 10Y Yield"
           heroValue={ust10y !== null && Number.isFinite(ust10y) ? `${fmtNum(ust10y, 2)} %` : '—'}
           subtitle={`Spread 2Y/10Y: ${slope2s10s !== null ? `${slope2s10s >= 0 ? '+' : ''}${slope2s10s} pb` : '—'}`}
         />
-        <KPICard
+        <UsIndexLogoKpiCard
+          logoTicker="VIX"
           title="CBOE VIX (Volatilidad S&P)"
           heroValue={fmtNum(vixVal, 2)}
           deltaPct={vixDelta}
@@ -2497,8 +2600,9 @@ export const USMarketModule: React.FC<{
         return (
           <div className="rounded-[10px] bg-[#131722] border border-[#232733] p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-[13px] font-bold text-[#FFFFFF]">
-                Curva Tasas EE.UU. &amp; Lectura Cuantitativa SPY (Piezas 15–18)
+              <div className="flex items-center gap-2 text-[13px] font-bold text-[#FFFFFF]">
+                <CompanyLogo ticker="SPY" name="SPDR S&P 500 ETF Trust" size="sm" />
+                <span>Curva Tasas EE.UU. &amp; Lectura Cuantitativa SPY (Piezas 15–18)</span>
               </div>
               <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono-num text-[#9CA3AF]">
                 <span>
@@ -3397,20 +3501,26 @@ export const RelationsModule: React.FC = () => {
               <div key={pair.id} className="qc-card qc-card-interactive p-4 flex flex-col justify-between gap-3">
                 {/* Encabezado de tarjeta */}
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent-primary)]">
-                        {pair.categoryLabel}
-                      </span>
-                      <span className="px-1.5 py-0.2 rounded bg-[var(--surface-2)] border border-[var(--border-subtle)] text-[9.5px] font-mono-num text-[var(--text-tertiary)]">
-                        {pair.source === 'MASSIVE_1D'
-                          ? 'NYSE · 1D USD'
-                          : pair.source === 'MIXED_USD_CCL'
-                          ? 'AR · USD CCL'
-                          : 'BYMA · DATA912'}
-                      </span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex items-center -space-x-2 shrink-0">
+                      <CompanyLogo ticker={pair.legA} size="md" className="ring-2 ring-[#11111A] relative z-10" />
+                      <CompanyLogo ticker={pair.legB} size="md" className="ring-2 ring-[#11111A]" />
                     </div>
-                    <h3 className="text-[15px] font-bold text-[var(--text-primary)] truncate">{pair.pairTitle}</h3>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent-primary)]">
+                          {pair.categoryLabel}
+                        </span>
+                        <span className="px-1.5 py-0.2 rounded bg-[var(--surface-2)] border border-[var(--border-subtle)] text-[9.5px] font-mono-num text-[var(--text-tertiary)]">
+                          {pair.source === 'MASSIVE_1D'
+                            ? 'NYSE · 1D USD'
+                            : pair.source === 'MIXED_USD_CCL'
+                            ? 'AR · USD CCL'
+                            : 'BYMA · DATA912'}
+                        </span>
+                      </div>
+                      <h3 className="text-[15px] font-bold text-[var(--text-primary)] truncate">{pair.pairTitle}</h3>
+                    </div>
                   </div>
 
                   <div className="flex flex-col items-end gap-1 shrink-0">
@@ -3698,7 +3808,12 @@ export const PositionsModule: React.FC<{
                 <tbody className="divide-y divide-[var(--border-subtle)]">
                   {positions.map((p) => (
                     <tr key={p.id} className="h-10 hover:bg-[var(--surface-2)]">
-                      <td className="px-3 text-left font-bold text-[var(--text-primary)]">{p.ticker}</td>
+                      <td className="px-3 text-left font-bold text-[var(--text-primary)]">
+                        <div className="flex items-center gap-2">
+                          <CompanyLogo ticker={p.ticker} size="sm" />
+                          <span>{p.ticker}</span>
+                        </div>
+                      </td>
                       <td className="px-2 text-left font-sans text-[11px] text-[var(--text-secondary)]">
                         {p.instrumentType}
                       </td>
@@ -3833,7 +3948,12 @@ export const PositionsModule: React.FC<{
                   {brokerData && brokerData.positions.length > 0 ? (
                     brokerData.positions.map((pos, idx) => (
                       <tr key={`${pos.symbol}-${String(idx)}`} className="h-10 hover:bg-[var(--surface-2)]">
-                        <td className="px-3 text-left font-bold text-[var(--text-primary)]">{pos.symbol}</td>
+                        <td className="px-3 text-left font-bold text-[var(--text-primary)]">
+                          <div className="flex items-center gap-2">
+                            <CompanyLogo ticker={pos.symbol} size="sm" />
+                            <span>{pos.symbol}</span>
+                          </div>
+                        </td>
                         <td className="px-2.5 text-left text-[var(--text-secondary)]">{pos.marketId ?? 'ROFX'}</td>
                         <td className="px-2.5 text-[#2EDC7E]">{pos.buySize.toLocaleString('es-AR')}</td>
                         <td className="px-2.5 text-[#FF5C63]">{pos.sellSize.toLocaleString('es-AR')}</td>

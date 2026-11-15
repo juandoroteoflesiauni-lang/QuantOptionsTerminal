@@ -33,6 +33,7 @@ import {
 } from '../../api/ggalSpecialistClient';
 import { fmtNum, fmtPct } from '../../data/marketData';
 import { HelpTooltip, InsightBanner, KPICard } from '../DesignSystem';
+import { CompanyLogo } from '../common/CompanyLogo';
 import type { OrderTicketPreset } from '../Overlays';
 
 export type GgalTabId =
@@ -610,14 +611,17 @@ export const GgalSpecialistModule: React.FC<{
     return (
       <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-2 pr-2 border-r border-[#1E1E2B]">
-            <Scale className="w-4 h-4 text-[#8B7CF6]" />
-            <span className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
-              GGAL Specialist
-            </span>
-            <span className="text-[11px] font-mono-num text-[#9CA3AF]">
-              BYMA 100 · ADR 10:1
-            </span>
+          <div className="flex items-center gap-2.5 pr-3 border-r border-[#1E1E2B]">
+            <CompanyLogo ticker="GGAL" name="Grupo Financiero Galicia" size="lg" />
+            <div className="flex items-center gap-2">
+              <Scale className="w-4 h-4 text-[#8B7CF6]" />
+              <span className="text-[13.5px] font-bold text-[#F3F4F6] tracking-tight">
+                GGAL Specialist
+              </span>
+              <span className="text-[11px] font-mono-num text-[#9CA3AF]">
+                BYMA 100 · ADR 10:1
+              </span>
+            </div>
           </div>
 
           {badges.map((b) => (
@@ -729,20 +733,56 @@ export const GgalSpecialistModule: React.FC<{
           </InsightBanner>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <KPICard
-              title="GGAL BYMA 24hs / CI"
-              heroValue={fmtCurrency(parityData.result.spot.byma24hArs, '$ ', 2)}
-              badge={parityData.telemetry.marketMode}
-              subtitle={`Contado Inmediato: ${fmtCurrency(parityData.result.spot.bymaCiArs, '$ ', 2)} · Fair Open: ${fmtCurrency(parityData.result.spot.fairBymaOpenArs, '$ ', 2)}`}
-              helpText="Cotización mid de GGAL en BYMA 24hs y cierre teórico ajustado por paridad SOFR/Caución y apertura ADR."
-            />
-            <KPICard
-              title="GGAL ADR (NASDAQ 10:1)"
-              heroValue={fmtCurrency(parityData.result.spot.adrMidUsd, 'US$ ', 2)}
-              badge={parityData.rateInputs.sofrSource ?? 'SOFR'}
-              subtitle={`ADR Justo s/ AL30: ${fmtCurrency(parityData.result.spot.fairAdrUsd, 'US$ ', 2)} · SOFR: ${fmtPct(parityData.rateInputs.sofrPct, 2, false)}`}
-              helpText="Precio del ADR en dólares en NASDAQ y paridad justa implícita frente al benchmark de bonos soberanos."
-            />
+            <div className="px-5 py-4 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CompanyLogo ticker="GGAL" name="GGAL BYMA 24hs / CI" size="md" />
+                  <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
+                    GGAL BYMA 24hs / CI
+                  </span>
+                  <HelpTooltip
+                    title="GGAL BYMA 24hs / CI"
+                    text="Cotización mid de GGAL en BYMA 24hs y cierre teórico ajustado por paridad SOFR/Caución y apertura ADR."
+                  />
+                </div>
+                <span className="text-[10px] font-mono-num font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
+                  {parityData.telemetry.marketMode}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2.5 pt-0.5">
+                <div className="font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight">
+                  {fmtCurrency(parityData.result.spot.byma24hArs, '$ ', 2)}
+                </div>
+              </div>
+              <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
+                {`Contado Inmediato: ${fmtCurrency(parityData.result.spot.bymaCiArs, '$ ', 2)} · Fair Open: ${fmtCurrency(parityData.result.spot.fairBymaOpenArs, '$ ', 2)}`}
+              </div>
+            </div>
+            <div className="px-5 py-4 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CompanyLogo ticker="GGAL" name="GGAL ADR (NASDAQ 10:1)" size="md" />
+                  <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
+                    GGAL ADR (NASDAQ 10:1)
+                  </span>
+                  <HelpTooltip
+                    title="GGAL ADR (NASDAQ 10:1)"
+                    text="Precio del ADR en dólares en NASDAQ y paridad justa implícita frente al benchmark de bonos soberanos."
+                  />
+                </div>
+                <span className="text-[10px] font-mono-num font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
+                  {parityData.rateInputs.sofrSource ?? 'SOFR'}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2.5 pt-0.5">
+                <div className="font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight">
+                  {fmtCurrency(parityData.result.spot.adrMidUsd, 'US$ ', 2)}
+                </div>
+              </div>
+              <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
+                {`ADR Justo s/ AL30: ${fmtCurrency(parityData.result.spot.fairAdrUsd, 'US$ ', 2)} · SOFR: ${fmtPct(parityData.rateInputs.sofrPct, 2, false)}`}
+              </div>
+            </div>
             <KPICard
               title="CCL GGAL vs. Soberanos"
               heroValue={fmtCurrency(parityData.result.ccl.cclGgal24h, '$ ', 2)}

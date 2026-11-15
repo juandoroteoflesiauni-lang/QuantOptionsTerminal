@@ -23,6 +23,7 @@ import {
 import { ExecutionBottomDeck } from './stock-detail/ExecutionBottomDeck';
 import { GexStrikeProfileChart } from './stock-detail/GexStrikeProfileChart';
 import { MainPriceAmtChart } from './stock-detail/MainPriceAmtChart';
+import { CompanyLogo } from './common/CompanyLogo';
 import {
   type AvwapAnchorMode,
   type MinimalOhlcvBar,
@@ -797,6 +798,47 @@ export const StockDetailView: React.FC<{
 
   return (
     <div className="flex flex-col gap-4 pb-6 text-[#F0F2FA]">
+      {/* 0. Cabecera Visual de Identidad Corporativa & Selector Rápido */}
+      <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <CompanyLogo ticker={cleanTicker} name={contextInfo.name} size="lg" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-mono-num text-[15px] font-extrabold text-[#FFFFFF] tracking-tight">
+                {cleanTicker}
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-[#171722] border border-[#262636] text-[10px] font-mono-num text-[#9CA3AF]">
+                {contextInfo.marketLabel}
+              </span>
+            </div>
+            <div className="text-[12px] text-[#9CA3AF] truncate max-w-[320px]">
+              {contextInfo.name}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {quickTickers.slice(0, 6).map((qt) => {
+            const isActive = qt.ticker === cleanTicker;
+            return (
+              <button
+                key={`sd-quick-${qt.ticker}`}
+                type="button"
+                onClick={() => onSelectTicker(qt.ticker)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono-num font-semibold transition-colors cursor-pointer ${
+                  isActive
+                    ? 'bg-[#211B3A] border-[#8B7CF6]/70 text-[#FFFFFF]'
+                    : 'bg-[#0B0B11] border-[#1E1E2B] text-[#9CA3AF] hover:text-[#FFFFFF] hover:border-[#2E3245]'
+                }`}
+              >
+                <CompanyLogo ticker={qt.ticker} name={qt.name} size="xs" />
+                <span>{qt.ticker}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* 1. Cabecera Ejecutiva + Bloque Contextual Dual + Tira de Niveles */}
       <StockDetailHeader
         info={contextInfo}

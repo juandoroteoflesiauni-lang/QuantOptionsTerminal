@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
 import type { FeedStatus } from '../data/liveTypes';
+import { CompanyLogo } from './common/CompanyLogo';
 
 /* ============================================================================
    1. INTERFACES Y TIPOS ESTRICTOS
@@ -199,6 +200,8 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       title={`${item.symbol} (${item.displayName}) — Click para inspeccionar`}
       className={`group inline-flex items-center gap-2 px-2.5 h-[30px] rounded-[8px] bg-[#131722] hover:bg-[#1A1F2C] border border-[#2A2E3D] hover:border-[#3D4358] transition-colors shrink-0 cursor-pointer select-none ${flashClass}`}
     >
+      <CompanyLogo ticker={item.id} name={item.displayName} size="sm" />
+
       <span className="text-[11.5px] font-semibold text-[#8A8F9E] group-hover:text-[#D1D4DC] transition-colors whitespace-nowrap">
         {item.symbol}
       </span>

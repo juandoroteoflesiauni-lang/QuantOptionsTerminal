@@ -31,6 +31,7 @@ import {
   HelpTooltip,
   InsightBanner,
 } from './DesignSystem';
+import { CompanyLogo } from './common/CompanyLogo';
 import {
   COMMISSION_RATE,
   FX_EASE,
@@ -609,7 +610,6 @@ export const OptionsModule: React.FC<{
     liveMarket.overview?.cedears.find((s) => s.ticker === upperUnderlying);
 
   const stockName = overviewStock?.name ?? catalogStock?.name ?? upperUnderlying;
-  const stockColor = overviewStock?.color ?? catalogStock?.color ?? '#FF6B00';
   const displaySpot = liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
   const displayDeltaPct = overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
 
@@ -936,12 +936,7 @@ export const OptionsModule: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-6">
             <div className="flex items-center gap-3">
-              <div
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white font-extrabold text-[14px] shadow-md shrink-0"
-                style={{ backgroundColor: stockColor }}
-              >
-                {upperUnderlying.slice(0, 2)}
-              </div>
+              <CompanyLogo ticker={upperUnderlying} name={stockName} size="lg" />
               <div>
                 <div className="flex items-center gap-1.5">
                   <select
@@ -1072,6 +1067,31 @@ export const OptionsModule: React.FC<{
           </div>
         </div>
 
+        {/* Selector rápido con logo por subyacente */}
+        <div className="pt-2 border-t border-[#1E222D]/60 flex items-center gap-1.5 overflow-x-auto">
+          <span className="text-[10px] font-mono-num uppercase tracking-wider text-[#6D7282] mr-1 shrink-0">
+            Subyacente:
+          </span>
+          {underlyingChoices.map((t) => {
+            const active = t === upperUnderlying;
+            return (
+              <button
+                key={`opt-under-${t}`}
+                type="button"
+                onClick={() => onSelectUnderlying(t)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono-num font-semibold transition-colors cursor-pointer shrink-0 ${
+                  active
+                    ? 'bg-[#211B3A] border-[#8B7CF6]/70 text-[#FFFFFF]'
+                    : 'bg-[#090B10] border-[#1E222D] text-[#9CA3AF] hover:text-[#FFFFFF] hover:border-[#2E3446]'
+                }`}
+              >
+                <CompanyLogo ticker={t} size="xs" />
+                <span>{t}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Navegación interna de los 7 módulos de Opciones */}
         <div className="pt-2.5 border-t border-[#1E222D] flex items-center justify-between gap-2 overflow-x-auto">
           <div className="flex items-center gap-1.5">
@@ -1144,29 +1164,40 @@ export const OptionsModule: React.FC<{
           )}
 
           <div className="rounded-[12px] bg-[#101218] border border-[#232733] p-6 space-y-5">
-            <div className="inline-flex items-center bg-[#0B0D12] border border-[#232733] rounded-full p-1">
-              <button
-                type="button"
-                onClick={() => setStrategyMode('familia')}
-                className={`px-4 py-2 rounded-full text-[13px] font-bold cursor-pointer transition-all ${
-                  strategyMode === 'familia'
-                    ? 'bg-[#EAECEF] text-[#0B0E14]'
-                    : 'text-[#9CA3AF] hover:text-white'
-                }`}
-              >
-                Por familia
-              </button>
-              <button
-                type="button"
-                onClick={() => setStrategyMode('objetivo')}
-                className={`px-4 py-2 rounded-full text-[13px] font-bold cursor-pointer transition-all ${
-                  strategyMode === 'objetivo'
-                    ? 'bg-[#EAECEF] text-[#0B0E14]'
-                    : 'text-[#9CA3AF] hover:text-white'
-                }`}
-              >
-                Por objetivo
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex items-center bg-[#0B0D12] border border-[#232733] rounded-full p-1">
+                <button
+                  type="button"
+                  onClick={() => setStrategyMode('familia')}
+                  className={`px-4 py-2 rounded-full text-[13px] font-bold cursor-pointer transition-all ${
+                    strategyMode === 'familia'
+                      ? 'bg-[#EAECEF] text-[#0B0E14]'
+                      : 'text-[#9CA3AF] hover:text-white'
+                  }`}
+                >
+                  Por familia
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStrategyMode('objetivo')}
+                  className={`px-4 py-2 rounded-full text-[13px] font-bold cursor-pointer transition-all ${
+                    strategyMode === 'objetivo'
+                      ? 'bg-[#EAECEF] text-[#0B0E14]'
+                      : 'text-[#9CA3AF] hover:text-white'
+                  }`}
+                >
+                  Por objetivo
+                </button>
+              </div>
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-[#0B0D12] border border-[#1E222D]">
+                <CompanyLogo ticker={upperUnderlying} name={stockName} size="sm" />
+                <span className="font-mono-num text-[12px] font-bold text-[#FFFFFF]">
+                  {upperUnderlying}
+                </span>
+                <span className="text-[11px] text-[#787B86] hidden sm:inline">
+                  · {stockName}
+                </span>
+              </div>
             </div>
 
             {strategyMode === 'familia' && (
@@ -2177,6 +2208,12 @@ export const OptionsModule: React.FC<{
         <div className="space-y-3">
           <div className="rounded-[12px] bg-[#111116] border border-[#1C1C24] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 pr-2.5 mr-0.5 border-r border-[#1E222D]">
+                <CompanyLogo ticker={upperUnderlying} name={stockName} size="sm" />
+                <span className="font-mono-num text-[12px] font-bold text-[#F3F4F6]">
+                  {upperUnderlying}
+                </span>
+              </span>
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[#6B7280] flex items-center gap-1">
                 <SlidersHorizontal className="w-3.5 h-3.5" /> Columnas:
               </span>
