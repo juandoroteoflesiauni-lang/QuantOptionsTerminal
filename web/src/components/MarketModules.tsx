@@ -26,6 +26,7 @@ import {
   ROFEX_FUTURES,
   CAUCIONES_DATA,
   RATIO_PAIRS,
+  RELATION_SUMMARY,
   PortfolioPosition,
   AlertItem,
   fmtNum,
@@ -1505,88 +1506,297 @@ export const FuturesModule: React.FC = () => {
   );
 };
 
-/* MÓDULO RELACIONES Y ARBITRAJES ESTADÍSTICOS */
-export const RatiosModule: React.FC = () => {
+/* MÓDULO RELACIONES, LIQUIDEZ Y ROTACIÓN DE CAPITAL */
+type RelationsFilterTab =
+  | 'Todos'
+  | 'Rotación Sectorial'
+  | 'Liquidez y Crédito'
+  | 'Oportunidad (Z-Score)';
+
+const RELATIONS_FILTER_TABS: readonly RelationsFilterTab[] = [
+  'Todos',
+  'Rotación Sectorial',
+  'Liquidez y Crédito',
+  'Oportunidad (Z-Score)',
+];
+
+function formatRelationScalar(value: number, unit: string): string {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  const decimals = unit === 'x' && Math.abs(value) < 5 ? 3 : Math.abs(value) < 100 ? 2 : 0;
+  return `${fmtNum(value, decimals)} ${unit}`;
+}
+
+export const RelationsModule: React.FC = () => {
   const liveMarket = useLiveMarketState();
+  const [activeFilter, setActiveFilter] = useState<RelationsFilterTab>('Todos');
+
   useEffect(() => {
     void requestRelations();
   }, []);
 
-  const extremeCount = RATIO_PAIRS.filter((p) => Number.isFinite(p.zScore) && Math.abs(p.zScore) >= 1.5).length;
+  const sectorCount = RATIO_PAIRS.filter((p) => p.categoryGroup === 'ROTACION_SECTORIAL').length;
+  const liquidityCount = RATIO_PAIRS.filter((p) => p.categoryGroup === 'LIQUIDEZ_CREDITO').length;
+  const opportunityPairs = RATIO_PAIRS.filter(
+    (p) => Number.isFinite(p.zScore) && Math.abs(p.zScore) >= 1.5,
+  ).sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore));
+
+  const extremeTwoSigmaCount =
+    RATIO_PAIRS.length > 0 ? RELATION_SUMMARY.extremeTwoSigmaCount : Number.NaN;
+
+  const visiblePairs =
+    activeFilter === 'Todos'
+      ? RATIO_PAIRS
+      : activeFilter === 'Rotación Sectorial'
+      ? RATIO_PAIRS.filter((p) => p.categoryGroup === 'ROTACION_SECTORIAL')
+      : activeFilter === 'Liquidez y Crédito'
+      ? RATIO_PAIRS.filter((p) => p.categoryGroup === 'LIQUIDEZ_CREDITO')
+      : opportunityPairs;
+
+  const topFlowDelta = RELATION_SUMMARY.topCapitalFlowDeltaPct;
+  const topFlowSector = RELATION_SUMMARY.topCapitalFlowSector;
 
   return (
     <div className="space-y-4 animate-module">
-      <InsightBanner variant="default" tag="Arbitraje Relativo">
-        Monitoreando <strong className="text-[var(--text-primary)]">{RATIO_PAIRS.length} pares relativos</strong> (ventana
-        60 ruedas) ·{' '}
-        <strong className="text-[#F5B544]">
-          {extremeCount} {extremeCount === 1 ? 'par' : 'pares'} fuera de banda (±1,5σ)
-        </strong>{' '}
-        ({liveMarket.feedStatus}).
-      </InsightBanner>
+      {/* Resumen superior de alertas activas */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <KPICard
+          title="Pares en Extremo ±2σ"
+          heroValue={Number.isFinite(extremeTwoSigmaCount) ? `${String(extremeTwoSigmaCount)} pares` : '—'}
+          subtitle={
+            RATIO_PAIRS.length > 0
+              ? `${String(RELATION_SUMMARY.moderateDeviationCount)} con desvío moderado (1,5σ – 2,0σ)`
+              : 'Esperando series diarias 60d'
+          }
+          badge={
+            Number.isFinite(extremeTwoSigmaCount) && extremeTwoSigmaCount > 0 ? 'ALERTA ±2σ' : 'SIN EXTREMOS'
+          }
+          helpText="Cantidad de pares cuya lectura actual supera ±2,0 desviaciones estándar respecto a su media móvil de 60 ruedas."
+          helpFormula="z = (x_t − μ_60) / σ_60"
+        />
+
+        <KPICard
+          title="Sector con Mayor Giro de Capital"
+          heroValue={topFlowSector ?? '—'}
+          deltaPct={Number.isFinite(topFlowDelta) ? topFlowDelta : undefined}
+          subtitle={
+            Number.isFinite(topFlowDelta)
+              ? `Participación de volumen efectivo 5d vs. media 20d`
+              : 'Flujo sectorial no disponible'
+          }
+          badge="FLUJO 5D/20D"
+          helpText="Variación porcentual de la participación de volumen efectivo de los últimos 5 días frente a su promedio de 20 ruedas."
+          helpFormula="ΔFlujo% = (mean_5(s_t) / mean_20(s_t) − 1) × 100"
+        />
+
+        <KPICard
+          title="Universo Multi-Mercado"
+          heroValue={RATIO_PAIRS.length > 0 ? `${String(RATIO_PAIRS.length)} relaciones` : '—'}
+          subtitle={`${String(sectorCount)} rotación sectorial · ${String(liquidityCount)} liquidez/crédito · ${liveMarket.feedStatus}`}
+          badge="MASSIVE 1D + BYMA"
+          helpText="Combina barras diarias ajustadas Massive 1D (90 ruedas USD) con acciones, bonos soberanos y CCL/MEP locales."
+        />
+      </div>
+
+      {/* Barra de filtros por categoría */}
+      <div className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-[10px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)]">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {RELATIONS_FILTER_TABS.map((tab) => {
+            const count =
+              tab === 'Todos'
+                ? RATIO_PAIRS.length
+                : tab === 'Rotación Sectorial'
+                ? sectorCount
+                : tab === 'Liquidez y Crédito'
+                ? liquidityCount
+                : opportunityPairs.length;
+            const active = activeFilter === tab;
+            return (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveFilter(tab)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-[12px] font-semibold transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/60'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] border border-transparent'
+                }`}
+              >
+                <span>{tab}</span>
+                <span className="px-1.5 py-0.2 rounded bg-[var(--surface-2)] font-mono-num text-[10px] text-[var(--text-tertiary)]">
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <span className="px-2 text-[11px] font-mono-num text-[var(--text-tertiary)]">
+          Mín. 20 ruedas · Objetivo 60d · Reversión OU AR(1)
+        </span>
+      </div>
 
       {RATIO_PAIRS.length === 0 ? (
         <div className="qc-card p-8 text-center text-[12px] text-[var(--text-tertiary)]">
-          Cargando relaciones históricas de 60 ruedas desde /api/ar/relations ({liveMarket.feedStatus})...
+          Cargando relaciones de rotación sectorial, liquidez y crédito desde /api/ar/relations ({liveMarket.feedStatus})...
+        </div>
+      ) : visiblePairs.length === 0 ? (
+        <div className="qc-card p-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[12px] text-[var(--text-secondary)]">
+          <span>
+            No hay relaciones con desvío significativo (|Z-Score| ≥ 1,5σ) en el cierre actual.
+          </span>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('Todos')}
+            className="px-3 py-1.5 rounded-[8px] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border-subtle)] text-[var(--text-primary)] font-semibold cursor-pointer"
+          >
+            Ver todas las relaciones ({RATIO_PAIRS.length})
+          </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {RATIO_PAIRS.map((pair) => (
-            <div key={pair.id} className="qc-card qc-card-interactive p-4 flex flex-col justify-between gap-3">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent-primary)]">
-                    {pair.category}
-                  </span>
-                  <h3 className="text-[15px] font-bold text-[var(--text-primary)]">{pair.pairTitle}</h3>
-                </div>
-                <span
-                  className={`px-2 py-0.5 rounded-full font-mono-num text-[11px] font-semibold ${
-                    Number.isFinite(pair.zScore) && Math.abs(pair.zScore) >= 1.5
-                      ? 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
-                      : 'bg-[#0E2F20] text-[#2EDC7E] border border-[#1C5C3C]'
-                  }`}
-                >
-                  Z-Score:{' '}
-                  {Number.isFinite(pair.zScore)
-                    ? `${pair.zScore > 0 ? '+' : '−'}${fmtNum(Math.abs(pair.zScore), 2)}σ`
-                    : '—'}
-                </span>
-              </div>
+          {visiblePairs.map((pair) => {
+            const badge = pair.opportunityBadge;
+            const badgeStyle =
+              badge === 'EXTREMO COMPRA'
+                ? 'bg-[#0E2F20] text-[#2EDC7E] border-[#1C5C3C]'
+                : badge === 'EXTREMO VENTA'
+                ? 'bg-[#2A1216] text-[#F23645] border-[#5C2229]'
+                : badge === 'DESVÍO MODERADO'
+                ? 'bg-[#35280F] text-[#F5B544] border-[#F5B544]/40'
+                : 'bg-[var(--surface-2)] text-[var(--text-secondary)] border-[var(--border-subtle)]';
 
-              <div className="grid grid-cols-3 gap-2 p-2.5 rounded-[10px] bg-[var(--surface-2)] font-mono-num text-[12px]">
-                <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)]">Valor Actual</div>
-                  <div className="text-[16px] font-bold text-[var(--text-primary)]">
-                    {fmtNum(pair.currentRatio, Number.isFinite(pair.currentRatio) && pair.currentRatio < 10 ? 2 : 0)}{' '}
-                    {pair.unit}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)]">Media 60d</div>
-                  <div className="text-[14px] text-[var(--text-secondary)]">
-                    {fmtNum(pair.mean90d, Number.isFinite(pair.mean90d) && pair.mean90d < 10 ? 2 : 0)} {pair.unit}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)]">Percentil 60d</div>
-                  <div className="text-[14px] font-semibold text-[#8B7CF6]">
-                    {Number.isFinite(pair.percentile90d) ? `P${fmtNum(pair.percentile90d, 0)}` : '—'}
-                  </div>
-                </div>
-              </div>
+            const sparkData = pair.sparkline.length >= 2 ? pair.sparkline : pair.history;
+            const flowFinite = Number.isFinite(pair.capitalFlowDeltaPct);
+            const hlFinite = Number.isFinite(pair.halfLifeDays);
 
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[12px] text-[var(--text-secondary)] leading-snug">{pair.recommendation}</p>
-                <MiniSparkline data={pair.history} positive={!Number.isFinite(pair.zScore) || pair.zScore < 0} width={96} height={30} />
+            return (
+              <div key={pair.id} className="qc-card qc-card-interactive p-4 flex flex-col justify-between gap-3">
+                {/* Encabezado de tarjeta */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent-primary)]">
+                        {pair.categoryLabel}
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded bg-[var(--surface-2)] border border-[var(--border-subtle)] text-[9.5px] font-mono-num text-[var(--text-tertiary)]">
+                        {pair.source === 'MASSIVE_1D'
+                          ? 'NYSE · 1D USD'
+                          : pair.source === 'MIXED_USD_CCL'
+                          ? 'AR · USD CCL'
+                          : 'BYMA · DATA912'}
+                      </span>
+                    </div>
+                    <h3 className="text-[15px] font-bold text-[var(--text-primary)] truncate">{pair.pairTitle}</h3>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <span
+                      className={`px-2 py-0.5 rounded-full border text-[10px] font-mono-num font-bold tracking-wide ${badgeStyle}`}
+                    >
+                      {badge ?? '—'}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full font-mono-num text-[11px] font-semibold ${
+                        Number.isFinite(pair.zScore) && Math.abs(pair.zScore) >= 1.5
+                          ? 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
+                          : 'bg-[#0E2F20] text-[#2EDC7E] border border-[#1C5C3C]'
+                      }`}
+                    >
+                      Z-Score:{' '}
+                      {Number.isFinite(pair.zScore)
+                        ? `${pair.zScore > 0 ? '+' : '−'}${fmtNum(Math.abs(pair.zScore), 2)}σ`
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Banda principal 3 columnas */}
+                <div className="grid grid-cols-3 gap-2 p-2.5 rounded-[10px] bg-[var(--surface-2)] font-mono-num text-[12px]">
+                  <div>
+                    <div className="text-[10px] text-[var(--text-tertiary)]">Valor Actual</div>
+                    <div className="text-[15px] font-bold text-[var(--text-primary)]">
+                      {formatRelationScalar(pair.currentRatio, pair.unit)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-[var(--text-tertiary)]">Media 60d</div>
+                    <div className="text-[14px] text-[var(--text-secondary)]">
+                      {formatRelationScalar(pair.mean90d, pair.unit)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-[var(--text-tertiary)]">Percentil 60d</div>
+                    <div className="text-[14px] font-semibold text-[#8B7CF6]">
+                      {Number.isFinite(pair.percentile90d) ? `P${fmtNum(pair.percentile90d, 0)}` : '—'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sub-indicadores cuantitativos (Flujo 5d/20d + Vida Media OU) + Sparkline */}
+                <div className="flex items-center justify-between gap-3 pt-0.5">
+                  <div className="grid grid-cols-2 gap-3 flex-1 font-mono-num text-[11px]">
+                    <div className="px-2.5 py-1.5 rounded-[8px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)]">
+                      <div className="text-[9.5px] uppercase tracking-wider text-[var(--text-tertiary)]">
+                        Flujo 5d/20d
+                      </div>
+                      <div
+                        className={`text-[12.5px] font-bold ${
+                          !flowFinite
+                            ? 'text-[var(--text-tertiary)]'
+                            : pair.capitalFlowDeltaPct >= 0
+                            ? 'text-[#2EDC7E]'
+                            : 'text-[#F23645]'
+                        }`}
+                      >
+                        {flowFinite
+                          ? `${pair.capitalFlowDeltaPct >= 0 ? '+' : '−'}${fmtNum(
+                              Math.abs(pair.capitalFlowDeltaPct),
+                              1,
+                            )}%`
+                          : '—'}
+                      </div>
+                    </div>
+
+                    <div
+                      className="px-2.5 py-1.5 rounded-[8px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)]"
+                      title="Vida media de reversión OU t½ = -ln(2)/ln(φ) estimada vía AR(1); '—' si la serie es no estacionaria (φ ≥ 1 o φ ≤ 0)."
+                    >
+                      <div className="text-[9.5px] uppercase tracking-wider text-[var(--text-tertiary)]">
+                        Vida Media OU (t½)
+                      </div>
+                      <div className="text-[12.5px] font-bold text-[var(--text-primary)]">
+                        {hlFinite ? `${fmtNum(pair.halfLifeDays, 1)} d` : '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {sparkData.length >= 2 ? (
+                    <MiniSparkline
+                      data={sparkData}
+                      positive={!Number.isFinite(pair.zScore) || pair.zScore < 0}
+                      width={104}
+                      height={34}
+                    />
+                  ) : (
+                    <span className="w-[104px] text-center font-mono-num text-[11px] text-[var(--text-tertiary)]">
+                      —
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-[11.5px] text-[var(--text-secondary)] leading-snug">{pair.recommendation}</p>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
   );
 };
+
+export const RatiosModule = RelationsModule;
 
 /* MÓDULO POSICIONES (CARTERA Y RIESGO AGREGADO) */
 export const PositionsModule: React.FC<{

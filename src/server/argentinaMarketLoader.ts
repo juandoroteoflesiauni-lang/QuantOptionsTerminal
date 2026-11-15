@@ -111,6 +111,12 @@ import {
 } from '../core/terminal/structureOptimizer.js';
 import type { Bar } from '../core/types.js';
 import type { FetchResponse } from '../data/types.js';
+import {
+  DEFAULT_RELATIONS_US_TICKERS,
+  getSharedMarketRuntime,
+  MarketRuntime,
+  type CachedDailyBarsResult,
+} from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
@@ -136,6 +142,12 @@ export interface ArgentinaRuntimeDeps {
   readonly bcraBaseUrl?: string;
   readonly argentinaDatosBaseUrl?: string;
   readonly nyfedBaseUrl?: string;
+  readonly usRuntime?: Pick<MarketRuntime, 'getCachedDailyBars1d'>;
+  readonly usDailyBarsFn?: (
+    symbol: string,
+    lookbackBars?: number,
+    forceRefresh?: boolean,
+  ) => Promise<CachedDailyBarsResult>;
 }
 
 export interface GlobalIndicatorDto {
@@ -519,19 +531,45 @@ export interface ArOptionsResponse {
   readonly providerErrors: readonly string[];
 }
 
+export type RelationOpportunityBadge =
+  | 'EXTREMO COMPRA'
+  | 'EXTREMO VENTA'
+  | 'DESVÍO MODERADO'
+  | 'EN EQUILIBRIO';
+
+export type RelationCategoryGroup = 'ROTACION_SECTORIAL' | 'LIQUIDEZ_CREDITO';
+
 export interface ArRelationPairDto {
   readonly id: string;
   readonly name: string;
   readonly legA: string;
   readonly legB: string;
   readonly unit: string;
+  readonly category?: string;
+  readonly categoryGroup?: RelationCategoryGroup;
+  readonly source?: 'MASSIVE_1D' | 'DATA912' | 'MIXED_USD_CCL';
   readonly currentValue: number | null;
   readonly mean60d: number | null;
   readonly std60d: number | null;
   readonly zScore: number | null;
   readonly percentile60d: number | null;
+  readonly halfLifeDays?: number | null;
+  readonly capitalFlowDeltaPct?: number | null;
+  readonly opportunityBadge?: RelationOpportunityBadge | null;
+  readonly observationCount?: number;
+  readonly sparkline?: readonly number[];
   readonly signal: string;
   readonly history: readonly { readonly time: number; readonly ratio: number; readonly zScore: number }[];
+}
+
+export type RelationPairSnapshot = ArRelationPairDto;
+
+export interface ArRelationsSummaryDto {
+  readonly extremeTwoSigmaCount: number;
+  readonly moderateDeviationCount: number;
+  readonly topCapitalFlowPairId: string | null;
+  readonly topCapitalFlowSector: string | null;
+  readonly topCapitalFlowDeltaPct: number | null;
 }
 
 export interface ArRelationsResponse {
@@ -540,6 +578,8 @@ export interface ArRelationsResponse {
   readonly providerErrors: readonly string[];
   readonly pairs: readonly ArRelationPairDto[];
   readonly extendedPairs?: readonly ArRelationPairDto[];
+  readonly relationPairs?: readonly ArRelationPairDto[];
+  readonly relationSummary?: ArRelationsSummaryDto;
   readonly mepCclArbitrage: readonly MepCclArbitrageRow[];
 }
 
@@ -1361,6 +1401,548 @@ function computeDailyRealizedVol(bars: readonly Bar[], windowDays: number): numb
   return stats.std * Math.sqrt(252);
 }
 
+function toUtcDateKey(timeSec: number): string {
+  return new Date(timeSec * 1_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Vida media de reversión discreta AR(1) / Ornstein-Uhlenbeck:
+ * t_{1/2} = -ln(2) / ln(phi_hat) cuando 0 < phi_hat < 1 y existen >= 20 observaciones.
+ */
+export function computeOuHalfLifeDays(values: readonly number[]): number | null {
+  const clean = values.filter((v) => Number.isFinite(v));
+  if (clean.length < 20) {
+    return null;
+  }
+  const nPairs = clean.length - 1;
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < nPairs; i += 1) {
+    const x = clean[i];
+    const y = clean[i + 1];
+    if (x === undefined || y === undefined) {
+      return null;
+    }
+    sumX += x;
+    sumY += y;
+  }
+  const meanX = sumX / nPairs;
+  const meanY = sumY / nPairs;
+  let sxx = 0;
+  let sxy = 0;
+  for (let i = 0; i < nPairs; i += 1) {
+    const x = clean[i];
+    const y = clean[i + 1];
+    if (x === undefined || y === undefined) {
+      return null;
+    }
+    const dx = x - meanX;
+    const dy = y - meanY;
+    sxx += dx * dx;
+    sxy += dx * dy;
+  }
+  if (sxx <= 1e-15) {
+    return null;
+  }
+  const phi = sxy / sxx;
+  if (!Number.isFinite(phi) || phi <= 0 || phi >= 1 - 1e-9) {
+    return null;
+  }
+  const halfLife = -Math.LN2 / Math.log(phi);
+  return Number.isFinite(halfLife) && halfLife > 0 ? halfLife : null;
+}
+
+/**
+ * Etiqueta cuantitativa de oportunidad según z-score respecto a media 60 ruedas.
+ */
+export function computeOpportunityBadge(zScore: number | null): RelationOpportunityBadge | null {
+  if (zScore === null || !Number.isFinite(zScore)) {
+    return null;
+  }
+  if (zScore <= -2.0) {
+    return 'EXTREMO COMPRA';
+  }
+  if (zScore >= 2.0) {
+    return 'EXTREMO VENTA';
+  }
+  if (Math.abs(zScore) >= 1.5) {
+    return 'DESVÍO MODERADO';
+  }
+  return 'EN EQUILIBRIO';
+}
+
+/**
+ * Giro relativo de volumen efectivo: cambio porcentual de la media 5d
+ * respecto a la media 20d sobre la participación diaria del numerador (0 < s <= 1).
+ */
+export function computeCapitalFlowDeltaPct(shares: readonly number[]): number | null {
+  const clean = shares.filter((s) => Number.isFinite(s) && s > 0 && s <= 1);
+  if (clean.length < 20) {
+    return null;
+  }
+  const last20 = clean.slice(-20);
+  const last5 = clean.slice(-5);
+  let sum20 = 0;
+  for (const s of last20) {
+    sum20 += s;
+  }
+  let sum5 = 0;
+  for (const s of last5) {
+    sum5 += s;
+  }
+  const mean20 = sum20 / last20.length;
+  const mean5 = sum5 / last5.length;
+  if (mean20 <= 1e-12) {
+    return null;
+  }
+  const deltaPct = ((mean5 / mean20) - 1) * 100;
+  return Number.isFinite(deltaPct) ? deltaPct : null;
+}
+
+export interface RelationSeriesPoint {
+  readonly time: number;
+  readonly val: number;
+  readonly volumeShare?: number | null;
+}
+
+function deduplicateBarsByDate(bars: readonly Bar[]): readonly { readonly dateKey: string; readonly bar: Bar }[] {
+  const byDate = new Map<string, Bar>();
+  for (const b of bars) {
+    if (!Number.isFinite(b.close) || !Number.isFinite(b.time)) {
+      continue;
+    }
+    const key = toUtcDateKey(b.time);
+    const prev = byDate.get(key);
+    if (prev === undefined || b.time >= prev.time) {
+      byDate.set(key, b);
+    }
+  }
+  return [...byDate.entries()]
+    .map(([dateKey, bar]) => ({ dateKey, bar }))
+    .sort((a, b) => a.bar.time - b.bar.time);
+}
+
+/**
+ * Alinea dos series diarias por fecha UTC sin rellenos ni fallbacks silenciosos.
+ */
+export function alignDailyPairSeries(
+  barsA: readonly Bar[],
+  barsB: readonly Bar[],
+  mode: 'RATIO' | 'DIFF',
+  includeVolumeShare = true,
+  denominatorIsSuperset = false,
+): readonly RelationSeriesPoint[] {
+  const dedupA = deduplicateBarsByDate(barsA);
+  const mapB = new Map<string, Bar>();
+  for (const { dateKey, bar } of deduplicateBarsByDate(barsB)) {
+    mapB.set(dateKey, bar);
+  }
+
+  const out: RelationSeriesPoint[] = [];
+  for (const { dateKey, bar: a } of dedupA) {
+    const b = mapB.get(dateKey);
+    if (b === undefined || a.close <= 0 || b.close <= 0) {
+      continue;
+    }
+    const val = mode === 'DIFF' ? a.close - b.close : a.close / b.close;
+    if (!Number.isFinite(val)) {
+      continue;
+    }
+    let volumeShare: number | null = null;
+    if (includeVolumeShare) {
+      const effA = a.close * a.volume;
+      const effB = b.close * b.volume;
+      if (Number.isFinite(effA) && Number.isFinite(effB) && effA > 0 && effB > 0) {
+        if (denominatorIsSuperset) {
+          volumeShare = effA <= effB ? effA / effB : null;
+        } else {
+          volumeShare = effA / (effA + effB);
+        }
+      }
+    }
+    out.push({ time: a.time, val, volumeShare });
+  }
+  return out;
+}
+
+/**
+ * Construye serie histórica diaria de USD CCL mediano combinando bonos cable
+ * y paridad implícita de ADRs locales vs. NYSE.
+ */
+export function buildHistoricalCclByDate(sources: {
+  readonly gd30Bars?: readonly Bar[];
+  readonly gd30cBars?: readonly Bar[];
+  readonly al30Bars?: readonly Bar[];
+  readonly al30cBars?: readonly Bar[];
+  readonly equityPairs?: ReadonlyArray<{
+    readonly arBars: readonly Bar[];
+    readonly usBars: readonly Bar[];
+    readonly adrRatio: number;
+  }>;
+}): { readonly byDate: ReadonlyMap<string, number>; readonly timeByDate: ReadonlyMap<string, number> } {
+  const candidates = new Map<string, number[]>();
+  const timeByDate = new Map<string, number>();
+
+  const pushCandidate = (dateKey: string, timeSec: number, val: number): void => {
+    if (!Number.isFinite(val) || val <= 0) {
+      return;
+    }
+    const arr = candidates.get(dateKey);
+    if (arr === undefined) {
+      candidates.set(dateKey, [val]);
+    } else {
+      arr.push(val);
+    }
+    const prevT = timeByDate.get(dateKey);
+    if (prevT === undefined || timeSec > prevT) {
+      timeByDate.set(dateKey, timeSec);
+    }
+  };
+
+  const addCross = (
+    numBars: readonly Bar[] | undefined,
+    denBars: readonly Bar[] | undefined,
+    multiplier: number,
+  ): void => {
+    if (numBars === undefined || denBars === undefined) {
+      return;
+    }
+    const denMap = new Map<string, Bar>();
+    for (const { dateKey, bar } of deduplicateBarsByDate(denBars)) {
+      denMap.set(dateKey, bar);
+    }
+    for (const { dateKey, bar: n } of deduplicateBarsByDate(numBars)) {
+      const d = denMap.get(dateKey);
+      if (d !== undefined && n.close > 0 && d.close > 0) {
+        pushCandidate(dateKey, n.time, (n.close * multiplier) / d.close);
+      }
+    }
+  };
+
+  addCross(sources.gd30Bars, sources.gd30cBars, 1);
+  addCross(sources.al30Bars, sources.al30cBars, 1);
+  for (const eq of sources.equityPairs ?? []) {
+    addCross(eq.arBars, eq.usBars, eq.adrRatio);
+  }
+
+  const byDate = new Map<string, number>();
+  for (const [dateKey, vals] of candidates.entries()) {
+    const med = computeMedian(vals);
+    if (med !== null && med > 0) {
+      byDate.set(dateKey, med);
+    }
+  }
+  return { byDate, timeByDate };
+}
+
+/**
+ * Construye serie histórica diaria del Canje Implícito `(CCL / MEP - 1) * 100`.
+ */
+export function computeHistoricalCanjeSeries(sources: {
+  readonly gd30Bars: readonly Bar[];
+  readonly gd30dBars: readonly Bar[];
+  readonly gd30cBars: readonly Bar[];
+  readonly al30Bars: readonly Bar[];
+  readonly al30dBars: readonly Bar[];
+  readonly al30cBars: readonly Bar[];
+  readonly equityPairs?: ReadonlyArray<{
+    readonly arBars: readonly Bar[];
+    readonly usBars: readonly Bar[];
+    readonly adrRatio: number;
+  }>;
+}): readonly RelationSeriesPoint[] {
+  const ccl = buildHistoricalCclByDate(sources);
+  const mepCandidates = new Map<string, number[]>();
+
+  const addMep = (arsBars: readonly Bar[], usdBars: readonly Bar[]): void => {
+    const usdMap = new Map<string, Bar>();
+    for (const { dateKey, bar } of deduplicateBarsByDate(usdBars)) {
+      usdMap.set(dateKey, bar);
+    }
+    for (const { dateKey, bar: ars } of deduplicateBarsByDate(arsBars)) {
+      const usd = usdMap.get(dateKey);
+      if (usd !== undefined && ars.close > 0 && usd.close > 0) {
+        const val = ars.close / usd.close;
+        const arr = mepCandidates.get(dateKey);
+        if (arr === undefined) {
+          mepCandidates.set(dateKey, [val]);
+        } else {
+          arr.push(val);
+        }
+      }
+    }
+  };
+
+  addMep(sources.al30Bars, sources.al30dBars);
+  addMep(sources.gd30Bars, sources.gd30dBars);
+
+  const sortedDates = [...ccl.byDate.keys()].sort();
+  const out: RelationSeriesPoint[] = [];
+  for (const dk of sortedDates) {
+    const cclVal = ccl.byDate.get(dk);
+    const mepList = mepCandidates.get(dk);
+    const mepVal = mepList !== undefined ? computeMedian(mepList) : null;
+    const timeSec = ccl.timeByDate.get(dk);
+    if (cclVal === undefined || mepVal === null || mepVal <= 0 || timeSec === undefined) {
+      continue;
+    }
+    const canjePct = ((cclVal / mepVal) - 1) * 100;
+    if (Number.isFinite(canjePct)) {
+      out.push({ time: timeSec, val: canjePct, volumeShare: null });
+    }
+  }
+  return out;
+}
+
+/**
+ * Índice relativo equiponderado de retornos diarios (o mediana en denominador para benchmark)
+ * en USD-CCL o moneda homogénea, más participación de volumen efectivo por fecha.
+ */
+export function computeBasketRelativeSeries(params: {
+  readonly numBarsList: readonly (readonly Bar[])[];
+  readonly denBarsList: readonly (readonly Bar[])[];
+  readonly deflatorByDate?: ReadonlyMap<string, number> | null;
+  readonly denominatorAggregator?: 'EQUAL_RETURN_INDEX' | 'MEDIAN_RETURN_INDEX';
+  readonly denominatorIsSuperset?: boolean;
+}): readonly RelationSeriesPoint[] {
+  const {
+    numBarsList,
+    denBarsList,
+    deflatorByDate = null,
+    denominatorAggregator = 'EQUAL_RETURN_INDEX',
+    denominatorIsSuperset = false,
+  } = params;
+
+  const numMaps = numBarsList.map((bars) => {
+    const m = new Map<string, Bar>();
+    for (const { dateKey, bar } of deduplicateBarsByDate(bars)) {
+      m.set(dateKey, bar);
+    }
+    return m;
+  });
+  const denMaps = denBarsList.map((bars) => {
+    const m = new Map<string, Bar>();
+    for (const { dateKey, bar } of deduplicateBarsByDate(bars)) {
+      m.set(dateKey, bar);
+    }
+    return m;
+  });
+
+  const dateToTime = new Map<string, number>();
+  for (const m of [...numMaps, ...denMaps]) {
+    for (const [dk, bar] of m.entries()) {
+      const prev = dateToTime.get(dk);
+      if (prev === undefined || bar.time > prev) {
+        dateToTime.set(dk, bar.time);
+      }
+    }
+  }
+
+  const allDates = [...dateToTime.keys()].sort();
+  const minNum = Math.min(2, numMaps.length);
+  const minDen = Math.min(2, denMaps.length);
+
+  let started = false;
+  let idxNum = 100;
+  let idxDen = 100;
+  let prevNum = new Map<number, number>();
+  let prevDen = new Map<number, number>();
+  const out: RelationSeriesPoint[] = [];
+
+  for (const dk of allDates) {
+    const ts = dateToTime.get(dk);
+    if (ts === undefined) {
+      continue;
+    }
+    const defl = deflatorByDate !== null ? deflatorByDate.get(dk) : 1;
+    if (defl === undefined || !Number.isFinite(defl) || defl <= 0) {
+      continue;
+    }
+
+    const curNum = new Map<number, number>();
+    let effNum = 0;
+    for (let j = 0; j < numMaps.length; j += 1) {
+      const m = numMaps[j];
+      const b = m?.get(dk);
+      if (b !== undefined && b.close > 0) {
+        curNum.set(j, b.close / defl);
+        if (b.volume > 0) {
+          effNum += (b.close * b.volume) / defl;
+        }
+      }
+    }
+
+    const curDen = new Map<number, number>();
+    let effDen = 0;
+    for (let j = 0; j < denMaps.length; j += 1) {
+      const m = denMaps[j];
+      const b = m?.get(dk);
+      if (b !== undefined && b.close > 0) {
+        curDen.set(j, b.close / defl);
+        if (b.volume > 0) {
+          effDen += (b.close * b.volume) / defl;
+        }
+      }
+    }
+
+    const computeShare = (): number | null => {
+      if (effNum <= 0 || effDen <= 0) {
+        return null;
+      }
+      if (denominatorIsSuperset) {
+        return effNum <= effDen ? effNum / effDen : null;
+      }
+      return effNum / (effNum + effDen);
+    };
+
+    if (!started) {
+      if (curNum.size >= minNum && curDen.size >= minDen) {
+        started = true;
+        prevNum = curNum;
+        prevDen = curDen;
+        out.push({ time: ts, val: idxNum / idxDen, volumeShare: computeShare() });
+      }
+      continue;
+    }
+
+    const rNum: number[] = [];
+    for (const [j, px] of curNum.entries()) {
+      const pPrev = prevNum.get(j);
+      if (pPrev !== undefined && pPrev > 0) {
+        rNum.push(px / pPrev - 1);
+      }
+    }
+
+    const rDen: number[] = [];
+    for (const [j, px] of curDen.entries()) {
+      const pPrev = prevDen.get(j);
+      if (pPrev !== undefined && pPrev > 0) {
+        rDen.push(px / pPrev - 1);
+      }
+    }
+
+    if (rNum.length < minNum || rDen.length < minDen) {
+      continue;
+    }
+
+    const meanRNum = rNum.reduce((acc, r) => acc + r, 0) / rNum.length;
+    const aggRDen =
+      denominatorAggregator === 'MEDIAN_RETURN_INDEX'
+        ? computeMedian(rDen)
+        : rDen.reduce((acc, r) => acc + r, 0) / rDen.length;
+
+    if (aggRDen === null || 1 + meanRNum <= 0 || 1 + aggRDen <= 0) {
+      continue;
+    }
+
+    idxNum *= 1 + meanRNum;
+    idxDen *= 1 + aggRDen;
+    prevNum = curNum;
+    prevDen = curDen;
+    const ratio = idxNum / idxDen;
+    if (Number.isFinite(ratio)) {
+      out.push({ time: ts, val: ratio, volumeShare: computeShare() });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Calcula estadísticos completos de una relación (`>= 20` obs requeridas, `60` objetivo)
+ * sin fallbacks silenciosos.
+ */
+export function computeRelationPairStats(
+  series: readonly RelationSeriesPoint[],
+  explicitShares: readonly number[] | null = null,
+  minObservations = 20,
+): {
+  readonly currentValue: number | null;
+  readonly mean60d: number | null;
+  readonly std60d: number | null;
+  readonly zScore: number | null;
+  readonly percentile60d: number | null;
+  readonly halfLifeDays: number | null;
+  readonly capitalFlowDeltaPct: number | null;
+  readonly opportunityBadge: RelationOpportunityBadge | null;
+  readonly observationCount: number;
+  readonly sparkline: readonly number[];
+  readonly history: readonly { readonly time: number; readonly ratio: number; readonly zScore: number }[];
+} {
+  const recent60 = series.slice(-60).filter((p) => Number.isFinite(p.val) && Number.isFinite(p.time));
+  const vals60 = recent60.map((p) => p.val);
+  const latest = vals60.length > 0 ? vals60[vals60.length - 1] ?? null : null;
+  const currentValue = sanitizeFinite(latest);
+  const sparkline = vals60.slice(-30);
+
+  let derivedFlowDelta: number | null = null;
+  if (explicitShares !== null) {
+    derivedFlowDelta = sanitizeFinite(computeCapitalFlowDeltaPct(explicitShares));
+  } else {
+    const tail5AllValid =
+      recent60.length >= 20 &&
+      recent60
+        .slice(-5)
+        .every((p) => typeof p.volumeShare === 'number' && Number.isFinite(p.volumeShare) && p.volumeShare > 0);
+    if (tail5AllValid) {
+      const validShares = recent60
+        .map((p) => p.volumeShare)
+        .filter((s): s is number => typeof s === 'number' && Number.isFinite(s) && s > 0 && s <= 1);
+      derivedFlowDelta = sanitizeFinite(computeCapitalFlowDeltaPct(validShares));
+    }
+  }
+
+  if (vals60.length < minObservations || currentValue === null) {
+    return {
+      currentValue,
+      mean60d: null,
+      std60d: null,
+      zScore: null,
+      percentile60d: null,
+      halfLifeDays: null,
+      capitalFlowDeltaPct: derivedFlowDelta,
+      opportunityBadge: null,
+      observationCount: vals60.length,
+      sparkline,
+      history: [],
+    };
+  }
+
+  const stats = computeMeanAndStd(vals60);
+  const mean60d = sanitizeFinite(stats?.mean);
+  const std60d = sanitizeFinite(stats?.std);
+  const zScore =
+    mean60d !== null && std60d !== null && std60d > 1e-8
+      ? sanitizeFinite((currentValue - mean60d) / std60d)
+      : null;
+  const belowCount = vals60.filter((v) => v <= currentValue).length;
+  const percentile60d = sanitizeFinite((belowCount / vals60.length) * 100);
+  const halfLifeDays = sanitizeFinite(computeOuHalfLifeDays(vals60));
+  const opportunityBadge = computeOpportunityBadge(zScore);
+  const history = recent60.map((p) => ({
+    time: p.time,
+    ratio: p.val,
+    zScore:
+      mean60d !== null && std60d !== null && std60d > 1e-8
+        ? (p.val - mean60d) / std60d
+        : 0,
+  }));
+
+  return {
+    currentValue,
+    mean60d,
+    std60d,
+    zScore,
+    percentile60d,
+    halfLifeDays,
+    capitalFlowDeltaPct: derivedFlowDelta,
+    opportunityBadge,
+    observationCount: vals60.length,
+    sparkline,
+    history,
+  };
+}
+
 /**
  * Calcula valor técnico residual, TIR (XIRR anualizada ACT/365) y Duration Modificada
  * de un bono soberano argentino sobre sus flujos reales de prospecto.
@@ -1769,6 +2351,12 @@ export class ArgentinaMarketRuntime {
   private readonly bcraBaseUrl: string;
   private readonly argDatosBaseUrl: string;
   private readonly nyfedBaseUrl: string;
+  private readonly usRuntime: Pick<MarketRuntime, 'getCachedDailyBars1d'> | null;
+  private readonly usDailyBarsFn:
+    | ((symbol: string, lookbackBars?: number, forceRefresh?: boolean) => Promise<CachedDailyBarsResult>)
+    | null;
+  private readonly allowSharedUsRuntime: boolean;
+  private lazyUsRuntime: MarketRuntime | null = null;
 
   private readonly liveCache: SingleFlightRuntimeCache<unknown>;
   private readonly histCache: SingleFlightRuntimeCache<readonly Bar[]>;
@@ -1789,6 +2377,9 @@ export class ArgentinaMarketRuntime {
     this.bcraBaseUrl = (deps.bcraBaseUrl ?? DEFAULT_BCRA_BASE).replace(/\/+$/, '');
     this.argDatosBaseUrl = (deps.argentinaDatosBaseUrl ?? DEFAULT_ARGDATOS_BASE).replace(/\/+$/, '');
     this.nyfedBaseUrl = (deps.nyfedBaseUrl ?? DEFAULT_NYFED_BASE).replace(/\/+$/, '');
+    this.usRuntime = deps.usRuntime ?? null;
+    this.usDailyBarsFn = deps.usDailyBarsFn ?? null;
+    this.allowSharedUsRuntime = deps.fetchFn === undefined;
 
     const ttlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.liveCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
@@ -4416,23 +5007,139 @@ export class ArgentinaMarketRuntime {
     return cached.value as ArOptionsResponse;
   }
 
+  private async getUsDailyBars1dMap(
+    symbols: readonly string[],
+    lookbackBars = 90,
+    forceRefresh = false,
+  ): Promise<{
+    readonly bySymbol: ReadonlyMap<string, readonly Bar[]>;
+    readonly errors: readonly string[];
+  }> {
+    const unique = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter((s) => s !== ''))];
+    const injectedRuntime = this.usRuntime;
+    const providerFn =
+      this.usDailyBarsFn ??
+      (injectedRuntime !== null
+        ? (sym: string, lb?: number, fr?: boolean) =>
+            injectedRuntime.getCachedDailyBars1d(sym, lb, fr)
+        : null);
+
+    let effectiveFn = providerFn;
+    if (effectiveFn === null && this.allowSharedUsRuntime) {
+      const shared = getSharedMarketRuntime();
+      const rt = shared ?? (this.lazyUsRuntime ??= new MarketRuntime({ enableWs: false, secrets: this.secrets }));
+      effectiveFn = (sym: string, lb?: number, fr?: boolean) =>
+        rt.getCachedDailyBars1d(sym, lb, fr);
+    }
+
+    const bySymbol = new Map<string, readonly Bar[]>();
+    const errors: string[] = [];
+    if (effectiveFn === null) {
+      return { bySymbol, errors };
+    }
+
+    const results = await Promise.all(
+      unique.map(async (sym) => {
+        const res = await effectiveFn(sym, lookbackBars, forceRefresh);
+        return res;
+      }),
+    );
+
+    for (const res of results) {
+      bySymbol.set(res.symbol, res.bars);
+      if (res.error !== null) {
+        errors.push(`Massive 1D ${res.symbol}: ${res.error}`);
+      }
+    }
+    return { bySymbol, errors };
+  }
+
   public async getRelations(forceRefresh = false): Promise<ArRelationsResponse> {
     const cached = await this.computedCache.getOrCompute(
       'ar:relations',
       async () => {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
-        const [overview, gd30H, al30H, ggalH, bmaH, ypfdH, vistaH, pampH, spyH, qqqH] = await Promise.all([
+        const panelLiderTickers = AR_STOCK_META.filter((m) => m.panel === 'Líder').map((m) => m.ticker);
+        const bondTickers = ['GD30D', 'AL30D', 'GD35D', 'GD30', 'AL30', 'GD30C', 'AL30C'] as const;
+
+        const [overview, stockHistEntries, bondHistEntries, vistaH, spyH, qqqH, usDailyRes] = await Promise.all([
           this.getOverview(forceRefresh),
-          this.getData912History('bonds', 'GD30D', forceRefresh),
-          this.getData912History('bonds', 'AL30D', forceRefresh),
-          this.getData912History('stocks', 'GGAL', forceRefresh),
-          this.getData912History('stocks', 'BMA', forceRefresh),
-          this.getData912History('stocks', 'YPFD', forceRefresh),
+          Promise.all(
+            panelLiderTickers.map(async (ticker) => [
+              ticker,
+              await this.getData912History('stocks', ticker, forceRefresh),
+            ] as const),
+          ),
+          Promise.all(
+            bondTickers.map(async (ticker) => [
+              ticker,
+              await this.getData912History('bonds', ticker, forceRefresh),
+            ] as const),
+          ),
           this.getCedearHistoryWithAlias('VISTA', forceRefresh),
-          this.getData912History('stocks', 'PAMP', forceRefresh),
           this.getData912History('cedears', 'SPY', forceRefresh),
           this.getData912History('cedears', 'QQQ', forceRefresh),
+          this.getUsDailyBars1dMap(DEFAULT_RELATIONS_US_TICKERS, 90, forceRefresh),
         ]);
+
+        const arStockMap = new Map<
+          string,
+          { readonly bars: readonly Bar[]; readonly error: string | null }
+        >(stockHistEntries);
+        const arBondMap = new Map<
+          string,
+          { readonly bars: readonly Bar[]; readonly error: string | null }
+        >(bondHistEntries);
+        const stockBars = (ticker: string): readonly Bar[] => arStockMap.get(ticker)?.bars ?? [];
+        const bondBars = (ticker: string): readonly Bar[] => arBondMap.get(ticker)?.bars ?? [];
+        const usBars = (ticker: string): readonly Bar[] => usDailyRes.bySymbol.get(ticker) ?? [];
+
+        const buildDtoFromSeries = (meta: {
+          readonly id: string;
+          readonly name: string;
+          readonly legA: string;
+          readonly legB: string;
+          readonly unit: string;
+          readonly category: string;
+          readonly categoryGroup: RelationCategoryGroup;
+          readonly source: 'MASSIVE_1D' | 'DATA912' | 'MIXED_USD_CCL';
+          readonly series: readonly RelationSeriesPoint[];
+        }): ArRelationPairDto => {
+          const stats = computeRelationPairStats(meta.series, null, 20);
+          const signal =
+            stats.zScore === null
+              ? stats.observationCount > 0 && stats.observationCount < 20
+                ? 'Sin historial suficiente (mín. 20 ruedas)'
+                : 'Sin historial suficiente'
+              : stats.zScore >= 2.0
+                ? `${meta.legA} muy caro relativo a ${meta.legB} (+${stats.zScore.toFixed(1)}σ)`
+                : stats.zScore <= -2.0
+                  ? `${meta.legA} barato relativo a ${meta.legB} (${stats.zScore.toFixed(1)}σ)`
+                  : 'Dentro de rango histórico 60 ruedas';
+
+          return {
+            id: meta.id,
+            name: meta.name,
+            legA: meta.legA,
+            legB: meta.legB,
+            unit: meta.unit,
+            category: meta.category,
+            categoryGroup: meta.categoryGroup,
+            source: meta.source,
+            currentValue: stats.currentValue,
+            mean60d: stats.mean60d,
+            std60d: stats.std60d,
+            zScore: stats.zScore,
+            percentile60d: stats.percentile60d,
+            halfLifeDays: stats.halfLifeDays,
+            capitalFlowDeltaPct: stats.capitalFlowDeltaPct,
+            opportunityBadge: stats.opportunityBadge,
+            observationCount: stats.observationCount,
+            sparkline: stats.sparkline,
+            signal,
+            history: stats.history,
+          };
+        };
 
         const buildPair = (
           id: string,
@@ -4443,70 +5150,24 @@ export class ArgentinaMarketRuntime {
           barsA: readonly Bar[],
           barsB: readonly Bar[],
           mode: 'DIFF' | 'RATIO',
-        ): ArRelationPairDto => {
-          const mapB = new Map<string, number>();
-          for (const b of barsB) {
-            mapB.set(new Date(b.time * 1_000).toISOString().slice(0, 10), b.close);
-          }
-
-          const paired: { time: number; val: number }[] = [];
-          for (const a of barsA) {
-            const key = new Date(a.time * 1_000).toISOString().slice(0, 10);
-            const bClose = mapB.get(key);
-            if (bClose === undefined || bClose <= 0 || a.close <= 0) {
-              continue;
-            }
-            const val = mode === 'DIFF' ? a.close - bClose : a.close / bClose;
-            if (Number.isFinite(val)) {
-              paired.push({ time: a.time, val });
-            }
-          }
-
-          const recent60 = paired.slice(-60);
-          const vals60 = recent60.map((p) => p.val);
-          const stats = computeMeanAndStd(vals60);
-          const latest = recent60[recent60.length - 1]?.val ?? null;
-          const zScore =
-            latest !== null && stats !== null && stats.std > 1e-8
-              ? (latest - stats.mean) / stats.std
-              : null;
-
-          const belowCount =
-            latest !== null ? vals60.filter((v) => v <= latest).length : 0;
-          const percentile60d =
-            vals60.length > 0 && latest !== null ? (belowCount / vals60.length) * 100 : null;
-
-          const history = recent60.map((p) => ({
-            time: p.time,
-            ratio: p.val,
-            zScore:
-              stats !== null && stats.std > 1e-8 ? (p.val - stats.mean) / stats.std : 0,
-          }));
-
-          const signal =
-            zScore === null
-              ? 'Sin historial suficiente'
-              : zScore >= 2.0
-                ? `${legA} muy caro relativo a ${legB} (+${zScore.toFixed(1)}σ)`
-                : zScore <= -2.0
-                  ? `${legA} barato relativo a ${legB} (${zScore.toFixed(1)}σ)`
-                  : 'Dentro de rango histórico 60 ruedas';
-
-          return {
+          opts?: {
+            readonly category?: string;
+            readonly categoryGroup?: RelationCategoryGroup;
+            readonly source?: 'MASSIVE_1D' | 'DATA912' | 'MIXED_USD_CCL';
+            readonly includeVolumeShare?: boolean;
+          },
+        ): ArRelationPairDto =>
+          buildDtoFromSeries({
             id,
             name,
             legA,
             legB,
             unit,
-            currentValue: sanitizeFinite(latest),
-            mean60d: sanitizeFinite(stats?.mean),
-            std60d: sanitizeFinite(stats?.std),
-            zScore: sanitizeFinite(zScore),
-            percentile60d: sanitizeFinite(percentile60d),
-            signal,
-            history,
-          };
-        };
+            category: opts?.category ?? 'RELACIÓN LOCAL',
+            categoryGroup: opts?.categoryGroup ?? (mode === 'DIFF' ? 'LIQUIDEZ_CREDITO' : 'ROTACION_SECTORIAL'),
+            source: opts?.source ?? 'DATA912',
+            series: alignDailyPairSeries(barsA, barsB, mode, opts?.includeVolumeShare ?? mode === 'RATIO', false),
+          });
 
         const livePairRatio = (numTicker: string, denTicker: string): number | null => {
           const num =
@@ -4519,7 +5180,48 @@ export class ArgentinaMarketRuntime {
             )?.last ?? null;
           return num !== null && num > 0 && den !== null && den > 0 ? num / den : null;
         };
-        const vistaPair = buildPair('ypfd-vista', 'Ratio Energía YPFD / VIST', 'YPFD', 'VIST', 'x', ypfdH.bars, vistaH.bars, 'RATIO');
+
+        const gd30dBars = bondBars('GD30D');
+        const al30dBars = bondBars('AL30D');
+        const gd35dBars = bondBars('GD35D');
+        const gd30Bars = bondBars('GD30');
+        const al30Bars = bondBars('AL30');
+        const gd30cBars = bondBars('GD30C');
+        const al30cBars = bondBars('AL30C');
+
+        const ggalAr = stockBars('GGAL');
+        const bmaAr = stockBars('BMA');
+        const ypfdAr = stockBars('YPFD');
+        const pampAr = stockBars('PAMP');
+
+        const gd30Al30Pair = buildPair(
+          'gd30-al30',
+          'Spread Legislación GD30D - AL30D',
+          'GD30D',
+          'AL30D',
+          'USD',
+          gd30dBars,
+          al30dBars,
+          'DIFF',
+          { category: 'LEGISLACIÓN & SOBERANOS', categoryGroup: 'LIQUIDEZ_CREDITO', includeVolumeShare: false },
+        );
+        const ggalBmaPair = buildPair(
+          'ggal-bma',
+          'Ratio Bancos GGAL / BMA',
+          'GGAL',
+          'BMA',
+          'x',
+          ggalAr,
+          bmaAr,
+          'RATIO',
+          { category: 'BANCOS LOCAL · BYMA', categoryGroup: 'ROTACION_SECTORIAL', includeVolumeShare: true },
+        );
+
+        const vistaPair = buildPair('ypfd-vista', 'Ratio Energía YPFD / VIST', 'YPFD', 'VIST', 'x', ypfdAr, vistaH.bars, 'RATIO', {
+          category: 'ENERGÍA LOCAL · BYMA',
+          categoryGroup: 'ROTACION_SECTORIAL',
+          includeVolumeShare: false,
+        });
         // Data912 no publica /historical para VIST/VISTA: valor actual real desde cotizaciones vivas, sin estadísticas inventadas.
         const vistaLive = vistaPair.currentValue === null ? livePairRatio('YPFD', 'VIST') : null;
         const vistaPairFinal: ArRelationPairDto =
@@ -4531,31 +5233,283 @@ export class ArgentinaMarketRuntime {
               }
             : vistaPair;
 
-        const pairs: ArRelationPairDto[] = [
-          buildPair('gd30-al30', 'Spread Legislación GD30D - AL30D', 'GD30D', 'AL30D', 'USD', gd30H.bars, al30H.bars, 'DIFF'),
-          buildPair('ggal-bma', 'Ratio Bancos GGAL / BMA', 'GGAL', 'BMA', 'x', ggalH.bars, bmaH.bars, 'RATIO'),
-          vistaPairFinal,
-        ];
+        const pairs: ArRelationPairDto[] = [gd30Al30Pair, ggalBmaPair, vistaPairFinal];
+
+        const ypfdPampPair = buildPair(
+          'ypfd-pamp',
+          'Ratio Energía Local YPFD / PAMP',
+          'YPFD',
+          'PAMP',
+          'x',
+          ypfdAr,
+          pampAr,
+          'RATIO',
+          { category: 'ENERGÍA LOCAL · BYMA', categoryGroup: 'ROTACION_SECTORIAL', includeVolumeShare: true },
+        );
 
         const extendedPairs: ArRelationPairDto[] = [
           ...pairs,
-          buildPair('ypfd-pamp', 'Ratio Energía Local YPFD / PAMP', 'YPFD', 'PAMP', 'x', ypfdH.bars, pampH.bars, 'RATIO'),
-          buildPair('spy-qqq', 'Ratio Índices CEDEAR SPY / QQQ', 'SPY', 'QQQ', 'x', spyH.bars, qqqH.bars, 'RATIO'),
+          ypfdPampPair,
+          buildPair('spy-qqq', 'Ratio Índices CEDEAR SPY / QQQ', 'SPY', 'QQQ', 'x', spyH.bars, qqqH.bars, 'RATIO', {
+            category: 'ROTACIÓN US · TECH',
+            categoryGroup: 'ROTACION_SECTORIAL',
+            includeVolumeShare: true,
+          }),
         ];
 
-        const providerErrors = [
-          ...overview.providerErrors,
-          ...[gd30H.error, al30H.error, ggalH.error, bmaH.error, ypfdH.error, vistaH.error].filter(
-            (e): e is string => e !== null,
-          ),
+        // Pares globales & ADR USD vía Massive 1D (90 ruedas cerradas ajustadas)
+        const usSpecs: readonly {
+          readonly id: string;
+          readonly name: string;
+          readonly legA: string;
+          readonly legB: string;
+          readonly category: string;
+          readonly categoryGroup: RelationCategoryGroup;
+        }[] = [
+          {
+            id: 'ypf-vist',
+            name: 'Vaca Muerta YPF / VIST (NYSE USD)',
+            legA: 'YPF',
+            legB: 'VIST',
+            category: 'ROTACIÓN AR · VACA MUERTA',
+            categoryGroup: 'ROTACION_SECTORIAL',
+          },
+          {
+            id: 'ggal-ewz',
+            name: 'Bancos AR vs. Brasil GGAL ADR / EWZ',
+            legA: 'GGAL',
+            legB: 'EWZ',
+            category: 'ROTACIÓN LATAM · AR VS BR',
+            categoryGroup: 'ROTACION_SECTORIAL',
+          },
+          {
+            id: 'qqq-spy',
+            name: 'Rotación US Tech QQQ / SPY',
+            legA: 'QQQ',
+            legB: 'SPY',
+            category: 'ROTACIÓN US · TECH',
+            categoryGroup: 'ROTACION_SECTORIAL',
+          },
+          {
+            id: 'iwm-spy',
+            name: 'Apetito Small Caps IWM / SPY',
+            legA: 'IWM',
+            legB: 'SPY',
+            category: 'ROTACIÓN US · RISK-ON',
+            categoryGroup: 'ROTACION_SECTORIAL',
+          },
+          {
+            id: 'xlf-xle',
+            name: 'Financieras vs. Energía Global XLF / XLE',
+            legA: 'XLF',
+            legB: 'XLE',
+            category: 'ROTACIÓN US · SECTORES',
+            categoryGroup: 'ROTACION_SECTORIAL',
+          },
+          {
+            id: 'hyg-lqd',
+            name: 'Liquidez & Crédito High Yield HYG / LQD',
+            legA: 'HYG',
+            legB: 'LQD',
+            category: 'LIQUIDEZ & CRÉDITO US',
+            categoryGroup: 'LIQUIDEZ_CREDITO',
+          },
+          {
+            id: 'gld-spy',
+            name: 'Refugio Oro vs. S&P 500 GLD / SPY',
+            legA: 'GLD',
+            legB: 'SPY',
+            category: 'REFUGIO & LIQUIDEZ MACRO',
+            categoryGroup: 'LIQUIDEZ_CREDITO',
+          },
         ];
+
+        const usRelationPairs = usSpecs.map((spec) =>
+          buildPair(spec.id, spec.name, spec.legA, spec.legB, 'x', usBars(spec.legA), usBars(spec.legB), 'RATIO', {
+            category: spec.category,
+            categoryGroup: spec.categoryGroup,
+            source: 'MASSIVE_1D',
+            includeVolumeShare: true,
+          }),
+        );
+
+        // CCL histórico mediano (bonos cable + ADRs NYSE vs. BYMA)
+        const cclSources = {
+          gd30Bars,
+          gd30cBars,
+          al30Bars,
+          al30cBars,
+          equityPairs: [
+            { arBars: ggalAr, usBars: usBars('GGAL'), adrRatio: 10 },
+            { arBars: bmaAr, usBars: usBars('BMA'), adrRatio: 10 },
+            { arBars: ypfdAr, usBars: usBars('YPF'), adrRatio: 1 },
+            { arBars: pampAr, usBars: usBars('PAM'), adrRatio: 25 },
+          ],
+        } as const;
+        const cclHistorical = buildHistoricalCclByDate(cclSources);
+
+        // Canasta Bancos vs. Energía AR en USD-CCL
+        const bancosEnergySeries = computeBasketRelativeSeries({
+          numBarsList: ['GGAL', 'BMA', 'SUPV', 'BBAR'].map(stockBars),
+          denBarsList: ['YPFD', 'PAMP', 'TGSU2', 'CEPU'].map(stockBars),
+          deflatorByDate: cclHistorical.byDate,
+          denominatorAggregator: 'EQUAL_RETURN_INDEX',
+          denominatorIsSuperset: false,
+        });
+        const bancosEnergiaArPair = buildDtoFromSeries({
+          id: 'bancos-energia-ar',
+          name: 'Canasta Bancos vs. Energía AR (USD-CCL)',
+          legA: 'BANCOS AR',
+          legB: 'ENERGÍA AR',
+          unit: 'x',
+          category: 'ROTACIÓN SECTORIAL AR · USD CCL',
+          categoryGroup: 'ROTACION_SECTORIAL',
+          source: 'MIXED_USD_CCL',
+          series: bancosEnergySeries,
+        });
+
+        // Reguladas / Utilities vs. Mediana del Panel Líder AR
+        const reguladasSeries = computeBasketRelativeSeries({
+          numBarsList: ['TRAN', 'EDN', 'METR', 'TGNO4'].map(stockBars),
+          denBarsList: panelLiderTickers.map(stockBars),
+          deflatorByDate: null,
+          denominatorAggregator: 'MEDIAN_RETURN_INDEX',
+          denominatorIsSuperset: true,
+        });
+        const reguladasLiderPair = buildDtoFromSeries({
+          id: 'reguladas-lider',
+          name: 'Reguladas / Utilities vs. Panel Líder AR',
+          legA: 'REGULADAS AR',
+          legB: 'PANEL LÍDER',
+          unit: 'x',
+          category: 'ROTACIÓN AR · REGULADAS',
+          categoryGroup: 'ROTACION_SECTORIAL',
+          source: 'DATA912',
+          series: reguladasSeries,
+        });
+
+        const gd35Gd30Pair = buildPair(
+          'gd35-gd30',
+          'Curva Soberana GD35D / GD30D',
+          'GD35D',
+          'GD30D',
+          'x',
+          gd35dBars,
+          gd30dBars,
+          'RATIO',
+          { category: 'CURVA SOBERANA USD', categoryGroup: 'LIQUIDEZ_CREDITO', includeVolumeShare: false },
+        );
+
+        const ggalSupvPair = buildPair(
+          'ggal-supv',
+          'Ratio Bancos GGAL / SUPV',
+          'GGAL',
+          'SUPV',
+          'x',
+          ggalAr,
+          stockBars('SUPV'),
+          'RATIO',
+          { category: 'BANCOS LOCAL · BYMA', categoryGroup: 'ROTACION_SECTORIAL', includeVolumeShare: true },
+        );
+
+        const canjeSeries = computeHistoricalCanjeSeries({
+          ...cclSources,
+          gd30dBars,
+          al30dBars,
+        });
+        let cclMepPair = buildDtoFromSeries({
+          id: 'ccl-mep',
+          name: 'Canje Implícito CCL / MEP (%)',
+          legA: 'CCL',
+          legB: 'MEP',
+          unit: '%',
+          category: 'CANJE & LIQUIDEZ FX',
+          categoryGroup: 'LIQUIDEZ_CREDITO',
+          source: 'MIXED_USD_CCL',
+          series: canjeSeries,
+        });
+        if (
+          cclMepPair.currentValue === null &&
+          overview.cclMedian !== null &&
+          overview.mepMedian !== null &&
+          overview.mepMedian > 0
+        ) {
+          cclMepPair = {
+            ...cclMepPair,
+            currentValue: sanitizeFinite(((overview.cclMedian / overview.mepMedian) - 1) * 100),
+            signal: 'Sin historial suficiente (solo canje spot en vivo)',
+          };
+        }
+
+        const relationPairs: ArRelationPairDto[] = [
+          ...usRelationPairs,
+          bancosEnergiaArPair,
+          reguladasLiderPair,
+          gd30Al30Pair,
+          gd35Gd30Pair,
+          ypfdPampPair,
+          ggalBmaPair,
+          ggalSupvPair,
+          cclMepPair,
+        ];
+
+        const extremeTwoSigmaCount = relationPairs.filter(
+          (p) => p.zScore !== null && Math.abs(p.zScore) >= 2.0,
+        ).length;
+        const moderateDeviationCount = relationPairs.filter(
+          (p) => p.zScore !== null && Math.abs(p.zScore) >= 1.5 && Math.abs(p.zScore) < 2.0,
+        ).length;
+
+        let topFlowPair: ArRelationPairDto | null = null;
+        for (const p of relationPairs) {
+          const flow = p.capitalFlowDeltaPct ?? null;
+          if (flow === null || !Number.isFinite(flow)) {
+            continue;
+          }
+          const prevFlow = topFlowPair?.capitalFlowDeltaPct ?? null;
+          if (prevFlow === null || Math.abs(flow) > Math.abs(prevFlow)) {
+            topFlowPair = p;
+          }
+        }
+        const topCapitalFlowDeltaPct =
+          topFlowPair !== null ? sanitizeFinite(topFlowPair.capitalFlowDeltaPct) : null;
+        const topCapitalFlowSector =
+          topFlowPair !== null && topCapitalFlowDeltaPct !== null
+            ? topCapitalFlowDeltaPct >= 0
+              ? `${topFlowPair.legA} · ${topFlowPair.category ?? topFlowPair.name}`
+              : `${topFlowPair.legB} · ${topFlowPair.category ?? topFlowPair.name}`
+            : null;
+
+        const relationSummary: ArRelationsSummaryDto = {
+          extremeTwoSigmaCount,
+          moderateDeviationCount,
+          topCapitalFlowPairId: topFlowPair?.id ?? null,
+          topCapitalFlowSector,
+          topCapitalFlowDeltaPct,
+        };
+
+        const rawErrors = [
+          ...overview.providerErrors,
+          ...['GD30D', 'AL30D', 'GD35D', 'GGAL', 'BMA', 'YPFD', 'PAMP'].flatMap((tk) => {
+            const err = arBondMap.get(tk)?.error ?? arStockMap.get(tk)?.error ?? null;
+            return err !== null ? [err] : [];
+          }),
+          ...[vistaH.error].filter((e): e is string => e !== null),
+          ...usDailyRes.errors,
+        ];
+        const providerErrors = [...new Set(rawErrors)];
 
         return {
           asOfUtcSec: nowSec,
-          feedStatus: pairs.some((p) => p.currentValue !== null) ? overview.feedStatus : 'PARTIAL',
+          feedStatus:
+            pairs.some((p) => p.currentValue !== null) || relationPairs.some((p) => p.currentValue !== null)
+              ? overview.feedStatus
+              : 'PARTIAL',
           providerErrors,
           pairs,
           extendedPairs,
+          relationPairs,
+          relationSummary,
           mepCclArbitrage: overview.mepCclMatrix,
         };
       },

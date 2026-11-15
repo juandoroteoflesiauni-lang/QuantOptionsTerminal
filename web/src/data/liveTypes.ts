@@ -663,19 +663,45 @@ export interface ArOptionsResponse {
   readonly providerErrors: readonly string[];
 }
 
+export type RelationOpportunityBadge =
+  | 'EXTREMO COMPRA'
+  | 'EXTREMO VENTA'
+  | 'DESVÍO MODERADO'
+  | 'EN EQUILIBRIO';
+
+export type RelationCategoryGroup = 'ROTACION_SECTORIAL' | 'LIQUIDEZ_CREDITO';
+
 export interface ArRelationPairDto {
   readonly id: string;
   readonly name: string;
   readonly legA: string;
   readonly legB: string;
   readonly unit: string;
+  readonly category?: string;
+  readonly categoryGroup?: RelationCategoryGroup;
+  readonly source?: 'MASSIVE_1D' | 'DATA912' | 'MIXED_USD_CCL';
   readonly currentValue: number | null;
   readonly mean60d: number | null;
   readonly std60d: number | null;
   readonly zScore: number | null;
   readonly percentile60d: number | null;
+  readonly halfLifeDays?: number | null;
+  readonly capitalFlowDeltaPct?: number | null;
+  readonly opportunityBadge?: RelationOpportunityBadge | null;
+  readonly observationCount?: number;
+  readonly sparkline?: readonly number[];
   readonly signal: string;
   readonly history: readonly { readonly time: number; readonly ratio: number; readonly zScore: number }[];
+}
+
+export type RelationPairSnapshot = ArRelationPairDto;
+
+export interface ArRelationsSummaryDto {
+  readonly extremeTwoSigmaCount: number;
+  readonly moderateDeviationCount: number;
+  readonly topCapitalFlowPairId: string | null;
+  readonly topCapitalFlowSector: string | null;
+  readonly topCapitalFlowDeltaPct: number | null;
 }
 
 export interface ArRelationsResponse {
@@ -684,6 +710,8 @@ export interface ArRelationsResponse {
   readonly providerErrors: readonly string[];
   readonly pairs: readonly ArRelationPairDto[];
   readonly extendedPairs?: readonly ArRelationPairDto[];
+  readonly relationPairs?: readonly ArRelationPairDto[];
+  readonly relationSummary?: ArRelationsSummaryDto;
   readonly mepCclArbitrage: readonly MepCclArbitrageRow[];
 }
 

@@ -497,19 +497,51 @@ export const CAUCIONES_DATA: CaucionRow[] = [];
 export interface RatioArbitragePair {
   id: string;
   pairTitle: string;
-  category: 'Legislación Bonos' | 'Bancos Relativo' | 'Energía Relativo' | 'Índices en USD';
+  legA: string;
+  legB: string;
+  category:
+    | 'Rotación Sectorial'
+    | 'Liquidez y Crédito'
+    | 'Legislación Bonos'
+    | 'Bancos Relativo'
+    | 'Energía Relativo'
+    | 'Índices en USD';
+  categoryLabel: string;
+  categoryGroup: 'ROTACION_SECTORIAL' | 'LIQUIDEZ_CREDITO';
+  source: 'MASSIVE_1D' | 'DATA912' | 'MIXED_USD_CCL';
   currentRatio: number;
   unit: string;
   mean90d: number;
   stdDev90d: number;
   zScore: number;
   percentile90d: number;
+  halfLifeDays: number;
+  capitalFlowDeltaPct: number;
+  opportunityBadge: 'EXTREMO COMPRA' | 'EXTREMO VENTA' | 'DESVÍO MODERADO' | 'EN EQUILIBRIO' | null;
+  observationCount: number;
+  sparkline: number[];
   signal: string;
   recommendation: string;
   history: number[];
 }
 
+export interface RelationsSummaryState {
+  extremeTwoSigmaCount: number;
+  moderateDeviationCount: number;
+  topCapitalFlowPairId: string | null;
+  topCapitalFlowSector: string | null;
+  topCapitalFlowDeltaPct: number;
+}
+
 export const RATIO_PAIRS: RatioArbitragePair[] = [];
+
+export const RELATION_SUMMARY: RelationsSummaryState = {
+  extremeTwoSigmaCount: 0,
+  moderateDeviationCount: 0,
+  topCapitalFlowPairId: null,
+  topCapitalFlowSector: null,
+  topCapitalFlowDeltaPct: Number.NaN,
+};
 
 export interface PortfolioPosition {
   id: string;
@@ -909,35 +941,105 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
 }
 
 export function hydrateFromArRelations(rel: ArRelationsResponse): void {
-  const sourcePairs = rel.extendedPairs && rel.extendedPairs.length > 0 ? rel.extendedPairs : rel.pairs;
+  const sourcePairs =
+    rel.relationPairs && rel.relationPairs.length > 0
+      ? rel.relationPairs
+      : rel.extendedPairs && rel.extendedPairs.length > 0
+      ? rel.extendedPairs
+      : rel.pairs;
+
   const mapped: RatioArbitragePair[] = sourcePairs.map((p) => {
     const lower = p.id.toLowerCase();
+    const isLiquidity =
+      p.categoryGroup === 'LIQUIDEZ_CREDITO' ||
+      lower.includes('gd30') ||
+      lower.includes('gd35') ||
+      lower.includes('al30') ||
+      lower.includes('hyg') ||
+      lower.includes('lqd') ||
+      lower.includes('gld') ||
+      lower.includes('ccl') ||
+      lower.includes('mep');
+
+    const categoryGroup: 'ROTACION_SECTORIAL' | 'LIQUIDEZ_CREDITO' = isLiquidity
+      ? 'LIQUIDEZ_CREDITO'
+      : 'ROTACION_SECTORIAL';
+
+    const categoryLabel =
+      p.category && p.category.trim() !== ''
+        ? p.category
+        : lower === 'qqq-spy' || lower === 'spy-qqq'
+        ? 'ROTACIÓN US · TECH'
+        : lower.includes('gd30') || lower.includes('gd35') || lower.includes('al30')
+        ? 'LEGISLACIÓN & SOBERANOS'
+        : lower.includes('ccl') || lower.includes('mep')
+        ? 'CANJE & LIQUIDEZ FX'
+        : lower.includes('hyg') || lower.includes('lqd') || lower.includes('gld')
+        ? 'LIQUIDEZ & CRÉDITO US'
+        : lower.includes('ypf') || lower.includes('pamp')
+        ? 'ROTACIÓN ENERGÍA'
+        : 'ROTACIÓN SECTORIAL';
+
     const category: RatioArbitragePair['category'] =
-      lower.includes('gd30') || lower.includes('al30')
-        ? 'Legislación Bonos'
+      categoryGroup === 'LIQUIDEZ_CREDITO'
+        ? lower.includes('gd30') || lower.includes('al30')
+          ? 'Legislación Bonos'
+          : 'Liquidez y Crédito'
         : lower.includes('ypf') || lower.includes('pamp')
         ? 'Energía Relativo'
-        : lower.includes('ccl') || lower.includes('mep')
-        ? 'Índices en USD'
-        : 'Bancos Relativo';
+        : lower.includes('bma') || lower.includes('supv') || lower.includes('ewz')
+        ? 'Bancos Relativo'
+        : 'Rotación Sectorial';
 
     const cur = toNumOrNaN(p.currentValue);
     const z = toNumOrNaN(p.zScore);
-    const recommendation =
-      Number.isFinite(z) && Math.abs(z) >= 1.5
+    const badge =
+      p.opportunityBadge !== undefined
+        ? p.opportunityBadge
+        : Number.isFinite(z)
+        ? z <= -2.0
+          ? 'EXTREMO COMPRA'
+          : z >= 2.0
+          ? 'EXTREMO VENTA'
+          : Math.abs(z) >= 1.5
+          ? 'DESVÍO MODERADO'
+          : 'EN EQUILIBRIO'
+        : null;
+
+    const spark =
+      p.sparkline && p.sparkline.length > 0
+        ? p.sparkline.filter((v) => Number.isFinite(v))
+        : p.history
+            .map((h) => h.ratio)
+            .filter((v) => Number.isFinite(v))
+            .slice(-30);
+
+    const recommendation = Number.isFinite(z)
+      ? Math.abs(z) >= 1.5
         ? `Desvío estadístico de ${fmtNum(z, 2)}σ (${p.signal}) respecto a su media de 60 ruedas.`
-        : `Relación en equilibrio (${p.signal}) alrededor de ${fmtNum(p.mean60d, 2)} ${p.unit}.`;
+        : `Relación en equilibrio (${p.signal}) alrededor de ${fmtNum(p.mean60d, 2)} ${p.unit}.`
+      : p.signal;
 
     return {
       id: p.id,
       pairTitle: p.name,
+      legA: p.legA,
+      legB: p.legB,
       category,
+      categoryLabel,
+      categoryGroup,
+      source: p.source ?? 'DATA912',
       currentRatio: cur,
       unit: p.unit,
       mean90d: toNumOrNaN(p.mean60d),
       stdDev90d: toNumOrNaN(p.std60d),
       zScore: z,
       percentile90d: toNumOrNaN(p.percentile60d),
+      halfLifeDays: toNumOrNaN(p.halfLifeDays),
+      capitalFlowDeltaPct: toNumOrNaN(p.capitalFlowDeltaPct),
+      opportunityBadge: badge,
+      observationCount: p.observationCount ?? p.history.length,
+      sparkline: spark,
       signal: p.signal,
       recommendation,
       history: p.history.map((h) => h.ratio).filter((v) => Number.isFinite(v)),
@@ -945,6 +1047,36 @@ export function hydrateFromArRelations(rel: ArRelationsResponse): void {
   });
 
   RATIO_PAIRS.splice(0, RATIO_PAIRS.length, ...mapped);
+
+  if (rel.relationSummary) {
+    RELATION_SUMMARY.extremeTwoSigmaCount = rel.relationSummary.extremeTwoSigmaCount;
+    RELATION_SUMMARY.moderateDeviationCount = rel.relationSummary.moderateDeviationCount;
+    RELATION_SUMMARY.topCapitalFlowPairId = rel.relationSummary.topCapitalFlowPairId;
+    RELATION_SUMMARY.topCapitalFlowSector = rel.relationSummary.topCapitalFlowSector;
+    RELATION_SUMMARY.topCapitalFlowDeltaPct = toNumOrNaN(rel.relationSummary.topCapitalFlowDeltaPct);
+  } else {
+    RELATION_SUMMARY.extremeTwoSigmaCount = mapped.filter(
+      (m) => Number.isFinite(m.zScore) && Math.abs(m.zScore) >= 2.0,
+    ).length;
+    RELATION_SUMMARY.moderateDeviationCount = mapped.filter(
+      (m) => Number.isFinite(m.zScore) && Math.abs(m.zScore) >= 1.5 && Math.abs(m.zScore) < 2.0,
+    ).length;
+    let best: RatioArbitragePair | null = null;
+    for (const m of mapped) {
+      if (!Number.isFinite(m.capitalFlowDeltaPct)) continue;
+      if (best === null || Math.abs(m.capitalFlowDeltaPct) > Math.abs(best.capitalFlowDeltaPct)) {
+        best = m;
+      }
+    }
+    RELATION_SUMMARY.topCapitalFlowPairId = best?.id ?? null;
+    RELATION_SUMMARY.topCapitalFlowSector =
+      best !== null
+        ? best.capitalFlowDeltaPct >= 0
+          ? `${best.legA} · ${best.categoryLabel}`
+          : `${best.legB} · ${best.categoryLabel}`
+        : null;
+    RELATION_SUMMARY.topCapitalFlowDeltaPct = best !== null ? best.capitalFlowDeltaPct : Number.NaN;
+  }
 }
 
 export function hydrateFromUsSnapshot(snap: UsSnapshotResponseDto): void {

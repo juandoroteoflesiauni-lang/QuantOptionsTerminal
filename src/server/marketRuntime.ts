@@ -732,6 +732,33 @@ interface SlicePackage {
   readonly butterflyMinDensity: number;
 }
 
+export const DEFAULT_RELATIONS_US_TICKERS = [
+  'YPF',
+  'VIST',
+  'SPY',
+  'QQQ',
+  'IWM',
+  'XLF',
+  'XLE',
+  'HYG',
+  'LQD',
+  'TLT',
+  'GLD',
+  'EWZ',
+  'GGAL',
+  'BMA',
+  'PAM',
+] as const;
+
+export interface CachedDailyBarsResult {
+  readonly symbol: string;
+  readonly bars: readonly Bar[];
+  readonly error: string | null;
+  readonly cacheHit: boolean;
+}
+
+const DEFAULT_DAILY_1D_CACHE_TTL_MS = 5 * 60 * 1_000;
+
 export function sanitizeFinite(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -1575,6 +1602,7 @@ export class MarketRuntime {
   private readonly snapshotCache: SingleFlightRuntimeCache<TerminalSnapshotResponse>;
   private readonly barsCache: SingleFlightRuntimeCache<TerminalBarsResponse>;
   private readonly unusualCache: SingleFlightRuntimeCache<TerminalUnusualResponse>;
+  private readonly daily1dCache: SingleFlightRuntimeCache<readonly Bar[]>;
 
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
@@ -1637,6 +1665,18 @@ export class MarketRuntime {
       nowFn: this.nowMsFn,
       ttlResolver,
     });
+    this.daily1dCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: deps.ttlResolver ?? (() => DEFAULT_DAILY_1D_CACHE_TTL_MS),
+    });
+
+    if (
+      deps.fetchFn === undefined &&
+      deps.loadBarsFn === undefined &&
+      deps.nowMsFn === undefined
+    ) {
+      registerSharedMarketRuntime(this);
+    }
   }
 
   public addWsListener(listener: (event: RuntimeWsBroadcast) => void): () => void {
@@ -3707,4 +3747,111 @@ export class MarketRuntime {
     assertJsonSafeSerialized(payload);
     return payload;
   }
+
+  /**
+   * Obtiene y cachea barras diarias ajustadas (`1D`, últimas `lookbackBars` ruedas cerradas)
+   * de Massive API para pares cuantitativos US/ADR (`/relaciones` y rotación sectorial).
+   */
+  public async getCachedDailyBars1d(
+    rawSymbol: string,
+    lookbackBars = 90,
+    forceRefresh = false,
+  ): Promise<CachedDailyBarsResult> {
+    const cleanInput = rawSymbol.trim().toUpperCase();
+    const boundedLookback = Math.min(Math.max(Math.trunc(lookbackBars), 20), 365);
+
+    if (this.apiKey.trim() === '') {
+      return {
+        symbol: cleanInput,
+        bars: [],
+        error: 'MASSIVE_API_KEY not configured for 1D US relations',
+        cacheHit: false,
+      };
+    }
+
+    try {
+      const symbol = parseTerminalSymbol(cleanInput, this.secrets).canonicalSymbol;
+      const cacheKey = `us1d:${symbol}:${String(boundedLookback)}`;
+      const cached = await this.daily1dCache.getOrCompute(
+        cacheKey,
+        async () => {
+          const nowSec = Math.floor(this.nowMsFn() / 1_000);
+          const res = await this.loadBarsFn({
+            provider: 'massive',
+            symbol,
+            timeframe: '1D',
+            visibleBars: boundedLookback,
+            warmupBars: 0,
+            rthOnly: false,
+            maxPages: 2,
+            now: nowSec,
+            apiKey: this.apiKey,
+            fetchFn: this.fetchFn,
+            ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+          });
+          const bars = res.bars.slice(-boundedLookback);
+          if (bars.length === 0) {
+            const reason =
+              res.report.providerError?.message ??
+              `No 1D bars available from Massive for ${symbol}`;
+            throw new Error(reason);
+          }
+          return bars;
+        },
+        { forceRefresh },
+      );
+
+      return {
+        symbol,
+        bars: cached.value,
+        error: null,
+        cacheHit: cached.cacheHit,
+      };
+    } catch (err: unknown) {
+      const msg = redactSecrets(
+        extractErrorMessage(err, `Massive 1D bars failed for ${cleanInput}`),
+        this.secrets,
+      );
+      return {
+        symbol: cleanInput,
+        bars: [],
+        error: msg,
+        cacheHit: false,
+      };
+    }
+  }
+
+  public async getCachedDailyBars1dBatch(
+    symbols: readonly string[] = DEFAULT_RELATIONS_US_TICKERS,
+    lookbackBars = 90,
+    forceRefresh = false,
+  ): Promise<ReadonlyMap<string, CachedDailyBarsResult>> {
+    return fetchCachedUsDailyBars1dMap(this, symbols, lookbackBars, forceRefresh);
+  }
+}
+
+let sharedDefaultMarketRuntime: MarketRuntime | null = null;
+
+function registerSharedMarketRuntime(runtime: MarketRuntime): void {
+  sharedDefaultMarketRuntime = runtime;
+}
+
+export function getSharedMarketRuntime(): MarketRuntime | null {
+  return sharedDefaultMarketRuntime;
+}
+
+export async function fetchCachedUsDailyBars1dMap(
+  runtime: Pick<MarketRuntime, 'getCachedDailyBars1d'>,
+  symbols: readonly string[] = DEFAULT_RELATIONS_US_TICKERS,
+  lookbackBars = 90,
+  forceRefresh = false,
+): Promise<ReadonlyMap<string, CachedDailyBarsResult>> {
+  const unique = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter((s) => s !== ''))];
+  const entries = await Promise.all(
+    unique.map(async (symbol) => {
+      const res = await runtime.getCachedDailyBars1d(symbol, lookbackBars, forceRefresh);
+      return [res.symbol, res] as const;
+    }),
+  );
+  return new Map(entries);
 }

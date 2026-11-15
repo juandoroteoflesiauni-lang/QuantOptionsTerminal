@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { priceBsm } from '../src/core/options/blackScholes.js';
+import type { Bar } from '../src/core/types.js';
 import type { FetchFn } from '../src/data/types.js';
 import {
   type ArMacroResponse,
@@ -25,12 +26,18 @@ import {
   type ArRelationsResponse,
   type ArStockDetailResponse,
   ArgentinaMarketRuntime,
+  computeBasketRelativeSeries,
+  computeRelationPairStats,
   computeSyntheticUsdFuturesCurve,
   evaluateSovereignBondMath,
   parseBymaOptionSymbol,
 } from '../src/server/argentinaMarketLoader.js';
 import { createHttpWsServer, type HttpWsServerHandle } from '../src/server/httpWsServer.js';
-import { MarketRuntime, type TerminalSnapshotResponse } from '../src/server/marketRuntime.js';
+import {
+  DEFAULT_RELATIONS_US_TICKERS,
+  MarketRuntime,
+  type TerminalSnapshotResponse,
+} from '../src/server/marketRuntime.js';
 
 interface BondReferenceCase {
   readonly name: string;
@@ -1138,5 +1145,382 @@ describe('Argentina server math, BYMA options, /api/ar/* routes & US options upg
     expect(ypfdVist?.legB).toBe('VIST');
     expect(ypfdVist?.currentValue).not.toBeNull();
     expect(ypfdVist?.mean60d).not.toBeNull();
+  });
+});
+
+interface RelationsMathExpected {
+  readonly currentValue: number | null;
+  readonly mean60d: number | null;
+  readonly std60d: number | null;
+  readonly zScore: number | null;
+  readonly percentile60d: number | null;
+  readonly halfLifeDays: number | null;
+  readonly capitalFlowDeltaPct: number | null;
+  readonly opportunityBadge: 'EXTREMO COMPRA' | 'EXTREMO VENTA' | 'DESVÍO MODERADO' | 'EN EQUILIBRIO' | null;
+  readonly observationCount: number;
+  readonly sparkline: readonly number[];
+}
+
+interface RelationsReferenceFixture {
+  readonly mathCases: readonly {
+    readonly name: string;
+    readonly points: readonly { readonly time: number; readonly val: number }[];
+    readonly shares: readonly number[] | null;
+    readonly expected: RelationsMathExpected;
+  }[];
+  readonly basketUsdCclCase: {
+    readonly cclByDate: Readonly<Record<string, number>>;
+    readonly numBars: Readonly<Record<string, readonly Bar[]>>;
+    readonly denBars: Readonly<Record<string, readonly Bar[]>>;
+    readonly expected: RelationsMathExpected;
+  };
+}
+
+const RELATIONS_FIXTURE: RelationsReferenceFixture = JSON.parse(
+  readFileSync(new URL('../fixtures/relations_reference.json', import.meta.url), 'utf8'),
+) as RelationsReferenceFixture;
+
+describe('Pieza 22 — Módulo /relaciones (Rotación Sectorial, Liquidez, OU Half-Life & YPF/VIST Massive 1D)', () => {
+  const activeRelServers: HttpWsServerHandle[] = [];
+
+  afterEach(async () => {
+    while (activeRelServers.length > 0) {
+      const srv = activeRelServers.pop();
+      if (srv !== undefined) {
+        await srv.stop();
+      }
+    }
+  });
+
+  const expectCloseOrNull = (actual: number | null, expected: number | null, label: string): void => {
+    if (expected === null) {
+      expect(actual, label).toBeNull();
+    } else {
+      expect(actual, label).not.toBeNull();
+      if (actual !== null) {
+        expect(actual, label).toBeCloseTo(expected, 9);
+      }
+    }
+  };
+
+  it('matches Python independent OU half-life, capital flow 5d/20d, Z-score badges & USD-CCL basket reference (tol 1e-9)', () => {
+    for (const mc of RELATIONS_FIXTURE.mathCases) {
+      const actual = computeRelationPairStats(mc.points, mc.shares, 20);
+      expectCloseOrNull(actual.currentValue, mc.expected.currentValue, `${mc.name}.currentValue`);
+      expectCloseOrNull(actual.mean60d, mc.expected.mean60d, `${mc.name}.mean60d`);
+      expectCloseOrNull(actual.std60d, mc.expected.std60d, `${mc.name}.std60d`);
+      expectCloseOrNull(actual.zScore, mc.expected.zScore, `${mc.name}.zScore`);
+      expectCloseOrNull(actual.percentile60d, mc.expected.percentile60d, `${mc.name}.percentile60d`);
+      expectCloseOrNull(actual.halfLifeDays, mc.expected.halfLifeDays, `${mc.name}.halfLifeDays`);
+      expectCloseOrNull(actual.capitalFlowDeltaPct, mc.expected.capitalFlowDeltaPct, `${mc.name}.capitalFlowDeltaPct`);
+      expect(actual.opportunityBadge, `${mc.name}.opportunityBadge`).toBe(mc.expected.opportunityBadge);
+      expect(actual.observationCount, `${mc.name}.observationCount`).toBe(mc.expected.observationCount);
+      expect(actual.sparkline.length, `${mc.name}.sparkline.length`).toBe(mc.expected.sparkline.length);
+      for (let i = 0; i < mc.expected.sparkline.length; i += 1) {
+        expect(actual.sparkline[i]).toBeCloseTo(mc.expected.sparkline[i] ?? Number.NaN, 9);
+      }
+    }
+
+    const basketCase = RELATIONS_FIXTURE.basketUsdCclCase;
+    const cclMap = new Map<string, number>(Object.entries(basketCase.cclByDate));
+    const series = computeBasketRelativeSeries({
+      numBarsList: Object.values(basketCase.numBars),
+      denBarsList: Object.values(basketCase.denBars),
+      deflatorByDate: cclMap,
+      denominatorAggregator: 'EQUAL_RETURN_INDEX',
+      denominatorIsSuperset: false,
+    });
+    const actualBasket = computeRelationPairStats(series, null, 20);
+    expectCloseOrNull(actualBasket.currentValue, basketCase.expected.currentValue, 'basket.currentValue');
+    expectCloseOrNull(actualBasket.mean60d, basketCase.expected.mean60d, 'basket.mean60d');
+    expectCloseOrNull(actualBasket.zScore, basketCase.expected.zScore, 'basket.zScore');
+    expectCloseOrNull(
+      actualBasket.capitalFlowDeltaPct,
+      basketCase.expected.capitalFlowDeltaPct,
+      'basket.capitalFlowDeltaPct',
+    );
+    expect(actualBasket.opportunityBadge).toBe(basketCase.expected.opportunityBadge);
+  });
+
+  it('computes YPF/VIST in USD via Massive 1D, global US rotation, AR baskets, capital flow deltas & serves /api/ar/relations without NaN', async () => {
+    const asOfUtcSec = FIXTURE.asOfUtcSec;
+    const endDayMs = Math.floor(asOfUtcSec / 86_400) * 86_400_000;
+    const usCalls = new Map<string, number>();
+
+    const usTickerSpecs: Readonly<
+      Record<
+        string,
+        { readonly start: number; readonly amp: number; readonly tailMult: number; readonly volBase: number; readonly tailVolMult: number }
+      >
+    > = {
+      YPF: { start: 25.0, amp: 0.25, tailMult: 0.72, volBase: 2_100_000, tailVolMult: 1.55 },
+      VIST: { start: 48.0, amp: 0.30, tailMult: 1.18, volBase: 1_200_000, tailVolMult: 0.85 },
+      SPY: { start: 580.0, amp: 2.2, tailMult: 1.01, volBase: 55_000_000, tailVolMult: 1.0 },
+      QQQ: { start: 500.0, amp: 2.8, tailMult: 1.07, volBase: 32_000_000, tailVolMult: 1.25 },
+      IWM: { start: 225.0, amp: 1.8, tailMult: 0.94, volBase: 24_000_000, tailVolMult: 0.9 },
+      XLF: { start: 48.0, amp: 0.4, tailMult: 1.08, volBase: 30_000_000, tailVolMult: 1.35 },
+      XLE: { start: 91.0, amp: 0.6, tailMult: 0.92, volBase: 14_000_000, tailVolMult: 0.85 },
+      HYG: { start: 79.0, amp: 0.25, tailMult: 1.03, volBase: 28_000_000, tailVolMult: 1.15 },
+      LQD: { start: 108.0, amp: 0.35, tailMult: 0.97, volBase: 19_000_000, tailVolMult: 0.9 },
+      TLT: { start: 92.0, amp: 0.6, tailMult: 0.96, volBase: 25_000_000, tailVolMult: 1.0 },
+      GLD: { start: 242.0, amp: 1.9, tailMult: 1.06, volBase: 8_000_000, tailVolMult: 1.3 },
+      EWZ: { start: 28.0, amp: 0.3, tailMult: 0.96, volBase: 21_000_000, tailVolMult: 0.95 },
+      GGAL: { start: 51.0, amp: 0.7, tailMult: 1.06, volBase: 1_500_000, tailVolMult: 1.2 },
+      BMA: { start: 82.0, amp: 0.9, tailMult: 0.99, volBase: 600_000, tailVolMult: 0.95 },
+      PAM: { start: 74.0, amp: 0.8, tailMult: 0.98, volBase: 450_000, tailVolMult: 0.95 },
+    };
+
+    const massiveFetch: FetchFn = (url) => {
+      const u = new URL(url);
+      if (u.pathname.startsWith('/v2/aggs/ticker/')) {
+        const ticker = decodeURIComponent(u.pathname.split('/')[4] ?? 'SPY').toUpperCase();
+        usCalls.set(ticker, (usCalls.get(ticker) ?? 0) + 1);
+        const spec = usTickerSpecs[ticker] ?? {
+          start: 100,
+          amp: 1,
+          tailMult: 1,
+          volBase: 1_000_000,
+          tailVolMult: 1,
+        };
+        const count = 80;
+        const results = Array.from({ length: count }, (_, idx) => {
+          const dayMs = endDayMs - (count - idx) * 86_400_000;
+          const tailFactor = idx >= count - 1 ? spec.tailMult : 1.0;
+          const close = Number(
+            ((spec.start + Math.sin(idx * 0.45 + ticker.length) * spec.amp) * tailFactor).toFixed(4),
+          );
+          const volFactor = idx >= count - 5 ? spec.tailVolMult : 1.0;
+          return {
+            t: dayMs,
+            o: Number((close * 0.995).toFixed(4)),
+            h: Number((close * 1.008).toFixed(4)),
+            l: Number((close * 0.992).toFixed(4)),
+            c: close,
+            v: Math.round(spec.volBase * volFactor),
+            vw: close,
+          };
+        });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', ticker, resultsCount: results.length, results }),
+          headers: {},
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, text: JSON.stringify({ error: 'Not mocked' }), headers: {} });
+    };
+
+    const usRuntime = new MarketRuntime({
+      apiKey: 'test-massive-key',
+      nowMsFn: () => asOfUtcSec * 1_000,
+      enableWs: false,
+      fetchFn: massiveFetch,
+    });
+
+    // Verificar cache 1D de MarketRuntime
+    const batch1 = await usRuntime.getCachedDailyBars1dBatch(DEFAULT_RELATIONS_US_TICKERS, 90, false);
+    expect(batch1.get('YPF')?.error).toBeNull();
+    expect((batch1.get('YPF')?.bars.length ?? 0)).toBeGreaterThanOrEqual(70);
+    expect(batch1.get('YPF')?.cacheHit).toBe(false);
+    const ypfCallsBeforeCache = usCalls.get('YPF') ?? 0;
+
+    const batch2 = await usRuntime.getCachedDailyBars1dBatch(DEFAULT_RELATIONS_US_TICKERS, 90, false);
+    expect(batch2.get('YPF')?.cacheHit).toBe(true);
+    expect(usCalls.get('YPF') ?? 0).toBe(ypfCallsBeforeCache);
+
+    const baseArFetch = createOfflineArgentinaHttp({ asOfUtcSec });
+    const arCustomFetch = async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912') && parsed.pathname.startsWith('/historical/stocks/')) {
+        const ticker = (parsed.pathname.split('/').pop() ?? 'GGAL').toUpperCase();
+        const isBank = ['GGAL', 'BMA', 'SUPV', 'BBAR'].includes(ticker);
+        const isReg = ['TRAN', 'EDN', 'METR', 'TGNO4'].includes(ticker);
+        const count = 75;
+        const rows = Array.from({ length: count }, (_, idx) => {
+          const dayMs = endDayMs - (count - idx) * 86_400_000;
+          const date = new Date(dayMs).toISOString().slice(0, 10);
+          const base =
+            ticker === 'GGAL'
+              ? 6_000
+              : ticker === 'BMA'
+              ? 10_000
+              : ticker === 'SUPV'
+              ? 2_800
+              : ticker === 'BBAR'
+              ? 7_200
+              : ticker === 'YPFD'
+              ? 38_000
+              : ticker === 'PAMP'
+              ? 3_600
+              : isReg
+              ? 2_100
+              : 4_500;
+          const drift = isBank ? idx * 14 : isReg ? idx * 8 : idx * 3;
+          const close = Number(
+            (base + drift + Math.sin(idx * 0.41 + ticker.length) * base * 0.025).toFixed(4),
+          );
+          const volMult = isBank && idx >= count - 5 ? 1.85 : isReg && idx >= count - 5 ? 1.45 : 1.0;
+          return {
+            date,
+            o: Number((close * 0.996).toFixed(4)),
+            h: Number((close * 1.012).toFixed(4)),
+            l: Number((close * 0.988).toFixed(4)),
+            c: close,
+            v: Math.round(350_000 * volMult),
+          };
+        });
+        return { ok: true, status: 200, text: JSON.stringify(rows), headers: {} };
+      }
+
+      if (parsed.hostname.includes('data912') && parsed.pathname.startsWith('/historical/bonds/')) {
+        const ticker = (parsed.pathname.split('/').pop() ?? 'GD30D').toUpperCase();
+        const count = 75;
+        const rows = Array.from({ length: count }, (_, idx) => {
+          const dayMs = endDayMs - (count - idx) * 86_400_000;
+          const date = new Date(dayMs).toISOString().slice(0, 10);
+          const c =
+            ticker === 'GD30D'
+              ? 68.5 + idx * 0.04 + Math.sin(idx * 0.25) * 0.6
+              : ticker === 'AL30D'
+              ? 64.2 + idx * 0.02 + Math.cos(idx * 0.22) * 0.4
+              : ticker === 'GD35D'
+              ? 59.8 + idx * 0.06 + Math.sin(idx * 0.31) * 0.7
+              : ticker === 'GD30'
+              ? (68.5 + idx * 0.04) * (1185 + idx * 0.9)
+              : ticker === 'AL30'
+              ? (64.2 + idx * 0.02) * (1185 + idx * 0.9)
+              : ticker === 'GD30C'
+              ? 67.1 + idx * 0.03 + Math.sin(idx * 0.29) * 0.35
+              : 62.9 + idx * 0.015 + Math.cos(idx * 0.27) * 0.3;
+          const close = Number(c.toFixed(4));
+          return {
+            date,
+            o: Number((close * 0.996).toFixed(4)),
+            h: Number((close * 1.008).toFixed(4)),
+            l: Number((close * 0.992).toFixed(4)),
+            c: close,
+            v: 1_200_000,
+          };
+        });
+        return { ok: true, status: 200, text: JSON.stringify(rows), headers: {} };
+      }
+
+      return baseArFetch(url);
+    };
+
+    const arRuntime = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: arCustomFetch,
+      usRuntime,
+    });
+
+    const server = createHttpWsServer({
+      runtime: usRuntime,
+      arRuntime,
+      host: '127.0.0.1',
+      port: 0,
+      startRuntimeWs: false,
+    });
+    activeRelServers.push(server);
+    const { host, port } = await server.start();
+    const res = await fetch(`http://${host}:${String(port)}/api/ar/relations`);
+    const bodyText = await res.text();
+    expect(res.status).toBe(200);
+    expect(bodyText).not.toMatch(/(?<=[:,[])\s*(?:NaN|-?Infinity|undefined)\b/);
+
+    const rel = JSON.parse(bodyText) as ArRelationsResponse;
+    expect(rel.pairs.length).toBe(3);
+    expect(rel.extendedPairs?.length).toBe(5);
+
+    const list = rel.relationPairs ?? [];
+    expect(list.length).toBe(15);
+
+    const expectedIds = [
+      'ypf-vist',
+      'ggal-ewz',
+      'qqq-spy',
+      'iwm-spy',
+      'xlf-xle',
+      'hyg-lqd',
+      'gld-spy',
+      'bancos-energia-ar',
+      'reguladas-lider',
+      'gd30-al30',
+      'gd35-gd30',
+      'ypfd-pamp',
+      'ggal-bma',
+      'ggal-supv',
+      'ccl-mep',
+    ];
+    for (const id of expectedIds) {
+      expect(list.some((p) => p.id === id), `missing relation ${id}`).toBe(true);
+    }
+
+    // YPF / VIST en NYSE USD real (no ARS) y con alerta EXTREMO COMPRA
+    const ypfVist = list.find((p) => p.id === 'ypf-vist');
+    expect(ypfVist?.source).toBe('MASSIVE_1D');
+    expect(ypfVist?.legA).toBe('YPF');
+    expect(ypfVist?.legB).toBe('VIST');
+    expect(ypfVist?.currentValue).not.toBeNull();
+    if (ypfVist?.currentValue != null) {
+      expect(ypfVist.currentValue).toBeGreaterThan(0.1);
+      expect(ypfVist.currentValue).toBeLessThan(1.0);
+    }
+    expect(ypfVist?.opportunityBadge).toBe('EXTREMO COMPRA');
+    expect(ypfVist?.zScore).not.toBeNull();
+    expect(ypfVist?.mean60d).not.toBeNull();
+    expect(ypfVist?.std60d).not.toBeNull();
+    expect(ypfVist?.percentile60d).not.toBeNull();
+    expect(ypfVist?.sparkline?.length).toBe(30);
+    expect(ypfVist?.capitalFlowDeltaPct).not.toBeNull();
+    expect(ypfVist?.capitalFlowDeltaPct).toBeGreaterThan(10);
+
+    // QQQ / SPY categoría corregida
+    const qqqSpy = list.find((p) => p.id === 'qqq-spy');
+    expect(qqqSpy?.category).toBe('ROTACIÓN US · TECH');
+    expect(qqqSpy?.categoryGroup).toBe('ROTACION_SECTORIAL');
+    expect(qqqSpy?.capitalFlowDeltaPct).not.toBeNull();
+
+    // Canasta Bancos vs Energía AR USD-CCL + flujo sectorial 5d vs 20d
+    const bancosEnergia = list.find((p) => p.id === 'bancos-energia-ar');
+    expect(bancosEnergia?.source).toBe('MIXED_USD_CCL');
+    expect(bancosEnergia?.currentValue).not.toBeNull();
+    expect(bancosEnergia?.zScore).not.toBeNull();
+    expect(bancosEnergia?.capitalFlowDeltaPct).not.toBeNull();
+    if (bancosEnergia?.capitalFlowDeltaPct != null) {
+      expect(bancosEnergia.capitalFlowDeltaPct).toBeGreaterThan(5);
+    }
+
+    // Reguladas vs Panel Líder, GD35/GD30, GGAL/SUPV, Canje CCL/MEP
+    const reguladas = list.find((p) => p.id === 'reguladas-lider');
+    expect(reguladas?.currentValue).not.toBeNull();
+    expect(reguladas?.capitalFlowDeltaPct).not.toBeNull();
+
+    const gd35 = list.find((p) => p.id === 'gd35-gd30');
+    expect(gd35?.currentValue).not.toBeNull();
+    expect(gd35?.capitalFlowDeltaPct).toBeNull();
+
+    const ggalSupv = list.find((p) => p.id === 'ggal-supv');
+    expect(ggalSupv?.currentValue).not.toBeNull();
+    expect(ggalSupv?.zScore).not.toBeNull();
+
+    const canje = list.find((p) => p.id === 'ccl-mep');
+    expect(canje?.unit).toBe('%');
+    expect(canje?.currentValue).not.toBeNull();
+    expect(canje?.zScore).not.toBeNull();
+    expect(canje?.capitalFlowDeltaPct).toBeNull();
+
+    // Verificamos half-life AR(1) en pares con reversión cíclica (sin NaN/Infinity)
+    expect(list.some((p) => p.halfLifeDays !== null && p.halfLifeDays !== undefined && p.halfLifeDays > 0)).toBe(
+      true,
+    );
+
+    // Resumen agregado superior
+    expect(rel.relationSummary).toBeDefined();
+    expect(rel.relationSummary?.extremeTwoSigmaCount).toBeGreaterThanOrEqual(1);
+    expect(rel.relationSummary?.topCapitalFlowPairId).not.toBeNull();
+    expect(rel.relationSummary?.topCapitalFlowSector).not.toBeNull();
+    expect(rel.relationSummary?.topCapitalFlowDeltaPct).not.toBeNull();
   });
 });
