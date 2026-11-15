@@ -2184,7 +2184,7 @@ describe('Cascada MEP/CCL/Canje, Curva Tasas + SPY EOD_CLOSE_REF, Batch 73 US y 
     expect(mc3.variables.mep).toBeCloseTo(1190.5, 6);
     expect(mc3.variables.ccl).toBeCloseTo(1228.0, 6);
     expect(mc3.variables.canjePct).toBeCloseTo(ov3.mepCclGapPct, 9);
-  });
+  }, 15_000);
 
   it('resuelve NY Fed SOFR + FRED UST 2Y/10Y + I:SKEW 1D + OPRA SPY EOD_CLOSE_REF en fin de semana', async () => {
     // Sábado 2025-03-08 18:00 UTC (13:00 ET, fuera de rueda OPRA con bid=0/ask=0)

@@ -4612,9 +4612,16 @@ export class MarketRuntime {
           Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0
             ? c.lastTrade.price
             : resolveQuoteMid(c);
+        const printVolume =
+          Number.isFinite(c.day.volume) && c.day.volume > 0
+            ? c.day.volume
+            : quoteMode === 'EOD_CLOSE_REF' &&
+                Number.isFinite(c.lastTrade.size) &&
+                c.lastTrade.size > 0
+              ? c.lastTrade.size
+              : 0;
         if (
-          Number.isFinite(c.day.volume) &&
-          c.day.volume > 0 &&
+          printVolume > 0 &&
           Number.isFinite(tradePx) &&
           tradePx > 0 &&
           Number.isFinite(c.lastQuote.bid) &&
@@ -4629,7 +4636,7 @@ export class MarketRuntime {
             expiryUtcSec: Math.floor(c.expirationTime),
             contractType: c.contractType,
             price: tradePx,
-            size: c.day.volume,
+            size: printVolume,
             bid: c.lastQuote.bid,
             ask: c.lastQuote.ask,
             ...(Number.isFinite(c.day.previousClose) && c.day.previousClose > 0

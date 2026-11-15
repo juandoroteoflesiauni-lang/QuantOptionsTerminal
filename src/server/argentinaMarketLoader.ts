@@ -3936,16 +3936,16 @@ export class ArgentinaMarketRuntime {
   }
 
   public async warmup(forceRefresh = false): Promise<void> {
-    // Priorizamos panorama, macro y bonos para hidratar /inicio en < 1s antes de
-    // cargar cadenas de opciones e históricos de relaciones.
+    // Priorizamos panorama (que además precalienta macro, bonos y cadena GGAL) antes de
+    // hidratar monitoreo de bonos y relaciones sin recomputar la cadena GGAL en paralelo.
+    await Promise.allSettled([this.getOverview(forceRefresh)]);
     await Promise.allSettled([
-      this.getOverview(forceRefresh),
       this.getMacro(forceRefresh),
       this.getMonitoring('bonos', forceRefresh),
     ]);
     await new Promise<void>((r) => setTimeout(r, 10));
     await Promise.allSettled([
-      this.getOptionsChain('GGAL', forceRefresh),
+      this.getOptionsChain('GGAL', false),
       this.getRelations(forceRefresh),
     ]);
   }
@@ -4238,7 +4238,7 @@ export class ArgentinaMarketRuntime {
         const ggalOpts =
           core.feedStatus === 'NO_DATA'
             ? null
-            : await this.getOptionsChain('GGAL', forceRefresh).catch((): null => null);
+            : await this.getOptionsChainInternal('GGAL', forceRefresh, core).catch((): null => null);
         const targetExp =
           ggalOpts?.expiries.find((e) => e.expiryCode === ggalOpts.primaryLiquidExpiryCode) ??
           ggalOpts?.expiries.find((e) => e.ivAtm !== null && Number.isFinite(e.ivAtm) && e.ivAtm > 0) ??
@@ -4271,10 +4271,10 @@ export class ArgentinaMarketRuntime {
       'ar:macro',
       async () => {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
-        const [macroData, overview, bondsRes] = await Promise.all([
-          this.fetchBcraAndArgDatos(forceRefresh),
-          this.getOverview(forceRefresh),
-          this.getData912Live('/live/arg_bonds', forceRefresh),
+        const overview = await this.getOverviewCore(forceRefresh);
+        const [macroData, bondsRes] = await Promise.all([
+          this.fetchBcraAndArgDatos(false),
+          this.getData912Live('/live/arg_bonds', false),
         ]);
 
         const sharedMep = overview.mepMedian ?? macroData.variables.mep;
@@ -4497,7 +4497,7 @@ export class ArgentinaMarketRuntime {
   ): Promise<ArMonitoringResponse> {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const [overview, bondsRes, notesRes, corpRes, macroData] = await Promise.all([
-      this.getOverview(forceRefresh),
+      this.getOverviewCore(forceRefresh),
       this.getData912Live('/live/arg_bonds', forceRefresh),
       this.getData912Live('/live/arg_notes', forceRefresh),
       this.getData912Live('/live/arg_corp', forceRefresh),
@@ -5175,7 +5175,7 @@ export class ArgentinaMarketRuntime {
     const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData, mervBook, mervBookCi, bmbSnap, macroIfPrimary] =
       await Promise.all([
         this.getData912History(kind, symbol, forceRefresh),
-        this.getOverview(forceRefresh),
+        this.getOverviewCore(forceRefresh),
         this.getData912Live('/live/arg_options', forceRefresh),
         isBond
           ? this.getData912Live('/live/arg_bonds', forceRefresh)
@@ -5461,6 +5461,14 @@ export class ArgentinaMarketRuntime {
   }
 
   public async getOptionsChain(rawUnderlying = 'GGAL', forceRefresh = false): Promise<ArOptionsResponse> {
+    return this.getOptionsChainInternal(rawUnderlying, forceRefresh);
+  }
+
+  private async getOptionsChainInternal(
+    rawUnderlying = 'GGAL',
+    forceRefresh = false,
+    preloadedOverviewCore?: ArOverviewResponse,
+  ): Promise<ArOptionsResponse> {
     const underlying = rawUnderlying.trim().toUpperCase();
     const cacheKey = `ar:options:${underlying}`;
     const cached = await this.computedCache.getOrCompute(
@@ -5469,8 +5477,10 @@ export class ArgentinaMarketRuntime {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
         const [optionsRes, overview, macroData, histRes] = await Promise.all([
           this.getData912Live('/live/arg_options', forceRefresh),
-          this.getOverviewCore(forceRefresh),
-          this.fetchBcraAndArgDatos(forceRefresh),
+          preloadedOverviewCore !== undefined
+            ? Promise.resolve(preloadedOverviewCore)
+            : this.getOverviewCore(forceRefresh),
+          this.fetchBcraAndArgDatos(preloadedOverviewCore !== undefined ? false : forceRefresh),
           this.getData912History('stocks', underlying, forceRefresh),
         ]);
 
@@ -6702,7 +6712,7 @@ export class ArgentinaMarketRuntime {
         const bondTickers = ['GD30D', 'AL30D', 'GD35D', 'GD30', 'AL30', 'GD30C', 'AL30C'] as const;
 
         const [overview, stockHistEntries, bondHistEntries, vistaH, spyH, qqqH, usDailyRes] = await Promise.all([
-          this.getOverview(forceRefresh),
+          this.getOverviewCore(forceRefresh),
           Promise.all(
             panelLiderTickers.map(async (ticker) => [
               ticker,
