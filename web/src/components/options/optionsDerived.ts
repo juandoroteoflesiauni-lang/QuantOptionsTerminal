@@ -1,4 +1,5 @@
-import { OptionChainRow, fmtMoneyCompact, fmtNum } from '../../data/marketData';
+import type { ArOptionContractDto, ArOptionExpiryDto, ArOptionsResponse } from '../../data/liveTypes';
+import { type OptionChainRow, type OptionExpiryGroup, fmtMoneyCompact, fmtNum } from '../../data/marketData';
 import {
   COMMISSION_RATE,
   Evaluation,
@@ -886,4 +887,491 @@ export function computeBuilderAnalytics(
     theta,
     rho,
   };
+}
+
+/* ============================================================================
+   CADENA COMPLETA ("EL TEÓRICO"): HELPERS PUROS DE EXPIRACIÓN, PUNTAS, TEÓRICO Y TENENCIA
+   ============================================================================ */
+
+type ArContractWithExtras = ArOptionContractDto & {
+  readonly bidSize?: number | null;
+  readonly askSize?: number | null;
+  readonly changePct?: number | null;
+  readonly theoreticalPrice?: number | null;
+  readonly volumeArs?: number | null;
+};
+
+type ArExpiryWithExtras = ArOptionExpiryDto & {
+  readonly maxPainStrike?: number | null;
+  readonly maxPainDistPct?: number | null;
+};
+
+export interface ChainExpirySummary {
+  readonly formattedDate: string;
+  readonly isOperating: boolean;
+  readonly statusText: 'Operando' | 'Cierre EOD';
+  readonly callLots: number;
+  readonly putLots: number;
+  readonly totalLots: number;
+  readonly callTurnoverArsM: number;
+  readonly putTurnoverArsM: number;
+  readonly callSharePct: number;
+  readonly putSharePct: number;
+  readonly flowLeaderLabel: string;
+  readonly atmIvPct: number;
+  readonly oneSigmaMoveAbs: number;
+  readonly oneSigmaMovePct: number;
+  readonly totalOi: number;
+  readonly maxPainStrike: number;
+  readonly maxPainDistPct: number;
+  readonly band1SigmaAbs: number;
+}
+
+export interface EnrichedChainRow {
+  readonly row: OptionChainRow;
+  readonly callBidSize: number;
+  readonly callAskSize: number;
+  readonly callChangePct: number;
+  readonly callTheoreticalPrice: number;
+  readonly callHoldings: number;
+  readonly putBidSize: number;
+  readonly putAskSize: number;
+  readonly putChangePct: number;
+  readonly putTheoreticalPrice: number;
+  readonly putHoldings: number;
+}
+
+export interface InlineAxisMarker {
+  readonly id: string;
+  readonly kind: 'spot' | 'sigma';
+  readonly label: string;
+  readonly thresholdValue: number;
+  readonly tooltip: string;
+}
+
+const POSITIONS_STORAGE_KEY = 'quant_core_positions_v1';
+
+const toFiniteOrNaN = (v: unknown): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN;
+
+export function readOptionHoldingsFromStorage(): ReadonlyMap<string, number> {
+  const holdings = new Map<string, number>();
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return holdings;
+  }
+  try {
+    const raw = window.localStorage.getItem(POSITIONS_STORAGE_KEY);
+    if (!raw) return holdings;
+    const parsed: unknown = JSON.parse(raw);
+    const items: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : typeof parsed === 'object' &&
+          parsed !== null &&
+          Array.isArray((parsed as { positions?: unknown }).positions)
+        ? ((parsed as { positions: unknown[] }).positions)
+        : [];
+
+    for (const item of items) {
+      if (typeof item !== 'object' || item === null) continue;
+      const rec = item as Record<string, unknown>;
+      const symRaw = rec['ticker'] ?? rec['symbol'];
+      if (typeof symRaw !== 'string' || symRaw.trim() === '') continue;
+      const sym = symRaw.trim().toUpperCase();
+      const qtyRaw = rec['qty'] ?? rec['quantity'] ?? rec['lots'] ?? rec['contracts'] ?? rec['netSize'];
+      const qtyNum = typeof qtyRaw === 'number' ? qtyRaw : Number(qtyRaw);
+      if (!Number.isFinite(qtyNum) || qtyNum === 0) continue;
+      const sideRaw = typeof rec['side'] === 'string' ? rec['side'].trim().toUpperCase() : '';
+      const signedQty =
+        sideRaw === 'VENTA' || sideRaw === 'SHORT' || sideRaw === 'SELL'
+          ? -Math.abs(qtyNum)
+          : qtyNum;
+      holdings.set(sym, (holdings.get(sym) ?? 0) + signedQty);
+    }
+  } catch {
+    return holdings;
+  }
+  return holdings;
+}
+
+export function formatSpanishExpiryDate(
+  expirationDate: string | undefined,
+  fallbackLabel: string
+): string {
+  if (typeof expirationDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(expirationDate.trim())) {
+    const parts = expirationDate.trim().slice(0, 10).split('-').map(Number);
+    const y = parts[0] ?? 0;
+    const m = parts[1] ?? 0;
+    const d = parts[2] ?? 0;
+    if (y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      const utcNoon = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+      try {
+        return new Intl.DateTimeFormat('es-AR', {
+          day: 'numeric',
+          month: 'long',
+          timeZone: 'UTC',
+        }).format(utcNoon);
+      } catch {
+        // fallback below
+      }
+    }
+  }
+  return fallbackLabel;
+}
+
+export function computeMaxPainFromRows(
+  rows: readonly OptionChainRow[],
+  spot: number
+): { readonly maxPainStrike: number; readonly maxPainDistPct: number } {
+  let totalOi = 0;
+  for (const r of rows) {
+    if (Number.isFinite(r.callOpenInterest) && r.callOpenInterest > 0) totalOi += r.callOpenInterest;
+    if (Number.isFinite(r.putOpenInterest) && r.putOpenInterest > 0) totalOi += r.putOpenInterest;
+  }
+  if (totalOi <= 0 || rows.length === 0) {
+    return { maxPainStrike: Number.NaN, maxPainDistPct: Number.NaN };
+  }
+
+  let bestStrike = Number.NaN;
+  let bestPayout = Number.POSITIVE_INFINITY;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const cand of rows) {
+    let payout = 0;
+    for (const r of rows) {
+      if (Number.isFinite(r.callOpenInterest) && r.callOpenInterest > 0 && cand.strike > r.strike) {
+        payout += r.callOpenInterest * (cand.strike - r.strike);
+      }
+      if (Number.isFinite(r.putOpenInterest) && r.putOpenInterest > 0 && r.strike > cand.strike) {
+        payout += r.putOpenInterest * (r.strike - cand.strike);
+      }
+    }
+    const distSpot = Number.isFinite(spot) && spot > 0 ? Math.abs(cand.strike - spot) : 0;
+    if (payout < bestPayout - 1e-6 || (Math.abs(payout - bestPayout) <= 1e-6 && distSpot < bestDist)) {
+      bestPayout = payout;
+      bestDist = distSpot;
+      bestStrike = cand.strike;
+    }
+  }
+
+  const maxPainDistPct =
+    Number.isFinite(bestStrike) && Number.isFinite(spot) && spot > 0
+      ? ((bestStrike - spot) / spot) * 100
+      : Number.NaN;
+  return { maxPainStrike: bestStrike, maxPainDistPct };
+}
+
+export function buildEnrichedChainForExpiry(params: {
+  readonly exp: OptionExpiryGroup;
+  readonly rawExpiry: ArOptionExpiryDto | undefined;
+  readonly liveOptions: ArOptionsResponse | undefined;
+  readonly spot: number;
+  readonly rateDec: number;
+  readonly holdingsBySymbol: ReadonlyMap<string, number>;
+  readonly marketStateLabel: string;
+}): {
+  readonly summary: ChainExpirySummary;
+  readonly rows: readonly EnrichedChainRow[];
+} {
+  const { exp, rawExpiry, liveOptions, spot, rateDec, holdingsBySymbol, marketStateLabel } = params;
+  const rawCallsBySymbol = new Map<string, ArContractWithExtras>();
+  const rawCallsByStrike = new Map<number, ArContractWithExtras>();
+  const rawPutsBySymbol = new Map<string, ArContractWithExtras>();
+  const rawPutsByStrike = new Map<number, ArContractWithExtras>();
+
+  if (rawExpiry) {
+    for (const c of rawExpiry.calls) {
+      const ext = c as ArContractWithExtras;
+      rawCallsBySymbol.set(c.symbol.toUpperCase(), ext);
+      rawCallsByStrike.set(c.strike, ext);
+    }
+    for (const p of rawExpiry.puts) {
+      const ext = p as ArContractWithExtras;
+      rawPutsBySymbol.set(p.symbol.toUpperCase(), ext);
+      rawPutsByStrike.set(p.strike, ext);
+    }
+  }
+
+  const effSpot = Number.isFinite(spot) && spot > 0 ? spot : Number.NaN;
+  const atmIvPct =
+    Number.isFinite(exp.atmIV) && exp.atmIV > 0
+      ? exp.atmIV
+      : Number.isFinite(atmIv(exp.daysToExpiry))
+        ? atmIv(exp.daysToExpiry) * 100
+        : Number.NaN;
+  const atmIvDec = Number.isFinite(atmIvPct) && atmIvPct > 0 ? atmIvPct / 100 : Number.NaN;
+  const effRate = Number.isFinite(rateDec) ? rateDec : 0;
+
+  let callLots = 0;
+  let putLots = 0;
+  let callTurnoverArs = 0;
+  let putTurnoverArs = 0;
+  let totalOi = 0;
+  let bestStrike = Number.NaN;
+  let bestStrikeTotalLots = 0;
+  let bestStrikeCallLots = 0;
+  let bestStrikePutLots = 0;
+
+  const pickRefPrice = (last: number, bid: number, ask: number): number => {
+    if (Number.isFinite(last) && last > 0) return last;
+    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) return 0.5 * (bid + ask);
+    if (Number.isFinite(ask) && ask > 0) return ask;
+    if (Number.isFinite(bid) && bid > 0) return bid;
+    return Number.NaN;
+  };
+
+  const rows: EnrichedChainRow[] = exp.rows.map((row) => {
+    const rawCall =
+      rawCallsBySymbol.get(row.callTicker.toUpperCase()) ?? rawCallsByStrike.get(row.strike);
+    const rawPut =
+      rawPutsBySymbol.get(row.putTicker.toUpperCase()) ?? rawPutsByStrike.get(row.strike);
+
+    const cLots = Number.isFinite(row.callVolumeLots) && row.callVolumeLots > 0 ? row.callVolumeLots : 0;
+    const pLots = Number.isFinite(row.putVolumeLots) && row.putVolumeLots > 0 ? row.putVolumeLots : 0;
+    callLots += cLots;
+    putLots += pLots;
+
+    const cTurnoverDirect = toFiniteOrNaN(rawCall?.volumeArs);
+    if (Number.isFinite(cTurnoverDirect) && cTurnoverDirect > 0) {
+      callTurnoverArs += cTurnoverDirect;
+    } else if (cLots > 0) {
+      const refPx = pickRefPrice(row.callLast, row.callBid, row.callAsk);
+      if (Number.isFinite(refPx) && refPx > 0) callTurnoverArs += cLots * LOT * refPx;
+    }
+
+    const pTurnoverDirect = toFiniteOrNaN(rawPut?.volumeArs);
+    if (Number.isFinite(pTurnoverDirect) && pTurnoverDirect > 0) {
+      putTurnoverArs += pTurnoverDirect;
+    } else if (pLots > 0) {
+      const refPx = pickRefPrice(row.putLast, row.putBid, row.putAsk);
+      if (Number.isFinite(refPx) && refPx > 0) putTurnoverArs += pLots * LOT * refPx;
+    }
+
+    if (Number.isFinite(row.callOpenInterest) && row.callOpenInterest > 0) totalOi += row.callOpenInterest;
+    if (Number.isFinite(row.putOpenInterest) && row.putOpenInterest > 0) totalOi += row.putOpenInterest;
+
+    const rowTotalLots = cLots + pLots;
+    if (rowTotalLots > bestStrikeTotalLots) {
+      bestStrikeTotalLots = rowTotalLots;
+      bestStrike = row.strike;
+      bestStrikeCallLots = cLots;
+      bestStrikePutLots = pLots;
+    }
+
+    const callBackendTheo = toFiniteOrNaN(rawCall?.theoreticalPrice);
+    const putBackendTheo = toFiniteOrNaN(rawPut?.theoreticalPrice);
+    const modelSigC = Number.isFinite(atmIvDec)
+      ? atmIvDec
+      : Number.isFinite(row.callIV) && row.callIV > 0
+        ? row.callIV / 100
+        : Number.NaN;
+    const modelSigP = Number.isFinite(atmIvDec)
+      ? atmIvDec
+      : Number.isFinite(row.putIV) && row.putIV > 0
+        ? row.putIV / 100
+        : Number.NaN;
+
+    const callTheoreticalPrice = Number.isFinite(callBackendTheo)
+      ? callBackendTheo
+      : Number.isFinite(effSpot) && Number.isFinite(modelSigC) && exp.daysToExpiry > 0
+        ? bsPrice('C', effSpot, row.strike, exp.daysToExpiry, modelSigC, effRate)
+        : Number.NaN;
+    const putTheoreticalPrice = Number.isFinite(putBackendTheo)
+      ? putBackendTheo
+      : Number.isFinite(effSpot) && Number.isFinite(modelSigP) && exp.daysToExpiry > 0
+        ? bsPrice('P', effSpot, row.strike, exp.daysToExpiry, modelSigP, effRate)
+        : Number.NaN;
+
+    const callChangeRaw = toFiniteOrNaN(rawCall?.changePct);
+    const callChangePct = Number.isFinite(callChangeRaw) ? callChangeRaw : row.callDeltaPct;
+    const putChangeRaw = toFiniteOrNaN(rawPut?.changePct);
+    const putChangePct = Number.isFinite(putChangeRaw) ? putChangeRaw : row.putDeltaPct;
+
+    return {
+      row,
+      callBidSize: toFiniteOrNaN(rawCall?.bidSize),
+      callAskSize: toFiniteOrNaN(rawCall?.askSize),
+      callChangePct,
+      callTheoreticalPrice,
+      callHoldings: holdingsBySymbol.get(row.callTicker.toUpperCase()) ?? 0,
+      putBidSize: toFiniteOrNaN(rawPut?.bidSize),
+      putAskSize: toFiniteOrNaN(rawPut?.askSize),
+      putChangePct,
+      putTheoreticalPrice,
+      putHoldings: holdingsBySymbol.get(row.putTicker.toUpperCase()) ?? 0,
+    };
+  });
+
+  const totalLots = callLots + putLots;
+  const totalTurnoverArs = callTurnoverArs + putTurnoverArs;
+  const callSharePct =
+    totalLots > 0
+      ? (callLots / totalLots) * 100
+      : totalTurnoverArs > 0
+        ? (callTurnoverArs / totalTurnoverArs) * 100
+        : Number.NaN;
+  const putSharePct = Number.isFinite(callSharePct) ? Math.max(0, 100 - callSharePct) : Number.NaN;
+
+  const band1SigmaAbs =
+    Number.isFinite(effSpot) && Number.isFinite(atmIvDec) && exp.daysToExpiry > 0
+      ? effSpot * atmIvDec * Math.sqrt(exp.daysToExpiry / 365)
+      : Number.isFinite(exp.oneSigmaLow) && Number.isFinite(exp.oneSigmaHigh)
+        ? 0.5 * (exp.oneSigmaHigh - exp.oneSigmaLow)
+        : Number.NaN;
+  const oneSigmaMovePct =
+    Number.isFinite(band1SigmaAbs) && Number.isFinite(effSpot) && effSpot > 0
+      ? (band1SigmaAbs / effSpot) * 100
+      : Number.NaN;
+
+  const rawExpExt = rawExpiry as ArExpiryWithExtras | undefined;
+  const backendMaxPain = toFiniteOrNaN(rawExpExt?.maxPainStrike);
+  const backendMaxPainDist = toFiniteOrNaN(rawExpExt?.maxPainDistPct);
+  const computedMaxPain = computeMaxPainFromRows(exp.rows, effSpot);
+  const maxPainStrike = Number.isFinite(backendMaxPain) ? backendMaxPain : computedMaxPain.maxPainStrike;
+  const maxPainDistPct = Number.isFinite(backendMaxPainDist)
+    ? backendMaxPainDist
+    : computedMaxPain.maxPainDistPct;
+
+  const upperState = marketStateLabel.toUpperCase();
+  const isOperating =
+    liveOptions?.feedStatus === 'LIVE' &&
+    !upperState.includes('EOD') &&
+    !upperState.includes('FIN DE SEMANA') &&
+    !upperState.includes('CERRAD') &&
+    !upperState.includes('POST-CIERRE');
+
+  let flowLeaderLabel = 'Sin actividad operada en la ventana';
+  if (bestStrikeTotalLots > 0 && Number.isFinite(bestStrike)) {
+    const callShareLeader = (bestStrikeCallLots / bestStrikeTotalLots) * 100;
+    const putShareLeader = 100 - callShareLeader;
+    flowLeaderLabel = `Base más operada: ${fmtNum(bestStrike, 0)} (${fmtNum(bestStrikeTotalLots, 0)} lotes · ${fmtNum(callShareLeader, 0)}% C / ${fmtNum(putShareLeader, 0)}% P)`;
+  }
+
+  return {
+    summary: {
+      formattedDate: formatSpanishExpiryDate(exp.expiryDate, exp.label),
+      isOperating,
+      statusText: isOperating ? 'Operando' : 'Cierre EOD',
+      callLots,
+      putLots,
+      totalLots,
+      callTurnoverArsM: callTurnoverArs > 0 ? callTurnoverArs / 1_000_000 : Number.NaN,
+      putTurnoverArsM: putTurnoverArs > 0 ? putTurnoverArs / 1_000_000 : Number.NaN,
+      callSharePct,
+      putSharePct,
+      flowLeaderLabel,
+      atmIvPct,
+      oneSigmaMoveAbs: band1SigmaAbs,
+      oneSigmaMovePct,
+      totalOi: totalOi > 0 ? totalOi : Number.NaN,
+      maxPainStrike,
+      maxPainDistPct,
+      band1SigmaAbs,
+    },
+    rows,
+  };
+}
+
+export function computeInlineMarkersForRows(params: {
+  readonly rows: readonly EnrichedChainRow[];
+  readonly spot: number;
+  readonly band1SigmaAbs: number;
+  readonly sigmaMultiplier: 1 | 1.5 | 2;
+  readonly onlySigmaRange: boolean;
+}): {
+  readonly beforeFirst: readonly InlineAxisMarker[];
+  readonly afterIndex: ReadonlyMap<number, readonly InlineAxisMarker[]>;
+} {
+  const { rows, spot, band1SigmaAbs, sigmaMultiplier, onlySigmaRange } = params;
+  const beforeFirst: InlineAxisMarker[] = [];
+  const afterIndex = new Map<number, InlineAxisMarker[]>();
+  if (rows.length === 0) {
+    return { beforeFirst, afterIndex };
+  }
+
+  const candidates: {
+    readonly id: string;
+    readonly kind: 'spot' | 'sigma';
+    readonly label: string;
+    readonly value: number;
+    readonly tooltip: string;
+    readonly sigmaOrder: number;
+  }[] = [];
+
+  if (Number.isFinite(spot) && spot > 0) {
+    candidates.push({
+      id: 'spot',
+      kind: 'spot',
+      label: fmtNum(spot, 2),
+      value: spot,
+      tooltip: `Spot Subyacente: $ ${fmtNum(spot, 2)}`,
+      sigmaOrder: 0,
+    });
+    if (Number.isFinite(band1SigmaAbs) && band1SigmaAbs > 0) {
+      candidates.push(
+        {
+          id: 'sigma-m2',
+          kind: 'sigma',
+          label: '-2σ',
+          value: spot - 2 * band1SigmaAbs,
+          tooltip: `Límite -2σ (95,4%): $ ${fmtNum(spot - 2 * band1SigmaAbs, 2)}`,
+          sigmaOrder: 2,
+        },
+        {
+          id: 'sigma-m1',
+          kind: 'sigma',
+          label: '-1σ',
+          value: spot - band1SigmaAbs,
+          tooltip: `Límite -1σ (68,2%): $ ${fmtNum(spot - band1SigmaAbs, 2)}`,
+          sigmaOrder: 1,
+        },
+        {
+          id: 'sigma-p1',
+          kind: 'sigma',
+          label: '+1σ',
+          value: spot + band1SigmaAbs,
+          tooltip: `Límite +1σ (68,2%): $ ${fmtNum(spot + band1SigmaAbs, 2)}`,
+          sigmaOrder: 1,
+        },
+        {
+          id: 'sigma-p2',
+          kind: 'sigma',
+          label: '+2σ',
+          value: spot + 2 * band1SigmaAbs,
+          tooltip: `Límite +2σ (95,4%): $ ${fmtNum(spot + 2 * band1SigmaAbs, 2)}`,
+          sigmaOrder: 2,
+        }
+      );
+    }
+  }
+
+  const visibleCandidates = candidates
+    .filter((m) => m.kind === 'spot' || !onlySigmaRange || m.sigmaOrder <= sigmaMultiplier)
+    .sort((a, b) => a.value - b.value);
+
+  const firstStrike = rows[0]?.row.strike ?? 0;
+  for (const m of visibleCandidates) {
+    const marker: InlineAxisMarker = {
+      id: m.id,
+      kind: m.kind,
+      label: m.label,
+      thresholdValue: m.value,
+      tooltip: m.tooltip,
+    };
+    if (m.value < firstStrike) {
+      beforeFirst.push(marker);
+      continue;
+    }
+    let placedIdx = rows.length - 1;
+    for (let i = 0; i < rows.length - 1; i += 1) {
+      const cur = rows[i]?.row.strike ?? 0;
+      const nxt = rows[i + 1]?.row.strike ?? 0;
+      if (m.value >= cur && m.value < nxt) {
+        placedIdx = i;
+        break;
+      }
+    }
+    const existing = afterIndex.get(placedIdx) ?? [];
+    afterIndex.set(placedIdx, [...existing, marker]);
+  }
+
+  return { beforeFirst, afterIndex };
 }
