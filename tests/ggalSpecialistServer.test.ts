@@ -26,6 +26,7 @@ import {
 } from '../src/server/ggalSpecialistRuntime.js';
 import { createHttpWsServer, type HttpWsServerHandle } from '../src/server/httpWsServer.js';
 import { MarketRuntime } from '../src/server/marketRuntime.js';
+import { PrimaryRofexClient } from '../src/server/primaryRofexLoader.js';
 
 const JSON_FORBIDDEN_TOKEN = /(?<=[:,[])\s*(?:NaN|-?Infinity|undefined)\b/;
 const FAKE_SECRET = 'TEST_GGAL_SECRET_991';
@@ -743,5 +744,518 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     const errRes = await fetch(`${errSetup.baseUrl}/api/ar/ggal-specialist/overview`);
     const errBody = await errRes.text();
     expect(errBody).not.toContain(FAKE_SECRET);
+  });
+
+  it('resuelve CER dinámico BCRA, suprime 502 BYMA en cierre y habilita proxy Structure + StrategySelector default 0', async () => {
+    const saturdaySec = Math.floor(Date.UTC(2026, 9, 17, 18, 0, 0) / 1_000);
+    const baseMocks = createOfflineMocks({
+      asOfUtcSec: saturdaySec,
+      eodWeekendMode: true,
+    });
+    const cerSeries = buildCerHistory(saturdaySec, 120);
+
+    const arFetch: ArHttpFn = (url: string, init) => {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.hostname.includes('open.bymadata.com.ar')) {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          text: 'Bad Gateway',
+          headers: {},
+        });
+      }
+      if (parsedUrl.hostname.includes('bcra.gob.ar')) {
+        if (parsedUrl.pathname === '/estadisticas/v4.0/Monetarias') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              status: 200,
+              results: [
+                { idVariable: 1, descripcion: 'Reservas Internacionales' },
+                { idVariable: 77, descripcion: 'CER (Coeficiente de Estabilización de Referencia - Base 2.2.2002=1)' },
+              ],
+            }),
+            headers: {},
+          });
+        }
+        if (parsedUrl.pathname === '/estadisticas/v4.0/Monetarias/77') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify({ status: 200, results: cerSeries }),
+            headers: {},
+          });
+        }
+        if (parsedUrl.pathname === '/estadisticas/v4.0/Monetarias/30') {
+          return Promise.resolve({ ok: false, status: 404, text: 'Fallback ID 30 should not be used', headers: {} });
+        }
+      }
+      return baseMocks.arFetch(url, init);
+    };
+
+    const dataNowMs = saturdaySec * 1_000;
+    const runtime = new MarketRuntime({
+      apiKey: FAKE_SECRET,
+      secrets: [FAKE_SECRET],
+      fetchFn: baseMocks.usFetch,
+      nowMsFn: () => dataNowMs,
+    });
+    const arRuntime = new ArgentinaMarketRuntime({
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => dataNowMs,
+      minData912IntervalMs: 0,
+      usRuntime: runtime,
+    });
+    const ggalRuntime = new GgalSpecialistRuntime({
+      runtime,
+      arRuntime,
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => dataNowMs,
+    });
+    const server = createHttpWsServer({
+      runtime,
+      arRuntime,
+      ggalRuntime,
+      secrets: [FAKE_SECRET],
+      port: 0,
+    });
+    handles.push(server);
+    const addr = await server.start();
+    const baseUrl = `http://${addr.host}:${String(addr.port)}`;
+
+    // 1. Suprimir HTTP 502 de open.bymadata.com.ar en providerErrors cuando está cerrado, preservando sourceDiagnostics
+    const parityRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/parity-gap`);
+    expect(parityRes.status).toBe(200);
+    const parityRaw = await parityRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(parityRaw)).toBe(false);
+    const parityJson = JSON.parse(parityRaw) as GgalParityGapResponse & {
+      readonly telemetry: { readonly sourceDiagnostics?: readonly string[] };
+    };
+    expect(parityJson.telemetry.marketMode).toBe('EOD_CIERRE');
+    expect(parityJson.telemetry.sessionRegime).toBe('CLOSED');
+    expect(
+      parityJson.telemetry.providerErrors.every((msg) => !msg.toLowerCase().includes('open.bymadata.com.ar')),
+    ).toBe(true);
+    expect(
+      (parityJson.telemetry.sourceDiagnostics ?? []).some((msg) =>
+        msg.toLowerCase().includes('open.bymadata.com.ar'),
+      ),
+    ).toBe(true);
+
+    // 2. Tab 2: Triángulo de Volatilidad con OPRA GGAL ADR poblado
+    const volRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/vol-triangle`);
+    expect(volRes.status).toBe(200);
+    const volRaw = await volRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(volRaw)).toBe(false);
+    const volJson = JSON.parse(volRaw) as GgalVolTriangleResponse;
+    expect(volJson.result).not.toBeNull();
+    expect(volJson.result?.opraAdrAtmIvPct ?? 0).toBeGreaterThan(20);
+    expect(volJson.result?.harRvCclPct ?? 0).toBeGreaterThan(0);
+    expect(
+      volJson.result?.impliedCclVolPct === null || (volJson.result?.impliedCclVolPct ?? 0) > 0,
+    ).toBe(true);
+
+    // 3. Tab 3: Densidad Dual usando CER idVariable dinámico 77
+    const dualRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/dual-density`);
+    expect(dualRes.status).toBe(200);
+    const dualRaw = await dualRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(dualRaw)).toBe(false);
+    const dualJson = JSON.parse(dualRaw) as GgalDualDensityResponse;
+    expect(dualJson.cerSource ?? '').toContain('77');
+    expect(dualJson.cerSeriesCount).toBeGreaterThanOrEqual(60);
+    expect(dualJson.result?.physicalMetricsUsd.status).toBe('OK');
+
+    // 4. Tab 4: Structure proxy Data912 sin Anexo B manteniendo result: null
+    const structRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/structure-pinning`);
+    expect(structRes.status).toBe(200);
+    const structRaw = await structRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(structRaw)).toBe(false);
+    const structJson = JSON.parse(structRaw) as GgalStructurePinningResponse & {
+      readonly proxySource?: string | null;
+      readonly proxyResult?: GgalStructurePinningResponse['result'];
+    };
+    expect(structJson.result).toBeNull();
+    expect(structJson.proxySource).toBe('PROXY DATA912 (SIN ANEXO B)');
+    expect(structJson.proxyResult).not.toBeNull();
+    expect(structJson.proxyResult?.strikeProfile.length ?? 0).toBeGreaterThan(0);
+    expect(Number.isFinite(structJson.proxyResult?.netEffectiveGexArsPer1Pct ?? Number.NaN)).toBe(true);
+    expect(structJson.proxyResult?.callWallArs ?? 0).toBeGreaterThanOrEqual(5400);
+
+    // Overview toma el proxy para structure
+    const ovRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/overview`);
+    expect(ovRes.status).toBe(200);
+    const ovJson = JSON.parse(await ovRes.text()) as GgalSpecialistOverviewResponse;
+    expect(ovJson.structure.peakPinStrikeArs).not.toBeNull();
+
+    // 5. Tab 5: Strategy Selector con body {} usa minOi = 0 por defecto
+    const stratRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/strategy-selector`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(stratRes.status).toBe(200);
+    const stratRaw = await stratRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(stratRaw)).toBe(false);
+    const stratJson = JSON.parse(stratRaw) as GgalStrategySelectorResponse;
+    expect(stratJson.result?.status).toBe('OK');
+    expect(stratJson.result?.rankedStrategies.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('expone atmIvPct en /api/ar/overview, agresionTicks y Gamma/IV finita en Puts ITM sin NaN', async () => {
+    const asOfUtcSec = Math.floor(Date.UTC(2026, 9, 15, 15, 30, 0) / 1_000);
+    const baseMocks = createOfflineMocks({ asOfUtcSec });
+
+    const arFetch: ArHttpFn = async (url, init) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912') && parsed.pathname === '/live/arg_options') {
+        const res = await baseMocks.arFetch(url, init);
+        const rows = JSON.parse(res.text) as Record<string, unknown>[];
+        const adjusted = rows.map((row) => {
+          const rawSym = row['symbol'];
+          const sym = typeof rawSym === 'string' ? rawSym : '';
+          // Forzar prima ligeramente por debajo del intrínseco en Puts ITM 6800/7200 (donde K - S >= 400)
+          if (sym.startsWith('GFGV6800') || sym.startsWith('GFGV7200')) {
+            return {
+              ...row,
+              c: 320,
+              px_bid: 315,
+              px_ask: 325,
+              v: 15_000,
+              v_ars: 4_800_000,
+            };
+          }
+          return row;
+        });
+        return { ...res, text: JSON.stringify(adjusted) };
+      }
+      return baseMocks.arFetch(url, init);
+    };
+
+    const dataNowMs = asOfUtcSec * 1_000;
+    const runtime = new MarketRuntime({
+      apiKey: FAKE_SECRET,
+      secrets: [FAKE_SECRET],
+      fetchFn: baseMocks.usFetch,
+      nowMsFn: () => dataNowMs,
+    });
+    const arRuntime = new ArgentinaMarketRuntime({
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => dataNowMs,
+      minData912IntervalMs: 0,
+      usRuntime: runtime,
+    });
+    const ggalRuntime = new GgalSpecialistRuntime({
+      runtime,
+      arRuntime,
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => dataNowMs,
+    });
+    const server = createHttpWsServer({
+      runtime,
+      arRuntime,
+      ggalRuntime,
+      secrets: [FAKE_SECRET],
+      port: 0,
+    });
+    handles.push(server);
+    const addr = await server.start();
+    const baseUrl = `http://${addr.host}:${String(addr.port)}`;
+
+    const ovRes = await fetch(`${baseUrl}/api/ar/overview`);
+    expect(ovRes.status).toBe(200);
+    const ovRaw = await ovRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(ovRaw)).toBe(false);
+    const ovJson = JSON.parse(ovRaw) as {
+      readonly atmIvPct?: number | null;
+      readonly atmIvExpiryCode?: string | null;
+      readonly atmIvDaysToExpiry?: number | null;
+    };
+    expect(typeof ovJson.atmIvPct).toBe('number');
+    expect(ovJson.atmIvPct ?? 0).toBeGreaterThan(20);
+    expect(typeof ovJson.atmIvExpiryCode).toBe('string');
+    expect((ovJson.atmIvExpiryCode ?? '').length).toBeGreaterThan(0);
+    expect(ovJson.atmIvDaysToExpiry ?? 0).toBeGreaterThan(0);
+
+    const optRes = await fetch(`${baseUrl}/api/ar/options?underlying=GGAL`);
+    expect(optRes.status).toBe(200);
+    const optRaw = await optRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(optRaw)).toBe(false);
+    const optJson = JSON.parse(optRaw) as {
+      readonly primaryLiquidExpiryCode?: string | null;
+      readonly expiries: readonly {
+        readonly expiryCode: string;
+        readonly puts: readonly {
+          readonly strike: number;
+          readonly iv: number | null;
+          readonly delta: number | null;
+          readonly gamma: number | null;
+        }[];
+      }[];
+      readonly quantEngines?: {
+        readonly agresionTicks?: {
+          readonly askPct: number | null;
+          readonly bidPct: number | null;
+          readonly netBiasPct: number | null;
+          readonly direction: string;
+        } | null;
+      } | null;
+    };
+    expect(optJson.quantEngines?.agresionTicks).not.toBeNull();
+    expect(Number.isFinite(optJson.quantEngines?.agresionTicks?.askPct ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(optJson.quantEngines?.agresionTicks?.bidPct ?? Number.NaN)).toBe(true);
+    expect(['COMPRADOR', 'VENDEDOR', 'EQUILIBRADO']).toContain(
+      optJson.quantEngines?.agresionTicks?.direction ?? '',
+    );
+
+    const activeExp =
+      optJson.expiries.find((e) => e.expiryCode === optJson.primaryLiquidExpiryCode) ?? optJson.expiries[0];
+    const activePuts = activeExp?.puts ?? [];
+    for (const targetStrike of [6800, 7200]) {
+      const deepPut = activePuts.find((r) => r.strike === targetStrike);
+      expect(deepPut).toBeDefined();
+      expect(Number.isFinite(deepPut?.iv ?? Number.NaN)).toBe(true);
+      expect(deepPut?.iv ?? 0).toBeGreaterThan(0.2);
+      expect(Number.isFinite(deepPut?.delta ?? Number.NaN)).toBe(true);
+      expect(Number.isFinite(deepPut?.gamma ?? Number.NaN)).toBe(true);
+      expect(deepPut?.gamma ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it('mapea BI/OF, OI y TV/NV en PrimaryRofexClient y expone Confluencia <=0.35 ATR, nivel cercano y agresionTicks en MarketRuntime US', async () => {
+    const asOfUtcSec = Math.floor(Date.UTC(2026, 9, 15, 15, 30, 0) / 1_000);
+    const asOfMs = asOfUtcSec * 1_000;
+
+    // 1. PrimaryRofexClient mapping BI/OF, OI y TV/NV
+    const primaryClient = new PrimaryRofexClient({
+      env: {
+        PRIMARY_API_URL: 'https://primary.test',
+        PRIMARY_WS_URL: 'wss://primary.test/',
+        PRIMARY_USERNAME: 'demo_user',
+        PRIMARY_PASSWORD: FAKE_SECRET,
+        PRIMARY_ACCOUNT: 'ACC01',
+      },
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => asOfMs,
+      fetchFn: (url) => {
+        const u = new URL(url);
+        if (u.pathname === '/auth/getToken') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: '{}',
+            headers: { 'x-auth-token': 'PRIM_TOK_1' },
+          });
+        }
+        if (u.pathname === '/rest/instruments/byCFICode') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              status: 'OK',
+              instruments: [
+                { instrumentId: { marketId: 'ROFX', symbol: 'DLR/DIC26' } },
+                { instrumentId: { marketId: 'ROFX', symbol: 'DLR/ENE27' } },
+              ],
+            }),
+            headers: {},
+          });
+        }
+        if (u.pathname === '/rest/instruments/bySegment') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify({ status: 'OK', instruments: [] }),
+            headers: {},
+          });
+        }
+        if (u.pathname === '/rest/instruments/detail') {
+          const sym = u.searchParams.get('symbol') ?? '';
+          const maturityDate = sym === 'DLR/DIC26' ? '20261230' : '20270129';
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify({ status: 'OK', instrument: { maturityDate } }),
+            headers: {},
+          });
+        }
+        if (u.pathname === '/rest/marketdata/get') {
+          expect(u.searchParams.get('entries')).toContain('TV');
+          expect(u.searchParams.get('entries')).toContain('NV');
+          expect(u.searchParams.get('entries')).toContain('OI');
+          expect(u.searchParams.get('depth')).toBe('5');
+          const sym = u.searchParams.get('symbol') ?? '';
+          if (sym === 'DLR/DIC26') {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              text: JSON.stringify({
+                status: 'OK',
+                marketData: {
+                  BI: [{ price: 1210.5, size: 150 }],
+                  OF: [{ price: 1212.0, size: 220 }],
+                  LA: { price: 1211.0, date: asOfMs },
+                  SE: { price: 1210.0, date: asOfMs },
+                  OI: { size: 45_000 },
+                  TV: 12_800,
+                },
+              }),
+              headers: {},
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              status: 'OK',
+              marketData: {
+                BI: [],
+                OF: [],
+                SE: { price: 1245.0, date: asOfMs },
+                OI: { price: 32_000 },
+                NV: 9_400,
+              },
+            }),
+            headers: {},
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, text: 'Not found', headers: {} });
+      },
+    });
+
+    const dlrCurve = await primaryClient.getDlrFuturesAndDerivatives({
+      asOfUtcSec,
+      a3500: 1120,
+      forceRefresh: true,
+    });
+    expect(dlrCurve.contracts.length).toBe(2);
+    const dic26 = dlrCurve.contracts.find((c) => c.contract === 'DLR/DIC26');
+    const ene27 = dlrCurve.contracts.find((c) => c.contract === 'DLR/ENE27');
+    expect(dic26).toMatchObject({
+      bidPrice: 1210.5,
+      askPrice: 1212.0,
+      bidSize: 150,
+      askSize: 220,
+      openInterest: 45_000,
+      nominalVolume: 12_800,
+    });
+    expect(ene27).toMatchObject({
+      bidPrice: null,
+      askPrice: null,
+      openInterest: 32_000,
+      nominalVolume: 9_400,
+      priceBasis: 'SETTLEMENT_EOD',
+    });
+
+    // 2. MarketRuntime US para SPY: nearestInstitutionalLevel, Confluencia <= 0.35 ATR y agresionTicks
+    const baseMocks = createOfflineMocks({ asOfUtcSec });
+    const spySpot = 595.0;
+    const spyStrikes = [580, 585, 590, 595, 600, 605, 610, 615];
+    const spyFrontExp = '2026-11-20';
+    const spyT = (Date.UTC(2026, 10, 20, 21, 0, 0) / 1_000 - asOfUtcSec) / (365 * 86_400);
+
+    const spyUsFetch: FetchFn = (url) => {
+      const u = new URL(url);
+      if (u.pathname.startsWith('/v3/snapshot/options/SPY')) {
+        const results: Record<string, unknown>[] = [];
+        for (const k of spyStrikes) {
+          for (const ct of ['call', 'put'] as const) {
+            const iv = 0.19 - 0.04 * ((k - spySpot) / spySpot);
+            const fair = priceBsm({
+              spot: spySpot,
+              strike: k,
+              timeToExpiry: spyT,
+              rate: 0.043,
+              dividendYield: 0,
+              volatility: iv,
+              contractType: ct,
+            });
+            const bid = Number(Math.max(0.05, fair * 0.98).toFixed(2));
+            const ask = Number((fair * 1.02 + 0.02).toFixed(2));
+            const mid = Number((0.5 * (bid + ask)).toFixed(2));
+            results.push({
+              details: {
+                ticker: `O:SPY261120${ct === 'call' ? 'C' : 'P'}${String(k * 1_000).padStart(8, '0')}`,
+                contract_type: ct,
+                strike_price: k,
+                expiration_date: spyFrontExp,
+                shares_per_contract: 100,
+              },
+              day: { volume: k >= spySpot ? 1_400 : 800 },
+              open_interest: 3_500,
+              implied_volatility: iv,
+              last_quote: { bid, ask, midpoint: mid },
+              // Compras al Ask dominantes para validar Lee-Ready COMPRADOR
+              last_trade: { price: ask, sip_timestamp: String(asOfUtcSec * 1_000_000_000) },
+              underlying_asset: { ticker: 'SPY', price: spySpot },
+            });
+          }
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', results }),
+          headers: {},
+        });
+      }
+      if (u.pathname === '/v3/reference/options/contracts') {
+        const results: Record<string, unknown>[] = [];
+        for (const k of spyStrikes) {
+          for (const ct of ['call', 'put'] as const) {
+            results.push({
+              ticker: `O:SPY261120${ct === 'call' ? 'C' : 'P'}${String(k * 1_000).padStart(8, '0')}`,
+              underlying_ticker: 'SPY',
+              contract_type: ct,
+              strike_price: k,
+              expiration_date: spyFrontExp,
+              shares_per_contract: 100,
+            });
+          }
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ status: 'OK', results }),
+          headers: {},
+        });
+      }
+      return baseMocks.usFetch(url);
+    };
+
+    const usRuntime = new MarketRuntime({
+      apiKey: FAKE_SECRET,
+      secrets: [FAKE_SECRET],
+      fetchFn: spyUsFetch,
+      nowMsFn: () => asOfMs,
+    });
+    const spySnap = await usRuntime.getSnapshot('SPY', { forceRefresh: true });
+    const spyRaw = JSON.stringify(spySnap);
+    expect(JSON_FORBIDDEN_TOKEN.test(spyRaw)).toBe(false);
+
+    const enginesExt = spySnap.terminalEngines as unknown as {
+      readonly agresionTicks?: {
+        readonly askPct: number | null;
+        readonly bidPct: number | null;
+        readonly netBiasPct: number | null;
+        readonly direction: string;
+      } | null;
+      readonly nearestInstitutionalLevel?: {
+        readonly name: string;
+        readonly price: number;
+        readonly distancePct: number;
+        readonly distanceAtr: number | null;
+      } | null;
+    } | null;
+
+    expect(enginesExt?.agresionTicks).not.toBeNull();
+    expect(enginesExt?.agresionTicks?.askPct ?? 0).toBeGreaterThan(50);
+    expect(enginesExt?.agresionTicks?.direction).toBe('COMPRADOR');
+    expect(enginesExt?.nearestInstitutionalLevel).not.toBeNull();
+    expect(Number.isFinite(enginesExt?.nearestInstitutionalLevel?.price ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(enginesExt?.nearestInstitutionalLevel?.distancePct ?? Number.NaN)).toBe(true);
   });
 });

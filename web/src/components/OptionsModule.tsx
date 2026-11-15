@@ -42,18 +42,17 @@ import {
   bsPrice,
   fk,
   makeMarket,
+  ncdf,
 } from './options/engine';
 import { InteractiveOptionPriceMap } from './options/map/InteractiveOptionPriceMap';
 import { VolatilitySurface } from './options/VolatilitySurface';
 import {
   type BidirectionalFlowRow,
   type BuilderLeg,
-  type SpreadLadderRow,
   type StrategyFamilyId,
   type VisualPayoffCardData,
   buildBidirectionalFlow,
   buildLiveStrategyCardsAndRows,
-  buildSpreadLadder,
   computeBuilderAnalytics,
 } from './options/optionsDerived';
 
@@ -295,6 +294,209 @@ function findAtmIdx(rows: readonly OptionChainRow[], spot: number): number {
 /* ============================================================================
    COMPONENTE PRINCIPAL: `OptionsModule`
    ============================================================================ */
+type SpreadCellMetric = {
+  readonly side: 'CALL' | 'PUT';
+  readonly longStrike: number;
+  readonly shortStrike: number;
+  readonly widthBases: 1 | 2 | 3 | 4;
+  readonly widthArs: number;
+  readonly debit: number;
+  readonly maxProfit: number;
+  readonly ratio: number;
+  readonly breakeven: number;
+  readonly beDistPct: number;
+  readonly probBePct: number;
+  readonly edgePct: number;
+  readonly usesEodRef: boolean;
+};
+
+type DetailedSpreadRow = {
+  readonly base: string;
+  readonly strikeNum: number;
+  readonly c1: SpreadCellMetric | null;
+  readonly c2: SpreadCellMetric | null;
+  readonly c3: SpreadCellMetric | null;
+  readonly c4: SpreadCellMetric | null;
+  readonly p1: SpreadCellMetric | null;
+  readonly p2: SpreadCellMetric | null;
+  readonly p3: SpreadCellMetric | null;
+  readonly p4: SpreadCellMetric | null;
+  readonly spotMarkerAfter?: string;
+  readonly sigmaMarkerAfter?: string;
+};
+
+function resolveOptionSpreadPrice(
+  row: OptionChainRow,
+  side: 'CALL' | 'PUT',
+  legRole: 'BUY' | 'SELL',
+): { readonly price: number; readonly eodFallback: boolean } {
+  const bid = side === 'CALL' ? row.callBid : row.putBid;
+  const ask = side === 'CALL' ? row.callAsk : row.putAsk;
+  const last = side === 'CALL' ? row.callLast : row.putLast;
+  if (legRole === 'BUY') {
+    if (Number.isFinite(ask) && ask > 0) return { price: ask, eodFallback: false };
+    if (Number.isFinite(last) && last > 0) return { price: last, eodFallback: true };
+    if (Number.isFinite(bid) && bid > 0) return { price: bid, eodFallback: true };
+    return { price: Number.NaN, eodFallback: false };
+  }
+  if (Number.isFinite(bid) && bid > 0) return { price: bid, eodFallback: false };
+  if (Number.isFinite(last) && last > 0) return { price: last, eodFallback: true };
+  if (Number.isFinite(ask) && ask > 0) return { price: ask, eodFallback: true };
+  return { price: Number.NaN, eodFallback: false };
+}
+
+function buildDetailedSpreadMatrix(
+  rows: readonly OptionChainRow[],
+  spot: number,
+  oneSigmaHigh: number,
+  daysToExpiry: number,
+  rateDec: number,
+  atmIvDec: number,
+  filter: 'donde_estoy' | 'cerca' | 'tenencia' | 'todas',
+): readonly DetailedSpreadRow[] {
+  if (rows.length < 2) return [];
+  const sorted = [...rows].sort((a, b) => a.strike - b.strike);
+  const visible = sorted.filter((r) => {
+    if (!Number.isFinite(spot) || spot <= 0 || filter === 'todas') return true;
+    const dist = Math.abs(r.strike - spot) / spot;
+    if (filter === 'donde_estoy') return dist <= 0.08;
+    if (filter === 'cerca') return dist <= 0.22;
+    return dist <= 0.14;
+  });
+  const target = visible.length > 0 ? visible : sorted;
+  const tExp = Math.max(1 / 365, (Number.isFinite(daysToExpiry) && daysToExpiry > 0 ? daysToExpiry : 30) / 365);
+  const rCont = Number.isFinite(rateDec) ? rateDec : 0;
+
+  const makeMetric = (
+    longRow: OptionChainRow | undefined,
+    shortRow: OptionChainRow | undefined,
+    side: 'CALL' | 'PUT',
+    widthBases: 1 | 2 | 3 | 4,
+  ): SpreadCellMetric | null => {
+    if (!longRow || !shortRow) return null;
+    const widthArs = Math.abs(shortRow.strike - longRow.strike);
+    if (!(widthArs > 0)) return null;
+    const buyLeg = resolveOptionSpreadPrice(longRow, side, 'BUY');
+    const sellLeg = resolveOptionSpreadPrice(shortRow, side, 'SELL');
+    if (!Number.isFinite(buyLeg.price) || !Number.isFinite(sellLeg.price)) return null;
+    const debit = buyLeg.price - sellLeg.price;
+    if (!(debit > 0.05) || debit >= widthArs - 0.01) return null;
+    const maxProfit = widthArs - debit;
+    const ratio = maxProfit / debit;
+    const breakeven = side === 'CALL' ? longRow.strike + debit : longRow.strike - debit;
+    const beDistPct =
+      Number.isFinite(spot) && spot > 0 ? ((breakeven - spot) / spot) * 100 : Number.NaN;
+
+    const longIv = (side === 'CALL' ? longRow.callIV : longRow.putIV) / 100;
+    const shortIv = (side === 'CALL' ? shortRow.callIV : shortRow.putIV) / 100;
+    const ivSamples = [longIv, shortIv, atmIvDec].filter((v) => Number.isFinite(v) && v > 0.01);
+    const ivMean =
+      ivSamples.length > 0 ? ivSamples.reduce((a, b) => a + b, 0) / ivSamples.length : Number.NaN;
+
+    let probBePct = Number.NaN;
+    let edgePct = Number.NaN;
+    if (
+      Number.isFinite(spot) &&
+      spot > 0 &&
+      breakeven > 0 &&
+      Number.isFinite(ivMean) &&
+      ivMean > 0.01
+    ) {
+      const denom = ivMean * Math.sqrt(tExp);
+      const d2 = (Math.log(spot / breakeven) + (rCont - 0.5 * ivMean * ivMean) * tExp) / denom;
+      const probBe = side === 'CALL' ? ncdf(d2) : ncdf(-d2);
+      if (Number.isFinite(probBe)) {
+        probBePct = probBe * 100;
+        edgePct = (probBe - debit / widthArs) * 100;
+      }
+    }
+
+    return {
+      side,
+      longStrike: longRow.strike,
+      shortStrike: shortRow.strike,
+      widthBases,
+      widthArs,
+      debit,
+      maxProfit,
+      ratio,
+      breakeven,
+      beDistPct,
+      probBePct,
+      edgePct,
+      usesEodRef: buyLeg.eodFallback || sellLeg.eodFallback,
+    };
+  };
+
+  let insertedSpot = false;
+  let insertedSigma = false;
+
+  return target.map((row, idx) => {
+    const fullIdx = sorted.findIndex((s) => s.strike === row.strike);
+    const next = target[idx + 1];
+    let spotMarkerAfter: string | undefined;
+    if (!insertedSpot && Number.isFinite(spot) && next && row.strike <= spot && next.strike > spot) {
+      insertedSpot = true;
+      spotMarkerAfter = `SPOT $${fmtNum(spot, 1)}`;
+    }
+    let sigmaMarkerAfter: string | undefined;
+    if (
+      !insertedSigma &&
+      Number.isFinite(oneSigmaHigh) &&
+      next &&
+      row.strike <= oneSigmaHigh &&
+      next.strike > oneSigmaHigh
+    ) {
+      insertedSigma = true;
+      sigmaMarkerAfter = `+1σ ($${fmtNum(oneSigmaHigh, 0)})`;
+    }
+
+    return {
+      base: fk(row.strike),
+      strikeNum: row.strike,
+      // Call Bull Spread: Long Call strike bajo -> Short Call k bases más alto
+      c1: makeMetric(row, sorted[fullIdx + 1], 'CALL', 1),
+      c2: makeMetric(row, sorted[fullIdx + 2], 'CALL', 2),
+      c3: makeMetric(row, sorted[fullIdx + 3], 'CALL', 3),
+      c4: makeMetric(row, sorted[fullIdx + 4], 'CALL', 4),
+      // Put Bear Spread: Long Put strike alto -> Short Put k bases más bajo
+      p1: makeMetric(row, sorted[fullIdx - 1], 'PUT', 1),
+      p2: makeMetric(row, sorted[fullIdx - 2], 'PUT', 2),
+      p3: makeMetric(row, sorted[fullIdx - 3], 'PUT', 3),
+      p4: makeMetric(row, sorted[fullIdx - 4], 'PUT', 4),
+      ...(spotMarkerAfter !== undefined ? { spotMarkerAfter } : {}),
+      ...(sigmaMarkerAfter !== undefined ? { sigmaMarkerAfter } : {}),
+    };
+  });
+}
+
+function safeAnalyticalBsmGamma(
+  spot: number,
+  strike: number,
+  ivPct: number,
+  daysToExpiry: number,
+  rateDec: number,
+): number {
+  if (
+    !Number.isFinite(spot) ||
+    spot <= 0 ||
+    !Number.isFinite(strike) ||
+    strike <= 0 ||
+    !Number.isFinite(ivPct) ||
+    ivPct <= 0
+  ) {
+    return Number.NaN;
+  }
+  const t = Math.max((Number.isFinite(daysToExpiry) && daysToExpiry > 0 ? daysToExpiry : 1) / 365, 1e-4);
+  const sigma = Math.max(ivPct / 100, 1e-4);
+  const r = Number.isFinite(rateDec) ? rateDec : 0;
+  const sqrtT = Math.sqrt(t);
+  const d1 = (Math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrtT);
+  const nd1Prime = Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI);
+  const g = nd1Prime / (spot * sigma * sqrtT);
+  return Number.isFinite(g) ? g : Number.NaN;
+}
+
 export const OptionsModule: React.FC<{
   activeSubView: OptionsSubView;
   onSelectSubView: (v: OptionsSubView) => void;
@@ -343,6 +545,7 @@ export const OptionsModule: React.FC<{
   // Estado del Módulo 2: Spreads
   const [spreadFilter, setSpreadFilter] = useState<'donde_estoy' | 'cerca' | 'tenencia' | 'todas'>('cerca');
   const [spreadViewMode, setSpreadViewMode] = useState<'pares' | 'escalera'>('escalera');
+  const [selectedSpreadCell, setSelectedSpreadCell] = useState<SpreadCellMetric | null>(null);
 
   // Estado del Módulo 3: Flujo
   const [flowUnit, setFlowUnit] = useState<'lotes' | '$'>('lotes');
@@ -541,16 +744,75 @@ export const OptionsModule: React.FC<{
     [labMarket, strategyMode, selectedFamily, marketBias, targetPrice]
   );
 
-  const spreadLadderRows: SpreadLadderRow[] = useMemo(
+  const detailedSpreadRows: readonly DetailedSpreadRow[] = useMemo(
     () =>
-      buildSpreadLadder(
+      buildDetailedSpreadMatrix(
         activeExpiry?.rows ?? [],
         displaySpot,
         activeExpiry?.oneSigmaHigh ?? Number.NaN,
-        spreadFilter
+        activeDays,
+        effectiveRateDec,
+        activeAtmIvDec,
+        spreadFilter,
       ),
-    [activeExpiry, displaySpot, spreadFilter, liveMarket.version]
+    [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, liveMarket.version],
   );
+
+  const spreadSummaryStats = useMemo(() => {
+    const allCells: SpreadCellMetric[] = [];
+    for (const r of detailedSpreadRows) {
+      for (const c of [r.c1, r.c2, r.c3, r.c4, r.p1, r.p2, r.p3, r.p4]) {
+        if (c !== null) allCells.push(c);
+      }
+    }
+    const callCells = allCells.filter((c) => c.side === 'CALL').sort((a, b) => b.ratio - a.ratio);
+    const putCells = allCells.filter((c) => c.side === 'PUT').sort((a, b) => b.ratio - a.ratio);
+    const bestEdgeCell = [...allCells]
+      .filter((c) => Number.isFinite(c.edgePct))
+      .sort((a, b) => b.edgePct - a.edgePct)[0] ?? null;
+    return {
+      totalValid: allCells.length,
+      bestCall: callCells[0] ?? null,
+      bestPut: putCells[0] ?? null,
+      bestEdgeCell,
+      focusedCell: selectedSpreadCell ?? bestEdgeCell ?? callCells[0] ?? putCells[0] ?? null,
+    };
+  }, [detailedSpreadRows, selectedSpreadCell]);
+
+  const activeTickAggression = useMemo(() => {
+    type AgresionTicksShape = {
+      readonly askPct: number | null;
+      readonly bidPct: number | null;
+      readonly neutralPct: number | null;
+      readonly netBiasPct: number | null;
+      readonly direction: 'COMPRADOR' | 'VENDEDOR' | 'EQUILIBRADO';
+      readonly label: string;
+      readonly totalNotional: number | null;
+      readonly classifiedContracts: number | null;
+      readonly method: 'LEE_READY_BBO' | 'TICK_VARIATION_EOD';
+    };
+    const qeExt = activeQuantEngines as
+      | (NonNullable<typeof activeQuantEngines> & {
+          readonly agresionTicks?: AgresionTicksShape | null;
+        })
+      | null;
+    if (qeExt?.agresionTicks) return qeExt.agresionTicks;
+    const flowExt = qeExt?.orderFlowArs as
+      | (NonNullable<NonNullable<typeof activeQuantEngines>['orderFlowArs']> & {
+          readonly agresionTicks?: AgresionTicksShape | null;
+        })
+      | null
+      | undefined;
+    if (flowExt?.agresionTicks) return flowExt.agresionTicks;
+    const rawUsSnap = liveMarket.usSnapshotsBySymbol[upperUnderlying];
+    const usTe = rawUsSnap?.terminalEngines as
+      | (NonNullable<NonNullable<typeof rawUsSnap>['terminalEngines']> & {
+          readonly agresionTicks?: AgresionTicksShape | null;
+        })
+      | null
+      | undefined;
+    return usTe?.agresionTicks ?? null;
+  }, [activeQuantEngines, liveMarket.usSnapshotsBySymbol, upperUnderlying]);
 
   const flowSummary = useMemo(
     () => buildBidirectionalFlow(activeExpiry?.rows ?? [], displaySpot, flowUnit),
@@ -1299,8 +1561,86 @@ export const OptionsModule: React.FC<{
               />
             </div>
             <p className="text-[13px] text-[#9CA3AF]">
-              Cada par de bases de {upperUnderlying}, con el multiplicador retorno/costo calculado en vivo.
+              Cada par de bases de {upperUnderlying} ({activeExpiry?.label ?? '—'}), con Débito Neto, Ratio Max Profit / Débito, Breakeven y Edge implícito.
             </p>
+          </div>
+
+          {/* Panel Resumen de Decisión Spreads (Calls Bull & Puts Bear) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="rounded-[10px] bg-[#101218] border border-[#232733] p-3.5 space-y-1">
+              <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#EAB308]">
+                MEJOR BULL CALL SPREAD ({spreadSummaryStats.bestCall ? `${spreadSummaryStats.bestCall.longStrike}/${spreadSummaryStats.bestCall.shortStrike}` : '—'})
+              </div>
+              {spreadSummaryStats.bestCall ? (
+                <>
+                  <div className="font-mono-num text-[17px] font-extrabold text-[#FFFFFF]">
+                    {fmtNum(spreadSummaryStats.bestCall.ratio, 2)}x R/B · Deb $ {fmtNum(spreadSummaryStats.bestCall.debit, 1)}
+                  </div>
+                  <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                    BE $ {fmtNum(spreadSummaryStats.bestCall.breakeven, 0)} ({fmtPct(spreadSummaryStats.bestCall.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.bestCall.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.bestCall.edgePct, 1)}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[12px] text-[#787B86] font-mono-num">Sin Call Spread válido en rango</div>
+              )}
+            </div>
+
+            <div className="rounded-[10px] bg-[#101218] border border-[#232733] p-3.5 space-y-1">
+              <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#C084FC]">
+                MEJOR BEAR PUT SPREAD ({spreadSummaryStats.bestPut ? `${spreadSummaryStats.bestPut.longStrike}/${spreadSummaryStats.bestPut.shortStrike}` : '—'})
+              </div>
+              {spreadSummaryStats.bestPut ? (
+                <>
+                  <div className="font-mono-num text-[17px] font-extrabold text-[#FFFFFF]">
+                    {fmtNum(spreadSummaryStats.bestPut.ratio, 2)}x R/B · Deb $ {fmtNum(spreadSummaryStats.bestPut.debit, 1)}
+                  </div>
+                  <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                    BE $ {fmtNum(spreadSummaryStats.bestPut.breakeven, 0)} ({fmtPct(spreadSummaryStats.bestPut.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.bestPut.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.bestPut.edgePct, 1)}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[12px] text-[#787B86] font-mono-num">Sin Put Spread válido en rango</div>
+              )}
+            </div>
+
+            <div className="rounded-[10px] bg-[#101218] border border-[#8B7CF6]/40 p-3.5 space-y-1 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#A78BFA]">
+                  INSPECTOR ACTIVO ({spreadSummaryStats.focusedCell ? `${spreadSummaryStats.focusedCell.side} ${spreadSummaryStats.focusedCell.longStrike}/${spreadSummaryStats.focusedCell.shortStrike}` : 'SELECCIONA CELDA'})
+                </span>
+                {spreadSummaryStats.focusedCell && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sel = spreadSummaryStats.focusedCell;
+                      if (!sel) return;
+                      onOpenOrderTicket({
+                        ticker: `${sel.side}-SPREAD-${sel.longStrike}-${sel.shortStrike}`,
+                        side: 'Compra',
+                        price: sel.debit * LOT,
+                        qty: 10,
+                        instrumentLabel: `${sel.side === 'CALL' ? 'Bull Call' : 'Bear Put'} ${upperUnderlying} ${sel.longStrike}/${sel.shortStrike} (${sel.widthBases} bases)`,
+                      });
+                    }}
+                    className="px-2 py-0.5 rounded bg-[#8B7CF6] hover:bg-[#7C6CE6] text-white text-[10.5px] font-semibold cursor-pointer"
+                  >
+                    Operar
+                  </button>
+                )}
+              </div>
+              {spreadSummaryStats.focusedCell ? (
+                <>
+                  <div className="font-mono-num text-[14px] font-bold text-[#FFFFFF]">
+                    Débito $ {fmtNum(spreadSummaryStats.focusedCell.debit, 2)} ($ {fmtNum(spreadSummaryStats.focusedCell.debit * LOT, 0)}/lote) · Max Gain $ {fmtNum(spreadSummaryStats.focusedCell.maxProfit, 1)}
+                  </div>
+                  <div className="text-[11px] font-mono-num text-[#9CA3AF]">
+                    R/B {fmtNum(spreadSummaryStats.focusedCell.ratio, 2)}x · BE $ {fmtNum(spreadSummaryStats.focusedCell.breakeven, 1)} ({fmtPct(spreadSummaryStats.focusedCell.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.focusedCell.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.focusedCell.edgePct, 1)}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[12px] text-[#787B86] font-mono-num">Hacé click en una celda Call o Put para inspeccionar</div>
+              )}
+            </div>
           </div>
 
           <div className="rounded-[12px] bg-[#101218] border border-[#232733] overflow-hidden">
@@ -1383,95 +1723,99 @@ export const OptionsModule: React.FC<{
                   </tr>
                 </thead>
                 <tbody>
-                  {spreadLadderRows.length === 0 ? (
+                  {detailedSpreadRows.length === 0 ? (
                     <tr>
                       <td colSpan={spreadViewMode === 'pares' ? 3 : 9} className="py-8 text-[#787B86]">
-                        Sin puntas suficientes en {upperUnderlying} para construir spreads verticales.
+                        Sin puntas ni referencias de cierre suficientes en {upperUnderlying} para construir spreads verticales.
                       </td>
                     </tr>
                   ) : (
-                    spreadLadderRows.map((row) => {
+                    detailedSpreadRows.map((row) => {
                       const isAtmRow =
                         Number.isFinite(displaySpot) &&
                         displaySpot > 0 &&
                         Math.abs(row.strikeNum / displaySpot - 1) <= 0.025;
                       const callCols =
                         spreadViewMode === 'pares'
-                          ? [{ val: row.c1, width: 1 }]
+                          ? [{ metric: row.c1, width: 1 }]
                           : [
-                              { val: row.c4, width: 4 },
-                              { val: row.c3, width: 3 },
-                              { val: row.c2, width: 2 },
-                              { val: row.c1, width: 1 },
+                              { metric: row.c4, width: 4 },
+                              { metric: row.c3, width: 3 },
+                              { metric: row.c2, width: 2 },
+                              { metric: row.c1, width: 1 },
                             ];
                       const putCols =
                         spreadViewMode === 'pares'
-                          ? [{ val: row.p1, width: 1 }]
+                          ? [{ metric: row.p1, width: 1 }]
                           : [
-                              { val: row.p1, width: 1 },
-                              { val: row.p2, width: 2 },
-                              { val: row.p3, width: 3 },
-                              { val: row.p4, width: 4 },
+                              { metric: row.p1, width: 1 },
+                              { metric: row.p2, width: 2 },
+                              { metric: row.p3, width: 3 },
+                              { metric: row.p4, width: 4 },
                             ];
+
+                      const renderSpreadCell = (cell: SpreadCellMetric | null, key: string) => (
+                        <td key={key} className="py-2 px-1.5 align-top">
+                          {cell !== null ? (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSpreadCell(cell)}
+                              onDoubleClick={() =>
+                                onOpenOrderTicket({
+                                  ticker: `${cell.side}-SPREAD-${cell.longStrike}-${cell.shortStrike}`,
+                                  side: 'Compra',
+                                  price: cell.debit * LOT,
+                                  qty: 10,
+                                  instrumentLabel: `${cell.side === 'CALL' ? 'Bull Call' : 'Bear Put'} ${upperUnderlying} ${cell.longStrike}/${cell.shortStrike} (${cell.widthBases} bases)`,
+                                })
+                              }
+                              title={`Long ${cell.longStrike} / Short ${cell.shortStrike} · Débito $${fmtNum(cell.debit, 2)} · R/B ${fmtNum(cell.ratio, 2)}x · BE $${fmtNum(cell.breakeven, 1)} (${fmtPct(cell.beDistPct, 1)}) · Prob ${fmtNum(cell.probBePct, 1)}% · Edge ${fmtPct(cell.edgePct, 1)} (Click para inspeccionar · Doble click para operar)`}
+                              className={`w-full rounded-[6px] px-1.5 py-1 flex flex-col items-center gap-0.5 cursor-pointer transition-all hover:bg-[#1E2434] ${
+                                selectedSpreadCell?.longStrike === cell.longStrike &&
+                                selectedSpreadCell?.shortStrike === cell.shortStrike &&
+                                selectedSpreadCell?.side === cell.side
+                                  ? 'ring-1 ring-[#8B7CF6] bg-[#1E1B33]'
+                                  : ''
+                              }`}
+                            >
+                              <span
+                                className={`px-2 py-0.5 rounded-full font-bold text-[11.5px] ${getSpreadPillColor(
+                                  cell.ratio
+                                )}`}
+                              >
+                                {fmtNum(cell.ratio, 2)}x
+                              </span>
+                              <span className="text-[9.5px] font-mono-num text-[#9CA3AF] leading-tight whitespace-nowrap">
+                                Deb ${fmtNum(cell.debit, 0)} · BE {fmtPct(cell.beDistPct, 1)}
+                              </span>
+                              <span
+                                className={`text-[9.5px] font-mono-num leading-tight whitespace-nowrap ${
+                                  Number.isFinite(cell.edgePct)
+                                    ? cell.edgePct >= 0
+                                      ? 'text-[#22C55E]'
+                                      : 'text-[#9CA3AF]'
+                                    : 'text-[#6D7282]'
+                                }`}
+                              >
+                                P:{fmtNum(cell.probBePct, 0)}% · E:{fmtPct(cell.edgePct, 1)}
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="text-[#6D7282] inline-block py-2">—</span>
+                          )}
+                        </td>
+                      );
 
                       return (
                         <React.Fragment key={row.strikeNum}>
                           <tr className={`border-b border-[#1A1E29] ${isAtmRow ? 'bg-[#1B1F2A]' : 'hover:bg-[#161A24]'}`}>
-                            {callCols.map((cell, cIdx) => (
-                              <td key={`c-${cIdx}`} className="py-2.5 px-2">
-                                {Number.isFinite(cell.val) ? (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onOpenOrderTicket({
-                                        ticker: `CALL-SPREAD-${row.strikeNum}`,
-                                        side: 'Compra',
-                                        price: cell.val * 100,
-                                        qty: 10,
-                                        instrumentLabel: `Spread Call ${upperUnderlying} Base ${row.base} (${cell.width} bases)`,
-                                      })
-                                    }
-                                    className={`px-2.5 py-0.5 rounded-full font-bold text-[12px] cursor-pointer hover:brightness-125 transition-all ${getSpreadPillColor(
-                                      cell.val
-                                    )}`}
-                                  >
-                                    {fmtNum(cell.val, 2)}x
-                                  </button>
-                                ) : (
-                                  <span className="text-[#6D7282]">—</span>
-                                )}
-                              </td>
-                            ))}
+                            {callCols.map((c, cIdx) => renderSpreadCell(c.metric, `c-${cIdx}`))}
 
-                            <td className={`py-2.5 px-4 font-bold text-[#FFFFFF] ${isAtmRow ? 'bg-[#2A2F3D]' : 'bg-[#1C202B]'}`}>
+                            <td className={`py-2.5 px-4 font-bold text-[#FFFFFF] align-middle ${isAtmRow ? 'bg-[#2A2F3D]' : 'bg-[#1C202B]'}`}>
                               {row.base}
                             </td>
 
-                            {putCols.map((cell, pIdx) => (
-                              <td key={`p-${pIdx}`} className="py-2.5 px-2">
-                                {Number.isFinite(cell.val) ? (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onOpenOrderTicket({
-                                        ticker: `PUT-SPREAD-${row.strikeNum}`,
-                                        side: 'Compra',
-                                        price: cell.val * 100,
-                                        qty: 10,
-                                        instrumentLabel: `Spread Put ${upperUnderlying} Base ${row.base} (${cell.width} bases)`,
-                                      })
-                                    }
-                                    className={`px-2.5 py-0.5 rounded-full font-bold text-[12px] cursor-pointer hover:brightness-125 transition-all ${getSpreadPillColor(
-                                      cell.val
-                                    )}`}
-                                  >
-                                    {fmtNum(cell.val, 2)}x
-                                  </button>
-                                ) : (
-                                  <span className="text-[#6D7282]">—</span>
-                                )}
-                              </td>
-                            ))}
+                            {putCols.map((p, pIdx) => renderSpreadCell(p.metric, `p-${pIdx}`))}
                           </tr>
 
                           {row.spotMarkerAfter && (
@@ -1583,9 +1927,28 @@ export const OptionsModule: React.FC<{
                 <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#787B86]">
                   AGRESIÓN TICKS
                 </div>
-                <div className="font-mono-num text-[18px] font-extrabold text-[#787B86] mt-0.5">
-                  —
-                </div>
+                {activeTickAggression && activeTickAggression.netBiasPct != null && Number.isFinite(activeTickAggression.netBiasPct) ? (
+                  <>
+                    <div
+                      className={`font-mono-num text-[15px] font-extrabold mt-0.5 ${
+                        activeTickAggression.direction === 'COMPRADOR'
+                          ? 'text-[#22C55E]'
+                          : activeTickAggression.direction === 'VENDEDOR'
+                            ? 'text-[#F23645]'
+                            : 'text-[#F5B544]'
+                      }`}
+                    >
+                      {activeTickAggression.label}
+                    </div>
+                    <div className="text-[10.5px] font-mono-num text-[#9CA3AF]">
+                      Ask {fmtNum(activeTickAggression.askPct, 0)}% · Bid {fmtNum(activeTickAggression.bidPct, 0)}% ({activeTickAggression.method === 'LEE_READY_BBO' ? 'Lee-Ready' : 'Cierre EOD'})
+                    </div>
+                  </>
+                ) : (
+                  <div className="font-mono-num text-[18px] font-extrabold text-[#787B86] mt-0.5">
+                    —
+                  </div>
+                )}
               </div>
               <div>
                 <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#787B86]">
@@ -1825,7 +2188,10 @@ export const OptionsModule: React.FC<{
                   <button
                     key={sig}
                     type="button"
-                    onClick={() => setSigmaMultiplier(sig)}
+                    onClick={() => {
+                      setSigmaMultiplier(sig);
+                      setOnlySigmaRange(true);
+                    }}
                     className={`px-2 py-0.5 rounded font-mono-num text-[11px] cursor-pointer ${
                       sigmaMultiplier === sig
                         ? 'bg-[var(--accent-primary)] text-white font-semibold'
@@ -1843,7 +2209,7 @@ export const OptionsModule: React.FC<{
                   onChange={(e) => setOnlySigmaRange(e.target.checked)}
                   className="rounded accent-[#8B7CF6]"
                 />
-                <span>Solo bases dentro de ±1σ</span>
+                <span>Solo bases dentro de ±{sigmaMultiplier}σ</span>
               </label>
             </div>
           </div>
@@ -1855,7 +2221,28 @@ export const OptionsModule: React.FC<{
           ) : (
             GGAL_OPTION_EXPIRIES.map((exp) => {
               const isOpen = expandedExpiries[exp.id] ?? true;
-              const filteredRows = onlySigmaRange ? exp.rows.filter((r) => r.inOneSigma) : exp.rows;
+              const spotValidForBand = Number.isFinite(displaySpot) && displaySpot > 0;
+              const halfWidth1Sigma =
+                Number.isFinite(exp.oneSigmaLow) && Number.isFinite(exp.oneSigmaHigh) && spotValidForBand
+                  ? 0.5 * (exp.oneSigmaHigh - exp.oneSigmaLow)
+                  : spotValidForBand && Number.isFinite(exp.atmIV) && exp.atmIV > 0 && exp.daysToExpiry > 0
+                    ? displaySpot * (exp.atmIV / 100) * Math.sqrt(exp.daysToExpiry / 365)
+                    : Number.NaN;
+              const bandLow =
+                spotValidForBand && Number.isFinite(halfWidth1Sigma)
+                  ? displaySpot - sigmaMultiplier * halfWidth1Sigma
+                  : Number.NaN;
+              const bandHigh =
+                spotValidForBand && Number.isFinite(halfWidth1Sigma)
+                  ? displaySpot + sigmaMultiplier * halfWidth1Sigma
+                  : Number.NaN;
+              const isRowInBand = (r: OptionChainRow): boolean =>
+                Number.isFinite(bandLow) && Number.isFinite(bandHigh)
+                  ? r.strike >= bandLow - 1e-9 && r.strike <= bandHigh + 1e-9
+                  : r.inOneSigma;
+              const filteredRows = onlySigmaRange ? exp.rows.filter(isRowInBand) : exp.rows;
+              const bandProbLabel =
+                sigmaMultiplier === 1 ? '68,2' : sigmaMultiplier === 1.5 ? '86,6' : '95,4';
 
               return (
                 <div key={exp.id} className="qc-card overflow-hidden">
@@ -2030,9 +2417,16 @@ export const OptionsModule: React.FC<{
                               row.strike <= displaySpot &&
                               nextRow !== undefined &&
                               nextRow.strike > displaySpot;
-                            const showLowSigmaBefore = !prevRow?.inOneSigma && row.inOneSigma;
+                            const showLowSigmaBefore =
+                              (!prevRow || !isRowInBand(prevRow)) && isRowInBand(row) && !onlySigmaRange;
                             const showHighSigmaAfter =
-                              row.inOneSigma && nextRow !== undefined && !nextRow.inOneSigma;
+                              isRowInBand(row) && nextRow !== undefined && !isRowInBand(nextRow) && !onlySigmaRange;
+                            const callGammaSafe = Number.isFinite(row.callGamma)
+                              ? row.callGamma
+                              : safeAnalyticalBsmGamma(displaySpot, row.strike, row.callIV, exp.daysToExpiry, effectiveRateDec);
+                            const putGammaSafe = Number.isFinite(row.putGamma)
+                              ? row.putGamma
+                              : safeAnalyticalBsmGamma(displaySpot, row.strike, row.putIV, exp.daysToExpiry, effectiveRateDec);
                             const callOiRatio =
                               Number.isFinite(row.callOpenInterest) && row.callOpenInterest > 0
                                 ? (row.callVolumeLots / row.callOpenInterest) * 100
@@ -2044,13 +2438,13 @@ export const OptionsModule: React.FC<{
 
                             return (
                               <React.Fragment key={row.strike}>
-                                {showLowSigmaBefore && Number.isFinite(exp.oneSigmaLow) && (
+                                {showLowSigmaBefore && Number.isFinite(bandLow) && (
                                   <tr className="bg-[var(--surface-2)]/80">
                                     <td
                                       colSpan={15}
                                       className="py-1 px-4 text-center text-[10px] font-mono-num uppercase tracking-wider text-[#8B7CF6] border-y border-dashed border-[#8B7CF6]/40"
                                     >
-                                      ── Límite Inferior −{sigmaMultiplier}σ ($ {fmtNum(exp.oneSigmaLow, 0)}) · 68,2 % de probabilidad implícita ──
+                                      ── Límite Inferior −{sigmaMultiplier}σ ($ {fmtNum(bandLow, 0)}) · {bandProbLabel} % de probabilidad implícita ──
                                     </td>
                                   </tr>
                                 )}
@@ -2139,7 +2533,7 @@ export const OptionsModule: React.FC<{
                                     <>
                                       <td className="px-2">{Number.isFinite(row.callIV) ? `${fmtNum(row.callIV, 1)}%` : '—'}</td>
                                       <td className="px-2 text-[#4BA3FF] font-semibold">{fmtNum(row.callDelta, 2)}</td>
-                                      <td className="px-2 text-[var(--text-secondary)]">{fmtNum(row.callGamma, 5)}</td>
+                                      <td className="px-2 text-[var(--text-secondary)]">{fmtNum(callGammaSafe, 5)}</td>
                                       <td className="px-2 text-[#FF5C63]">
                                         {Number.isFinite(row.callTheta) ? `−$ ${fmtNum(Math.abs(row.callTheta), 2)}` : '—'}
                                       </td>
@@ -2277,7 +2671,7 @@ export const OptionsModule: React.FC<{
                                         {Number.isFinite(row.putIV) ? `${fmtNum(row.putIV, 1)}%` : '—'}
                                       </td>
                                       <td className="px-2 text-[#E5558F] font-semibold">{fmtNum(row.putDelta, 2)}</td>
-                                      <td className="px-2 text-[var(--text-secondary)]">{fmtNum(row.putGamma, 5)}</td>
+                                      <td className="px-2 text-[var(--text-secondary)]">{fmtNum(putGammaSafe, 5)}</td>
                                       <td className="px-2 text-[#FF5C63]">
                                         {Number.isFinite(row.putTheta) ? `−$ ${fmtNum(Math.abs(row.putTheta), 2)}` : '—'}
                                       </td>
@@ -2345,13 +2739,13 @@ export const OptionsModule: React.FC<{
                                   </tr>
                                 )}
 
-                                {showHighSigmaAfter && Number.isFinite(exp.oneSigmaHigh) && (
+                                {showHighSigmaAfter && Number.isFinite(bandHigh) && (
                                   <tr className="bg-[var(--surface-2)]/80">
                                     <td
                                       colSpan={15}
                                       className="py-1 px-4 text-center text-[10px] font-mono-num uppercase tracking-wider text-[#8B7CF6] border-y border-dashed border-[#8B7CF6]/40"
                                     >
-                                      ── Límite Superior +{sigmaMultiplier}σ ($ {fmtNum(exp.oneSigmaHigh, 0)}) · 68,2 % de probabilidad implícita ──
+                                      ── Límite Superior +{sigmaMultiplier}σ ($ {fmtNum(bandHigh, 0)}) · {bandProbLabel} % de probabilidad implícita ──
                                     </td>
                                   </tr>
                                 )}

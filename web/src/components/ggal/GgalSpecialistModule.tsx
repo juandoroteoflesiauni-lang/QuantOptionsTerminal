@@ -124,9 +124,9 @@ export const GgalSpecialistModule: React.FC<{
   const [structureData, setStructureData] = useState<GgalStructurePinningResponseDto | null>(null);
   const [strategyData, setStrategyData] = useState<GgalStrategySelectorResponseDto | null>(null);
 
-  // Filtros interactivos Motor 5
+  // Filtros interactivos Motor 5 (0 lotes/nom por defecto cuando no hay Anexo B ingestado o en EOD)
   const [familyFilter, setFamilyFilter] = useState<GgalStrategyFamily | 'ALL'>('ALL');
-  const [minBymaOiNom, setMinBymaOiNom] = useState<string>('100000');
+  const [minBymaOiNom, setMinBymaOiNom] = useState<string>('0');
   const [minEvMultiple, setMinEvMultiple] = useState<string>('1.5');
   const [enforceThresholds, setEnforceThresholds] = useState<boolean>(false);
 
@@ -523,7 +523,14 @@ export const GgalSpecialistModule: React.FC<{
   };
 
   const renderGexProfileChart = () => {
-    const profile = structureData?.result?.strikeProfile ?? [];
+    const structExt = structureData as
+      | (typeof structureData & {
+          readonly proxyResult?: NonNullable<typeof structureData>['result'];
+          readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
+        })
+      | null;
+    const isProxy = structExt !== null && structExt.result === null && structExt.proxyResult != null;
+    const profile = (structExt?.result ?? structExt?.proxyResult)?.strikeProfile ?? [];
     if (profile.length === 0) {
       return null;
     }
@@ -544,8 +551,17 @@ export const GgalSpecialistModule: React.FC<{
     return (
       <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-[12.5px] font-bold text-[#F3F4F6]">
-            Perfil Signed GEX Ponderado (Anexo B IAMC en Acciones Nominales)
+          <div className="text-[12.5px] font-bold text-[#F3F4F6] flex items-center gap-2">
+            <span>
+              {isProxy
+                ? 'Perfil Signed GEX Ponderado (Proxy Data912 — Sin Anexo B)'
+                : 'Perfil Signed GEX Ponderado (Anexo B IAMC en Acciones Nominales)'}
+            </span>
+            {isProxy && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono-num bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/40">
+                PROXY DATA912 (SIN ANEXO B)
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3 text-[11px] font-mono-num">
             <span className="text-[#2EDC7E]">■ GEX (+) Mean-Reverting</span>
@@ -660,11 +676,20 @@ export const GgalSpecialistModule: React.FC<{
         </InsightBanner>
       )}
 
-      {activeTelemetry !== null && activeTelemetry.providerErrors.length > 0 && (
-        <InsightBanner tag="Avisos de Fuente" variant="warn">
-          {activeTelemetry.providerErrors.join(' | ')}
-        </InsightBanner>
-      )}
+      {(() => {
+        if (activeTelemetry === null) return null;
+        const closedSession =
+          activeTelemetry.marketMode === 'EOD_CIERRE' || activeTelemetry.sessionRegime === 'CLOSED';
+        const visibleWarnings = closedSession
+          ? activeTelemetry.providerErrors.filter((err) => !/open\.bymadata\.com\.ar/i.test(err))
+          : activeTelemetry.providerErrors;
+        if (visibleWarnings.length === 0) return null;
+        return (
+          <InsightBanner tag="Avisos de Fuente" variant="warn">
+            {visibleWarnings.join(' | ')}
+          </InsightBanner>
+        );
+      })()}
 
       {/* Sub-navegación de 5 motores */}
       <div className="flex flex-wrap items-center gap-1.5 border-b border-[#1E1E2B] pb-2.5">
@@ -966,7 +991,14 @@ export const GgalSpecialistModule: React.FC<{
       )}
 
       {/* TAB 4 — ESTRUCTURA, ANEXO B & PINNING */}
-      {activeTab === 'structure-pinning' && structureData !== null && (
+      {activeTab === 'structure-pinning' && structureData !== null && (() => {
+        const structExt = structureData as typeof structureData & {
+          readonly proxyResult?: typeof structureData.result;
+          readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
+        };
+        const effStruct = structExt.result ?? structExt.proxyResult ?? null;
+        const usingProxy = structExt.result === null && structExt.proxyResult != null;
+        return (
         <div className="space-y-4">
           {structureData.notice !== null && (
             <div className="rounded-[10px] bg-[#211B3A]/60 border border-[#43347A] p-4 flex flex-wrap items-center justify-between gap-3">
@@ -987,37 +1019,46 @@ export const GgalSpecialistModule: React.FC<{
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <KPICard
               title="Régimen Gamma & Zero-Gamma"
-              heroValue={fmtCurrency(structureData.result?.zeroGammaLevelArs, '$ ', 0)}
-              badge={structureData.result?.regime ?? 'NO_DATA'}
-              subtitle={`Net Signed GEX: ${fmtCurrency(structureData.result?.netEffectiveGexArsPer1Pct, '$ ', 0)} /1%`}
-              helpText="Nivel donde la exposición Gamma ponderada (Anexo B en nominales) cruza por cero vía método de Brent."
+              heroValue={fmtCurrency(effStruct?.zeroGammaLevelArs, '$ ', 0)}
+              badge={effStruct?.regime ?? 'NO_DATA'}
+              subtitle={`Net Signed GEX: ${fmtCurrency(effStruct?.netEffectiveGexArsPer1Pct, '$ ', 0)} /1%${usingProxy ? ' · Proxy Data912' : ''}`}
+              helpText="Nivel donde la exposición Gamma ponderada (Anexo B IAMC o Proxy Data912) cruza por cero vía método de Brent."
             />
             <KPICard
               title="Call Wall / Put Wall"
-              heroValue={`${fmtCurrency(structureData.result?.putWallArs, '$ ', 0)} / ${fmtCurrency(structureData.result?.callWallArs, '$ ', 0)}`}
-              badge={structureData.telemetry.anexoBStatus}
-              subtitle={`Lag Anexo B: ${structureData.telemetry.anexoBLagTradingDays !== null ? `${structureData.telemetry.anexoBLagTradingDays}d` : '—'}`}
+              heroValue={`${fmtCurrency(effStruct?.putWallArs, '$ ', 0)} / ${fmtCurrency(effStruct?.callWallArs, '$ ', 0)}`}
+              badge={usingProxy ? (structExt.proxySource ?? 'PROXY DATA912 (SIN ANEXO B)') : structureData.telemetry.anexoBStatus}
+              subtitle={`Lag Anexo B: ${structureData.telemetry.anexoBLagTradingDays !== null ? `${structureData.telemetry.anexoBLagTradingDays}d` : usingProxy ? 'Proxy activo' : '—'}`}
             />
             <KPICard
               title="Monitor Pinning 15:30 ART"
-              heroValue={fmtCurrency(structureData.result?.peakPinStrikeArs, '$ ', 0)}
-              badge={structureData.result?.isExpiryDay ? 'OPEX HOY' : 'NO OPEX'}
-              subtitle={`Pin Score: ${fmtNum(structureData.result?.maxPinScore, 3)} · Min a 15:30 ART: ${fmtNum(structureData.result?.minutesTo1530Cutoff, 0)}`}
+              heroValue={fmtCurrency(effStruct?.peakPinStrikeArs, '$ ', 0)}
+              badge={effStruct?.isExpiryDay ? 'OPEX HOY' : 'NO OPEX'}
+              subtitle={`Pin Score: ${fmtNum(effStruct?.maxPinScore, 3)} · Min a 15:30 ART: ${fmtNum(effStruct?.minutesTo1530Cutoff, 0)}`}
             />
             <KPICard
               title="Flujo Intradiario Firmado"
-              heroValue={fmtCurrency(structureData.result?.intradayFlow.bymaNetSignedArs, '$ ', 0)}
-              badge={structureData.result?.intradayFlow.leeReadyConfidence ?? 'SNAPSHOT_20S_APPROX'}
-              subtitle={`ADR Flow: ${fmtCurrency(structureData.result?.intradayFlow.adrNetSignedUsd, 'US$ ', 0)} · Snapshots 20s: ${structureData.telemetry.recorder.flowPointsCount}`}
+              heroValue={fmtCurrency(effStruct?.intradayFlow.bymaNetSignedArs, '$ ', 0)}
+              badge={effStruct?.intradayFlow.leeReadyConfidence ?? 'SNAPSHOT_20S_APPROX'}
+              subtitle={`ADR Flow: ${fmtCurrency(effStruct?.intradayFlow.adrNetSignedUsd, 'US$ ', 0)} · Snapshots 20s: ${structureData.telemetry.recorder.flowPointsCount}`}
             />
           </div>
 
           {renderGexProfileChart()}
 
-          {structureData.result !== null ? (
+          {effStruct !== null ? (
             <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-[#1E1E2B] text-[12.5px] font-bold text-[#F3F4F6]">
-                Desglose Anexo B IAMC por Strike (Acciones Nominales sin multiplicar x100)
+              <div className="px-4 py-2.5 border-b border-[#1E1E2B] flex flex-wrap items-center justify-between gap-2 text-[12.5px] font-bold text-[#F3F4F6]">
+                <span>
+                  {usingProxy
+                    ? `Desglose Signed GEX / Vanna / Pinning (${structureData.frontExpiryCode ?? '—'}) — Volumen/OI Proxy Data912`
+                    : 'Desglose Anexo B IAMC por Strike (Acciones Nominales sin multiplicar x100)'}
+                </span>
+                {usingProxy && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono-num bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/40">
+                    PROXY DATA912 (SIN ANEXO B)
+                  </span>
+                )}
               </div>
               <div className="overflow-x-auto max-h-[300px]">
                 <table className="w-full text-[11.5px] font-mono-num">
@@ -1025,7 +1066,7 @@ export const GgalSpecialistModule: React.FC<{
                     <tr>
                       <th className="text-left px-3 py-2">Strike</th>
                       <th className="text-right px-3 py-2">Cubierta</th>
-                      <th className="text-right px-3 py-2">Descubierta</th>
+                      <th className="text-right px-3 py-2">{usingProxy ? 'Proxy Nom.' : 'Descubierta'}</th>
                       <th className="text-right px-3 py-2">Opuesta</th>
                       <th className="text-right px-3 py-2">Cruzada</th>
                       <th className="text-right px-3 py-2">Signed GEX</th>
@@ -1034,7 +1075,7 @@ export const GgalSpecialistModule: React.FC<{
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1E1E2B]">
-                    {structureData.result.strikeProfile.map((r, idx) => (
+                    {effStruct.strikeProfile.map((r, idx) => (
                       <tr key={r.strikeArs ?? idx} className="hover:bg-[#171722]">
                         <td className="px-3 py-2 font-bold text-[#FFFFFF]">${fmtNum(r.strikeArs, 0)}</td>
                         <td className="px-3 py-2 text-right text-[#9CA3AF]">{fmtNum(r.oiCoveredNom, 0)}</td>
@@ -1094,7 +1135,8 @@ export const GgalSpecialistModule: React.FC<{
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {/* TAB 5 — SELECTOR DE ESTRATEGIAS */}
       {activeTab === 'strategy-selector' && (
@@ -1118,15 +1160,24 @@ export const GgalSpecialistModule: React.FC<{
             </div>
 
             <div className="space-y-1">
-              <label className="block text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
-                OI Mínimo BYMA (nom.)
-              </label>
+              <div className="flex items-center gap-2">
+                <label className="block text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
+                  OI Mínimo BYMA (nom.)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setMinBymaOiNom(minBymaOiNom === '0' ? '100000' : '0')}
+                  className="text-[10px] font-mono-num text-[#8B7CF6] hover:underline cursor-pointer"
+                >
+                  {minBymaOiNom === '0' ? 'Usar 1.000 lotes' : 'Fijar 0 (sin Anexo B)'}
+                </button>
+              </div>
               <input
                 type="number"
                 min={0}
                 value={minBymaOiNom}
                 onChange={(e) => setMinBymaOiNom(e.target.value)}
-                className="w-32 px-3 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#2A2A3B] text-[12px] font-mono-num text-[#E5E7EB]"
+                className="w-36 px-3 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#2A2A3B] text-[12px] font-mono-num text-[#E5E7EB]"
               />
             </div>
 

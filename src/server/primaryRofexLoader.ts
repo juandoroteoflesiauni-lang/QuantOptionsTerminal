@@ -122,8 +122,10 @@ export interface PrimaryDlrContractDto {
   readonly settlement: number | null;
   readonly close: number | null;
   readonly bid: number | null;
+  readonly bidPrice?: number | null;
   readonly bidSize: number | null;
   readonly ask: number | null;
+  readonly askPrice?: number | null;
   readonly askSize: number | null;
   readonly bids: readonly OrderBookLevel[];
   readonly asks: readonly OrderBookLevel[];
@@ -806,6 +808,17 @@ function parseEntryPriceAndTime(raw: unknown): {
   };
 }
 
+function parsePrimaryVolumeNode(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    return raw;
+  }
+  if (!isPlainRecord(raw)) {
+    return null;
+  }
+  const v = readNum(raw, ['size', 'nominalVolume', 'volume', 'price']);
+  return v !== null && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
 function parsePrimaryMarketDataNode(
   symbol: string,
   marketId: string,
@@ -821,9 +834,12 @@ function parsePrimaryMarketDataNode(
   const lo = parseEntryPriceAndTime(md['LO']);
   const oi = parseEntryPriceAndTime(md['OI']);
   const iv = parseEntryPriceAndTime(md['IV']);
-  const nv = typeof md['NV'] === 'number' && Number.isFinite(md['NV']) ? md['NV'] : parseEntryPriceAndTime(md['NV']).size;
+  const tvNode = parseEntryPriceAndTime(md['TV']);
+  const tv = parsePrimaryVolumeNode(md['TV']);
+  const nv = parsePrimaryVolumeNode(md['NV']);
+  const nominalVolume = tv ?? nv;
 
-  const times = [la.utcSec, se.utcSec, cl.utcSec].filter(
+  const times = [la.utcSec, se.utcSec, cl.utcSec, oi.utcSec, tvNode.utcSec].filter(
     (t): t is number => t !== null && Number.isFinite(t) && t > 0,
   );
   const updatedAtUtcSec = times.length > 0 ? Math.max(...times) : null;
@@ -840,7 +856,7 @@ function parsePrimaryMarketDataNode(
     high: hi.price,
     low: lo.price,
     openInterest: oi.size ?? oi.price,
-    nominalVolume: nv,
+    nominalVolume,
     impliedVol: iv.price,
     updatedAtUtcSec,
   };
@@ -1200,7 +1216,7 @@ export class PrimaryRofexClient {
     const res = await this.marketDataCache.getOrCompute(
       `md:${marketId}:${symbol}:${String(depth)}`,
       async () => {
-        const entries = 'BI,OF,LA,OP,CL,SE,OI,HI,LO,NV,IV';
+        const entries = 'BI,OF,LA,OP,CL,SE,OI,HI,LO,TV,EV,NV,IV';
         const path =
           `/rest/marketdata/get?marketId=${encodeURIComponent(marketId)}` +
           `&symbol=${encodeURIComponent(symbol)}` +
@@ -1238,7 +1254,7 @@ export class PrimaryRofexClient {
     const subscribePayload = JSON.stringify({
       type: 'smd',
       level: 1,
-      entries: ['BI', 'OF', 'LA', 'OP', 'CL', 'SE', 'OI', 'HI', 'LO', 'NV', 'IV'],
+      entries: ['BI', 'OF', 'LA', 'OP', 'CL', 'SE', 'OI', 'HI', 'LO', 'TV', 'EV', 'NV', 'IV'],
       products,
       depth,
     });
@@ -1439,8 +1455,10 @@ export class PrimaryRofexClient {
           settlement: md?.settlement ?? null,
           close: md?.close ?? null,
           bid: md?.bids[0]?.price ?? null,
+          bidPrice: md?.bids[0]?.price ?? null,
           bidSize: md?.bids[0]?.size ?? null,
           ask: md?.asks[0]?.price ?? null,
+          askPrice: md?.asks[0]?.price ?? null,
           askSize: md?.asks[0]?.size ?? null,
           bids: md?.bids ?? [],
           asks: md?.asks ?? [],

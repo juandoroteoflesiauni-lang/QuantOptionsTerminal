@@ -55,6 +55,7 @@ import {
   priceAmericanBjerksund2002,
   solveImpliedVolAmerican,
 } from '../core/options/american.js';
+import { greeksBsm } from '../core/options/blackScholes.js';
 import { solveImpliedVolBsm } from '../core/options/impliedVol.js';
 import {
   computeDealerExposure,
@@ -277,6 +278,11 @@ export interface ArOverviewResponse {
   readonly mepMedian: number | null;
   readonly cclMedian: number | null;
   readonly mepCclGapPct: number | null;
+  readonly atmIvPct?: number | null;
+  readonly atmIvExpiryCode?: string | null;
+  readonly atmIvExpiryLabel?: string | null;
+  readonly atmIvDaysToExpiry?: number | null;
+  readonly atmIvRateTnaPct?: number | null;
   readonly mervalStocks: readonly ArStockDto[];
   readonly generalPanelStocks: readonly ArStockDto[];
   readonly cedears: readonly ArStockDto[];
@@ -406,8 +412,21 @@ export interface ArStockInstitutionalEnginesDto {
   readonly confluenceClusters: JsonSafe<SpatialConfluenceResult> | null;
 }
 
+export interface ArOptionsTickAggressionDto {
+  readonly askPct: number;
+  readonly bidPct: number;
+  readonly neutralPct: number;
+  readonly netBiasPct: number;
+  readonly direction: 'COMPRADOR' | 'VENDEDOR' | 'EQUILIBRADO';
+  readonly label: string;
+  readonly totalNotional: number;
+  readonly classifiedContracts: number;
+  readonly method: 'LEE_READY_BBO' | 'TICK_VARIATION_EOD';
+}
+
 export interface ArOptionsQuantEnginesDto {
   readonly orderFlowArs: JsonSafe<SignedOptionsOrderFlowResult> | null;
+  readonly agresionTicks?: JsonSafe<ArOptionsTickAggressionDto> | null;
   readonly netDirectionalPremiumUsdCcl: number | null;
   readonly callNetPremiumCvdUsdCcl: number | null;
   readonly putNetPremiumCvdUsdCcl: number | null;
@@ -1214,11 +1233,14 @@ function solveContractIvCascade(p: {
   return Number.NaN;
 }
 
-/** Interpolación lineal en strike sobre IVs invertidas (solo dentro del rango observado). */
+/** Interpolación lineal en strike sobre IVs invertidas con extensión plana en extremos cuando la superficie tiene soporte. */
 function interpolateIvByStrike(
   sortedPoints: readonly { readonly strike: number; readonly iv: number }[],
   strike: number,
 ): number {
+  if (sortedPoints.length === 0) {
+    return Number.NaN;
+  }
   let lower: { readonly strike: number; readonly iv: number } | undefined;
   let upper: { readonly strike: number; readonly iv: number } | undefined;
   for (const pt of sortedPoints) {
@@ -1229,14 +1251,115 @@ function interpolateIvByStrike(
       upper = pt;
     }
   }
-  if (lower === undefined || upper === undefined) {
-    return Number.NaN;
+  if (lower === undefined) {
+    return upper !== undefined ? upper.iv : Number.NaN;
+  }
+  if (upper === undefined) {
+    return lower.iv;
   }
   if (upper.strike === lower.strike) {
     return lower.iv;
   }
   const w = (strike - lower.strike) / (upper.strike - lower.strike);
   return lower.iv + w * (upper.iv - lower.iv);
+}
+
+function computeArOptionsTickAggression(
+  contracts: readonly ArOptionContractDto[],
+  rawRowBySymbol: ReadonlyMap<string, NormalizedQuoteRow>,
+  lotSize: number,
+): ArOptionsTickAggressionDto | null {
+  let askNotional = 0;
+  let bidNotional = 0;
+  let neutralNotional = 0;
+  let classifiedContracts = 0;
+  let leeReadyCount = 0;
+  let variationCount = 0;
+
+  for (const c of contracts) {
+    const vol = c.volume;
+    const px = c.last !== null && c.last > 0 ? c.last : c.mark;
+    if (vol === null || !Number.isFinite(vol) || vol <= 0 || px === null || !Number.isFinite(px) || px <= 0) {
+      continue;
+    }
+    const weight = vol * px * lotSize;
+    if (!Number.isFinite(weight) || weight <= 0) {
+      continue;
+    }
+
+    const bid = c.bid;
+    const ask = c.ask;
+    const raw = rawRowBySymbol.get(c.symbol);
+    const prevClose = raw?.prevClose ?? null;
+    const deltaPct = raw?.deltaPct ?? null;
+    const tickDelta =
+      prevClose !== null && Number.isFinite(prevClose) && prevClose > 0
+        ? px - prevClose
+        : deltaPct !== null && Number.isFinite(deltaPct)
+          ? deltaPct
+          : null;
+
+    if (bid !== null && ask !== null && bid > 0 && ask > bid) {
+      const mid = 0.5 * (bid + ask);
+      if (px >= ask - 1e-9 || px > mid + 1e-9) {
+        askNotional += weight;
+        leeReadyCount += 1;
+        classifiedContracts += 1;
+      } else if (px <= bid + 1e-9 || px < mid - 1e-9) {
+        bidNotional += weight;
+        leeReadyCount += 1;
+        classifiedContracts += 1;
+      } else if (tickDelta !== null && Math.abs(tickDelta) > 1e-6) {
+        if (tickDelta > 0) {
+          askNotional += weight;
+        } else {
+          bidNotional += weight;
+        }
+        leeReadyCount += 1;
+        classifiedContracts += 1;
+      } else {
+        neutralNotional += weight;
+        leeReadyCount += 1;
+        classifiedContracts += 1;
+      }
+      continue;
+    }
+
+    if (tickDelta !== null && Number.isFinite(tickDelta)) {
+      if (tickDelta > 1e-6) {
+        askNotional += weight;
+      } else if (tickDelta < -1e-6) {
+        bidNotional += weight;
+      } else {
+        neutralNotional += weight;
+      }
+      variationCount += 1;
+      classifiedContracts += 1;
+    }
+  }
+
+  const totalNotional = askNotional + bidNotional + neutralNotional;
+  if (classifiedContracts === 0 || !Number.isFinite(totalNotional) || totalNotional <= 0) {
+    return null;
+  }
+  const askPct = (askNotional / totalNotional) * 100;
+  const bidPct = (bidNotional / totalNotional) * 100;
+  const neutralPct = (neutralNotional / totalNotional) * 100;
+  const netBiasPct = askPct - bidPct;
+  const direction: ArOptionsTickAggressionDto['direction'] =
+    netBiasPct > 2 ? 'COMPRADOR' : netBiasPct < -2 ? 'VENDEDOR' : 'EQUILIBRADO';
+  const sign = netBiasPct >= 0 ? '+' : '';
+  return {
+    askPct,
+    bidPct,
+    neutralPct,
+    netBiasPct,
+    direction,
+    label: `${direction} ${sign}${netBiasPct.toFixed(1)}%`,
+    totalNotional,
+    classifiedContracts,
+    method: leeReadyCount >= variationCount ? 'LEE_READY_BBO' : 'TICK_VARIATION_EOD',
+  };
 }
 
 function hasPositiveLast(rows: readonly NormalizedQuoteRow[]): boolean {
@@ -3426,9 +3549,9 @@ export class ArgentinaMarketRuntime {
     ]);
   }
 
-  public async getOverview(forceRefresh = false): Promise<ArOverviewResponse> {
+  private async getOverviewCore(forceRefresh = false): Promise<ArOverviewResponse> {
     const cached = await this.computedCache.getOrCompute(
-      'ar:overview',
+      'ar:overview:core',
       async () => {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
         const [
@@ -3645,6 +3768,42 @@ export class ArgentinaMarketRuntime {
           generalPanelStocks,
           cedears,
           mepCclMatrix: matrix.rows,
+        };
+      },
+      { forceRefresh },
+    );
+
+    return cached.value as ArOverviewResponse;
+  }
+
+  public async getOverview(forceRefresh = false): Promise<ArOverviewResponse> {
+    const cached = await this.computedCache.getOrCompute(
+      'ar:overview',
+      async () => {
+        const core = await this.getOverviewCore(forceRefresh);
+        const ggalOpts =
+          core.feedStatus === 'NO_DATA'
+            ? null
+            : await this.getOptionsChain('GGAL', forceRefresh).catch((): null => null);
+        const targetExp =
+          ggalOpts?.expiries.find((e) => e.expiryCode === ggalOpts.primaryLiquidExpiryCode) ??
+          ggalOpts?.expiries.find((e) => e.ivAtm !== null && Number.isFinite(e.ivAtm) && e.ivAtm > 0) ??
+          ggalOpts?.expiries[0] ??
+          null;
+        const atmIvPct =
+          targetExp?.ivAtm !== null &&
+          targetExp?.ivAtm !== undefined &&
+          Number.isFinite(targetExp.ivAtm) &&
+          targetExp.ivAtm > 0
+            ? sanitizeFinite(targetExp.ivAtm * 100)
+            : null;
+        return {
+          ...core,
+          atmIvPct,
+          atmIvExpiryCode: targetExp?.expiryCode ?? null,
+          atmIvExpiryLabel: targetExp?.expiryLabel ?? null,
+          atmIvDaysToExpiry: targetExp?.days ?? null,
+          atmIvRateTnaPct: sanitizeFinite(ggalOpts?.rateTna),
         };
       },
       { forceRefresh },
@@ -4322,7 +4481,7 @@ export class ArgentinaMarketRuntime {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
         const [optionsRes, overview, macroData, histRes] = await Promise.all([
           this.getData912Live('/live/arg_options', forceRefresh),
-          this.getOverview(forceRefresh),
+          this.getOverviewCore(forceRefresh),
           this.fetchBcraAndArgDatos(forceRefresh),
           this.getData912History('stocks', underlying, forceRefresh),
         ]);
@@ -4353,10 +4512,12 @@ export class ArgentinaMarketRuntime {
           readonly parsed: ParsedBymaOptionSymbol;
           readonly row: NormalizedQuoteRow;
         }[] = [];
+        const rawRowBySymbol = new Map<string, NormalizedQuoteRow>();
         for (const row of optionsRes.rows) {
           const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec);
           if (parsed !== null && parsed.underlying === underlying) {
             parsedContracts.push({ parsed, row });
+            rawRowBySymbol.set(parsed.symbol, row);
           }
         }
 
@@ -4456,12 +4617,16 @@ export class ArgentinaMarketRuntime {
             }
             surfacePoints.sort((a, b) => a.strike - b.strike);
             for (const { parsed, row } of bucket) {
-              if (solvedSymbols.has(parsed.symbol) || quoteMid(row) === null) {
+              if (solvedSymbols.has(parsed.symbol)) {
                 continue;
               }
               const opposite = parsed.contractType === 'call' ? 'put' : 'call';
+              const oppositeIv = solvedByKey.get(`${String(parsed.strike)}|${opposite}`);
+              if (quoteMid(row) === null && oppositeIv === undefined && surfacePoints.length < 2) {
+                continue;
+              }
               const inherited =
-                solvedByKey.get(`${String(parsed.strike)}|${opposite}`) ??
+                oppositeIv ??
                 interpolateIvByStrike(surfacePoints, parsed.strike);
               if (Number.isFinite(inherited) && inherited > 0) {
                 ivBySymbol.set(parsed.symbol, inherited);
@@ -4494,18 +4659,56 @@ export class ArgentinaMarketRuntime {
             const iv = ivBySymbol.get(parsed.symbol) ?? Number.NaN;
             const ivIsSolved = solvedSymbols.has(parsed.symbol);
 
-            const greeks =
-              spot !== null && spot > 0 && Number.isFinite(iv) && iv > 0 && Number.isFinite(evalRate)
+            const effTExp = Math.max(tExp, 1e-4);
+            const effIv = Number.isFinite(iv) && iv > 0 ? Math.max(iv, 1e-4) : Number.NaN;
+            const rawAmGreeks =
+              spot !== null && spot > 0 && Number.isFinite(effIv) && Number.isFinite(evalRate)
                 ? greeksAmericanFiniteDiffOrAnalytical({
                     spot,
                     strike: parsed.strike,
-                    timeToExpiry: tExp,
+                    timeToExpiry: effTExp,
                     rate: evalRate,
                     dividendYield,
-                    volatility: iv,
+                    volatility: effIv,
                     contractType: parsed.contractType,
                   })
                 : null;
+            const needsBsmFallback =
+              rawAmGreeks !== null &&
+              (!Number.isFinite(rawAmGreeks.gamma) ||
+                !Number.isFinite(rawAmGreeks.delta) ||
+                !Number.isFinite(rawAmGreeks.thetaDaily) ||
+                !Number.isFinite(rawAmGreeks.vegaPer1Pct));
+            const bsmFallback =
+              spot !== null && spot > 0 && Number.isFinite(effIv) && Number.isFinite(evalRate) && needsBsmFallback
+                ? greeksBsm({
+                    spot,
+                    strike: parsed.strike,
+                    timeToExpiry: effTExp,
+                    rate: evalRate,
+                    dividendYield,
+                    volatility: effIv,
+                    contractType: parsed.contractType,
+                  })
+                : null;
+            const greeks =
+              rawAmGreeks === null
+                ? null
+                : bsmFallback === null
+                  ? rawAmGreeks
+                  : {
+                      delta: Number.isFinite(rawAmGreeks.delta) ? rawAmGreeks.delta : bsmFallback.delta,
+                      gamma: Number.isFinite(rawAmGreeks.gamma) ? rawAmGreeks.gamma : bsmFallback.gamma,
+                      thetaDaily: Number.isFinite(rawAmGreeks.thetaDaily)
+                        ? rawAmGreeks.thetaDaily
+                        : bsmFallback.thetaDaily,
+                      vegaPer1Pct: Number.isFinite(rawAmGreeks.vegaPer1Pct)
+                        ? rawAmGreeks.vegaPer1Pct
+                        : bsmFallback.vegaPer1Pct,
+                      rho: Number.isFinite(rawAmGreeks.rho) ? rawAmGreeks.rho : bsmFallback.rho,
+                      vanna: Number.isFinite(rawAmGreeks.vanna) ? rawAmGreeks.vanna : bsmFallback.vanna,
+                      charm: Number.isFinite(rawAmGreeks.charm) ? rawAmGreeks.charm : bsmFallback.charm,
+                    };
 
             if (ivIsSolved && Number.isFinite(iv) && iv > 0 && mid !== null && mid > 0) {
               const effBid = bid !== null && bid > 0 ? bid : mid * 0.98;
@@ -4831,6 +5034,16 @@ export class ArgentinaMarketRuntime {
             printsArs.length > 0
               ? computeSignedOptionsOrderFlow(printsArs, flowContext)
               : null;
+
+          const expContractsForAggression =
+            frontExp !== undefined
+              ? [...frontExp.calls, ...frontExp.puts]
+              : expiries.flatMap((e) => [...e.calls, ...e.puts]);
+          const agresionTicks = computeArOptionsTickAggression(
+            expContractsForAggression,
+            rawRowBySymbol,
+            OPTION_LOT_SIZE,
+          );
 
           const netDirectionalPremiumUsdCcl =
             orderFlowArs !== null && cclDiv !== null && cclDiv > 0
@@ -5264,6 +5477,7 @@ export class ArgentinaMarketRuntime {
 
           return sanitizeJsonPayload({
             orderFlowArs,
+            agresionTicks,
             netDirectionalPremiumUsdCcl,
             callNetPremiumCvdUsdCcl,
             putNetPremiumCvdUsdCcl,

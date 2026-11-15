@@ -136,6 +136,7 @@ export interface GgalTelemetryHeaderDto {
   readonly anexoBLagTradingDays: number | null;
   readonly recorder: GgalRecorderStatusDto;
   readonly providerErrors: readonly string[];
+  readonly sourceDiagnostics?: readonly string[];
 }
 
 export interface GgalRecorderSnapshotEntry {
@@ -271,6 +272,8 @@ export interface GgalStructurePinningResponse {
   readonly frontExpiryDate: string | null;
   readonly anexoBSummary: AnexoBStoredRecord['totals'] | null;
   readonly result: JsonSafeValue<StructurePinningOutput> | null;
+  readonly proxyResult?: JsonSafeValue<StructurePinningOutput> | null;
+  readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
   readonly data912TotalOiFallback: readonly GgalData912OiFallbackItemDto[];
   readonly notice: string | null;
 }
@@ -379,6 +382,7 @@ interface MarketBundle {
   readonly ggalOptions: ArOptionsResponse;
   readonly usSnapshot: TerminalSnapshotResponse | null;
   readonly usBars: TerminalBarsResponse | null;
+  readonly usDailyCloseBars: readonly { readonly time: number; readonly close: number }[];
   readonly liveStocks: readonly Data912RawRow[];
   readonly liveBonds: readonly Data912RawRow[];
   readonly liveNotes: readonly Data912RawRow[];
@@ -388,6 +392,7 @@ interface MarketBundle {
   readonly gd30History: readonly HistoricalPriceSeriesPoint[];
   readonly gd30cHistory: readonly HistoricalPriceSeriesPoint[];
   readonly cerHistory: readonly CerObservation[];
+  readonly cerVarId: number;
   readonly errors: readonly string[];
 }
 
@@ -990,12 +995,14 @@ export class GgalSpecialistRuntime {
 
   private bundleCache: CachedEntry<MarketBundle> | null = null;
   private bundleInFlight: Promise<MarketBundle> | null = null;
+  private resolvedCerVarId: number | null = null;
   private historyCache: CachedEntry<{
     readonly al30History: readonly HistoricalPriceSeriesPoint[];
     readonly al30cHistory: readonly HistoricalPriceSeriesPoint[];
     readonly gd30History: readonly HistoricalPriceSeriesPoint[];
     readonly gd30cHistory: readonly HistoricalPriceSeriesPoint[];
     readonly cerHistory: readonly CerObservation[];
+    readonly cerVarId: number;
   }> | null = null;
   private historyInFlight: Promise<
     NonNullable<GgalSpecialistRuntime['historyCache']>['value']
@@ -1249,6 +1256,46 @@ export class GgalSpecialistRuntime {
     return out;
   }
 
+  private async resolveBcraCerVariableId(): Promise<number> {
+    if (this.resolvedCerVarId !== null) {
+      return this.resolvedCerVarId;
+    }
+    const catalogRes = await this.fetchJsonSafe(
+      `${this.bcraBaseUrl}/estadisticas/v4.0/Monetarias?Limit=3000`,
+    );
+    if (catalogRes.ok && isPlainRecord(catalogRes.data) && Array.isArray(catalogRes.data['results'])) {
+      let bestId: number | null = null;
+      for (const item of catalogRes.data['results']) {
+        if (!isPlainRecord(item)) {
+          continue;
+        }
+        const idVal = readNum(item, ['idVariable', 'id']);
+        const desc = readStr(item, ['descripcion', 'nombre', 'description']) ?? '';
+        if (idVal === null || !Number.isInteger(idVal) || idVal <= 0 || desc.trim() === '') {
+          continue;
+        }
+        const norm = desc.trim();
+        const isExactCer =
+          /^cer$/i.test(norm) ||
+          /\bcoeficiente\s+de\s+estabilizaci[oó]n\s+de\s+referencia\b/i.test(norm) ||
+          /^cer\b/i.test(norm);
+        const hasTokenCer = /\bcer\b/i.test(norm);
+        if (isExactCer) {
+          bestId = idVal;
+          break;
+        }
+        if (hasTokenCer && bestId === null) {
+          bestId = idVal;
+        }
+      }
+      if (bestId !== null) {
+        this.resolvedCerVarId = bestId;
+        return bestId;
+      }
+    }
+    return 30;
+  }
+
   private async loadHistories(asOfUtcSec: number, forceRefresh: boolean) {
     const nowMs = this.nowMsFn();
     if (!forceRefresh && this.historyCache !== null && nowMs - this.historyCache.fetchedAtMs < HISTORY_CACHE_TTL_MS) {
@@ -1260,23 +1307,42 @@ export class GgalSpecialistRuntime {
 
     const work = (async () => {
       const toDate = getBuenosAiresParts(asOfUtcSec).dateKey;
-      const fromSec = Math.max(0, asOfUtcSec - 180 * 86_400);
+      const fromSec = Math.max(0, asOfUtcSec - 240 * 86_400);
       const fromDate = getBuenosAiresParts(fromSec).dateKey;
+      const cerVarId = await this.resolveBcraCerVariableId();
 
       const [al30Res, al30cRes, gd30Res, gd30cRes, cerRes] = await Promise.all([
         this.fetchJsonSafe(`${this.data912BaseUrl}/historical/bonds/AL30`),
         this.fetchJsonSafe(`${this.data912BaseUrl}/historical/bonds/AL30C`),
         this.fetchJsonSafe(`${this.data912BaseUrl}/historical/bonds/GD30`),
         this.fetchJsonSafe(`${this.data912BaseUrl}/historical/bonds/GD30C`),
-        this.fetchJsonSafe(`${this.bcraBaseUrl}/estadisticas/v4.0/Monetarias/30?desde=${fromDate}&hasta=${toDate}`),
+        this.fetchJsonSafe(
+          `${this.bcraBaseUrl}/estadisticas/v4.0/Monetarias/${String(cerVarId)}?desde=${fromDate}&hasta=${toDate}&Limit=3000`,
+        ),
       ]);
+
+      let effectiveCerVarId = cerVarId;
+      let cerHistory = cerRes.ok ? this.parseBcraCerHistory(cerRes.data) : [];
+      if (cerHistory.length === 0 && cerVarId !== 30) {
+        const fbRes = await this.fetchJsonSafe(
+          `${this.bcraBaseUrl}/estadisticas/v4.0/Monetarias/30?desde=${fromDate}&hasta=${toDate}&Limit=3000`,
+        );
+        if (fbRes.ok) {
+          const parsedFb = this.parseBcraCerHistory(fbRes.data);
+          if (parsedFb.length > 0) {
+            cerHistory = parsedFb;
+            effectiveCerVarId = 30;
+          }
+        }
+      }
 
       const value = {
         al30History: al30Res.ok ? this.parseData912History(al30Res.data) : [],
         al30cHistory: al30cRes.ok ? this.parseData912History(al30cRes.data) : [],
         gd30History: gd30Res.ok ? this.parseData912History(gd30Res.data) : [],
         gd30cHistory: gd30cRes.ok ? this.parseData912History(gd30cRes.data) : [],
-        cerHistory: cerRes.ok ? this.parseBcraCerHistory(cerRes.data) : [],
+        cerHistory,
+        cerVarId: effectiveCerVarId,
       };
       this.historyCache = { fetchedAtMs: nowMs, value };
       return value;
@@ -1321,7 +1387,7 @@ export class GgalSpecialistRuntime {
               return null;
             }),
           this.runtime
-            .getBars('GGAL', '1D', { visibleBars: 150, forceRefresh })
+            .getBars('GGAL', '1D', { visibleBars: 180, forceRefresh })
             .catch((err: unknown): null => {
               const msg = err instanceof Error ? err.message : String(err);
               errors.push(redactSecrets(`Massive Bars GGAL 1D: ${msg}`, this.secrets));
@@ -1334,6 +1400,17 @@ export class GgalSpecialistRuntime {
           this.loadHistories(asOfUtcSec, forceRefresh),
         ]);
 
+      let usDailyCloseBars: readonly { readonly time: number; readonly close: number }[] =
+        usBarsRes !== null
+          ? usBarsRes.bars.map((b) => ({ time: b.time, close: b.close }))
+          : [];
+      if (usDailyCloseBars.length < 60) {
+        const cached1d = await this.runtime.getCachedDailyBars1d('GGAL', 180, forceRefresh).catch(() => null);
+        if (cached1d !== null && cached1d.bars.length > usDailyCloseBars.length) {
+          usDailyCloseBars = cached1d.bars.map((b) => ({ time: b.time, close: b.close }));
+        }
+      }
+
       const bundle: MarketBundle = {
         asOfUtcSec,
         overview,
@@ -1343,6 +1420,7 @@ export class GgalSpecialistRuntime {
         ggalOptions,
         usSnapshot: usSnapshotRes,
         usBars: usBarsRes,
+        usDailyCloseBars,
         liveStocks: stocksRes.ok ? this.parseData912Rows(stocksRes.data) : [],
         liveBonds: bondsRes.ok ? this.parseData912Rows(bondsRes.data) : [],
         liveNotes: notesRes.ok ? this.parseData912Rows(notesRes.data) : [],
@@ -1352,6 +1430,7 @@ export class GgalSpecialistRuntime {
         gd30History: histories.gd30History,
         gd30cHistory: histories.gd30cHistory,
         cerHistory: histories.cerHistory,
+        cerVarId: histories.cerVarId,
         errors,
       };
 
@@ -1426,6 +1505,14 @@ export class GgalSpecialistRuntime {
       badges.push('T-1 ANEXO B');
     }
 
+    const allErrors = Array.from(
+      new Set([...bundle.overview.providerErrors, ...bundle.ggalOptions.providerErrors, ...bundle.errors]),
+    );
+    const hideClosedOpenByma = isClosedSession || parity.sessionRegime === 'CLOSED';
+    const visibleErrors = hideClosedOpenByma
+      ? allErrors.filter((err) => !/open\.bymadata\.com\.ar/i.test(err))
+      : allErrors;
+
     return {
       asOfUtcSec,
       timestampUtc: formatIsoUtcFromSec(asOfUtcSec),
@@ -1443,9 +1530,8 @@ export class GgalSpecialistRuntime {
       anexoBAsOfDate: this.anexoBStore?.asOfDate ?? null,
       anexoBLagTradingDays: overrideAnexoBLag ?? null,
       recorder: this.getRecorderStatus(),
-      providerErrors: Array.from(
-        new Set([...bundle.overview.providerErrors, ...bundle.ggalOptions.providerErrors, ...bundle.errors]),
-      ),
+      providerErrors: visibleErrors,
+      sourceDiagnostics: allErrors,
     };
   }
 
@@ -1921,6 +2007,61 @@ export class GgalSpecialistRuntime {
           });
         }
       }
+
+      if (opraSlices.length === 0 && volSummary.contracts.length > 0) {
+        const spotAdrUsd =
+          Number.isFinite(spots.adrQuote.bid) && Number.isFinite(spots.adrQuote.ask) && spots.adrQuote.ask > 0
+            ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
+            : Number.NaN;
+        if (Number.isFinite(spotAdrUsd) && spotAdrUsd > 0) {
+          const byExp = new Map<
+            string,
+            { expiryUtcSec: number; quotes: OpraSliceQuoteInput[] }
+          >();
+          for (const c of volSummary.contracts) {
+            if (c.expiryUtcSec <= bundle.asOfUtcSec) {
+              continue;
+            }
+            const iv = c.ownIv ?? c.providerIv;
+            if (iv === null || !Number.isFinite(iv) || iv <= 0) {
+              continue;
+            }
+            const bucket = byExp.get(c.expirationDate) ?? {
+              expiryUtcSec: c.expiryUtcSec,
+              quotes: [],
+            };
+            bucket.quotes.push({
+              strike: c.strike,
+              contractType: c.contractType,
+              ivDecimal: iv,
+              ...(c.delta !== null && Number.isFinite(c.delta) ? { delta: c.delta } : {}),
+            });
+            byExp.set(c.expirationDate, bucket);
+          }
+          const sofrAnnual = Number.isFinite(rates.sofrRateAnnual) ? rates.sofrRateAnnual : 0;
+          for (const [, grp] of byExp) {
+            if (grp.quotes.length < 2) {
+              continue;
+            }
+            const tYears = Math.max(1 / 365, (grp.expiryUtcSec - bundle.asOfUtcSec) / (365 * 86_400));
+            const forwardUsd = spotAdrUsd * Math.exp((sofrAnnual - 0.012) * tYears);
+            const sortedNear = [...grp.quotes].sort(
+              (a, b) => Math.abs(a.strike - forwardUsd) - Math.abs(b.strike - forwardUsd),
+            );
+            const atmSample = sortedNear.slice(0, 2);
+            const atmIvDecimal =
+              atmSample.reduce((acc, q) => acc + q.ivDecimal, 0) / Math.max(1, atmSample.length);
+            if (Number.isFinite(atmIvDecimal) && atmIvDecimal > 0) {
+              opraSlices.push({
+                timeToExpiryYears: tYears,
+                forwardUsd,
+                atmIvDecimal,
+                quotes: grp.quotes,
+              });
+            }
+          }
+        }
+      }
     }
 
     // Series causales de retornos ADR USD y CCL GGAL
@@ -1931,11 +2072,9 @@ export class GgalSpecialistRuntime {
       }
     }
     const adrByDate = new Map<string, number>();
-    if (bundle.usBars !== null) {
-      for (const bar of bundle.usBars.bars) {
-        if (Number.isFinite(bar.close) && bar.close > 0) {
-          adrByDate.set(formatIsoUtcFromSec(bar.time).slice(0, 10), bar.close);
-        }
+    for (const bar of bundle.usDailyCloseBars) {
+      if (Number.isFinite(bar.close) && bar.close > 0) {
+        adrByDate.set(formatIsoUtcFromSec(bar.time).slice(0, 10), bar.close);
       }
     }
 
@@ -2093,11 +2232,9 @@ export class GgalSpecialistRuntime {
 
     const arByDate = new Map(bundle.ggalDetail.historicalBars.map((b) => [b.date, b]));
     const adrByDate = new Map<string, number>();
-    if (bundle.usBars !== null) {
-      for (const b of bundle.usBars.bars) {
-        if (Number.isFinite(b.close) && b.close > 0) {
-          adrByDate.set(formatIsoUtcFromSec(b.time).slice(0, 10), b.close);
-        }
+    for (const b of bundle.usDailyCloseBars) {
+      if (Number.isFinite(b.close) && b.close > 0) {
+        adrByDate.set(formatIsoUtcFromSec(b.time).slice(0, 10), b.close);
       }
     }
 
@@ -2139,7 +2276,8 @@ export class GgalSpecialistRuntime {
     }
 
     let expectedCerGrowth = Number.NaN;
-    let cerSource: string | null = cerSorted.length > 0 ? 'BCRA v4.0 Variable 30 (CER)' : null;
+    let cerSource: string | null =
+      cerSorted.length > 0 ? `BCRA v4.0 Variable ${String(bundle.cerVarId)} (CER)` : null;
     if (front !== null) {
       const dte = front.days;
       const infM = bundle.macro.variables.inflacionMensualPct;
@@ -2214,13 +2352,68 @@ export class GgalSpecialistRuntime {
       }
     }
 
+    let opraForwardPrice = matchedSlice?.forward ?? null;
+    let opraTimeToExpiryYears = matchedSlice?.timeToExpiryYears ?? null;
+    let opraRiskFreeContinuous = matchedSlice?.rate ?? null;
+
+    if (opraNodes.length < 5) {
+      const contracts = bundle.usSnapshot?.volSurfaceSummary?.contracts ?? [];
+      const validByExp = new Map<
+        string,
+        { expiryUtcSec: number; byStrike: Map<number, number[]> }
+      >();
+      for (const c of contracts) {
+        if (c.expiryUtcSec <= bundle.asOfUtcSec) {
+          continue;
+        }
+        const iv = c.ownIv ?? c.providerIv;
+        if (iv === null || !Number.isFinite(iv) || iv <= 0.01) {
+          continue;
+        }
+        const grp = validByExp.get(c.expirationDate) ?? {
+          expiryUtcSec: c.expiryUtcSec,
+          byStrike: new Map<number, number[]>(),
+        };
+        const arr = grp.byStrike.get(c.strike) ?? [];
+        arr.push(iv);
+        grp.byStrike.set(c.strike, arr);
+        validByExp.set(c.expirationDate, grp);
+      }
+      const bestExp = [...validByExp.values()]
+        .filter((g) => g.byStrike.size >= 3)
+        .sort((a, b) => {
+          const tA = Math.max(1 / 365, (a.expiryUtcSec - bundle.asOfUtcSec) / (365 * 86_400));
+          const tB = Math.max(1 / 365, (b.expiryUtcSec - bundle.asOfUtcSec) / (365 * 86_400));
+          return Math.abs(tA - targetYears) - Math.abs(tB - targetYears);
+        })[0];
+
+      if (bestExp !== undefined) {
+        opraNodes.length = 0;
+        const strikesSorted = [...bestExp.byStrike.keys()].sort((a, b) => a - b);
+        for (const k of strikesSorted) {
+          const ivArr = bestExp.byStrike.get(k) ?? [];
+          if (ivArr.length > 0) {
+            opraNodes.push({
+              strike: k,
+              ivDecimal: ivArr.reduce((acc, v) => acc + v, 0) / ivArr.length,
+            });
+          }
+        }
+        const tYears = Math.max(1 / 365, (bestExp.expiryUtcSec - bundle.asOfUtcSec) / (365 * 86_400));
+        const rFree = Number.isFinite(rates.sofrRateAnnual) ? rates.sofrRateAnnual : 0;
+        opraTimeToExpiryYears = tYears;
+        opraRiskFreeContinuous = rFree;
+        opraForwardPrice = spotAdrUsd * Math.exp((rFree - 0.012) * tYears);
+      }
+    }
+
     if (
       bymaEval === null ||
       bymaNodes.length < 5 ||
-      matchedSlice === null ||
-      matchedSlice.forward === null ||
-      matchedSlice.rate === null ||
-      opraNodes.length < 5 ||
+      opraForwardPrice === null ||
+      opraTimeToExpiryYears === null ||
+      opraRiskFreeContinuous === null ||
+      opraNodes.length < 3 ||
       historicalSeries.length < 25
     ) {
       return {
@@ -2249,10 +2442,10 @@ export class GgalSpecialistRuntime {
         nodes: bymaNodes,
       },
       opraMarket: {
-        forwardPrice: matchedSlice.forward,
-        timeToExpiryYears: matchedSlice.timeToExpiryYears,
-        riskFreeContinuous: matchedSlice.rate,
-        timeToSettleYears: matchedSlice.timeToExpiryYears,
+        forwardPrice: opraForwardPrice,
+        timeToExpiryYears: opraTimeToExpiryYears,
+        riskFreeContinuous: opraRiskFreeContinuous,
+        timeToSettleYears: opraTimeToExpiryYears,
         nodes: opraNodes,
       },
       minHistoricalObs: 25,
@@ -2320,6 +2513,60 @@ export class GgalSpecialistRuntime {
         : Number.NaN;
 
     if (this.anexoBStore === null) {
+      let proxyOut: StructurePinningOutput | null = null;
+      if (
+        front !== null &&
+        Number.isFinite(spot24hArs) &&
+        spot24hArs > 0 &&
+        rates.rateCurveArs.length > 0 &&
+        front.ivAtm !== null &&
+        Number.isFinite(front.ivAtm) &&
+        front.ivAtm > 0
+      ) {
+        const proxyStrikes: AnexoBStrikeChainInput[] = [];
+        for (const strike of front.strikes) {
+          const c = front.calls.find((x) => x.strike === strike);
+          const p = front.puts.find((x) => x.strike === strike);
+          const rawCallLots = Math.max(0, c?.openInterest ?? c?.volume ?? 0);
+          const rawPutLots = Math.max(0, p?.openInterest ?? p?.volume ?? 0);
+          const callIv =
+            c?.iv !== null && c?.iv !== undefined && Number.isFinite(c.iv) && c.iv > 0
+              ? c.iv
+              : front.ivAtm;
+          const putIv =
+            p?.iv !== null && p?.iv !== undefined && Number.isFinite(p.iv) && p.iv > 0
+              ? p.iv
+              : front.ivAtm;
+          if ((rawCallLots > 0 || rawPutLots > 0) && Number.isFinite(callIv) && Number.isFinite(putIv)) {
+            proxyStrikes.push({
+              strikeArs: strike,
+              callOi: { coveredNom: 0, uncoveredNom: rawCallLots * 100, oppositeNom: 0, crossedNom: 0 },
+              putOi: { coveredNom: 0, uncoveredNom: rawPutLots * 100, oppositeNom: 0, crossedNom: 0 },
+              callIvDecimal: callIv,
+              putIvDecimal: putIv,
+            });
+          }
+        }
+        if (proxyStrikes.length > 0) {
+          proxyOut = evaluateStructureAndPinning({
+            asOfUtcSec: bundle.asOfUtcSec,
+            anexoBAsOfDate: formatIsoUtcFromSec(bundle.asOfUtcSec).slice(0, 10),
+            bymaEval: {
+              asOfUtcSec: bundle.asOfUtcSec,
+              spot24hArs,
+              expiryDateKey: front.expirationDate,
+              expiry1530UtcSec: computeExpiration1530ArtUtcSec(front.expirationDate),
+              arHolidays: this.arHolidays,
+              rateCurve: rates.rateCurveArs,
+            },
+            atmIvDecimal: front.ivAtm,
+            strikes: proxyStrikes,
+            weights: DEFAULT_ANEXO_B_WEIGHTS,
+            arHolidays: this.arHolidays,
+            ...(this.bymaFlowSnapshots.length >= 2 ? { bymaSnapshots: this.bymaFlowSnapshots } : {}),
+          });
+        }
+      }
       const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
       return {
         telemetry,
@@ -2327,9 +2574,13 @@ export class GgalSpecialistRuntime {
         frontExpiryDate: front?.expirationDate ?? null,
         anexoBSummary: null,
         result: null,
+        proxyResult: proxyOut !== null ? toJsonSafe(proxyOut) : null,
+        proxySource: proxyOut !== null ? ('PROXY DATA912 (SIN ANEXO B)' as const) : null,
         data912TotalOiFallback,
         notice:
-          'Sin matriz Anexo B IAMC cargada. Ingresa las columnas Cubierta / Descubierta / Opuesta / Cruzada (en acciones nominales) para activar GEX/Vanna/Charm y Zero-Gamma Brent.',
+          proxyOut !== null
+            ? 'Modo PROXY DATA912 (SIN ANEXO B): GEX/Zero-Gamma/Pinning calculados sobre volumen/OI activo de Data912. Ingesta Anexo B IAMC para desglose oficial Cubierta/Descubierta/Opuesta/Cruzada.'
+            : 'Sin matriz Anexo B IAMC cargada. Ingresa las columnas Cubierta / Descubierta / Opuesta / Cruzada (en acciones nominales) para activar GEX/Vanna/Charm y Zero-Gamma Brent.',
       };
     }
 
@@ -2346,6 +2597,8 @@ export class GgalSpecialistRuntime {
         frontExpiryDate: front?.expirationDate ?? null,
         anexoBSummary: this.anexoBStore.totals,
         result: null,
+        proxyResult: null,
+        proxySource: null,
         data912TotalOiFallback,
         notice: 'Falta cadena líquida o curva de tasas ARS para evaluar Anexo B contra BS02.',
       };
@@ -2398,6 +2651,8 @@ export class GgalSpecialistRuntime {
       frontExpiryDate: front.expirationDate,
       anexoBSummary: this.anexoBStore.totals,
       result: toJsonSafe(out),
+      proxyResult: null,
+      proxySource: null,
       data912TotalOiFallback,
       notice: null,
     };
@@ -2556,8 +2811,16 @@ export class GgalSpecialistRuntime {
       feeSchedule,
       usFeeSchedule,
       filterThresholds: {
-        ...(reqBody.minBymaOiNominals !== undefined ? { minBymaOiNominals: reqBody.minBymaOiNominals } : {}),
-        ...(reqBody.minOpraOiContracts !== undefined ? { minOpraOiContracts: reqBody.minOpraOiContracts } : {}),
+        ...(reqBody.minBymaOiNominals !== undefined
+          ? { minBymaOiNominals: reqBody.minBymaOiNominals }
+          : this.anexoBStore === null || isEodMode
+            ? { minBymaOiNominals: 0 }
+            : {}),
+        ...(reqBody.minOpraOiContracts !== undefined
+          ? { minOpraOiContracts: reqBody.minOpraOiContracts }
+          : this.anexoBStore === null || isEodMode
+            ? { minOpraOiContracts: 0 }
+            : {}),
         ...(reqBody.minEvToCostMultiple !== undefined ? { minEvToRoundTripCostMultiple: reqBody.minEvToCostMultiple } : {}),
         enforceThresholds: reqBody.enforceThresholds ?? false,
         maxCandidates: reqBody.maxCandidates ?? 30,
@@ -2603,7 +2866,7 @@ export class GgalSpecialistRuntime {
       structure.telemetry.anexoBLagTradingDays,
     );
 
-    const strRes = structure.result;
+    const strRes = structure.result ?? structure.proxyResult ?? null;
 
     return {
       telemetry,

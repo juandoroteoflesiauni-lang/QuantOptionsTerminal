@@ -76,7 +76,36 @@ export const HomeDashboard: React.FC<{
   const decCount = AR_STOCKS.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct < 0).length;
   const deltaFinite = AR_STOCKS.filter((s) => Number.isFinite(s.deltaPct)).map((s) => s.deltaPct);
   const avgDelta = deltaFinite.length > 0 ? deltaFinite.reduce((a, b) => a + b, 0) / deltaFinite.length : Number.NaN;
-  const frontOpt = GGAL_OPTION_EXPIRIES[0];
+  const overviewExt = liveMarket.overview as
+    | (typeof liveMarket.overview & {
+        readonly atmIvPct?: number | null;
+        readonly atmIvExpiryCode?: string | null;
+        readonly atmIvExpiryLabel?: string | null;
+        readonly atmIvDaysToExpiry?: number | null;
+        readonly atmIvRateTnaPct?: number | null;
+      })
+    | null;
+  const ggalOptsMeta = liveMarket.optionsByUnderlying['GGAL'] as
+    | ({
+        readonly primaryLiquidExpiryCode?: string | null;
+        readonly rateTna?: number | null;
+      })
+    | undefined;
+  const frontOpt =
+    (ggalOptsMeta?.primaryLiquidExpiryCode
+      ? GGAL_OPTION_EXPIRIES.find((e) => e.id === ggalOptsMeta.primaryLiquidExpiryCode)
+      : undefined) ??
+    GGAL_OPTION_EXPIRIES.find((e) => Number.isFinite(e.atmIV) && e.atmIV > 0) ??
+    GGAL_OPTION_EXPIRIES[0];
+  const atmIvHeroVal =
+    overviewExt?.atmIvPct != null && Number.isFinite(overviewExt.atmIvPct)
+      ? overviewExt.atmIvPct
+      : (frontOpt?.atmIV ?? Number.NaN);
+  const atmIvBadge = overviewExt?.atmIvExpiryCode ?? frontOpt?.id ?? 'SIN CADENA';
+  const atmIvDays = overviewExt?.atmIvDaysToExpiry ?? frontOpt?.daysToExpiry ?? null;
+  const atmIvLabel = overviewExt?.atmIvExpiryLabel ?? frontOpt?.label ?? atmIvBadge;
+  const atmIvRateTna =
+    overviewExt?.atmIvRateTnaPct ?? ggalOptsMeta?.rateTna ?? frontOpt?.syntheticRateTNA ?? Number.NaN;
 
   return (
     <div className="space-y-4 animate-module">
@@ -120,11 +149,11 @@ export const HomeDashboard: React.FC<{
         />
         <KPICard
           title="VI ATM Cadena Activa"
-          heroValue={frontOpt && Number.isFinite(frontOpt.atmIV) ? `${fmtNum(frontOpt.atmIV, 1)} %` : '—'}
-          badge={frontOpt?.id ?? 'SIN CADENA'}
+          heroValue={Number.isFinite(atmIvHeroVal) ? `${fmtNum(atmIvHeroVal, 1)} %` : '—'}
+          badge={atmIvBadge}
           subtitle={
-            frontOpt
-              ? `Vto ${frontOpt.daysToExpiry}d · Tasa Ref: ${fmtNum(frontOpt.syntheticRateTNA, 1)} % TNA`
+            atmIvDays !== null && Number.isFinite(atmIvDays)
+              ? `Vto ${atmIvDays}d (${atmIvLabel}) · Tasa Ref: ${Number.isFinite(atmIvRateTna) ? `${fmtNum(atmIvRateTna, 1)} % TNA` : '—'}`
               : 'Cargando cadena desde /api/ar/options'
           }
           helpText="Volatilidad implícita ATM calculada con modelo Americano Bjerksund-Stensland 2002."
@@ -970,8 +999,69 @@ export const USMarketModule: React.FC<{
         const te = spySnap?.terminalEngines ?? null;
         const tr = spyCtx?.treasury;
         const cone0 = te?.volCone?.cones?.[0];
+        const teExt = te as
+          | (NonNullable<typeof te> & {
+              readonly nearestInstitutionalLevel?: {
+                readonly name: string;
+                readonly category: string;
+                readonly price: number;
+                readonly distanceAbs: number;
+                readonly distancePct: number;
+                readonly distanceAtr: number | null;
+                readonly side: 'ABOVE' | 'BELOW' | 'AT_SPOT';
+                readonly clusterRadiusAtrUsed: number | null;
+              } | null;
+            })
+          | null;
         const strongCent = te?.confluenceClusters?.strongestClusterCentroid ?? null;
         const strongScore = te?.confluenceClusters?.strongestClusterStrength ?? null;
+        const confRadiusAtr =
+          (te?.confluenceClusters as ({ readonly clusterRadiusAtr?: number | null } | null | undefined))
+            ?.clusterRadiusAtr ?? 0.15;
+        const spySpotPx = spy?.price ?? spySnap?.envelope?.snapshot?.metrics?.spot ?? Number.NaN;
+        const atrSpy = te?.atr14d ?? Number.NaN;
+        const nearestLevel = (() => {
+          if (teExt?.nearestInstitutionalLevel) return teExt.nearestInstitutionalLevel;
+          if (!Number.isFinite(spySpotPx) || spySpotPx <= 0) return null;
+          const candidates: { name: string; category: string; price: number }[] = [];
+          if (te?.volumeProfile?.status === 'OK') {
+            if (te.volumeProfile.poc != null && Number.isFinite(te.volumeProfile.poc))
+              candidates.push({ name: 'POC', category: 'AMT', price: te.volumeProfile.poc });
+            if (te.volumeProfile.vah != null && Number.isFinite(te.volumeProfile.vah))
+              candidates.push({ name: 'VAH', category: 'AMT', price: te.volumeProfile.vah });
+            if (te.volumeProfile.val != null && Number.isFinite(te.volumeProfile.val))
+              candidates.push({ name: 'VAL', category: 'AMT', price: te.volumeProfile.val });
+          }
+          const expS = spySnap?.exposureSummary;
+          if (expS?.callWallStrike != null && Number.isFinite(expS.callWallStrike))
+            candidates.push({ name: 'Call Wall', category: 'OPTIONS', price: expS.callWallStrike });
+          if (expS?.putWallStrike != null && Number.isFinite(expS.putWallStrike))
+            candidates.push({ name: 'Put Wall', category: 'OPTIONS', price: expS.putWallStrike });
+          if (expS?.gammaFlipSpot != null && Number.isFinite(expS.gammaFlipSpot))
+            candidates.push({ name: 'Zero Gamma', category: 'OPTIONS', price: expS.gammaFlipSpot });
+          if (te?.gexCharmPin?.gexCharmPinStrike != null && Number.isFinite(te.gexCharmPin.gexCharmPinStrike))
+            candidates.push({ name: 'GEX Pin', category: 'OPTIONS', price: te.gexCharmPin.gexCharmPinStrike });
+          let best: (typeof candidates)[number] | null = null;
+          let bestDist = Number.POSITIVE_INFINITY;
+          for (const c of candidates) {
+            const d = Math.abs(c.price - spySpotPx);
+            if (d < bestDist) {
+              bestDist = d;
+              best = c;
+            }
+          }
+          if (!best || !Number.isFinite(bestDist)) return null;
+          return {
+            name: best.name,
+            category: best.category,
+            price: best.price,
+            distanceAbs: bestDist,
+            distancePct: ((best.price - spySpotPx) / spySpotPx) * 100,
+            distanceAtr: Number.isFinite(atrSpy) && atrSpy > 0 ? bestDist / atrSpy : null,
+            side: best.price > spySpotPx ? ('ABOVE' as const) : best.price < spySpotPx ? ('BELOW' as const) : ('AT_SPOT' as const),
+            clusterRadiusAtrUsed: null,
+          };
+        })();
         const pinStrike = te?.gexCharmPin?.gexCharmPinStrike ?? null;
         const netPremUsd = te?.orderFlow?.netDirectionalPremiumUsd ?? null;
         const netDeltaSh = te?.orderFlow?.netDeltaShares ?? null;
@@ -1065,15 +1155,23 @@ export const USMarketModule: React.FC<{
 
               <div className="p-3 rounded-[8px] bg-[#0B0E14] border border-[#1E222D] space-y-1">
                 <div className="text-[10.5px] uppercase tracking-wider text-[#787B86] font-mono-num">
-                  CONFLUENCIA &lt; 0.15 ATR
+                  {strongCent != null && Number.isFinite(strongCent)
+                    ? `CONFLUENCIA < ${fmtNum(confRadiusAtr, 2)} ATR`
+                    : nearestLevel !== null
+                      ? 'NIVEL INST. CERCANO'
+                      : 'CONFLUENCIA < 0.15 ATR'}
                 </div>
-                <div className="font-mono-num text-[15px] font-bold text-[#38BDF8]">
+                <div className="font-mono-num text-[15px] font-bold text-[#38BDF8] truncate">
                   {strongCent != null && Number.isFinite(strongCent)
                     ? `$ ${fmtNum(strongCent, 2)} (${strongScore != null ? fmtNum(strongScore, 0) : '—'})`
-                    : '—'}
+                    : nearestLevel !== null
+                      ? `${nearestLevel.name} $ ${fmtNum(nearestLevel.price, 2)}`
+                      : '—'}
                 </div>
-                <div className="text-[11px] font-mono-num text-[#9CA3AF]">
-                  RS ({rsClass}): {rsSpread != null && Number.isFinite(rsSpread) ? fmtPct(rsSpread * 100, 2) : '—'}
+                <div className="text-[11px] font-mono-num text-[#9CA3AF] truncate">
+                  {strongCent == null && nearestLevel !== null
+                    ? `${nearestLevel.distanceAtr != null && Number.isFinite(nearestLevel.distanceAtr) ? `${fmtNum(nearestLevel.distanceAtr, 2)} ATR` : fmtPct(nearestLevel.distancePct, 2)} · RS: ${rsSpread != null && Number.isFinite(rsSpread) ? fmtPct(rsSpread * 100, 2) : '—'}`
+                    : `RS (${rsClass}): ${rsSpread != null && Number.isFinite(rsSpread) ? fmtPct(rsSpread * 100, 2) : '—'}`}
                 </div>
               </div>
             </div>
@@ -1644,9 +1742,37 @@ export const FuturesModule: React.FC = () => {
                         {c.price !== null ? `$ ${fmtNum(c.price, 2)}` : '—'}
                       </td>
                       <td className="px-2.5 text-[var(--text-secondary)]">
-                        {c.bid !== null || c.ask !== null
-                          ? `${c.bid !== null ? fmtNum(c.bid, 2) : '—'} / ${c.ask !== null ? fmtNum(c.ask, 2) : '—'}`
-                          : '—'}
+                        {(() => {
+                          const cExt = c as typeof c & {
+                            readonly bidPrice?: number | null;
+                            readonly askPrice?: number | null;
+                            readonly bidSize?: number | null;
+                            readonly askSize?: number | null;
+                          };
+                          const bPx = cExt.bidPrice ?? c.bid;
+                          const aPx = cExt.askPrice ?? c.ask;
+                          const bSz = cExt.bidSize ?? null;
+                          const aSz = cExt.askSize ?? null;
+                          if (bPx !== null || aPx !== null) {
+                            const bTxt =
+                              bPx !== null
+                                ? `${fmtNum(bPx, 2)}${bSz !== null && bSz > 0 ? ` (${bSz.toLocaleString('es-AR')})` : ''}`
+                                : '—';
+                            const aTxt =
+                              aPx !== null
+                                ? `${fmtNum(aPx, 2)}${aSz !== null && aSz > 0 ? ` (${aSz.toLocaleString('es-AR')})` : ''}`
+                                : '—';
+                            return `${bTxt} / ${aTxt}`;
+                          }
+                          if (liveMarket.marketState === 'CERRADO' || c.priceBasis === 'SETTLEMENT_EOD') {
+                            return (
+                              <span className="text-[11px] font-sans text-[#787B86]">
+                                Sin puntas (Cierre)
+                              </span>
+                            );
+                          }
+                          return '—';
+                        })()}
                       </td>
                       <td className="px-2.5 text-[var(--text-secondary)]">
                         {c.openInterest !== null ? c.openInterest.toLocaleString('es-AR') : '—'}
