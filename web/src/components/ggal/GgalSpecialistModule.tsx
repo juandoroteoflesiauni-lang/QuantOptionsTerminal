@@ -880,7 +880,30 @@ export const GgalSpecialistModule: React.FC<{
       )}
 
       {/* TAB 2 — TRIÁNGULO DE VOLATILIDAD */}
-      {activeTab === 'vol-triangle' && volData !== null && (
+      {activeTab === 'vol-triangle' && volData !== null && (() => {
+        const volExt = volData as typeof volData & {
+          readonly impliedCclVolWingsPct?: number | null;
+          readonly impliedCclMinFloorPct?: number | null;
+          readonly atmCompressionPts?: number | null;
+        };
+        const isCompressed = volData.result?.boundaryRegime === 'VIOLATION_BYMA_COMPRESSED';
+        const cclHeroValue =
+          volData.result?.impliedCclVolPct !== null && volData.result?.impliedCclVolPct !== undefined
+            ? fmtPct(volData.result.impliedCclVolPct, 2, false)
+            : isCompressed
+              ? volExt.impliedCclVolWingsPct !== null && volExt.impliedCclVolWingsPct !== undefined
+                ? `σ_CCL (Alas/Puts): ${fmtPct(volExt.impliedCclVolWingsPct, 2, false)}`
+                : volExt.atmCompressionPts !== null && volExt.atmCompressionPts !== undefined
+                  ? `Compresión ATM: ${fmtNum(volExt.atmCompressionPts, 1)} pts vs OPRA`
+                  : volExt.impliedCclMinFloorPct !== null && volExt.impliedCclMinFloorPct !== undefined
+                    ? `Piso σ_min: ${fmtPct(volExt.impliedCclMinFloorPct, 2, false)}`
+                    : '—'
+              : '—';
+        const cclBadge =
+          isCompressed && volExt.atmCompressionPts !== null && volExt.atmCompressionPts !== undefined
+            ? `Compresión ATM: ${fmtNum(volExt.atmCompressionPts, 1)} pts vs OPRA`
+            : (volData.result?.boundaryRegime ?? '—');
+        return (
         <div className="space-y-4">
           <InsightBanner
             tag="Triángulo σ_BYMA² = σ_ADR² + σ_CCL² + 2ρσ_ADRσ_CCL"
@@ -908,10 +931,10 @@ export const GgalSpecialistModule: React.FC<{
             />
             <KPICard
               title="IV Implícita del CCL (Modo A)"
-              heroValue={fmtPct(volData.result?.impliedCclVolPct, 2, false)}
-              badge={volData.result?.boundaryRegime ?? '—'}
-              subtitle={`HAR-RV CCL: ${fmtPct(volData.result?.harRvCclPct, 2, false)} · ρ_impl (Modo B): ${fmtNum(volData.result?.impliedCorrelation, 3)}`}
-              helpText="Inversión triangular de volatilidad implícita del tipo de cambio CCL fijando ρ_EWMA (o — si BYMA comprime bajo el mínimo)."
+              heroValue={cclHeroValue}
+              badge={cclBadge}
+              subtitle={`HAR-RV CCL: ${fmtPct(volData.result?.harRvCclPct, 2, false)} · ρ_impl (Modo B): ${fmtNum(volData.result?.impliedCorrelation, 3)} · Regime: ${volData.result?.boundaryRegime ?? '—'}`}
+              helpText={`Inversión triangular de volatilidad implícita del tipo de cambio CCL fijando ρ_EWMA; en VIOLATION_BYMA_COMPRESSED muestra σ_CCL sobre alas OTM/Puts o compresión ATM vs OPRA (piso σ_CCL,min: ${fmtPct(volExt.impliedCclMinFloorPct, 2, false)}).`}
             />
             <KPICard
               title="Compresión Call Overwriting"
@@ -977,7 +1000,8 @@ export const GgalSpecialistModule: React.FC<{
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* TAB 3 — DENSIDAD DUAL P vs. Q */}
       {activeTab === 'dual-density' && dualData !== null && (
@@ -1035,9 +1059,14 @@ export const GgalSpecialistModule: React.FC<{
         const structExt = structureData as typeof structureData & {
           readonly proxyResult?: typeof structureData.result;
           readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
+          readonly flowBasis?: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT';
         };
         const effStruct = structExt.result ?? structExt.proxyResult ?? null;
         const usingProxy = structExt.result === null && structExt.proxyResult != null;
+        const flowBadge =
+          structExt.flowBasis === 'EOD_PREV_SESSION'
+            ? 'EOD RUEDA PREVIA'
+            : (effStruct?.intradayFlow.leeReadyConfidence ?? 'SNAPSHOT_20S_APPROX');
         return (
         <div className="space-y-4">
           {structureData.notice !== null && (
@@ -1079,7 +1108,7 @@ export const GgalSpecialistModule: React.FC<{
             <KPICard
               title="Flujo Intradiario Firmado"
               heroValue={fmtCurrency(effStruct?.intradayFlow.bymaNetSignedArs, '$ ', 0)}
-              badge={effStruct?.intradayFlow.leeReadyConfidence ?? 'SNAPSHOT_20S_APPROX'}
+              badge={flowBadge}
               subtitle={`ADR Flow: ${fmtCurrency(effStruct?.intradayFlow.adrNetSignedUsd, 'US$ ', 0)} · Snapshots 20s: ${structureData.telemetry.recorder.flowPointsCount}`}
             />
           </div>
@@ -1106,7 +1135,7 @@ export const GgalSpecialistModule: React.FC<{
                     <tr>
                       <th className="text-left px-3 py-2">Strike</th>
                       <th className="text-right px-3 py-2">Cubierta</th>
-                      <th className="text-right px-3 py-2">{usingProxy ? 'Proxy Nom.' : 'Descubierta'}</th>
+                      <th className="text-right px-3 py-2">{usingProxy ? 'DESCUB. (PROXY)' : 'Descubierta'}</th>
                       <th className="text-right px-3 py-2">Opuesta</th>
                       <th className="text-right px-3 py-2">Cruzada</th>
                       <th className="text-right px-3 py-2">Signed GEX</th>

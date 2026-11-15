@@ -211,6 +211,9 @@ export interface GgalVolTriangleResponse {
   readonly result: JsonSafeValue<CrossCurrencyVolOutput> | null;
   readonly smileComparison: readonly GgalSmileComparisonPointDto[];
   readonly returnObservationsUsed: number;
+  readonly impliedCclVolWingsPct?: number | null;
+  readonly impliedCclMinFloorPct?: number | null;
+  readonly atmCompressionPts?: number | null;
 }
 
 export interface GgalDualDensityResponse {
@@ -274,6 +277,7 @@ export interface GgalStructurePinningResponse {
   readonly result: JsonSafeValue<StructurePinningOutput> | null;
   readonly proxyResult?: JsonSafeValue<StructurePinningOutput> | null;
   readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
+  readonly flowBasis?: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT';
   readonly data912TotalOiFallback: readonly GgalData912OiFallbackItemDto[];
   readonly notice: string | null;
 }
@@ -1239,18 +1243,31 @@ export class GgalSpecialistRuntime {
     }
     const seen = new Set<string>();
     const out: CerObservation[] = [];
+    const pushObservation = (entry: unknown): void => {
+      if (!isPlainRecord(entry)) {
+        return;
+      }
+      const rawFecha = readStr(entry, ['fecha', 'date', 'ultFechaInformada']);
+      const val = readNum(entry, ['valor', 'value', 'ultValorInformado']);
+      const parsed = parseUtcDateKey(rawFecha);
+      if (parsed === null || val === null || !Number.isFinite(val) || val <= 0 || seen.has(parsed.date)) {
+        return;
+      }
+      seen.add(parsed.date);
+      out.push({ date: parsed.date, value: val });
+    };
+
     for (const item of data['results']) {
       if (!isPlainRecord(item)) {
         continue;
       }
-      const rawFecha = readStr(item, ['fecha', 'date', 'ultFechaInformada']);
-      const val = readNum(item, ['valor', 'value', 'ultValorInformado']);
-      const parsed = parseUtcDateKey(rawFecha);
-      if (parsed === null || val === null || !Number.isFinite(val) || val <= 0 || seen.has(parsed.date)) {
-        continue;
+      // BCRA v4.0 devuelve { results: [{ idVariable, detalle: [{ fecha, valor }, ...] }] }
+      if (Array.isArray(item['detalle'])) {
+        for (const detailRow of item['detalle']) {
+          pushObservation(detailRow);
+        }
       }
-      seen.add(parsed.date);
-      out.push({ date: parsed.date, value: val });
+      pushObservation(item);
     }
     out.sort((a, b) => a.date.localeCompare(b.date));
     return out;
@@ -1275,11 +1292,12 @@ export class GgalSpecialistRuntime {
           continue;
         }
         const norm = desc.trim();
+        const excludedSeries = /\b(?:no\s+ajustables?|dep[oó]sitos|plazo|pr[eé]stamos|tasas?)\b/i.test(norm);
         const isExactCer =
           /^cer$/i.test(norm) ||
-          /\bcoeficiente\s+de\s+estabilizaci[oó]n\s+de\s+referencia\b/i.test(norm) ||
+          /coeficiente\s+de\s+estabilizaci[oó]n\s+de\s+referencia/i.test(norm) ||
           /^cer\b/i.test(norm);
-        const hasTokenCer = /\bcer\b/i.test(norm);
+        const hasTokenCer = /\bcer\b/i.test(norm) && !excludedSeries;
         if (isExactCer) {
           bestId = idVal;
           break;
@@ -1307,7 +1325,7 @@ export class GgalSpecialistRuntime {
 
     const work = (async () => {
       const toDate = getBuenosAiresParts(asOfUtcSec).dateKey;
-      const fromSec = Math.max(0, asOfUtcSec - 240 * 86_400);
+      const fromSec = Math.max(0, asOfUtcSec - 365 * 86_400);
       const fromDate = getBuenosAiresParts(fromSec).dateKey;
       const cerVarId = await this.resolveBcraCerVariableId();
 
@@ -1387,7 +1405,7 @@ export class GgalSpecialistRuntime {
               return null;
             }),
           this.runtime
-            .getBars('GGAL', '1D', { visibleBars: 180, forceRefresh })
+            .getBars('GGAL', '1D', { visibleBars: 240, forceRefresh })
             .catch((err: unknown): null => {
               const msg = err instanceof Error ? err.message : String(err);
               errors.push(redactSecrets(`Massive Bars GGAL 1D: ${msg}`, this.secrets));
@@ -1404,8 +1422,8 @@ export class GgalSpecialistRuntime {
         usBarsRes !== null
           ? usBarsRes.bars.map((b) => ({ time: b.time, close: b.close }))
           : [];
-      if (usDailyCloseBars.length < 60) {
-        const cached1d = await this.runtime.getCachedDailyBars1d('GGAL', 180, forceRefresh).catch(() => null);
+      if (usDailyCloseBars.length < 75) {
+        const cached1d = await this.runtime.getCachedDailyBars1d('GGAL', 240, forceRefresh).catch(() => null);
         if (cached1d !== null && cached1d.bars.length > usDailyCloseBars.length) {
           usDailyCloseBars = cached1d.bars.map((b) => ({ time: b.time, close: b.close }));
         }
@@ -1920,12 +1938,389 @@ export class GgalSpecialistRuntime {
     };
   }
 
+  private evaluateExtrapolatedVolTriangleSmile(params: {
+    readonly output: CrossCurrencyVolOutput | null;
+    readonly front: ArOptionExpiryDto | null;
+    readonly spot24hArs: number;
+    readonly rates: ReturnType<GgalSpecialistRuntime['resolveSofrAndRateBenchmarks']>;
+    readonly opraSlices: readonly OpraMaturitySliceInput[];
+    readonly asOfUtcSec: number;
+  }): {
+    readonly smileComparison: GgalSmileComparisonPointDto[];
+    readonly enrichedOutput: CrossCurrencyVolOutput | null;
+    readonly impliedCclVolWingsPct: number | null;
+    readonly impliedCclMinFloorPct: number | null;
+    readonly atmCompressionPts: number | null;
+  } {
+    const { output, front, spot24hArs, rates, opraSlices, asOfUtcSec } = params;
+    if (front === null) {
+      return {
+        smileComparison: [],
+        enrichedOutput: output,
+        impliedCclVolWingsPct: null,
+        impliedCclMinFloorPct: null,
+        atmCompressionPts: null,
+      };
+    }
+
+    const computeBymaEval =
+      Number.isFinite(spot24hArs) && spot24hArs > 0 && rates.rateCurveArs.length > 0
+        ? computeBymaOptionEvalParams({
+            asOfUtcSec,
+            spot24hArs,
+            expiryDateKey: front.expirationDate,
+            expiry1530UtcSec: computeExpiration1530ArtUtcSec(front.expirationDate),
+            arHolidays: this.arHolidays,
+            rateCurve: rates.rateCurveArs,
+          })
+        : null;
+
+    // Preconstruir curvas OPRA ordenadas por z estandarizado para interpolación y extrapolación suave en alas
+    interface OpraZCurve {
+      readonly timeToExpiryYears: number;
+      readonly atmIvDecimal: number;
+      readonly nodes: readonly { readonly z: number; readonly iv: number }[];
+    }
+    const opraCurves: OpraZCurve[] = [];
+    for (const sl of opraSlices) {
+      if (
+        !Number.isFinite(sl.forwardUsd) ||
+        sl.forwardUsd <= 0 ||
+        !Number.isFinite(sl.atmIvDecimal) ||
+        sl.atmIvDecimal <= 0 ||
+        !Number.isFinite(sl.timeToExpiryYears) ||
+        sl.timeToExpiryYears <= 0
+      ) {
+        continue;
+      }
+      const denom = sl.atmIvDecimal * Math.sqrt(sl.timeToExpiryYears);
+      if (!Number.isFinite(denom) || denom <= 0) {
+        continue;
+      }
+      // Replicar exactamente build/interpolateSliceIvAtZ de volTriangle.ts para continuidad C0 en los extremos
+      const byStrike = new Map<number, { z: number; iv: number }>();
+      for (const q of sl.quotes) {
+        if (!Number.isFinite(q.strike) || q.strike <= 0 || !Number.isFinite(q.ivDecimal) || q.ivDecimal <= 0.02 || q.ivDecimal > 4.0) {
+          continue;
+        }
+        const z = Math.log(q.strike / sl.forwardUsd) / denom;
+        if (!Number.isFinite(z)) {
+          continue;
+        }
+        const isOtm =
+          (q.strike >= sl.forwardUsd && q.contractType === 'call') ||
+          (q.strike < sl.forwardUsd && q.contractType === 'put');
+        if (!byStrike.has(q.strike) || isOtm) {
+          byStrike.set(q.strike, { z, iv: q.ivDecimal });
+        }
+      }
+      const nodes = Array.from(byStrike.values()).sort((a, b) => a.z - b.z);
+      if (nodes.length >= 2) {
+        opraCurves.push({
+          timeToExpiryYears: sl.timeToExpiryYears,
+          atmIvDecimal: sl.atmIvDecimal,
+          nodes,
+        });
+      }
+    }
+    opraCurves.sort((a, b) => a.timeToExpiryYears - b.timeToExpiryYears);
+
+    const evalSingleCurve = (curve: OpraZCurve, zTarget: number): number => {
+      const nodes = curve.nodes;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (first === undefined || last === undefined) {
+        return Number.NaN;
+      }
+      if (nodes.length === 1) {
+        return first.iv;
+      }
+      const minIv = Math.max(0.05, Math.min(...nodes.map((n) => n.iv)) * 0.45);
+      const maxIv = Math.min(2.5, Math.max(1.2, Math.max(...nodes.map((n) => n.iv)) * 2.1));
+
+      if (zTarget < first.z) {
+        let anchorIdx = 1;
+        for (let i = 1; i < nodes.length; i += 1) {
+          if ((nodes[i]?.z ?? first.z) - first.z >= 0.15) {
+            anchorIdx = i;
+            break;
+          }
+        }
+        const anchor = nodes[anchorIdx] ?? nodes[1] ?? first;
+        const dzBase = anchor.z - first.z;
+        const rawSlope = dzBase > 1e-5 ? (anchor.iv - first.iv) / dzBase : 0;
+        // Acotar pendiente de ala izquierda para evitar volúmenes negativos o explosivos
+        const clampedSlope = Math.max(-0.18, Math.min(0.08, rawSlope));
+        const dz = zTarget - first.z;
+        const dampedDz = dz / (1 + 0.35 * Math.abs(dz));
+        return Math.max(minIv, Math.min(maxIv, first.iv + clampedSlope * dampedDz));
+      }
+
+      if (zTarget > last.z) {
+        let anchorIdx = nodes.length - 2;
+        for (let i = nodes.length - 2; i >= 0; i -= 1) {
+          if (last.z - (nodes[i]?.z ?? last.z) >= 0.15) {
+            anchorIdx = i;
+            break;
+          }
+        }
+        const anchor = nodes[anchorIdx] ?? nodes[nodes.length - 2] ?? last;
+        const dzBase = last.z - anchor.z;
+        const rawSlope = dzBase > 1e-5 ? (last.iv - anchor.iv) / dzBase : 0;
+        const clampedSlope = Math.max(-0.08, Math.min(0.18, rawSlope));
+        const dz = zTarget - last.z;
+        const dampedDz = dz / (1 + 0.35 * Math.abs(dz));
+        return Math.max(minIv, Math.min(maxIv, last.iv + clampedSlope * dampedDz));
+      }
+
+      for (let i = 0; i < nodes.length - 1; i += 1) {
+        const a = nodes[i];
+        const b = nodes[i + 1];
+        if (a !== undefined && b !== undefined && zTarget >= a.z && zTarget <= b.z) {
+          const span = b.z - a.z;
+          if (span <= 1e-9) {
+            return a.iv;
+          }
+          const w = (zTarget - a.z) / span;
+          const varA = a.iv * a.iv * curve.timeToExpiryYears;
+          const varB = b.iv * b.iv * curve.timeToExpiryYears;
+          const varInterp = varA + w * (varB - varA);
+          return varInterp > 0 ? Math.sqrt(varInterp / curve.timeToExpiryYears) : a.iv;
+        }
+      }
+      return last.iv;
+    };
+
+    const evalOpraIvAtZ = (zTarget: number): number => {
+      if (opraCurves.length === 0 || !Number.isFinite(zTarget)) {
+        return Number.NaN;
+      }
+      const targetT = computeBymaEval?.tExpYears ?? front.days / 365;
+      // Igual que interpolateOpraTotalVarIv(..., singleSliceDayTolerance=5): si existe slice cercano en plazo, usarlo directamente
+      const nearest = opraCurves
+        .slice()
+        .sort((a, b) => Math.abs(a.timeToExpiryYears - targetT) - Math.abs(b.timeToExpiryYears - targetT))[0];
+      if (nearest !== undefined && Math.abs(nearest.timeToExpiryYears - targetT) * 365 <= 5) {
+        return evalSingleCurve(nearest, zTarget);
+      }
+      const firstCurve = opraCurves[0];
+      const lastCurve = opraCurves[opraCurves.length - 1];
+      if (firstCurve === undefined || lastCurve === undefined) {
+        return Number.NaN;
+      }
+      if (opraCurves.length === 1 || targetT <= firstCurve.timeToExpiryYears) {
+        return evalSingleCurve(firstCurve, zTarget);
+      }
+      if (targetT >= lastCurve.timeToExpiryYears) {
+        return evalSingleCurve(lastCurve, zTarget);
+      }
+      for (let i = 0; i < opraCurves.length - 1; i += 1) {
+        const c0 = opraCurves[i];
+        const c1 = opraCurves[i + 1];
+        if (c0 !== undefined && c1 !== undefined && targetT >= c0.timeToExpiryYears && targetT <= c1.timeToExpiryYears) {
+          const iv0 = evalSingleCurve(c0, zTarget);
+          const iv1 = evalSingleCurve(c1, zTarget);
+          if (!Number.isFinite(iv0) || !Number.isFinite(iv1)) {
+            return Number.isFinite(iv0) ? iv0 : iv1;
+          }
+          const spanT = c1.timeToExpiryYears - c0.timeToExpiryYears;
+          if (spanT <= 1e-9) {
+            return iv0;
+          }
+          const alpha = (targetT - c0.timeToExpiryYears) / spanT;
+          const var0 = iv0 * iv0 * c0.timeToExpiryYears;
+          const var1 = iv1 * iv1 * c1.timeToExpiryYears;
+          const varT = var0 + alpha * (var1 - var0);
+          return varT > 0 && targetT > 0 ? Math.sqrt(varT / targetT) : iv0;
+        }
+      }
+      return evalSingleCurve(lastCurve, zTarget);
+    };
+
+    const corr = output?.realizedCorrEwma ?? Number.NaN;
+    const harRvCclAnnual =
+      output !== null && Number.isFinite(output.harRvCclPct) && output.harRvCclPct > 0
+        ? output.harRvCclPct / 100
+        : Number.NaN;
+    const bymaAtmAnnual =
+      output !== null && Number.isFinite(output.bymaAtmIvPct) && output.bymaAtmIvPct > 0
+        ? output.bymaAtmIvPct / 100
+        : front.ivAtm ?? Number.NaN;
+
+    const anomalyMap = new Map((output?.anomalies ?? []).map((a) => [a.strikeBymaArs, a]));
+    const smileComparison: GgalSmileComparisonPointDto[] = [];
+    const enrichedAnomalies: CrossCurrencyVolOutput['anomalies'][number][] = [];
+    const putWingCclRoots: number[] = [];
+    const callWingCclRoots: number[] = [];
+
+    for (const strike of front.strikes) {
+      const call = front.calls.find((c) => c.strike === strike);
+      const put = front.puts.find((p) => p.strike === strike);
+      const anom = anomalyMap.get(strike);
+      const oi =
+        (call?.openInterest ?? 0) + (put?.openInterest ?? 0) > 0
+          ? (call?.openInterest ?? 0) + (put?.openInterest ?? 0)
+          : null;
+
+      const bymaCallPct = call?.iv !== null && call?.iv !== undefined && Number.isFinite(call.iv) && call.iv > 0 ? call.iv * 100 : null;
+      const bymaPutPct = put?.iv !== null && put?.iv !== undefined && Number.isFinite(put.iv) && put.iv > 0 ? put.iv * 100 : null;
+
+      let z = anom !== undefined && Number.isFinite(anom.standardizedMoneynessZ) ? anom.standardizedMoneynessZ : Number.NaN;
+      if (!Number.isFinite(z) && computeBymaEval !== null && Number.isFinite(bymaAtmAnnual) && bymaAtmAnnual > 0 && computeBymaEval.tExpYears > 0) {
+        z = Math.log(strike / computeBymaEval.forwardArs) / (bymaAtmAnnual * Math.sqrt(computeBymaEval.tExpYears));
+      }
+
+      const fwdArs = computeBymaEval?.forwardArs ?? spot24hArs;
+      const isOtmCall = Number.isFinite(fwdArs) ? strike >= fwdArs : true;
+      const obsBymaPct =
+        anom !== undefined && Number.isFinite(anom.bymaMidIvPct) && anom.bymaMidIvPct > 0
+          ? anom.bymaMidIvPct
+          : isOtmCall
+            ? (bymaCallPct ?? bymaPutPct)
+            : (bymaPutPct ?? bymaCallPct);
+
+      let theorPct =
+        anom !== undefined && Number.isFinite(anom.theoreticalBymaIvPct) && anom.theoreticalBymaIvPct > 0
+          ? anom.theoreticalBymaIvPct
+          : Number.NaN;
+      let spreadPct =
+        anom !== undefined && Number.isFinite(anom.relValVolSpreadPct)
+          ? anom.relValVolSpreadPct
+          : Number.NaN;
+
+      const opraIvAtZ = Number.isFinite(z) ? evalOpraIvAtZ(z) : Number.NaN;
+      if (
+        !Number.isFinite(theorPct) &&
+        obsBymaPct !== null &&
+        Number.isFinite(opraIvAtZ) &&
+        opraIvAtZ > 0 &&
+        Number.isFinite(harRvCclAnnual) &&
+        Number.isFinite(corr)
+      ) {
+        const varTheor =
+          opraIvAtZ * opraIvAtZ +
+          harRvCclAnnual * harRvCclAnnual +
+          2 * corr * opraIvAtZ * harRvCclAnnual;
+        if (varTheor > 0) {
+          theorPct = Math.sqrt(varTheor) * 100;
+          spreadPct = obsBymaPct - theorPct;
+        }
+      } else if (!Number.isFinite(spreadPct) && obsBymaPct !== null && Number.isFinite(theorPct)) {
+        spreadPct = obsBymaPct - theorPct;
+      }
+
+      let sideBias = anom?.sideBias ?? null;
+      if (Number.isFinite(spreadPct) && (anom === undefined || !Number.isFinite(anom.theoreticalBymaIvPct))) {
+        sideBias = spreadPct <= -4.0 ? 'CHEAP_BYMA' : spreadPct >= 4.0 ? 'RICH_BYMA' : 'FAIR';
+      }
+      const arbFlag = anom?.arbFlag ?? (obsBymaPct !== null ? 'OK' : null);
+
+      if (
+        Number.isFinite(z) &&
+        Number.isFinite(opraIvAtZ) &&
+        opraIvAtZ > 0 &&
+        Number.isFinite(corr)
+      ) {
+        if (z <= -0.5 && Math.abs(z) <= 3.5 && bymaPutPct !== null) {
+          const putAnn = bymaPutPct / 100;
+          if (putAnn > opraIvAtZ) {
+            const disc = putAnn * putAnn - (1 - corr * corr) * opraIvAtZ * opraIvAtZ;
+            if (disc >= 0) {
+              const root = -corr * opraIvAtZ + Math.sqrt(disc);
+              if (Number.isFinite(root) && root > 0) {
+                putWingCclRoots.push(root * 100);
+              }
+            }
+          }
+        } else if (z >= 0.5 && Math.abs(z) <= 3.5 && bymaCallPct !== null) {
+          const callAnn = bymaCallPct / 100;
+          if (callAnn > opraIvAtZ) {
+            const disc = callAnn * callAnn - (1 - corr * corr) * opraIvAtZ * opraIvAtZ;
+            if (disc >= 0) {
+              const root = -corr * opraIvAtZ + Math.sqrt(disc);
+              if (Number.isFinite(root) && root > 0) {
+                callWingCclRoots.push(root * 100);
+              }
+            }
+          }
+        }
+      }
+
+      smileComparison.push({
+        strikeArs: strike,
+        standardizedMoneynessZ: sanitizeFinite(z),
+        bymaCallMidIvPct: bymaCallPct,
+        bymaPutMidIvPct: bymaPutPct,
+        theoreticalBymaIvPct: sanitizeFinite(theorPct),
+        relValVolSpreadPct: sanitizeFinite(spreadPct),
+        sideBias,
+        arbFlag,
+        openInterestNom: oi,
+      });
+
+      if (obsBymaPct !== null && Number.isFinite(z) && Number.isFinite(theorPct) && Number.isFinite(spreadPct)) {
+        enrichedAnomalies.push({
+          strikeBymaArs: strike,
+          standardizedMoneynessZ: z,
+          bymaMidIvPct: obsBymaPct,
+          theoreticalBymaIvPct: theorPct,
+          relValVolSpreadPct: spreadPct,
+          sideBias: sideBias ?? 'FAIR',
+          arbFlag: arbFlag ?? 'OK',
+        });
+      }
+    }
+
+    const computeMedian = (vals: readonly number[]): number | null => {
+      if (vals.length === 0) {
+        return null;
+      }
+      const sorted = [...vals].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      if (sorted.length % 2 === 1) {
+        return sorted[mid] ?? null;
+      }
+      const lo = sorted[mid - 1];
+      const hi = sorted[mid];
+      return lo !== undefined && hi !== undefined ? 0.5 * (lo + hi) : null;
+    };
+
+    const wingCcl = computeMedian(putWingCclRoots.length > 0 ? putWingCclRoots : callWingCclRoots);
+    const minFloor =
+      output !== null && Number.isFinite(output.realizedCorrEwma) && Number.isFinite(output.opraAdrAtmIvPct)
+        ? Math.max(0, -output.realizedCorrEwma * output.opraAdrAtmIvPct)
+        : Number.NaN;
+    const compressionPts =
+      output !== null && Number.isFinite(output.bymaAtmIvPct) && Number.isFinite(output.opraAdrAtmIvPct)
+        ? output.bymaAtmIvPct - output.opraAdrAtmIvPct
+        : Number.NaN;
+
+    const enrichedOutput: CrossCurrencyVolOutput | null =
+      output !== null
+        ? {
+            ...output,
+            anomalies: enrichedAnomalies.length > 0 ? enrichedAnomalies : output.anomalies,
+          }
+        : null;
+
+    return {
+      smileComparison,
+      enrichedOutput,
+      impliedCclVolWingsPct: sanitizeFinite(wingCcl),
+      impliedCclMinFloorPct: sanitizeFinite(minFloor),
+      atmCompressionPts: sanitizeFinite(compressionPts),
+    };
+  }
+
   private buildVolTriangleCore(bundle: MarketBundle): {
     readonly front: ArOptionExpiryDto | null;
     readonly opraMatchedExpiryDate: string | null;
     readonly output: CrossCurrencyVolOutput | null;
     readonly returnObservationsUsed: number;
     readonly executionPriceBasis: ExecutionPriceBasis;
+    readonly spot24hArs: number;
+    readonly rates: ReturnType<GgalSpecialistRuntime['resolveSofrAndRateBenchmarks']>;
+    readonly opraSlices: readonly OpraMaturitySliceInput[];
   } {
     const isClosed = bundle.overview.marketState === 'CERRADO';
     const isEodMode =
@@ -1953,6 +2348,9 @@ export class GgalSpecialistRuntime {
         output: null,
         returnObservationsUsed: 0,
         executionPriceBasis: spots.basis,
+        spot24hArs,
+        rates,
+        opraSlices: [],
       };
     }
 
@@ -2122,6 +2520,9 @@ export class GgalSpecialistRuntime {
         output: null,
         returnObservationsUsed: returnHistory.length,
         executionPriceBasis: optBasis,
+        spot24hArs,
+        rates,
+        opraSlices,
       };
     }
 
@@ -2157,6 +2558,9 @@ export class GgalSpecialistRuntime {
       output,
       returnObservationsUsed: returnHistory.length,
       executionPriceBasis: optBasis,
+      spot24hArs,
+      rates,
+      opraSlices,
     };
   }
 
@@ -2165,32 +2569,14 @@ export class GgalSpecialistRuntime {
     const core = this.buildVolTriangleCore(bundle);
     const telemetry = this.resolveTelemetryMode(bundle, core.executionPriceBasis);
 
-    const smilePoints: GgalSmileComparisonPointDto[] = [];
-    if (core.front !== null) {
-      const anomalyMap = new Map(
-        (core.output?.anomalies ?? []).map((a) => [a.strikeBymaArs, a]),
-      );
-      for (const strike of core.front.strikes) {
-        const call = core.front.calls.find((c) => c.strike === strike);
-        const put = core.front.puts.find((p) => p.strike === strike);
-        const anom = anomalyMap.get(strike);
-        const oi =
-          (call?.openInterest ?? 0) + (put?.openInterest ?? 0) > 0
-            ? (call?.openInterest ?? 0) + (put?.openInterest ?? 0)
-            : null;
-        smilePoints.push({
-          strikeArs: strike,
-          standardizedMoneynessZ: anom !== undefined ? sanitizeFinite(anom.standardizedMoneynessZ) : null,
-          bymaCallMidIvPct: call?.iv !== null && call?.iv !== undefined ? sanitizeFinite(call.iv * 100) : null,
-          bymaPutMidIvPct: put?.iv !== null && put?.iv !== undefined ? sanitizeFinite(put.iv * 100) : null,
-          theoreticalBymaIvPct: anom !== undefined ? sanitizeFinite(anom.theoreticalBymaIvPct) : null,
-          relValVolSpreadPct: anom !== undefined ? sanitizeFinite(anom.relValVolSpreadPct) : null,
-          sideBias: anom?.sideBias ?? null,
-          arbFlag: anom?.arbFlag ?? null,
-          openInterestNom: oi,
-        });
-      }
-    }
+    const ext = this.evaluateExtrapolatedVolTriangleSmile({
+      output: core.output,
+      front: core.front,
+      spot24hArs: core.spot24hArs,
+      rates: core.rates,
+      opraSlices: core.opraSlices,
+      asOfUtcSec: bundle.asOfUtcSec,
+    });
 
     return {
       telemetry,
@@ -2198,9 +2584,12 @@ export class GgalSpecialistRuntime {
       frontExpiryDate: core.front?.expirationDate ?? null,
       frontDteCalendar: core.front?.days ?? null,
       opraMatchedExpiryDate: core.opraMatchedExpiryDate,
-      result: core.output !== null ? toJsonSafe(core.output) : null,
-      smileComparison: smilePoints,
+      result: ext.enrichedOutput !== null ? toJsonSafe(ext.enrichedOutput) : null,
+      smileComparison: ext.smileComparison,
       returnObservationsUsed: core.returnObservationsUsed,
+      impliedCclVolWingsPct: ext.impliedCclVolWingsPct,
+      impliedCclMinFloorPct: ext.impliedCclMinFloorPct,
+      atmCompressionPts: ext.atmCompressionPts,
     };
   }
 
@@ -2231,10 +2620,33 @@ export class GgalSpecialistRuntime {
         : Number.NaN;
 
     const arByDate = new Map(bundle.ggalDetail.historicalBars.map((b) => [b.date, b]));
-    const adrByDate = new Map<string, number>();
+    const adrByDate = new Map<string, { readonly time: number; readonly close: number }>();
     for (const b of bundle.usDailyCloseBars) {
       if (Number.isFinite(b.close) && b.close > 0) {
-        adrByDate.set(formatIsoUtcFromSec(b.time).slice(0, 10), b.close);
+        adrByDate.set(formatIsoUtcFromSec(b.time).slice(0, 10), { time: b.time, close: b.close });
+      }
+    }
+
+    // CCL soberano por fecha desde AL30/AL30C y GD30/GD30C para complementar feriados locales
+    const al30ByDate = new Map(bundle.al30History.map((p) => [p.date, p.close]));
+    const al30cByDate = new Map(bundle.al30cHistory.map((p) => [p.date, p.close]));
+    const gd30ByDate = new Map(bundle.gd30History.map((p) => [p.date, p.close]));
+    const gd30cByDate = new Map(bundle.gd30cHistory.map((p) => [p.date, p.close]));
+    const bondCclByDate = new Map<string, number>();
+    for (const date of adrByDate.keys()) {
+      const ratios: number[] = [];
+      const a = al30ByDate.get(date);
+      const ac = al30cByDate.get(date);
+      if (a !== undefined && ac !== undefined && a > 0 && ac > 0) {
+        ratios.push(a / ac);
+      }
+      const g = gd30ByDate.get(date);
+      const gc = gd30cByDate.get(date);
+      if (g !== undefined && gc !== undefined && g > 0 && gc > 0) {
+        ratios.push(g / gc);
+      }
+      if (ratios.length > 0) {
+        bondCclByDate.set(date, ratios.reduce((acc, v) => acc + v, 0) / ratios.length);
       }
     }
 
@@ -2253,24 +2665,24 @@ export class GgalSpecialistRuntime {
     };
 
     const historicalSeries: HistoricalDualObservation[] = [];
-    for (const date of [...arByDate.keys()].sort()) {
+    for (const date of [...adrByDate.keys()].sort()) {
       const arBar = arByDate.get(date);
-      const adrClose = adrByDate.get(date);
+      const adrEntry = adrByDate.get(date);
       const cerVal = findCerOnOrBefore(date);
-      if (
-        arBar === undefined ||
-        adrClose === undefined ||
-        cerVal === null ||
-        adrClose <= 0 ||
-        arBar.close <= 0 ||
-        cerVal <= 0
-      ) {
+      if (adrEntry === undefined || cerVal === null || adrEntry.close <= 0 || cerVal <= 0) {
+        continue;
+      }
+      const cclVal =
+        arBar !== undefined && arBar.close > 0
+          ? (GGAL_ADR_RATIO * arBar.close) / adrEntry.close
+          : bondCclByDate.get(date);
+      if (cclVal === undefined || !Number.isFinite(cclVal) || cclVal <= 0) {
         continue;
       }
       historicalSeries.push({
-        time: arBar.time,
-        adrCloseUsd: adrClose,
-        cclGgal: (GGAL_ADR_RATIO * arBar.close) / adrClose,
+        time: arBar?.time ?? adrEntry.time,
+        adrCloseUsd: adrEntry.close,
+        cclGgal: cclVal,
         cerIndex: cerVal,
       });
     }
@@ -2323,15 +2735,29 @@ export class GgalSpecialistRuntime {
     });
 
     const bymaNodes: OptionSliceIvNode[] = [];
+    const bymaFwdRef = bymaEval?.forwardArs ?? spotByma24hArs;
     for (const strike of front.strikes) {
       const c = front.calls.find((x) => x.strike === strike);
       const p = front.puts.find((x) => x.strike === strike);
-      const ivs = [c?.iv, p?.iv].filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v) && v > 0.01);
-      if (ivs.length > 0) {
-        bymaNodes.push({
-          strike,
-          ivDecimal: ivs.reduce((a, b) => a + b, 0) / ivs.length,
-        });
+      const callIv = c?.iv !== null && c?.iv !== undefined && Number.isFinite(c.iv) && c.iv >= 0.03 && c.iv <= 3.0 ? c.iv : null;
+      const putIv = p?.iv !== null && p?.iv !== undefined && Number.isFinite(p.iv) && p.iv >= 0.03 && p.iv <= 3.0 ? p.iv : null;
+      const otmIv = strike >= bymaFwdRef ? (callIv ?? putIv) : (putIv ?? callIv);
+      if (otmIv !== null) {
+        bymaNodes.push({ strike, ivDecimal: otmIv });
+      }
+    }
+    if (bymaNodes.length < 5) {
+      bymaNodes.length = 0;
+      for (const strike of front.strikes) {
+        const c = front.calls.find((x) => x.strike === strike);
+        const p = front.puts.find((x) => x.strike === strike);
+        const ivs = [c?.iv, p?.iv].filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v) && v > 0.01);
+        if (ivs.length > 0) {
+          bymaNodes.push({
+            strike,
+            ivDecimal: ivs.reduce((a, b) => a + b, 0) / ivs.length,
+          });
+        }
       }
     }
 
@@ -2346,7 +2772,7 @@ export class GgalSpecialistRuntime {
     const opraNodes: OptionSliceIvNode[] = [];
     if (matchedSlice !== null) {
       for (const node of matchedSlice.nodes) {
-        if (node.iv !== null && Number.isFinite(node.iv) && node.iv > 0.01) {
+        if (node.iv !== null && Number.isFinite(node.iv) && node.iv >= 0.03 && node.iv <= 3.0) {
           opraNodes.push({ strike: node.strike, ivDecimal: node.iv });
         }
       }
@@ -2360,23 +2786,27 @@ export class GgalSpecialistRuntime {
       const contracts = bundle.usSnapshot?.volSurfaceSummary?.contracts ?? [];
       const validByExp = new Map<
         string,
-        { expiryUtcSec: number; byStrike: Map<number, number[]> }
+        { expiryUtcSec: number; byStrike: Map<number, { calls: number[]; puts: number[] }> }
       >();
       for (const c of contracts) {
         if (c.expiryUtcSec <= bundle.asOfUtcSec) {
           continue;
         }
         const iv = c.ownIv ?? c.providerIv;
-        if (iv === null || !Number.isFinite(iv) || iv <= 0.01) {
+        if (iv === null || !Number.isFinite(iv) || iv < 0.03 || iv > 3.0) {
           continue;
         }
         const grp = validByExp.get(c.expirationDate) ?? {
           expiryUtcSec: c.expiryUtcSec,
-          byStrike: new Map<number, number[]>(),
+          byStrike: new Map<number, { calls: number[]; puts: number[] }>(),
         };
-        const arr = grp.byStrike.get(c.strike) ?? [];
-        arr.push(iv);
-        grp.byStrike.set(c.strike, arr);
+        const bucket = grp.byStrike.get(c.strike) ?? { calls: [], puts: [] };
+        if (c.contractType === 'call') {
+          bucket.calls.push(iv);
+        } else {
+          bucket.puts.push(iv);
+        }
+        grp.byStrike.set(c.strike, bucket);
         validByExp.set(c.expirationDate, grp);
       }
       const bestExp = [...validByExp.values()]
@@ -2389,9 +2819,18 @@ export class GgalSpecialistRuntime {
 
       if (bestExp !== undefined) {
         opraNodes.length = 0;
+        const tYears = Math.max(1 / 365, (bestExp.expiryUtcSec - bundle.asOfUtcSec) / (365 * 86_400));
+        const rFree = Number.isFinite(rates.sofrRateAnnual) ? rates.sofrRateAnnual : 0;
+        const estForward = spotAdrUsd * Math.exp((rFree - 0.012) * tYears);
         const strikesSorted = [...bestExp.byStrike.keys()].sort((a, b) => a - b);
         for (const k of strikesSorted) {
-          const ivArr = bestExp.byStrike.get(k) ?? [];
+          const bucket = bestExp.byStrike.get(k);
+          if (bucket === undefined) {
+            continue;
+          }
+          const primary = k >= estForward ? bucket.calls : bucket.puts;
+          const fallback = k >= estForward ? bucket.puts : bucket.calls;
+          const ivArr = primary.length > 0 ? primary : fallback;
           if (ivArr.length > 0) {
             opraNodes.push({
               strike: k,
@@ -2399,11 +2838,9 @@ export class GgalSpecialistRuntime {
             });
           }
         }
-        const tYears = Math.max(1 / 365, (bestExp.expiryUtcSec - bundle.asOfUtcSec) / (365 * 86_400));
-        const rFree = Number.isFinite(rates.sofrRateAnnual) ? rates.sofrRateAnnual : 0;
         opraTimeToExpiryYears = tYears;
         opraRiskFreeContinuous = rFree;
-        opraForwardPrice = spotAdrUsd * Math.exp((rFree - 0.012) * tYears);
+        opraForwardPrice = estForward;
       }
     }
 
@@ -2512,8 +2949,87 @@ export class GgalSpecialistRuntime {
         ? 0.5 * (spots.byma24hQuote.bid + spots.byma24hQuote.ask)
         : Number.NaN;
 
+    const computeEodPrevSessionFlows = (): {
+      readonly bymaNetSignedArs: number;
+      readonly adrNetSignedUsd: number;
+    } => {
+      let bymaNetSignedArs = 0;
+      if (front !== null) {
+        for (const opt of [...front.calls, ...front.puts]) {
+          const vol = opt.volume !== null && Number.isFinite(opt.volume) && opt.volume > 0 ? opt.volume : 0;
+          const price =
+            opt.last !== null && Number.isFinite(opt.last) && opt.last > 0
+              ? opt.last
+              : opt.mark !== null && Number.isFinite(opt.mark) && opt.mark > 0
+                ? opt.mark
+                : 0;
+          const varPct =
+            opt.changePct !== null && opt.changePct !== undefined && Number.isFinite(opt.changePct)
+              ? opt.changePct
+              : 0;
+          const sign = varPct > 0 ? 1 : varPct < 0 ? -1 : 0;
+          if (vol > 0 && price > 0 && sign !== 0) {
+            bymaNetSignedArs += vol * price * 100 * sign;
+          }
+        }
+      }
+
+      let adrNetSignedUsd = 0;
+      const usBars = bundle.usBars?.bars ?? [];
+      const lastBar = usBars.length > 0 ? usBars[usBars.length - 1] : undefined;
+      if (lastBar !== undefined) {
+        const range = lastBar.high - lastBar.low;
+        const vwap =
+          lastBar.vw !== null && Number.isFinite(lastBar.vw) && lastBar.vw > 0
+            ? lastBar.vw
+            : (lastBar.high + lastBar.low + lastBar.close) / 3;
+        if (
+          Number.isFinite(range) &&
+          range > 0 &&
+          Number.isFinite(lastBar.volume) &&
+          lastBar.volume > 0 &&
+          Number.isFinite(vwap) &&
+          vwap > 0
+        ) {
+          adrNetSignedUsd = ((lastBar.close - lastBar.open) / range) * lastBar.volume * vwap;
+        }
+      }
+
+      return { bymaNetSignedArs, adrNetSignedUsd };
+    };
+
+    const applyEodFlowIfClosedZero = (
+      out: StructurePinningOutput,
+    ): { readonly output: StructurePinningOutput; readonly flowBasis: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT' } => {
+      if (
+        isClosed &&
+        out.intradayFlow.bymaNetSignedArs === 0 &&
+        out.intradayFlow.adrNetSignedUsd === 0
+      ) {
+        const eod = computeEodPrevSessionFlows();
+        return {
+          output: {
+            ...out,
+            intradayFlow: {
+              ...out.intradayFlow,
+              bymaNetSignedArs: eod.bymaNetSignedArs,
+              adrNetSignedUsd: eod.adrNetSignedUsd,
+            },
+          },
+          flowBasis: 'EOD_PREV_SESSION',
+        };
+      }
+      return {
+        output: out,
+        flowBasis: isClosed ? 'EOD_PREV_SESSION' : 'INTRADAY_SNAPSHOT',
+      };
+    };
+
     if (this.anexoBStore === null) {
       let proxyOut: StructurePinningOutput | null = null;
+      let flowBasis: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT' = isClosed
+        ? 'EOD_PREV_SESSION'
+        : 'INTRADAY_SNAPSHOT';
       if (
         front !== null &&
         Number.isFinite(spot24hArs) &&
@@ -2548,7 +3064,7 @@ export class GgalSpecialistRuntime {
           }
         }
         if (proxyStrikes.length > 0) {
-          proxyOut = evaluateStructureAndPinning({
+          const rawProxyOut = evaluateStructureAndPinning({
             asOfUtcSec: bundle.asOfUtcSec,
             anexoBAsOfDate: formatIsoUtcFromSec(bundle.asOfUtcSec).slice(0, 10),
             bymaEval: {
@@ -2565,6 +3081,9 @@ export class GgalSpecialistRuntime {
             arHolidays: this.arHolidays,
             ...(this.bymaFlowSnapshots.length >= 2 ? { bymaSnapshots: this.bymaFlowSnapshots } : {}),
           });
+          const resolved = applyEodFlowIfClosedZero(rawProxyOut);
+          proxyOut = resolved.output;
+          flowBasis = resolved.flowBasis;
         }
       }
       const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
@@ -2576,6 +3095,7 @@ export class GgalSpecialistRuntime {
         result: null,
         proxyResult: proxyOut !== null ? toJsonSafe(proxyOut) : null,
         proxySource: proxyOut !== null ? ('PROXY DATA912 (SIN ANEXO B)' as const) : null,
+        flowBasis,
         data912TotalOiFallback,
         notice:
           proxyOut !== null
@@ -2599,6 +3119,7 @@ export class GgalSpecialistRuntime {
         result: null,
         proxyResult: null,
         proxySource: null,
+        flowBasis: isClosed ? 'EOD_PREV_SESSION' : 'INTRADAY_SNAPSHOT',
         data912TotalOiFallback,
         notice: 'Falta cadena líquida o curva de tasas ARS para evaluar Anexo B contra BS02.',
       };
@@ -2620,7 +3141,7 @@ export class GgalSpecialistRuntime {
       });
     }
 
-    const out = evaluateStructureAndPinning({
+    const rawOut = evaluateStructureAndPinning({
       asOfUtcSec: bundle.asOfUtcSec,
       anexoBAsOfDate: this.anexoBStore.asOfDate,
       bymaEval: {
@@ -2637,6 +3158,8 @@ export class GgalSpecialistRuntime {
       arHolidays: this.arHolidays,
       ...(this.bymaFlowSnapshots.length >= 2 ? { bymaSnapshots: this.bymaFlowSnapshots } : {}),
     });
+    const resolvedOut = applyEodFlowIfClosedZero(rawOut);
+    const out = resolvedOut.output;
 
     const telemetry = this.resolveTelemetryMode(
       bundle,
@@ -2653,6 +3176,7 @@ export class GgalSpecialistRuntime {
       result: toJsonSafe(out),
       proxyResult: null,
       proxySource: null,
+      flowBasis: resolvedOut.flowBasis,
       data912TotalOiFallback,
       notice: null,
     };

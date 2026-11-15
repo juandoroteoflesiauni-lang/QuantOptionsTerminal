@@ -1258,4 +1258,313 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     expect(Number.isFinite(enginesExt?.nearestInstitutionalLevel?.price ?? Number.NaN)).toBe(true);
     expect(Number.isFinite(enginesExt?.nearestInstitutionalLevel?.distancePct ?? Number.NaN)).toBe(true);
   });
+
+  it('unwraps nested BCRA v4.0 detalle CER, extrapola alas OPRA z<-1/z>+1 en VIOLATION_BYMA_COMPRESSED y calcula flujo EOD rueda previa', async () => {
+    const saturdaySec = Math.floor(Date.UTC(2026, 9, 17, 18, 0, 0) / 1_000);
+    const baseMocks = createOfflineMocks({
+      asOfUtcSec: saturdaySec,
+      eodWeekendMode: true,
+    });
+    const cerSeries = buildCerHistory(saturdaySec, 120);
+    type MockAdrBar = { readonly o: number; readonly h: number; readonly l: number; readonly c: number; readonly v: number; readonly vw: number };
+    let lastAdrBar: MockAdrBar | null = null;
+    let adjustedArgOptions: Record<string, unknown>[] = [];
+
+    const arFetch: ArHttpFn = async (url, init) => {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.hostname.includes('bcra.gob.ar')) {
+        if (parsedUrl.pathname === '/estadisticas/v4.0/Monetarias') {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              status: 200,
+              results: [
+                { idVariable: 87, descripcion: 'Depósitos a plazo no ajustables por CER/UVAS' },
+                { idVariable: 30, descripcion: 'Coeficiente de estabilización de referencia\u00a0(base 2.2.02=1)' },
+              ],
+            }),
+            headers: {},
+          };
+        }
+        if (parsedUrl.pathname === '/estadisticas/v4.0/Monetarias/30') {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              status: 200,
+              results: [{ idVariable: 30, detalle: cerSeries }],
+            }),
+            headers: {},
+          };
+        }
+      }
+
+      const baseRes = await baseMocks.arFetch(url, init);
+      if (parsedUrl.hostname.includes('data912') && parsedUrl.pathname === '/live/arg_options') {
+        const rows = JSON.parse(baseRes.text) as Record<string, unknown>[];
+        const tBymaApprox = 33 / 365;
+        const withVarPct: Record<string, unknown>[] = rows.map((row) => {
+          const sym = typeof row['symbol'] === 'string' ? row['symbol'] : '';
+          const match = /^GFG([CV])(\d+)NO$/.exec(sym);
+          const isCall = sym.startsWith('GFGC');
+          if (match !== null) {
+            const strike = Number(match[2]);
+            const ct = match[1] === 'C' ? 'call' : 'put';
+            // Comprimir IV BYMA ATM (>= 5800 -> ~22%) manteniendo ala Put OTM 5400 (~85%) sobre OPRA (~64%)
+            const volTarget = strike < 5800 ? 0.85 : 0.22;
+            const bsPx = priceBsm({
+              spot: 6400,
+              strike,
+              timeToExpiry: tBymaApprox,
+              rate: 0.295,
+              dividendYield: 0,
+              volatility: volTarget,
+              contractType: ct,
+            });
+            const intrinsicFloor =
+              ct === 'put' ? Math.max(0, strike - 6400) + 8 : Math.max(0, 6400 - strike) + 8;
+            const fairCompressed = Number(Math.max(12, intrinsicFloor, bsPx).toFixed(2));
+            return {
+              ...row,
+              c: fairCompressed,
+              pct_change: isCall ? 6.5 : -4.2,
+            };
+          }
+          return {
+            ...row,
+            pct_change: isCall ? 6.5 : -4.2,
+          };
+        });
+        // Agregar alas extremas z < -1 y z > +1 fuera del rango directo OPRA
+        const put3400 = Number(
+          priceBsm({
+            spot: 6400,
+            strike: 3400,
+            timeToExpiry: tBymaApprox,
+            rate: 0.295,
+            dividendYield: 0,
+            volatility: 0.85,
+            contractType: 'put',
+          }).toFixed(2),
+        );
+        const put4200 = Number(
+          priceBsm({
+            spot: 6400,
+            strike: 4200,
+            timeToExpiry: tBymaApprox,
+            rate: 0.295,
+            dividendYield: 0,
+            volatility: 0.78,
+            contractType: 'put',
+          }).toFixed(2),
+        );
+        const extraStrikes: Array<{ strike: number; ct: 'C' | 'V'; px: number; pct: number }> = [
+          { strike: 3400, ct: 'C', px: 3180, pct: 4.1 },
+          { strike: 3400, ct: 'V', px: Math.max(12, put3400), pct: -3.5 },
+          { strike: 4200, ct: 'C', px: 2430, pct: 3.8 },
+          { strike: 4200, ct: 'V', px: Math.max(15, put4200), pct: -2.7 },
+          { strike: 9200, ct: 'C', px: 62, pct: 9.2 },
+          { strike: 9200, ct: 'V', px: 2790, pct: -1.5 },
+          { strike: 10800, ct: 'C', px: 34, pct: 11.4 },
+          { strike: 10800, ct: 'V', px: 4380, pct: -0.9 },
+        ];
+        for (const ext of extraStrikes) {
+          withVarPct.push({
+            symbol: `GFG${ext.ct}${String(ext.strike)}NO`,
+            c: ext.px,
+            px_bid: 0,
+            px_ask: 0,
+            pct_change: ext.pct,
+            v: 4_500,
+            v_ars: 4_500 * ext.px,
+            open_interest: 4_500,
+          });
+        }
+        adjustedArgOptions = withVarPct;
+        return { ...baseRes, text: JSON.stringify(withVarPct) };
+      }
+      return baseRes;
+    };
+
+    const usFetch: FetchFn = async (url) => {
+      const res = await baseMocks.usFetch(url);
+      const u = new URL(url);
+      if (u.pathname.startsWith('/v3/snapshot/options/GGAL')) {
+        const parsed = JSON.parse(res.text) as { status?: string; results?: Record<string, unknown>[] };
+        const boosted = (parsed.results ?? []).map((item) => {
+          const curIv = typeof item['implied_volatility'] === 'number' ? item['implied_volatility'] : 0.45;
+          const nextIv = Number((curIv + 0.2).toFixed(4));
+          const details = (item['details'] ?? {}) as {
+            contract_type?: 'call' | 'put';
+            strike_price?: number;
+            expiration_date?: string;
+          };
+          const ua = (item['underlying_asset'] ?? {}) as { price?: number };
+          const spotUsd = typeof ua.price === 'number' && ua.price > 0 ? ua.price : 53.0;
+          const strikeUsd = typeof details.strike_price === 'number' ? details.strike_price : 53.0;
+          const ct = details.contract_type === 'put' ? 'put' : 'call';
+          const expMs =
+            typeof details.expiration_date === 'string'
+              ? Date.parse(`${details.expiration_date}T21:00:00Z`)
+              : saturdaySec * 1_000 + 33 * 86_400_000;
+          const tExp = Math.max(7 / 365, (expMs - saturdaySec * 1_000) / (365 * 86_400_000));
+          const fair = priceBsm({
+            spot: spotUsd,
+            strike: strikeUsd,
+            timeToExpiry: tExp,
+            rate: 0.043,
+            dividendYield: 0,
+            volatility: nextIv,
+            contractType: ct,
+          });
+          const halfSpread = Math.max(0.02, fair * 0.02);
+          const bid = Number(Math.max(0.05, fair - halfSpread).toFixed(2));
+          const ask = Number((fair + halfSpread).toFixed(2));
+          const mid = Number((0.5 * (bid + ask)).toFixed(2));
+          return {
+            ...item,
+            // Elevar tanto precios como IV OPRA para disparar VIOLATION_BYMA_COMPRESSED frente a BYMA ATM (~56%)
+            implied_volatility: nextIv,
+            last_quote: { bid, ask, midpoint: mid },
+            last_trade: { price: mid, sip_timestamp: String(saturdaySec * 1_000_000_000) },
+          };
+        });
+        return { ...res, text: JSON.stringify({ ...parsed, results: boosted }) };
+      }
+      if (u.pathname.startsWith('/v2/aggs/ticker/GGAL/range/1/day')) {
+        const parsed = JSON.parse(res.text) as { results?: Record<string, unknown>[] };
+        const list = parsed.results ?? [];
+        if (list.length > 0) {
+          const prev = list[list.length - 1] ?? {};
+          const prevC =
+            typeof prev['c'] === 'number' && Number.isFinite(prev['c']) ? prev['c'] : 53.4;
+          const barVals = {
+            o: Number((prevC - 0.85).toFixed(4)),
+            h: Number((prevC + 0.35).toFixed(4)),
+            l: Number((prevC - 1.15).toFixed(4)),
+            c: prevC,
+            v: 1_250_000,
+            vw: Number((prevC - 0.25).toFixed(4)),
+          };
+          const updatedLast = {
+            ...prev,
+            ...barVals,
+          };
+          list[list.length - 1] = updatedLast;
+          lastAdrBar = barVals;
+          return { ...res, text: JSON.stringify({ ...parsed, results: list }) };
+        }
+      }
+      return res;
+    };
+
+    const dataNowMs = saturdaySec * 1_000;
+    const runtime = new MarketRuntime({
+      apiKey: FAKE_SECRET,
+      secrets: [FAKE_SECRET],
+      fetchFn: usFetch,
+      nowMsFn: () => dataNowMs,
+    });
+    const arRuntime = new ArgentinaMarketRuntime({
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => dataNowMs,
+      minData912IntervalMs: 0,
+      usRuntime: runtime,
+    });
+    const ggalRuntime = new GgalSpecialistRuntime({
+      runtime,
+      arRuntime,
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => dataNowMs,
+    });
+    const server = createHttpWsServer({
+      runtime,
+      arRuntime,
+      ggalRuntime,
+      secrets: [FAKE_SECRET],
+      port: 0,
+    });
+    handles.push(server);
+    const addr = await server.start();
+    const baseUrl = `http://${addr.host}:${String(addr.port)}`;
+
+    // Tab 3: BCRA v4.0 detalle anidado y >=60 observaciones históricas alineadas
+    const dualRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/dual-density`);
+    expect(dualRes.status).toBe(200);
+    const dualRaw = await dualRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(dualRaw)).toBe(false);
+    const dualJson = JSON.parse(dualRaw) as GgalDualDensityResponse;
+    expect(dualJson.cerSource ?? '').toContain('Variable 30');
+    expect(dualJson.cerSeriesCount).toBeGreaterThanOrEqual(60);
+    expect(dualJson.historicalObsUsed).toBeGreaterThanOrEqual(60);
+    expect(dualJson.result).not.toBeNull();
+    expect(dualJson.result?.physicalMetricsUsd.status).toBe('OK');
+    expect(Number.isFinite(dualJson.result?.physicalMetricsUsd.studentTCopulaDof ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(dualJson.result?.riskNeutralBymaArs.impliedVolPct ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(dualJson.result?.riskNeutralOpraUsd.impliedVolPct ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(dualJson.result?.riskNeutralBymaArs.klDivergencePvsQ ?? Number.NaN)).toBe(true);
+    expect(dualJson.result?.tailDislocationSignal).not.toBe('NO_DATA');
+
+    // Tab 2: Extrapolación de alas OPRA z < -1 y z > +1 + métricas VIOLATION_BYMA_COMPRESSED
+    const volRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/vol-triangle`);
+    expect(volRes.status).toBe(200);
+    const volRaw = await volRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(volRaw)).toBe(false);
+    const volJson = JSON.parse(volRaw) as GgalVolTriangleResponse & {
+      readonly impliedCclVolWingsPct?: number | null;
+      readonly impliedCclMinFloorPct?: number | null;
+      readonly atmCompressionPts?: number | null;
+    };
+    expect(volJson.result?.boundaryRegime).toBe('VIOLATION_BYMA_COMPRESSED');
+    expect(volJson.atmCompressionPts ?? 0).toBeLessThan(0);
+    expect(volJson.impliedCclMinFloorPct ?? -1).toBeGreaterThanOrEqual(0);
+    expect(volJson.impliedCclVolWingsPct ?? 0).toBeGreaterThan(0);
+    const withBymaIv = volJson.smileComparison.filter(
+      (pt) => pt.bymaCallMidIvPct !== null || pt.bymaPutMidIvPct !== null,
+    );
+    expect(withBymaIv.length).toBeGreaterThanOrEqual(10);
+    expect(withBymaIv.some((pt) => (pt.standardizedMoneynessZ ?? 0) < -1.0)).toBe(true);
+    expect(withBymaIv.some((pt) => (pt.standardizedMoneynessZ ?? 0) > 1.0)).toBe(true);
+    for (const pt of withBymaIv) {
+      expect(pt.theoreticalBymaIvPct).not.toBeNull();
+      expect(pt.relValVolSpreadPct).not.toBeNull();
+      expect(pt.theoreticalBymaIvPct ?? 0).toBeGreaterThan(0);
+      expect(pt.theoreticalBymaIvPct ?? 999).toBeLessThan(250);
+    }
+
+    // Tab 4: Flujo EOD Rueda Previa en mercado cerrado cuando deltas 20s son cero
+    const structRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/structure-pinning`);
+    expect(structRes.status).toBe(200);
+    const structRaw = await structRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(structRaw)).toBe(false);
+    const structJson = JSON.parse(structRaw) as GgalStructurePinningResponse & {
+      readonly flowBasis?: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT';
+      readonly proxyResult?: GgalStructurePinningResponse['result'];
+    };
+    expect(structJson.flowBasis).toBe('EOD_PREV_SESSION');
+    expect(structJson.proxyResult).not.toBeNull();
+    let expectedBymaEodFlow = 0;
+    for (const row of adjustedArgOptions) {
+      const sym = typeof row['symbol'] === 'string' ? row['symbol'] : '';
+      if (!sym.endsWith('NO')) continue;
+      const vol = typeof row['v'] === 'number' ? row['v'] : 0;
+      const px = typeof row['c'] === 'number' ? row['c'] : 0;
+      const pct = typeof row['pct_change'] === 'number' ? row['pct_change'] : 0;
+      const sign = pct > 0 ? 1 : pct < 0 ? -1 : 0;
+      expectedBymaEodFlow += vol * px * 100 * sign;
+    }
+    expect(structJson.proxyResult?.intradayFlow.bymaNetSignedArs).toBeCloseTo(expectedBymaEodFlow, 2);
+    const adrBarSnapshot = lastAdrBar as MockAdrBar | null;
+    expect(adrBarSnapshot).not.toBeNull();
+    if (adrBarSnapshot !== null) {
+      const expectedAdrFlow =
+        ((adrBarSnapshot.c - adrBarSnapshot.o) / (adrBarSnapshot.h - adrBarSnapshot.l)) *
+        adrBarSnapshot.v *
+        adrBarSnapshot.vw;
+      expect(structJson.proxyResult?.intradayFlow.adrNetSignedUsd).toBeCloseTo(expectedAdrFlow, 2);
+    }
+  });
 });
