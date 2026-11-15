@@ -35,7 +35,7 @@ import {
   fmtPct,
   fmtMoneyCompact,
 } from '../data/marketData';
-import type { EquityPanelAnalyticsDto, EquityPanelRowDto } from '../data/liveTypes';
+import type { EquityPanelAnalyticsDto, EquityPanelRowDto, UsUnifiedQuoteDto } from '../data/liveTypes';
 import {
   refreshMacro,
   requestMonitoringPanel,
@@ -772,7 +772,27 @@ export const HomeDashboard: React.FC<{
   }) => void;
 }> = ({ onSelectStock, onNavigate }) => {
   const liveMarket = useLiveMarketState();
-  const cclMedian = liveMarket.overview?.cclMedian ?? GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.value ?? null;
+  const cclMedian =
+    liveMarket.overview?.cclMedian ??
+    liveMarket.macro?.variables.ccl ??
+    GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.value ??
+    null;
+  const mepMedian =
+    liveMarket.overview?.mepMedian ??
+    liveMarket.macro?.variables.mep ??
+    null;
+  const computedCanjePct =
+    cclMedian !== null &&
+    mepMedian !== null &&
+    Number.isFinite(cclMedian) &&
+    Number.isFinite(mepMedian) &&
+    mepMedian > 0
+      ? ((cclMedian / mepMedian) - 1) * 100
+      : null;
+  const canjeGapPct =
+    liveMarket.overview?.mepCclGapPct ??
+    liveMarket.macro?.variables.canjePct ??
+    computedCanjePct;
   const embiVal = GLOBAL_INDICATORS.find((g) => g.id === 'embi')?.value ?? Number.NaN;
   const validTirs = BONDS_DATA.map((b) => b.tir).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const medianTir =
@@ -833,7 +853,7 @@ export const HomeDashboard: React.FC<{
           heroValue={cclMedian !== null && Number.isFinite(cclMedian) ? `$ ${fmtNum(cclMedian, 2)}` : '—'}
           deltaPct={GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.deltaPct}
           badge={liveMarket.feedStatus}
-          subtitle={`MEP: ${fmtNum(liveMarket.overview?.mepMedian, 2)} | Canje: ${fmtPct(liveMarket.overview?.mepCclGapPct, 2)}`}
+          subtitle={`MEP: ${fmtNum(mepMedian, 2)} | Canje: ${fmtPct(canjeGapPct, 2)}`}
           helpText="Mediana ponderada del Contado con Liquidación implícito en ADRs, CEDEARs y bonos C."
           onClick={() => onNavigate('monitoreo')}
         />
@@ -1320,16 +1340,21 @@ export const MonitoringModule: React.FC<{
         sector: s.sector,
         panel: s.panel === 'General' ? 'General' : 'Líder',
         color: s.color,
-        last: s.last,
-        prevClose: s.prevClose,
-        dayLow: s.low,
-        dayHigh: s.high,
+        last: Number.isFinite(s.last) ? s.last : extra?.last ?? Number.NaN,
+        prevClose: Number.isFinite(s.prevClose) ? s.prevClose : extra?.prevClose ?? Number.NaN,
+        dayLow: Number.isFinite(s.low) ? s.low : extra?.dayLow ?? Number.NaN,
+        dayHigh: Number.isFinite(s.high) ? s.high : extra?.dayHigh ?? Number.NaN,
         dayRangePos:
           extra?.dayRangePos !== undefined && extra.dayRangePos !== null
             ? extra.dayRangePos
             : s.dayRangePos ?? Number.NaN,
-        volumeM: s.volumeM,
-        return1dPct: s.deltaPct,
+        volumeM:
+          Number.isFinite(s.volumeM)
+            ? s.volumeM
+            : extra?.volumeM !== undefined && extra.volumeM !== null
+              ? extra.volumeM
+              : Number.NaN,
+        return1dPct: Number.isFinite(s.deltaPct) ? s.deltaPct : extra?.return1dPct ?? Number.NaN,
         return30dPct:
           extra?.return30dPct !== undefined && extra.return30dPct !== null
             ? extra.return30dPct
@@ -2191,14 +2216,41 @@ export const USMarketModule: React.FC<{
   }) => void;
 }> = ({ onOpenOrderTicket }) => {
   const liveMarket = useLiveMarketState();
+  const [directUsPanelAnalytics, setDirectUsPanelAnalytics] = useState<EquityPanelAnalyticsDto | null>(null);
 
   useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    const fetchPanelAnalytics = async () => {
+      try {
+        const res = await fetch('/api/us/panel-analytics', {
+          signal: controller.signal,
+          headers: { accept: 'application/json' },
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as EquityPanelAnalyticsDto;
+        if (active && json && Array.isArray(json.rows)) {
+          setDirectUsPanelAnalytics(json);
+        }
+      } catch {
+        // Keep previously loaded panel analytics; missing values stay NaN / '—'.
+      }
+    };
+    void fetchPanelAnalytics();
     void Promise.all([
       requestUsSnapshot('SPY'),
       requestUsSnapshot('QQQ'),
       requestUsSnapshot('IWM'),
       requestMonitoringPanel('cedears'),
     ]);
+    const timerId = window.setInterval(() => {
+      void fetchPanelAnalytics();
+    }, 60_000);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timerId);
+    };
   }, []);
 
   const usSectors: readonly string[] = [
@@ -2214,36 +2266,48 @@ export const USMarketModule: React.FC<{
   ];
 
   const usPanelAnalytics =
+    directUsPanelAnalytics ??
     liveMarket.usSnapshotsBySymbol['SPY']?.usEquityPanel ??
     liveMarket.monitoring?.usEquityPanel ??
     US_PANEL_ANALYTICS;
+
+  const spyUnifiedQuotes = liveMarket.usSnapshotsBySymbol['SPY']?.marketContext?.unifiedQuotes;
 
   const usPanelRows: NormalizedPanelRow[] = useMemo(() => {
     const analyticsMap = new Map<string, EquityPanelRowDto>(
       (usPanelAnalytics?.rows ?? []).map((r) => [r.symbol, r]),
     );
+    const unifiedQuoteMap = new Map<string, UsUnifiedQuoteDto>(
+      (spyUnifiedQuotes ?? []).map((q) => [q.ticker, q]),
+    );
+    const finiteOrNull = (v: number | null | undefined): number | null =>
+      v !== undefined && v !== null && Number.isFinite(v) ? v : null;
+
     return US_MARKET_DATA.map((u) => {
       const extra = analyticsMap.get(u.ticker);
+      const uq = unifiedQuoteMap.get(u.ticker);
+      const uqVolM =
+        finiteOrNull(uq?.tradedVolumeUsd) !== null
+          ? (uq!.tradedVolumeUsd as number) / 1_000_000
+          : finiteOrNull(uq?.volumeM);
+      const extraVolM =
+        finiteOrNull(extra?.tradedVolumeUsd) !== null
+          ? (extra!.tradedVolumeUsd as number) / 1_000_000
+          : finiteOrNull(extra?.volumeM);
+
       return {
         symbol: u.ticker,
         name: u.name,
         sector: u.sector,
         panel: u.panel,
         color: u.color,
-        last: extra?.last !== undefined && extra.last !== null ? extra.last : u.price,
-        prevClose:
-          extra?.prevClose !== undefined && extra.prevClose !== null ? extra.prevClose : u.prevClose,
-        dayLow: extra?.dayLow !== undefined && extra.dayLow !== null ? extra.dayLow : u.low,
-        dayHigh: extra?.dayHigh !== undefined && extra.dayHigh !== null ? extra.dayHigh : u.high,
-        dayRangePos:
-          extra?.dayRangePos !== undefined && extra.dayRangePos !== null
-            ? extra.dayRangePos
-            : u.dayRangePos,
-        volumeM: extra?.volumeM !== undefined && extra.volumeM !== null ? extra.volumeM : u.volumeM,
-        return1dPct:
-          extra?.return1dPct !== undefined && extra.return1dPct !== null
-            ? extra.return1dPct
-            : u.deltaPct,
+        last: finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? u.price,
+        prevClose: finiteOrNull(uq?.previousClose) ?? finiteOrNull(extra?.prevClose) ?? u.prevClose,
+        dayLow: finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? u.low,
+        dayHigh: finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? u.high,
+        dayRangePos: finiteOrNull(uq?.dayRangePos) ?? finiteOrNull(extra?.dayRangePos) ?? u.dayRangePos,
+        volumeM: uqVolM ?? extraVolM ?? u.volumeM,
+        return1dPct: finiteOrNull(uq?.changePct) ?? finiteOrNull(extra?.return1dPct) ?? u.deltaPct,
         return30dPct:
           extra?.return30dPct !== undefined && extra.return30dPct !== null
             ? extra.return30dPct
@@ -2263,7 +2327,7 @@ export const USMarketModule: React.FC<{
             : u.avgVolume40dM,
       };
     });
-  }, [usPanelAnalytics, liveMarket.version]);
+  }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version]);
 
   const handleSelectUsRow = (symbol: string) => {
     const item = US_MARKET_DATA.find((u) => u.ticker === symbol);
@@ -2449,8 +2513,13 @@ export const USMarketModule: React.FC<{
                 <span>
                   SKEW: <strong className={spyCtx?.tailRiskAlert ? 'text-[#F5B544]' : 'text-[#FFFFFF]'}>{skew != null && Number.isFinite(skew) ? fmtNum(skew, 1) : '—'}</strong>
                 </span>
-                <span className="px-2 py-0.5 rounded bg-[#0B0E14] border border-[#232733] text-[#D1D4DC]">
-                  {spySnap?.feedMode ?? 'SIN FEED'}
+                <span
+                  className="px-2 py-0.5 rounded bg-[#0B0E14] border border-[#232733] text-[#D1D4DC]"
+                  title={spySnap?.quoteMode === 'EOD_CLOSE_REF' ? 'Cotizaciones referenciales EOD OPRA (fuera de rueda)' : undefined}
+                >
+                  {spySnap?.feedMode === 'EOD_CIERRE' || spySnap?.quoteMode === 'EOD_CLOSE_REF'
+                    ? 'EOD_CIERRE'
+                    : spySnap?.feedMode ?? 'SIN FEED'}
                 </span>
               </div>
             </div>

@@ -2042,3 +2042,535 @@ describe('Universo EE.UU. (~73 acciones), 6 paneles analíticos AR/US y Radar CE
     expect(degradedAapl?.fairArsPrice).toBeNull();
   });
 });
+
+describe('Cascada MEP/CCL/Canje, Curva Tasas + SPY EOD_CLOSE_REF, Batch 73 US y Analítica 260D', () => {
+  const activeServers: HttpWsServerHandle[] = [];
+
+  afterEach(async () => {
+    while (activeServers.length > 0) {
+      const srv = activeServers.pop();
+      if (srv !== undefined) {
+        await srv.stop();
+      }
+    }
+  });
+
+  const assertAllFiniteJson = (value: unknown, pathLabel: string): void => {
+    if (typeof value === 'number') {
+      expect(Number.isFinite(value), `${pathLabel} must be finite`).toBe(true);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        assertAllFiniteJson(value[i], `${pathLabel}[${String(i)}]`);
+      }
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        assertAllFiniteJson(v, `${pathLabel}.${k}`);
+      }
+    }
+  };
+
+  it('comparte cascada MEP, CCL Mediano y Canje entre /api/ar/overview y /api/ar/macro (Data912 -> AL30/GD30 EOD -> ArgentinaDatos)', async () => {
+    const asOfUtcSec = FIXTURE.asOfUtcSec;
+    const baseFetch = createOfflineArgentinaHttp({ asOfUtcSec });
+
+    const okRes = (payload: unknown) =>
+      Promise.resolve({ ok: true, status: 200, text: JSON.stringify(payload), headers: {} });
+
+    // Tier 1: Data912 /live/mep y /live/ccl presentes -> ambos endpoints idénticos
+    const rtTier1 = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: baseFetch,
+    });
+    const ov1 = await rtTier1.getOverview(true);
+    const mc1 = await rtTier1.getMacro(true);
+    expect(ov1.mepMedian).toBeCloseTo(1185.0, 6);
+    expect(ov1.cclMedian).toBeCloseTo(1215.0, 6);
+    expect(ov1.mepCclGapPct).toBeCloseTo(((1215.0 / 1185.0) - 1) * 100, 6);
+    if (ov1.mepMedian === null || ov1.cclMedian === null || ov1.mepCclGapPct === null) {
+      throw new Error('Tier 1 overview must resolve finite mep/ccl/canje');
+    }
+    expect(mc1.variables.mep).toBeCloseTo(ov1.mepMedian, 9);
+    expect(mc1.variables.ccl).toBeCloseTo(ov1.cclMedian, 9);
+    expect(mc1.variables.canjePct).toBeCloseTo(ov1.mepCclGapPct, 9);
+
+    // Tier 2: /live/mep, /live/ccl y /live/arg_bonds con 0/vacío -> paridad implícita histórica AL30/AL30C/AL30D y GD30/GD30C/GD30D
+    const tier2Fetch: FetchFn = (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912')) {
+        if (parsed.pathname === '/live/mep' || parsed.pathname === '/live/ccl' || parsed.pathname === '/live/arg_bonds' || parsed.pathname === '/live/usa_adrs' || parsed.pathname === '/live/arg_cedears') {
+          return okRes([]);
+        }
+        if (parsed.pathname === '/historical/bonds/AL30' || parsed.pathname === '/historical/stocks/AL30') {
+          return okRes(buildDailyBarSeries({ count: 10, endUtcSec: asOfUtcSec, startPrice: 81_900, driftPerDay: 0, waveAmp: 0, waveFreq: 0 }));
+        }
+        if (parsed.pathname === '/historical/bonds/AL30D' || parsed.pathname === '/historical/stocks/AL30D') {
+          return okRes(buildDailyBarSeries({ count: 10, endUtcSec: asOfUtcSec, startPrice: 68.25, driftPerDay: 0, waveAmp: 0, waveFreq: 0 }));
+        }
+        if (parsed.pathname === '/historical/bonds/AL30C' || parsed.pathname === '/historical/stocks/AL30C') {
+          return okRes(buildDailyBarSeries({ count: 10, endUtcSec: asOfUtcSec, startPrice: 81_900 / 1240, driftPerDay: 0, waveAmp: 0, waveFreq: 0 }));
+        }
+        if (parsed.pathname === '/historical/bonds/GD30' || parsed.pathname === '/historical/stocks/GD30') {
+          return okRes(buildDailyBarSeries({ count: 10, endUtcSec: asOfUtcSec, startPrice: 83_400, driftPerDay: 0, waveAmp: 0, waveFreq: 0 }));
+        }
+        if (parsed.pathname === '/historical/bonds/GD30D' || parsed.pathname === '/historical/stocks/GD30D') {
+          return okRes(buildDailyBarSeries({ count: 10, endUtcSec: asOfUtcSec, startPrice: 69.5, driftPerDay: 0, waveAmp: 0, waveFreq: 0 }));
+        }
+        if (parsed.pathname === '/historical/bonds/GD30C' || parsed.pathname === '/historical/stocks/GD30C') {
+          return okRes(buildDailyBarSeries({ count: 10, endUtcSec: asOfUtcSec, startPrice: 83_400 / 1240, driftPerDay: 0, waveAmp: 0, waveFreq: 0 }));
+        }
+      }
+      return baseFetch(url);
+    };
+    const rtTier2 = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: tier2Fetch,
+    });
+    const ov2 = await rtTier2.getOverview(true);
+    const mc2 = await rtTier2.getMacro(true);
+    expect(ov2.mepMedian).toBeCloseTo(1200.0, 2);
+    expect(ov2.cclMedian).toBeCloseTo(1240.0, 2);
+    expect(ov2.mepCclGapPct).toBeCloseTo(((1240.0 / 1200.0) - 1) * 100, 2);
+    if (ov2.mepMedian === null || ov2.cclMedian === null || ov2.mepCclGapPct === null) {
+      throw new Error('Tier 2 overview must resolve finite mep/ccl/canje');
+    }
+    expect(mc2.variables.mep).toBeCloseTo(ov2.mepMedian, 9);
+    expect(mc2.variables.ccl).toBeCloseTo(ov2.cclMedian, 9);
+    expect(mc2.variables.canjePct).toBeCloseTo(ov2.mepCclGapPct, 9);
+
+    // Tier 3: sin Data912 MEP/CCL ni bonos/históricos -> fallback real ArgentinaDatos bolsa y contadoconliqui
+    const tier3Fetch: FetchFn = (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912')) {
+        if (
+          parsed.pathname === '/live/mep' ||
+          parsed.pathname === '/live/ccl' ||
+          parsed.pathname === '/live/arg_bonds' ||
+          parsed.pathname === '/live/usa_adrs' ||
+          parsed.pathname === '/live/arg_cedears' ||
+          parsed.pathname.startsWith('/historical/')
+        ) {
+          return okRes([]);
+        }
+      }
+      if (parsed.hostname.includes('argentinadatos') && parsed.pathname === '/v1/cotizaciones/dolares') {
+        return okRes([
+          { casa: 'oficial', compra: 1040, venta: 1080 },
+          { casa: 'blue', compra: 1210, venta: 1230 },
+          { casa: 'bolsa', compra: 0, venta: 1190.5 },
+          { casa: 'contadoconliqui', compra: 0, venta: 1228.0 },
+        ]);
+      }
+      return baseFetch(url);
+    };
+    const rtTier3 = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: tier3Fetch,
+    });
+    const ov3 = await rtTier3.getOverview(true);
+    const mc3 = await rtTier3.getMacro(true);
+    expect(ov3.mepMedian).toBeCloseTo(1190.5, 6);
+    expect(ov3.cclMedian).toBeCloseTo(1228.0, 6);
+    expect(ov3.mepCclGapPct).toBeCloseTo(((1228.0 / 1190.5) - 1) * 100, 6);
+    if (ov3.mepCclGapPct === null) {
+      throw new Error('Tier 3 overview must resolve finite mepCclGapPct');
+    }
+    expect(mc3.variables.mep).toBeCloseTo(1190.5, 6);
+    expect(mc3.variables.ccl).toBeCloseTo(1228.0, 6);
+    expect(mc3.variables.canjePct).toBeCloseTo(ov3.mepCclGapPct, 9);
+  });
+
+  it('resuelve NY Fed SOFR + FRED UST 2Y/10Y + I:SKEW 1D + OPRA SPY EOD_CLOSE_REF en fin de semana', async () => {
+    // Sábado 2025-03-08 18:00 UTC (13:00 ET, fuera de rueda OPRA con bid=0/ask=0)
+    const weekendSec = Math.floor(Date.UTC(2025, 2, 8, 18, 0, 0) / 1_000);
+    const spot = 580.0;
+    const rate = 0.0431;
+    const expiry1 = '2025-04-11';
+    const exp1Compact = '250411';
+    const t1 = (Math.floor(Date.UTC(2025, 3, 11, 20, 0, 0) / 1_000) - weekendSec) / (365 * 86_400);
+    const expiry2 = '2025-05-16';
+    const exp2Compact = '250516';
+    const t2 = (Math.floor(Date.UTC(2025, 4, 16, 20, 0, 0) / 1_000) - weekendSec) / (365 * 86_400);
+
+    const makeOcc = (expC: string, ct: 'call' | 'put', strike: number): string =>
+      `O:SPY${expC}${ct === 'call' ? 'C' : 'P'}${String(Math.round(strike * 1_000)).padStart(8, '0')}`;
+
+    const strikes = [550, 565, 575, 580, 585, 595, 610];
+    const contracts: Record<string, unknown>[] = [];
+    for (const [idxExp, exp] of [
+      { date: expiry1, compact: exp1Compact, t: t1 },
+      { date: expiry2, compact: exp2Compact, t: t2 },
+    ].entries()) {
+      for (const strike of strikes) {
+        for (const ct of ['call', 'put'] as const) {
+          const vol = 0.21 + idxExp * 0.015 + Math.abs(strike - spot) * 0.0005;
+          const fair = priceBsm({
+            spot,
+            strike,
+            timeToExpiry: exp.t,
+            rate,
+            dividendYield: 0.012,
+            volatility: vol,
+            contractType: ct,
+          });
+          contracts.push({
+            details: {
+              ticker: makeOcc(exp.compact, ct, strike),
+              contract_type: ct,
+              strike_price: strike,
+              expiration_date: exp.date,
+              shares_per_contract: 100,
+            },
+            day: {
+              volume: strike === 580 ? 18_500 : 2_200,
+              close: Number(fair.toFixed(4)),
+              vwap: Number(fair.toFixed(4)),
+              previous_close: Number((fair * 0.98).toFixed(4)),
+            },
+            open_interest: strike === 565 && ct === 'put' ? 42_000 : strike === 595 && ct === 'call' ? 39_000 : 12_000,
+            implied_volatility: vol,
+            // Fin de semana: OPRA llega con bid=0 / ask=0 -> debe construir quote referencial EOD_CLOSE_REF
+            last_quote: { bid: 0, ask: 0, midpoint: 0 },
+            last_trade: {
+              price: Number((fair * (ct === 'call' ? 1.003 : 0.997)).toFixed(4)),
+              size: strike === 580 ? 60 : 12,
+              sip_timestamp: String((weekendSec - 86_400) * 1_000_000_000),
+            },
+            underlying_asset: { ticker: 'SPY', price: spot },
+          });
+        }
+      }
+    }
+
+    const makeWeekendBars = (symbol: string, mult: number, span: string, count: number) => {
+      const unitSec = span === 'day' ? 86_400 : span === 'hour' ? 3_600 : 60;
+      const stepSec = Math.max(60, mult * unitSec);
+      const endOpenSec = Math.floor((weekendSec - 86_400) / stepSec) * stepSec;
+      const results: Record<string, unknown>[] = [];
+      for (let i = count - 1; i >= 0; i -= 1) {
+        const idx = count - 1 - i;
+        const tSec = endOpenSec - i * stepSec;
+        const base = symbol === 'I:SKEW' ? 152.4 : symbol === 'I:VIX' ? 19.8 : symbol === 'QQQ' ? 492 : spot;
+        const close = symbol === 'I:SKEW' ? 152.4 : Number((base + Math.sin(idx * 0.18) * 1.4).toFixed(4));
+        results.push({
+          t: tSec * 1_000,
+          o: Number((close - 0.15).toFixed(4)),
+          h: Number((close + 0.45).toFixed(4)),
+          l: Number((close - 0.45).toFixed(4)),
+          c: close,
+          v: symbol.startsWith('I:') ? 0 : 850_000,
+          vw: close,
+        });
+      }
+      return { status: 'OK', ticker: symbol, resultsCount: results.length, results };
+    };
+
+    const okRes = (payload: unknown, textMode = false) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: textMode ? String(payload) : JSON.stringify(payload),
+        headers: {},
+      });
+
+    const customFetch: FetchFn = (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('markets.newyorkfed.org')) {
+        return okRes({ refRates: [{ effectiveDate: '2025-03-07', type: 'SOFR', percentRate: 4.31 }] });
+      }
+      if (parsed.hostname.includes('fred.stlouisfed.org')) {
+        const id = parsed.searchParams.get('id');
+        if (id === 'DGS2') {
+          return okRes('observation_date,DGS2\n2025-03-06,4.00\n2025-03-07,4.02\n', true);
+        }
+        if (id === 'DGS10') {
+          return okRes('observation_date,DGS10\n2025-03-06,4.24\n2025-03-07,4.26\n', true);
+        }
+      }
+      const p = parsed.pathname;
+      if (p === '/fed/v1/treasury-yields') {
+        // Simula curva incompleta de Massive sin yield_2_year / yield_10_year -> obliga fallback FRED
+        return okRes({ status: 'OK', results: [{ date: '2025-03-07', yield_1_month: 4.3, yield_3_month: 4.29 }] });
+      }
+      if (p === '/fed/v1/funding-conditions') {
+        return okRes({ status: 'OK', results: [] });
+      }
+      if (p.startsWith('/v2/aggs/ticker/')) {
+        const segs = p.split('/');
+        const sym = decodeURIComponent(segs[4] ?? 'SPY');
+        const mult = Number(segs[6] ?? '1') || 1;
+        const span = segs[7] ?? 'day';
+        return okRes(makeWeekendBars(sym, mult, span, span === 'day' ? 260 : 120));
+      }
+      if (p === '/v2/snapshot/locale/us/markets/stocks/tickers') {
+        return okRes({
+          status: 'OK',
+          tickers: [
+            {
+              ticker: 'SPY',
+              day: { o: 579, h: 583, l: 577, c: spot, v: 64_000_000, vw: 580.2 },
+              prevDay: { c: 576 },
+              lastTrade: { p: spot, s: 100, t: (weekendSec - 86_400) * 1_000_000_000 },
+              todaysChange: 4,
+              todaysChangePerc: 0.694,
+            },
+          ],
+        });
+      }
+      if (p === '/v3/snapshot') {
+        // I:SKEW omitido intencionalmente en /v3/snapshot -> debe caer a /v2/aggs I:SKEW 1D = 152.4
+        return okRes({
+          status: 'OK',
+          results: [
+            {
+              ticker: 'SPY',
+              type: 'stocks',
+              market_status: 'closed',
+              session: { price: spot, close: spot, previous_close: 576, high: 583, low: 577, volume: 64_000_000 },
+              last_trade: { price: spot, size: 100, sip_timestamp: String((weekendSec - 86_400) * 1_000_000_000) },
+              last_quote: { bid: 0, ask: 0, midpoint: 0 },
+            },
+            { ticker: 'QQQ', type: 'stocks', market_status: 'closed', session: { price: 492, close: 492, previous_close: 490 } },
+            { ticker: 'I:SPX', type: 'indices', market_status: 'closed', value: 5800, session: { close: 5800 } },
+            { ticker: 'I:VIX', type: 'indices', market_status: 'closed', value: 19.8, session: { close: 19.8 } },
+          ],
+        });
+      }
+      if (p.startsWith('/v3/snapshot/options/')) {
+        return okRes({ status: 'OK', results: contracts });
+      }
+      if (p === '/stocks/v1/dividends' || p === '/options/v1/unusual-trades') {
+        return okRes({ status: 'OK', results: [] });
+      }
+      return okRes({ status: 'NOT_FOUND' });
+    };
+
+    const runtime = new MarketRuntime({
+      apiKey: 'TEST_KEY_WEEKEND',
+      secrets: ['TEST_KEY_WEEKEND'],
+      nowMsFn: () => weekendSec * 1_000,
+      enableWs: false,
+      fetchFn: customFetch,
+    });
+
+    const snap = await runtime.getSnapshot('SPY', { forceRefresh: true });
+    expect(snap.feedMode).toBe('EOD_CIERRE');
+    expect(snap.quoteMode).toBe('EOD_CLOSE_REF');
+    // Unidades porcentuales en marketContext.treasury (sin 0.05%) y decimal en rate30d
+    expect(snap.marketContext.treasury.yield2Y).toBeCloseTo(4.02, 4);
+    expect(snap.marketContext.treasury.yield10Y).toBeCloseTo(4.26, 4);
+    expect(snap.marketContext.treasury.sofr).toBeCloseTo(4.31, 4);
+    expect(snap.marketContext.treasury.rate30d).toBeCloseTo(0.043, 3);
+    expect(snap.marketContext.skewLevel).toBeCloseTo(152.4, 2);
+    expect(snap.terminalEngines?.volCone?.cones.length).toBeGreaterThan(0);
+    expect(snap.terminalEngines?.orderFlow).not.toBeNull();
+    expect(snap.terminalEngines?.gexCharmPin).not.toBeNull();
+    expect(snap.terminalEngines?.wheelTracker).not.toBeNull();
+    expect(snap.terminalEngines?.confluenceClusters).not.toBeNull();
+    assertAllFiniteJson(JSON.parse(JSON.stringify(snap.marketContext)), 'weekendMarketContext');
+    assertAllFiniteJson(JSON.parse(JSON.stringify(snap.terminalEngines)), 'weekendTerminalEngines');
+  });
+
+  it('sirve /api/us/panel-analytics y /api/ar/monitoring?panel=acciones con batch 73 US, fallback 1D, tradedVolumeUsd y series 260D/40R/60R', async () => {
+    const asOfUtcSec = Math.floor(Date.UTC(2025, 2, 8, 18, 0, 0) / 1_000);
+    const allUsSymbols = US_EQUITY_UNIVERSE.map((u) => u.symbol);
+    const missingSnapshotTickers = new Set(['MSFT', 'BRK.B', 'NVDA']);
+    const capturedV2Tickers = new Set<string>();
+
+    const make265Bars = (sym: string, offsetIdx: number, basePrice: number) => {
+      const results: Record<string, unknown>[] = [];
+      const endOpenSec = Math.floor((asOfUtcSec - 86_400) / 86_400) * 86_400;
+      for (let i = 264; i >= 0; i -= 1) {
+        const idx = 264 - i;
+        const tSec = endOpenSec - i * 86_400;
+        const retWave = 0.0005 * (offsetIdx + 1) + 0.018 * Math.sin(idx * 0.25 + offsetIdx * 0.3);
+        const close = Number((basePrice * Math.exp(retWave + idx * 0.0004)).toFixed(4));
+        const open = Number((close * 0.996).toFixed(4));
+        const high = Number((close * 1.015).toFixed(4));
+        const low = Number((close * 0.985).toFixed(4));
+        const vol = 1_500_000 + offsetIdx * 25_000 + idx * 1_000;
+        results.push({ t: tSec * 1_000, o: open, h: high, l: low, c: close, v: vol, vw: close });
+      }
+      return { status: 'OK', ticker: sym, resultsCount: results.length, results };
+    };
+
+    const okJson = (payload: unknown) =>
+      Promise.resolve({ ok: true, status: 200, text: JSON.stringify(payload), headers: {} });
+
+    const usBatchFetch: FetchFn = (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('markets.newyorkfed.org')) {
+        return okJson({ refRates: [{ effectiveDate: '2025-03-07', percentRate: 4.31 }] });
+      }
+      if (parsed.hostname.includes('fred.stlouisfed.org')) {
+        return Promise.resolve({ ok: true, status: 200, text: 'observation_date,VAL\n2025-03-07,4.25\n', headers: {} });
+      }
+      const p = parsed.pathname;
+      if (p === '/v2/snapshot/locale/us/markets/stocks/tickers') {
+        const reqTickers = (parsed.searchParams.get('tickers') ?? '').split(',').filter(Boolean);
+        for (const t of reqTickers) capturedV2Tickers.add(t);
+        const tickers = reqTickers.map((t, idx) => {
+          const base = 100 + idx * 3;
+          if (missingSnapshotTickers.has(t)) {
+            // Fin de semana sin day.c -> obliga fallback a barra 1D cacheada
+            return { ticker: t, day: {}, prevDay: { c: base }, lastTrade: {} };
+          }
+          const c = Number((base * 1.02).toFixed(2));
+          const l = Number((base * 0.99).toFixed(2));
+          const h = Number((base * 1.03).toFixed(2));
+          const v = 5_000_000 + idx * 100_000;
+          const vw = Number(((c + l + h) / 3).toFixed(4));
+          return {
+            ticker: t,
+            day: { o: base, h, l, c, v, vw },
+            prevDay: { c: base },
+            lastTrade: { p: c, s: 100, t: (asOfUtcSec - 86_400) * 1_000_000_000 },
+            todaysChange: Number((c - base).toFixed(4)),
+            todaysChangePerc: Number((((c - base) / base) * 100).toFixed(4)),
+          };
+        });
+        return okJson({ status: 'OK', tickers });
+      }
+      if (p.startsWith('/v2/aggs/ticker/')) {
+        const segs = p.split('/');
+        const sym = decodeURIComponent(segs[4] ?? 'SPY');
+        const idxSym = Math.max(0, allUsSymbols.indexOf(sym));
+        return okJson(make265Bars(sym, idxSym, 100 + idxSym * 3));
+      }
+      if (p === '/v3/snapshot') {
+        return okJson({
+          status: 'OK',
+          results: [
+            { ticker: 'SPY', type: 'stocks', market_status: 'closed', session: { price: 580, close: 580, previous_close: 576 } },
+            { ticker: 'QQQ', type: 'stocks', market_status: 'closed', session: { price: 492, close: 492, previous_close: 490 } },
+            { ticker: 'I:SPX', type: 'indices', market_status: 'closed', value: 5800 },
+            { ticker: 'I:VIX', type: 'indices', market_status: 'closed', value: 19.0 },
+            { ticker: 'I:SKEW', type: 'indices', market_status: 'closed', value: 145.0 },
+          ],
+        });
+      }
+      if (p.startsWith('/v3/snapshot/options/')) {
+        return okJson({ status: 'OK', results: [] });
+      }
+      if (p === '/fed/v1/treasury-yields') {
+        return okJson({ status: 'OK', results: [{ date: '2025-03-07', yield_2_year: 4.02, yield_10_year: 4.26 }] });
+      }
+      if (p === '/fed/v1/funding-conditions') {
+        return okJson({ status: 'OK', results: [{ date: '2025-03-07', sofr: 4.31 }] });
+      }
+      return okJson({ status: 'OK', results: [] });
+    };
+
+    const baseArFetch = createOfflineArgentinaHttp({ asOfUtcSec });
+    const arLongFetch: FetchFn = (url) => {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes('data912') && parsed.pathname.startsWith('/historical/stocks/')) {
+        const sym = parsed.pathname.slice('/historical/stocks/'.length);
+        let hash = 1;
+        for (let i = 0; i < sym.length; i += 1) hash = (hash * 31 + sym.charCodeAt(i)) % 97;
+        return okJson(
+          buildDailyBarSeries({
+            count: 265,
+            endUtcSec: asOfUtcSec,
+            startPrice: 1_200 + hash * 45,
+            driftPerDay: 3.5,
+            waveAmp: 85 + (hash % 15) * 4,
+            waveFreq: 0.24 + (hash % 7) * 0.02,
+          }),
+        );
+      }
+      return baseArFetch(url);
+    };
+
+    const usRuntime = new MarketRuntime({
+      apiKey: 'TEST_US_PANEL_KEY',
+      secrets: ['TEST_US_PANEL_KEY'],
+      nowMsFn: () => asOfUtcSec * 1_000,
+      enableWs: false,
+      fetchFn: usBatchFetch,
+    });
+    const arRuntime = new ArgentinaMarketRuntime({
+      minData912IntervalMs: 0,
+      nowMsFn: () => asOfUtcSec * 1_000,
+      fetchFn: arLongFetch,
+      usRuntime,
+    });
+    const server = createHttpWsServer({
+      runtime: usRuntime,
+      arRuntime,
+      host: '127.0.0.1',
+      port: 0,
+      startRuntimeWs: false,
+    });
+    activeServers.push(server);
+    const { host, port } = await server.start();
+    const baseUrl = `http://${host}:${String(port)}`;
+
+    const usResp = await fetch(`${baseUrl}/api/us/panel-analytics`);
+    expect(usResp.status).toBe(200);
+    const usPanel = (await usResp.json()) as NonNullable<TerminalSnapshotResponse['usEquityPanel']>;
+
+    // Todos los ~73 símbolos pedidos en /v2/snapshot/locale/us/markets/stocks/tickers
+    for (const sym of allUsSymbols) {
+      expect(capturedV2Tickers.has(sym)).toBe(true);
+    }
+    expect(usPanel.rows.length).toBe(allUsSymbols.length);
+    for (const row of usPanel.rows) {
+      expect(row.last).not.toBeNull();
+      expect(row.return1dPct).not.toBeNull();
+      expect(row.tradedVolumeUsd).not.toBeNull();
+      expect((row.tradedVolumeUsd ?? 0) > 0).toBe(true);
+      expect((row.volumeM ?? 0) > 0).toBe(true);
+      expect(row.dayLow).not.toBeNull();
+      expect(row.dayHigh).not.toBeNull();
+      expect((row.dayHigh ?? 0) >= (row.dayLow ?? 0)).toBe(true);
+      expect(row.realizedVol30dPct).not.toBeNull();
+      expect(row.beta).not.toBeNull();
+      expect(row.return30dPct).not.toBeNull();
+      expect(row.returnYtdOr252dPct).not.toBeNull();
+      expect(row.avgVolume40dM).not.toBeNull();
+    }
+    // Tickers sin day.c en snapshot EOD toman su última barra diaria 1D cacheada
+    for (const sym of missingSnapshotTickers) {
+      const fbRow = usPanel.rows.find((r) => r.symbol === sym);
+      expect(fbRow?.last).not.toBeNull();
+      expect((fbRow?.tradedVolumeUsd ?? 0) > 0).toBe(true);
+      expect(fbRow?.dayLow).not.toBeNull();
+      expect(fbRow?.dayHigh).not.toBeNull();
+    }
+    expect(usPanel.panelVolume40d.length).toBe(40);
+    expect(usPanel.volumeShareBreakdown.length).toBeGreaterThanOrEqual(2);
+    expect(usPanel.volumeShareBreakdown.length).toBeLessThanOrEqual(7);
+    expect(usPanel.panelVolHistory.length).toBe(60);
+    assertAllFiniteJson(usPanel, 'httpUsPanelAnalytics');
+
+    // AR /api/ar/monitoring?panel=acciones con 265 ruedas
+    const arResp = await fetch(`${baseUrl}/api/ar/monitoring?panel=acciones`);
+    expect(arResp.status).toBe(200);
+    const arMon = (await arResp.json()) as ArMonitoringResponse;
+    const arPanel = arMon.arPanelAnalytics;
+    expect(arPanel).not.toBeNull();
+    expect(arPanel).toBeDefined();
+    if (arPanel === undefined || arPanel === null) {
+      throw new Error('arPanelAnalytics must be defined');
+    }
+    expect(arPanel.rows.length).toBeGreaterThanOrEqual(21);
+    expect(arPanel.panelVolume40d.length).toBe(40);
+    expect(arPanel.volumeShareBreakdown.length).toBeGreaterThanOrEqual(2);
+    expect(arPanel.volumeShareBreakdown.length).toBeLessThanOrEqual(7);
+    expect(arPanel.panelVolHistory.length).toBe(60);
+    const ggalRow = arPanel.rows.find((r) => r.symbol === 'GGAL');
+    expect(ggalRow?.realizedVol30dPct).not.toBeNull();
+    expect(ggalRow?.beta).not.toBeNull();
+    expect(ggalRow?.return30dPct).not.toBeNull();
+    expect(ggalRow?.returnYtdOr252dPct).not.toBeNull();
+    expect(ggalRow?.avgVolume40dM).not.toBeNull();
+    assertAllFiniteJson(arMon.arPanelAnalytics, 'httpArPanelAnalytics');
+  });
+});

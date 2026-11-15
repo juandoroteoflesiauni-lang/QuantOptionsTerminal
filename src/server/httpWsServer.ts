@@ -337,6 +337,13 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         return;
       }
 
+      if (pathname === '/api/us/panel-analytics') {
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const analytics = await runtime.getUsEquityPanelAnalytics(forceRefresh);
+        sendJson(res, 200, analytics);
+        return;
+      }
+
       if (pathname === '/api/unusual') {
         const symbolParam = params.get('symbol');
         const tickerParam = params.get('ticker');
@@ -391,8 +398,12 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       if (pathname === '/api/ar/stock') {
         const symbol = params.get('symbol')?.trim() || 'GGAL';
+        const tfRaw = params.get('timeframe')?.trim() ?? '1D';
+        const validTf = (['1m', '5m', '15m', '1h', '4h', '1D'] as const).find(
+          (t) => t.toLowerCase() === tfRaw.toLowerCase(),
+        ) ?? '1D';
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
-        const stock = await arRuntime.getStockDetail(symbol, forceRefresh);
+        const stock = await arRuntime.getStockDetail(symbol, forceRefresh, validTf);
         sendJson(res, 200, stock);
         return;
       }

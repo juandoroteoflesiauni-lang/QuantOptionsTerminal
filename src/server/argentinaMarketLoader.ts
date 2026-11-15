@@ -55,7 +55,7 @@ import {
   priceAmericanBjerksund2002,
   solveImpliedVolAmerican,
 } from '../core/options/american.js';
-import { greeksBsm } from '../core/options/blackScholes.js';
+import { greeksBsm, priceBsm } from '../core/options/blackScholes.js';
 import { solveImpliedVolBsm } from '../core/options/impliedVol.js';
 import {
   computeDealerExposure,
@@ -97,7 +97,7 @@ import {
   type SyntheticImpliedRatesResult,
 } from '../core/options/syntheticRates.js';
 import { computeSliceVolMetrics } from '../core/options/volMetrics.js';
-import { buildVolSlice, type VolQuoteInput } from '../core/options/volSurface.js';
+import { buildVolSlice, evaluateSliceIvAtStrike, type VolQuoteInput } from '../core/options/volSurface.js';
 import {
   computeStructureCostPercentile,
   detectSpatialConfluenceClusters,
@@ -111,7 +111,7 @@ import {
   type StructureCostPercentileResult,
 } from '../core/terminal/structureOptimizer.js';
 import type { Bar } from '../core/types.js';
-import type { FetchResponse } from '../data/types.js';
+import type { FetchResponse, Timeframe } from '../data/types.js';
 import {
   BmbBridgeClient,
   collectBrokerSecretsFromEnv,
@@ -155,7 +155,7 @@ export type UsRuntimeAdapter = Pick<MarketRuntime, 'getCachedDailyBars1d'> &
   Partial<
     Pick<
       MarketRuntime,
-      'getUsEquityPanelAnalytics' | 'getCachedIv30Map' | 'getCachedDailyBars1dBatch'
+      'getUsEquityPanelAnalytics' | 'getCachedIv30Map' | 'getCachedDailyBars1dBatch' | 'getBars'
     >
   >;
 
@@ -356,6 +356,7 @@ export interface ArMacroResponse {
     readonly riesgoPaisPb: number | null;
     readonly mep: number | null;
     readonly ccl: number | null;
+    readonly canjePct?: number | null;
     readonly blue: number | null;
     readonly oficial: number | null;
   };
@@ -484,6 +485,25 @@ export interface ArStockDetailResponse {
   readonly stock: ArStockDto | null;
   readonly bond: ArBondDto | null;
   readonly historicalBars: readonly ArHistoricalBarDto[];
+  readonly adrBars?: {
+    readonly timeframe: Timeframe;
+    readonly source: 'MASSIVE_ADR_CONVERTED';
+    readonly usTicker: string;
+    readonly adrRatio: number;
+    readonly cclUsed: number;
+    readonly bars: readonly ArHistoricalBarDto[];
+  } | null;
+  readonly benchmarkSymbol?: string | null;
+  readonly benchmarkBars1d?: readonly ArHistoricalBarDto[];
+  readonly nextExpiry?: {
+    readonly expiryCode: string;
+    readonly expirationDate: string;
+    readonly expiryUtcSec: number;
+    readonly daysToExpiry: number;
+    readonly ivAtm: number | null;
+    readonly expectedMoveAbs: number | null;
+    readonly expectedMovePct: number | null;
+  } | null;
   readonly realizedVol20d: number | null;
   readonly realizedVol60d: number | null;
   readonly realizedVolUsd20d: number | null;
@@ -495,6 +515,7 @@ export interface ArStockDetailResponse {
   readonly relatedOptionsCount: number;
   readonly institutionalEngines?: ArStockInstitutionalEnginesDto | null;
   readonly orderBook5Levels?: OrderBook5LevelsDto | null;
+  readonly orderBookCi?: OrderBook5LevelsDto | null;
   readonly rofexFrontContract?: PrimaryDlrContractDto | null;
   readonly providerErrors: readonly string[];
 }
@@ -509,9 +530,13 @@ export interface ArOptionContractDto {
   readonly expiryUtcSec: number;
   readonly daysToExpiry: number;
   readonly bid: number | null;
+  readonly bidSize?: number | null;
   readonly ask: number | null;
+  readonly askSize?: number | null;
   readonly last: number | null;
+  readonly changePct?: number | null;
   readonly mark: number | null;
+  readonly theoreticalPrice?: number | null;
   readonly volume: number | null;
   readonly openInterest: number | null;
   readonly iv: number | null;
@@ -541,6 +566,8 @@ export interface ArOptionExpiryDto {
   readonly riskReversal25: number | null;
   readonly butterfly25: number | null;
   readonly butterflyArbitrageFree: boolean;
+  readonly maxPainStrike?: number | null;
+  readonly maxPainDistPct?: number | null;
   readonly strikes: readonly number[];
   readonly calls: readonly ArOptionContractDto[];
   readonly puts: readonly ArOptionContractDto[];
@@ -604,6 +631,17 @@ export interface ArOptionsResponse {
     readonly gammaFlipStatus: string;
     readonly expectedMoveAbs: number | null;
     readonly expectedMovePct: number | null;
+    readonly expectedMoveExpirySec?: number | null;
+    readonly expectedMoveExpiryCode?: string | null;
+    readonly expectedMoveDays?: number | null;
+    readonly byStrike?: readonly {
+      readonly strike: number;
+      readonly callOi: number | null;
+      readonly putOi: number | null;
+      readonly callGex: number | null;
+      readonly putGex: number | null;
+      readonly netGex: number | null;
+    }[];
   } | null;
   readonly costSchedule: {
     readonly rvMarketFeeRate: number;
@@ -680,10 +718,51 @@ const DEFAULT_NYFED_BASE = 'https://markets.newyorkfed.org';
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_CACHE_TTL_MS = 18_000;
-const DEFAULT_HIST_CACHE_TTL_MS = 180_000;
+const DEFAULT_HIST_CACHE_TTL_MS = 15 * 60 * 1_000;
+const AR_HIST_WEEKEND_TTL_MS = 2 * 60 * 60 * 1_000;
 const DEFAULT_MACRO_CACHE_TTL_MS = 300_000;
 // Data912 tope público: 120 req/min (~500 ms). Margen conservador en vivo: 550 ms en cola compartida o 0 en tests.
 const DEFAULT_MIN_DATA912_INTERVAL_MS = 120;
+const AR_PANEL_CONCURRENCY_LIMIT = 6;
+const AR_PANEL_MAX_CLOSED_BARS = 260;
+
+function computeArHistoricalPanelTtlMs(nowMs: number): number {
+  const artDate = new Date(nowMs - 3 * 3_600 * 1_000);
+  const dow = artDate.getUTCDay();
+  if (dow === 0 || dow === 6) {
+    return AR_HIST_WEEKEND_TTL_MS;
+  }
+  const minutes = artDate.getUTCHours() * 60 + artDate.getUTCMinutes();
+  if (minutes >= 10 * 60 + 30 && minutes < 17 * 60 + 30) {
+    return DEFAULT_HIST_CACHE_TTL_MS;
+  }
+  return AR_HIST_WEEKEND_TTL_MS;
+}
+
+async function mapWithConcurrencyLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<readonly R[]> {
+  if (items.length === 0) {
+    return [];
+  }
+  const capped = Math.max(1, Math.min(limit, items.length));
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const idx = cursor;
+      cursor += 1;
+      const item = items[idx];
+      if (item !== undefined) {
+        out[idx] = await mapper(item, idx);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: capped }, () => worker()));
+  return out;
+}
 
 const BYMA_RV_FEE = 0.0005; // 3 bps negociación + 2 bps post-trade
 const BYMA_OPTION_FEE = 0.0020; // 20 bps referencia opciones
@@ -1440,6 +1519,21 @@ function computeArOptionsTickAggression(
     classifiedContracts,
     method: leeReadyCount >= variationCount ? 'LEE_READY_BBO' : 'TICK_VARIATION_EOD',
   };
+}
+
+function sanitizePositive(value: number | null | undefined): number | null {
+  return value !== null && value !== undefined && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function resolvePositiveQuoteRate(row: NormalizedQuoteRow): number | null {
+  const direct = sanitizePositive(row.mark) ?? sanitizePositive(row.last);
+  if (direct !== null) {
+    return direct;
+  }
+  if (row.arsBid !== null && row.arsBid > 0 && row.usdAsk !== null && row.usdAsk > 0) {
+    return row.arsBid / row.usdAsk;
+  }
+  return null;
 }
 
 function hasPositiveLast(rows: readonly NormalizedQuoteRow[]): boolean {
@@ -2422,7 +2516,9 @@ interface NormalizedQuoteRow {
   readonly symbol: string;
   readonly last: number | null;
   readonly bid: number | null;
+  readonly bidSize: number | null;
   readonly ask: number | null;
+  readonly askSize: number | null;
   readonly prevClose: number | null;
   readonly deltaPct: number | null;
   readonly low: number | null;
@@ -2464,7 +2560,11 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
     const cleanSym = sym.toUpperCase();
     const last = readNum(item, ['c', 'close', 'last', 'px_last', 'mark', 'trade', 'settlementPrice']);
     const bid = readNum(item, ['px_bid', 'bid', 'bidPrice', 'ars_bid']);
+    const bidSizeRaw = readNum(item, ['q_bid', 'bidSize', 'bid_size', 'bidQty']);
     const ask = readNum(item, ['px_ask', 'ask', 'askPrice', 'ars_ask']);
+    const askSizeRaw = readNum(item, ['q_ask', 'askSize', 'ask_size', 'askQty']);
+    const bidSize = bidSizeRaw !== null && Number.isFinite(bidSizeRaw) && bidSizeRaw > 0 ? bidSizeRaw : null;
+    const askSize = askSizeRaw !== null && Number.isFinite(askSizeRaw) && askSizeRaw > 0 ? askSizeRaw : null;
     const prevCloseRaw = readNum(item, ['prev_close', 'previousClose', 'closingPrice', 'open', 'o']);
     const deltaPctRaw = readNum(item, ['pct_change', 'imbalance', 'variation', 'changePct', 'var']);
     const lowRaw = readNum(item, ['l', 'low', 'min', 'lowPrice']);
@@ -2507,7 +2607,9 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
       symbol: cleanSym,
       last,
       bid,
+      bidSize,
       ask,
+      askSize,
       prevClose,
       deltaPct: sanitizeFinite(computedDeltaPct),
       low,
@@ -2779,7 +2881,10 @@ export class ArgentinaMarketRuntime {
 
     const ttlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.liveCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
-    this.histCache = new SingleFlightRuntimeCache({ ttlResolver: () => DEFAULT_HIST_CACHE_TTL_MS, nowFn: this.nowMsFn });
+    this.histCache = new SingleFlightRuntimeCache({
+      ttlResolver: (nowMs) => computeArHistoricalPanelTtlMs(nowMs),
+      nowFn: this.nowMsFn,
+    });
     this.macroCache = new SingleFlightRuntimeCache({ ttlResolver: () => DEFAULT_MACRO_CACHE_TTL_MS, nowFn: this.nowMsFn });
     this.computedCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
   }
@@ -3092,14 +3197,18 @@ export class ArgentinaMarketRuntime {
           }
         }
         const dolares: ArMacroResponse['dolares'][number][] = [...latestDolaresByCasa.values()];
-        const mepRow = latestDolaresByCasa.get('bolsa');
-        const cclRow = latestDolaresByCasa.get('contadoconliqui');
+        const mepRow = latestDolaresByCasa.get('bolsa') ?? latestDolaresByCasa.get('mep');
+        const cclRow = latestDolaresByCasa.get('contadoconliqui') ?? latestDolaresByCasa.get('ccl');
         const blueRow = latestDolaresByCasa.get('blue');
         const oficialRow = latestDolaresByCasa.get('oficial');
-        const mepArgDatos = mepRow ? (mepRow.venta ?? mepRow.compra) : null;
-        const cclArgDatos = cclRow ? (cclRow.venta ?? cclRow.compra) : null;
-        const blue = blueRow ? (blueRow.venta ?? blueRow.compra) : null;
-        const oficial = oficialRow ? (oficialRow.venta ?? oficialRow.compra) : null;
+        const pickDolarPos = (row: ArMacroResponse['dolares'][number] | undefined): number | null => {
+          if (!row) return null;
+          return sanitizePositive(row.venta) ?? sanitizePositive(row.compra);
+        };
+        const mepArgDatos = pickDolarPos(mepRow);
+        const cclArgDatos = pickDolarPos(cclRow);
+        const blue = pickDolarPos(blueRow);
+        const oficial = pickDolarPos(oficialRow);
 
         const extractLatestIndex = (res: typeof infMRes, label: string): number | null => {
           if (!res.ok) {
@@ -3216,9 +3325,12 @@ export class ArgentinaMarketRuntime {
     }[] = [];
 
     // 1. Directo /live/mep y /live/ccl de Data912
+    const liveMepRates: number[] = [];
+    const liveCclRates: number[] = [];
     for (const r of params.mepRows) {
-      const rate = r.mark ?? r.last;
-      if (rate !== null && rate > 0) {
+      const rate = resolvePositiveQuoteRate(r);
+      if (rate !== null) {
+        liveMepRates.push(rate);
         rawRows.push({
           symbol: r.symbol,
           category: 'BONO',
@@ -3231,8 +3343,9 @@ export class ArgentinaMarketRuntime {
       }
     }
     for (const r of params.cclRows) {
-      const rate = r.mark ?? r.last;
-      if (rate !== null && rate > 0) {
+      const rate = resolvePositiveQuoteRate(r);
+      if (rate !== null) {
+        liveCclRates.push(rate);
         rawRows.push({
           symbol: r.symbol,
           category: 'BONO',
@@ -3245,36 +3358,46 @@ export class ArgentinaMarketRuntime {
       }
     }
 
-    // 2. Bonos soberanos directos si no vinieron en /live/mep o /live/ccl
+    // 2. Bonos soberanos directos (AL30/GD30 prioridad, luego AL35/GD35)
+    const bondMepPriorityRates: number[] = [];
+    const bondMepOtherRates: number[] = [];
+    const bondCclPriorityRates: number[] = [];
+    const bondCclOtherRates: number[] = [];
     for (const base of ['AL30', 'GD30', 'AL35', 'GD35']) {
       const ars = bondMap.get(base)?.last ?? null;
       const usdD = bondMap.get(`${base}D`)?.last ?? null;
       const usdC = bondMap.get(`${base}C`)?.last ?? null;
+      const isPriority = base === 'AL30' || base === 'GD30';
       if (ars !== null && ars > 0 && usdD !== null && usdD > 0) {
+        const implied = ars / usdD;
+        (isPriority ? bondMepPriorityRates : bondMepOtherRates).push(implied);
         rawRows.push({
           symbol: `${base} (D)`,
           category: 'BONO',
           ratio: 1,
           localArs: ars,
           usdPrice: usdD,
-          impliedRate: ars / usdD,
+          impliedRate: implied,
           side: 'MEP',
         });
       }
       if (ars !== null && ars > 0 && usdC !== null && usdC > 0) {
+        const implied = ars / usdC;
+        (isPriority ? bondCclPriorityRates : bondCclOtherRates).push(implied);
         rawRows.push({
           symbol: `${base} (C)`,
           category: 'BONO',
           ratio: 1,
           localArs: ars,
           usdPrice: usdC,
-          impliedRate: ars / usdC,
+          impliedRate: implied,
           side: 'CCL',
         });
       }
     }
 
     // 3. ADRs con ratio oficial
+    const equityCclRates: number[] = [];
     for (const meta of AR_STOCK_META) {
       if (meta.adrTicker === undefined || meta.adrRatio === undefined) {
         continue;
@@ -3282,13 +3405,15 @@ export class ArgentinaMarketRuntime {
       const localPx = stockMap.get(meta.ticker)?.last ?? null;
       const adrPx = adrMap.get(meta.adrTicker)?.last ?? usaMap.get(meta.adrTicker)?.last ?? null;
       if (localPx !== null && localPx > 0 && adrPx !== null && adrPx > 0) {
+        const implied = (localPx * meta.adrRatio) / adrPx;
+        equityCclRates.push(implied);
         rawRows.push({
           symbol: `${meta.ticker}/${meta.adrTicker}`,
           category: 'ADR',
           ratio: meta.adrRatio,
           localArs: localPx,
           usdPrice: adrPx,
-          impliedRate: (localPx * meta.adrRatio) / adrPx,
+          impliedRate: implied,
           side: 'CCL',
         });
       }
@@ -3299,13 +3424,15 @@ export class ArgentinaMarketRuntime {
       const cedPx = cedearMap.get(cedSym)?.last ?? null;
       const usPx = usaMap.get(info.usTicker)?.last ?? adrMap.get(info.usTicker)?.last ?? null;
       if (cedPx !== null && cedPx > 0 && usPx !== null && usPx > 0) {
+        const implied = (cedPx * info.ratio) / usPx;
+        equityCclRates.push(implied);
         rawRows.push({
           symbol: cedSym,
           category: 'CEDEAR',
           ratio: info.ratio,
           localArs: cedPx,
           usdPrice: usPx,
-          impliedRate: (cedPx * info.ratio) / usPx,
+          impliedRate: implied,
           side: 'CCL',
         });
       }
@@ -3314,8 +3441,19 @@ export class ArgentinaMarketRuntime {
     const mepRates = rawRows.filter((r) => r.side === 'MEP' && r.impliedRate !== null).map((r) => r.impliedRate as number);
     const cclRates = rawRows.filter((r) => r.side === 'CCL' && r.impliedRate !== null).map((r) => r.impliedRate as number);
 
-    const mepMedian = computeMedian(mepRates) ?? params.fallbackMep;
-    const cclMedian = computeMedian(cclRates) ?? params.fallbackCcl;
+    // Cascada explícita compartida por /api/ar/overview y /api/ar/macro:
+    // Data912 (/live/mep & /live/ccl) → Paridad implícita AL30/GD30 (y otros bonos/ADRs/CEDEARs) → ArgentinaDatos (bolsa / contadoconliqui)
+    const mepMedian =
+      computeMedian(liveMepRates) ??
+      computeMedian(bondMepPriorityRates) ??
+      computeMedian(bondMepOtherRates) ??
+      sanitizePositive(params.fallbackMep);
+    const cclMedian =
+      computeMedian(liveCclRates) ??
+      computeMedian(bondCclPriorityRates) ??
+      computeMedian(bondCclOtherRates) ??
+      computeMedian(equityCclRates) ??
+      sanitizePositive(params.fallbackCcl);
     const cclStats = computeMeanAndStd(cclRates);
     const mepStats = computeMeanAndStd(mepRates);
 
@@ -3759,7 +3897,9 @@ export class ArgentinaMarketRuntime {
       symbol: symbol.toUpperCase(),
       last: lastBar.close,
       bid: null,
+      bidSize: null,
       ask: null,
+      askSize: null,
       prevClose: sanitizeFinite(prevBar?.close),
       deltaPct: sanitizeFinite(deltaPct),
       low: sanitizeFinite(lastBar.low),
@@ -3781,14 +3921,16 @@ export class ArgentinaMarketRuntime {
     tickers: readonly string[],
     forceRefresh = false,
   ): Promise<readonly NormalizedQuoteRow[]> {
-    const results = await Promise.all(
-      tickers.map(async (ticker) => {
+    const results = await mapWithConcurrencyLimit(
+      tickers,
+      AR_PANEL_CONCURRENCY_LIMIT,
+      async (ticker) => {
         const hist =
           kind === 'cedears'
             ? await this.getCedearHistoryWithAlias(ticker, forceRefresh)
             : await this.getData912History(kind, ticker, forceRefresh);
         return this.historyBarsToQuoteRow(ticker, hist.bars);
-      }),
+      },
     );
     return results.filter((r): r is NormalizedQuoteRow => r !== null);
   }
@@ -3848,8 +3990,13 @@ export class ArgentinaMarketRuntime {
         const needStocksEod = !hasPositiveLast(stocksRes.rows) && !hasPositiveLast(bymaMerged);
         const needCedearsEod = !hasPositiveLast(cedearsRes.rows);
         const needBondsEod = !hasPositiveLast(bondsRes.rows);
+        const parityBondTickers = ['AL30', 'AL30D', 'AL30C', 'GD30', 'GD30D', 'GD30C'] as const;
+        const bondPosSet = new Set(
+          bondsRes.rows.filter((r) => r.last !== null && r.last > 0).map((r) => r.symbol),
+        );
+        const missingParityBondTickers = parityBondTickers.filter((tk) => !bondPosSet.has(tk));
 
-        const [eodStocks, eodCedears, eodBonds] = await Promise.all([
+        const [eodStocks, eodCedears, eodBonds, eodParityBonds] = await Promise.all([
           needStocksEod
             ? this.populateEodRowsFromHistorical(
                 'stocks',
@@ -3868,16 +4015,27 @@ export class ArgentinaMarketRuntime {
             ? this.populateEodRowsFromHistorical(
                 'bonds',
                 SOVEREIGN_BONDS.flatMap((b) =>
-                  (b.currency ?? 'USD') === 'USD' ? [b.baseTicker, `${b.baseTicker}D`] : [b.baseTicker],
+                  (b.currency ?? 'USD') === 'USD' ? [b.baseTicker, `${b.baseTicker}D`, `${b.baseTicker}C`] : [b.baseTicker],
                 ),
                 forceRefresh,
               )
+            : Promise.resolve([] as readonly NormalizedQuoteRow[]),
+          !needBondsEod && missingParityBondTickers.length > 0
+            ? this.populateEodRowsFromHistorical('bonds', missingParityBondTickers, forceRefresh)
             : Promise.resolve([] as readonly NormalizedQuoteRow[]),
         ]);
 
         const effectiveStocks = eodStocks.length > 0 ? eodStocks : stocksRes.rows;
         const effectiveCedears = eodCedears.length > 0 ? eodCedears : cedearsRes.rows;
-        const effectiveBonds = eodBonds.length > 0 ? eodBonds : bondsRes.rows;
+        const effectiveBonds =
+          eodBonds.length > 0
+            ? eodBonds
+            : eodParityBonds.length > 0
+              ? [
+                  ...bondsRes.rows.filter((r) => r.last !== null && r.last > 0),
+                  ...eodParityBonds.filter((p) => !bondPosSet.has(p.symbol)),
+                ]
+              : bondsRes.rows;
         const usedEodFallback =
           eodStocks.length > 0 || eodCedears.length > 0 || eodBonds.length > 0;
 
@@ -3896,6 +4054,38 @@ export class ArgentinaMarketRuntime {
           ].filter((e): e is string => e !== null),
         ];
 
+        let fallbackMep = macroData.variables.mep;
+        let fallbackCcl = macroData.variables.ccl;
+        if (fallbackMep === null || fallbackCcl === null) {
+          const preCheck = this.computeMepCclMatrix({
+            mepRows: mepRes.rows,
+            cclRows: cclRes.rows,
+            argStocks: effectiveStocks,
+            usaAdrs: adrsRes.rows,
+            argCedears: effectiveCedears,
+            usaStocks: usaStocksRes.rows,
+            argBonds: effectiveBonds,
+            fallbackMep,
+            fallbackCcl,
+          });
+          if (preCheck.mepMedian === null || preCheck.cclMedian === null) {
+            const directDolares = await this.fetchJsonSafe(`${this.argDatosBaseUrl}/v1/cotizaciones/dolares`);
+            if (directDolares.ok && Array.isArray(directDolares.data)) {
+              for (const d of directDolares.data) {
+                if (!isPlainRecord(d)) continue;
+                const casa = (readStr(d, ['casa']) ?? '').toLowerCase();
+                const val = sanitizePositive(readNum(d, ['venta'])) ?? sanitizePositive(readNum(d, ['compra']));
+                if (val === null) continue;
+                if ((casa === 'bolsa' || casa === 'mep') && fallbackMep === null) {
+                  fallbackMep = val;
+                } else if ((casa === 'contadoconliqui' || casa === 'ccl') && fallbackCcl === null) {
+                  fallbackCcl = val;
+                }
+              }
+            }
+          }
+        }
+
         const matrix = this.computeMepCclMatrix({
           mepRows: mepRes.rows,
           cclRows: cclRes.rows,
@@ -3904,8 +4094,8 @@ export class ArgentinaMarketRuntime {
           argCedears: effectiveCedears,
           usaStocks: usaStocksRes.rows,
           argBonds: effectiveBonds,
-          fallbackMep: macroData.variables.mep,
-          fallbackCcl: macroData.variables.ccl,
+          fallbackMep,
+          fallbackCcl,
         });
 
         const useBymaFallback = bymaMerged.length === 0;
@@ -4087,10 +4277,18 @@ export class ArgentinaMarketRuntime {
           this.getData912Live('/live/arg_bonds', forceRefresh),
         ]);
 
+        const sharedMep = overview.mepMedian ?? macroData.variables.mep;
+        const sharedCcl = overview.cclMedian ?? macroData.variables.ccl;
+        const sharedCanjePct =
+          overview.mepCclGapPct ??
+          (sharedMep !== null && sharedCcl !== null && sharedMep > 0
+            ? ((sharedCcl - sharedMep) / sharedMep) * 100
+            : null);
         const vars = {
           ...macroData.variables,
-          mep: overview.mepMedian ?? macroData.variables.mep,
-          ccl: overview.cclMedian ?? macroData.variables.ccl,
+          mep: sharedMep,
+          ccl: sharedCcl,
+          canjePct: sanitizeFinite(sharedCanjePct),
         };
 
         const brechaPct =
@@ -4446,11 +4644,16 @@ export class ArgentinaMarketRuntime {
       async () => {
         const errors: string[] = [];
         const rawByTicker = new Map(params.argStocks.map((r) => [r.symbol, r]));
-        const histEntries = await Promise.all(
-          AR_STOCK_META.map(async (meta) => {
+        const histEntries = await mapWithConcurrencyLimit(
+          AR_STOCK_META,
+          AR_PANEL_CONCURRENCY_LIMIT,
+          async (meta) => {
             const res = await this.getData912History('stocks', meta.ticker, params.forceRefresh);
-            return [meta.ticker, res] as const;
-          }),
+            const closedBars = normalizeClosedDailyBarsForEngines(res.bars, params.nowSec).slice(
+              -AR_PANEL_MAX_CLOSED_BARS,
+            );
+            return [meta.ticker, { bars: closedBars, error: res.error }] as const;
+          },
         );
         const barsByTicker = new Map<string, readonly Bar[]>();
         const liderSeries: (readonly Bar[])[] = [];
@@ -4958,14 +5161,18 @@ export class ArgentinaMarketRuntime {
     });
   }
 
-  public async getStockDetail(rawSymbol: string, forceRefresh = false): Promise<ArStockDetailResponse> {
+  public async getStockDetail(
+    rawSymbol: string,
+    forceRefresh = false,
+    timeframe: Timeframe = '1D',
+  ): Promise<ArStockDetailResponse> {
     const symbol = rawSymbol.trim().toUpperCase();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const isBond = SOVEREIGN_BONDS.some((b) => b.baseTicker === symbol || `${b.baseTicker}D` === symbol || `${b.baseTicker}C` === symbol);
     const isCedear = symbol in CEDEAR_RATIOS && !STOCK_META_MAP.has(symbol);
     const kind: 'stocks' | 'cedears' | 'bonds' = isBond ? 'bonds' : isCedear ? 'cedears' : 'stocks';
 
-    const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData, mervBook, bmbSnap, macroIfPrimary] =
+    const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData, mervBook, mervBookCi, bmbSnap, macroIfPrimary] =
       await Promise.all([
         this.getData912History(kind, symbol, forceRefresh),
         this.getOverview(forceRefresh),
@@ -4977,7 +5184,8 @@ export class ArgentinaMarketRuntime {
           ? Promise.resolve({ bars: [] as readonly Bar[], error: null })
           : this.getData912History('cedears', 'SPY', forceRefresh),
         isBond ? this.fetchBcraAndArgDatos(forceRefresh) : Promise.resolve(null),
-        this.primaryClient.getMervOrderBook5Levels(symbol, forceRefresh),
+        this.primaryClient.getMervOrderBook5Levels(symbol, forceRefresh, '24HS'),
+        this.primaryClient.getMervOrderBook5Levels(symbol, forceRefresh, 'CI'),
         this.bmbClient.getSnapshot(symbol, null, forceRefresh),
         this.primaryClient.isConfigured()
           ? this.getMacro(forceRefresh).catch(() => null)
@@ -5034,10 +5242,18 @@ export class ArgentinaMarketRuntime {
       ? evaluateMtfStructure({ bars1d: bars, bars4h: [], bars15m: [], bars5m: [] }, { asOfUtcSec: nowSec })
       : null;
 
-    const relatedOptionsCount = optionsRes.rows.filter((o) => {
-      const parsed = parseBymaOptionSymbol(o.symbol, stock?.last ?? null, nowSec);
-      return parsed !== null && parsed.underlying === symbol;
-    }).length;
+    const parsedOptionsForSymbol = optionsRes.rows
+      .map((o) => parseBymaOptionSymbol(o.symbol, stock?.last ?? null, nowSec))
+      .filter((p): p is ParsedBymaOptionSymbol => p !== null && p.underlying === symbol);
+    const relatedOptionsCount = parsedOptionsForSymbol.length;
+
+    const upcomingExpiries = [...new Map(
+      parsedOptionsForSymbol
+        .filter((p) => p.daysToExpiry >= 0)
+        .sort((a, b) => a.expiryUtcSec - b.expiryUtcSec)
+        .map((p) => [p.expiryCode, p] as const),
+    ).values()];
+    const nearestOptionExpiry = upcomingExpiries[0] ?? null;
 
     const benchBars = symbol === 'SPY' ? bars : spyHistRes.bars;
     const institutionalEngines = this.computeStockInstitutionalEngines({
@@ -5047,23 +5263,81 @@ export class ArgentinaMarketRuntime {
       benchmarkBars: benchBars,
     });
 
-    const recentBars = bars.slice(-120);
-    const historicalBars: ArHistoricalBarDto[] = recentBars.map((b, idx) => {
-      const prev = recentBars[idx - 1];
-      const ret = prev !== undefined && prev.close > 0 ? ((b.close - prev.close) / prev.close) * 100 : null;
-      const d = new Date(b.time * 1_000);
-      return {
-        time: b.time,
-        date: d.toISOString().slice(0, 10),
-        open: b.open,
-        high: b.high,
-        low: b.low,
-        close: b.close,
-        closeDeflatedUsd: cclDiv !== null && cclDiv > 0 ? sanitizeFinite(b.close / cclDiv) : null,
-        volume: b.volume,
-        dailyReturnPct: sanitizeFinite(ret),
-      };
-    });
+    const recentBars = bars.slice(-240);
+    const toArBarDtos = (srcBars: readonly Bar[], divCcl: number | null): readonly ArHistoricalBarDto[] =>
+      srcBars.map((b, idx) => {
+        const prev = srcBars[idx - 1];
+        const ret = prev !== undefined && prev.close > 0 ? ((b.close - prev.close) / prev.close) * 100 : null;
+        const d = new Date(b.time * 1_000);
+        return {
+          time: b.time,
+          date: d.toISOString().slice(0, 10),
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+          closeDeflatedUsd: divCcl !== null && divCcl > 0 ? sanitizeFinite(b.close / divCcl) : null,
+          volume: b.volume,
+          dailyReturnPct: sanitizeFinite(ret),
+        };
+      });
+
+    const historicalBars = toArBarDtos(recentBars, cclDiv);
+    const benchmarkBars1d = toArBarDtos(benchBars.slice(-120), cclDiv);
+
+    // Soporte intradiario real vía ADR US en Massive convertido a ARS por CCL vigente
+    let adrBars: ArStockDetailResponse['adrBars'] = null;
+    const stockMeta = STOCK_META_MAP.get(symbol);
+    const cedearMeta = isCedear ? CEDEAR_RATIOS[symbol] : undefined;
+    const adrUsTicker = stockMeta?.adrTicker ?? cedearMeta?.usTicker;
+    const adrUsRatio = stockMeta?.adrRatio ?? cedearMeta?.ratio;
+    const effectiveCclForAdr = stock?.cclImplicit ?? cclDiv;
+    if (
+      timeframe !== '1D' &&
+      adrUsTicker !== undefined &&
+      adrUsRatio !== undefined &&
+      adrUsRatio > 0 &&
+      effectiveCclForAdr !== null &&
+      effectiveCclForAdr > 0
+    ) {
+      const usRt = this.resolveEffectiveUsRuntime();
+      if (usRt !== null && typeof usRt.getBars === 'function') {
+        try {
+          const usBarsRes = await usRt.getBars(adrUsTicker, timeframe, {
+            visibleBars: 180,
+            forceRefresh,
+          });
+          if (usBarsRes.bars.length > 0) {
+            const convFactor = effectiveCclForAdr / adrUsRatio;
+            const convertedBars: ArHistoricalBarDto[] = usBarsRes.bars.map((b, idx) => {
+              const prev = usBarsRes.bars[idx - 1];
+              const ret = prev !== undefined && prev.close > 0 ? ((b.close - prev.close) / prev.close) * 100 : null;
+              return {
+                time: b.time,
+                date: new Date(b.time * 1_000).toISOString().slice(0, 10),
+                open: b.open * convFactor,
+                high: b.high * convFactor,
+                low: b.low * convFactor,
+                close: b.close * convFactor,
+                closeDeflatedUsd: sanitizeFinite(b.close / adrUsRatio),
+                volume: b.volume,
+                dailyReturnPct: sanitizeFinite(ret),
+              };
+            });
+            adrBars = {
+              timeframe,
+              source: 'MASSIVE_ADR_CONVERTED',
+              usTicker: adrUsTicker,
+              adrRatio: adrUsRatio,
+              cclUsed: effectiveCclForAdr,
+              bars: convertedBars,
+            };
+          }
+        } catch {
+          adrBars = null;
+        }
+      }
+    }
 
     const providerErrors = [
       ...overview.providerErrors,
@@ -5154,6 +5428,21 @@ export class ArgentinaMarketRuntime {
       stock,
       bond,
       historicalBars,
+      adrBars,
+      benchmarkSymbol: symbol === 'SPY' ? 'SPY CEDEAR' : 'SPY CEDEAR',
+      benchmarkBars1d,
+      nextExpiry:
+        nearestOptionExpiry !== null
+          ? {
+              expiryCode: nearestOptionExpiry.expiryCode,
+              expirationDate: nearestOptionExpiry.expirationDate,
+              expiryUtcSec: nearestOptionExpiry.expiryUtcSec,
+              daysToExpiry: nearestOptionExpiry.daysToExpiry,
+              ivAtm: null,
+              expectedMoveAbs: null,
+              expectedMovePct: null,
+            }
+          : null,
       realizedVol20d: sanitizeFinite(rv20),
       realizedVol60d: sanitizeFinite(rv60),
       realizedVolUsd20d: sanitizeFinite(rvUsd20),
@@ -5165,6 +5454,7 @@ export class ArgentinaMarketRuntime {
       relatedOptionsCount,
       institutionalEngines,
       orderBook5Levels,
+      orderBookCi: mervBookCi,
       rofexFrontContract,
       providerErrors,
     };
@@ -5462,9 +5752,13 @@ export class ArgentinaMarketRuntime {
               expiryUtcSec: parsed.expiryUtcSec,
               daysToExpiry: parsed.daysToExpiry,
               bid: sanitizeFinite(bid),
+              bidSize: row.bidSize,
               ask: sanitizeFinite(ask),
+              askSize: row.askSize,
               last: sanitizeFinite(last),
+              changePct: sanitizeFinite(row.deltaPct),
               mark: sanitizeFinite(mid),
+              theoreticalPrice: null,
               volume: sanitizeFinite(row.nominalVol),
               openInterest: sanitizeFinite(row.nominalVol),
               iv: sanitizeFinite(iv),
@@ -5501,6 +5795,7 @@ export class ArgentinaMarketRuntime {
           let riskReversal25 = Number.NaN;
           let butterfly25 = Number.NaN;
           let butterflyArbitrageFree = true;
+          let validSlice: ReturnType<typeof buildVolSlice> | null = null;
 
           const computeNearAtmFallbackIv = (spotPx: number): number => {
             const nearAtmIvs = volQuotes
@@ -5530,6 +5825,7 @@ export class ArgentinaMarketRuntime {
               },
             );
             if (slice.isValid) {
+              validSlice = slice;
               const metrics = computeSliceVolMetrics(slice, {
                 spot,
                 rate: evalRate,
@@ -5549,6 +5845,90 @@ export class ArgentinaMarketRuntime {
             ivAtm = computeNearAtmFallbackIv(spot);
           }
 
+          const sortedStrikes = [...strikeSet].sort((a, b) => a - b);
+
+          const computeTheoForDto = (c: ArOptionContractDto): ArOptionContractDto => {
+            if (spot === null || spot <= 0 || !Number.isFinite(evalRate)) {
+              return c;
+            }
+            const sliceVol = validSlice !== null ? evaluateSliceIvAtStrike(validSlice, c.strike) : Number.NaN;
+            const modelVol =
+              Number.isFinite(sliceVol) && sliceVol > 0
+                ? sliceVol
+                : Number.isFinite(ivAtm) && ivAtm > 0
+                  ? ivAtm
+                  : Number.NaN;
+            if (!Number.isFinite(modelVol) || modelVol <= 0) {
+              return c;
+            }
+            const effT = Math.max(tExp, 1e-4);
+            const effSig = Math.max(modelVol, 1e-4);
+            let theo = priceAmericanBjerksund2002({
+              spot,
+              strike: c.strike,
+              timeToExpiry: effT,
+              rate: evalRate,
+              dividendYield,
+              volatility: effSig,
+              contractType: c.contractType,
+            });
+            if (!Number.isFinite(theo)) {
+              theo = priceBsm({
+                spot,
+                strike: c.strike,
+                timeToExpiry: effT,
+                rate: evalRate,
+                dividendYield,
+                volatility: effSig,
+                contractType: c.contractType,
+              });
+            }
+            return {
+              ...c,
+              theoreticalPrice: Number.isFinite(theo) && theo >= 0 ? Math.round(theo * 100) / 100 : null,
+            };
+          };
+
+          const pricedCalls = calls.map(computeTheoForDto);
+          const pricedPuts = puts.map(computeTheoForDto);
+
+          // Max Pain exacto sobre Open Interest positivo del vencimiento
+          let totalOiExp = 0;
+          for (const c of pricedCalls) {
+            if (c.openInterest !== null && c.openInterest > 0) totalOiExp += c.openInterest;
+          }
+          for (const p of pricedPuts) {
+            if (p.openInterest !== null && p.openInterest > 0) totalOiExp += p.openInterest;
+          }
+          let maxPainStrike: number | null = null;
+          let maxPainDistPct: number | null = null;
+          if (totalOiExp > 0 && sortedStrikes.length > 0) {
+            let bestPayout = Number.POSITIVE_INFINITY;
+            let bestDist = Number.POSITIVE_INFINITY;
+            for (const candStrike of sortedStrikes) {
+              let payout = 0;
+              for (const c of pricedCalls) {
+                if (c.openInterest !== null && c.openInterest > 0 && candStrike > c.strike) {
+                  payout += c.openInterest * (candStrike - c.strike);
+                }
+              }
+              for (const p of pricedPuts) {
+                if (p.openInterest !== null && p.openInterest > 0 && p.strike > candStrike) {
+                  payout += p.openInterest * (p.strike - candStrike);
+                }
+              }
+              const distSpot = spot !== null && spot > 0 ? Math.abs(candStrike - spot) : 0;
+              if (payout < bestPayout - 1e-6 || (Math.abs(payout - bestPayout) <= 1e-6 && distSpot < bestDist)) {
+                bestPayout = payout;
+                bestDist = distSpot;
+                maxPainStrike = candStrike;
+              }
+            }
+            if (maxPainStrike !== null && spot !== null && spot > 0) {
+              maxPainDistPct = sanitizeFinite(((maxPainStrike - spot) / spot) * 100);
+            }
+          }
+
           expiries.push({
             expiryCode: sample.expiryCode,
             expiryLabel: sample.expiryLabel,
@@ -5559,9 +5939,11 @@ export class ArgentinaMarketRuntime {
             riskReversal25: sanitizeFinite(riskReversal25),
             butterfly25: sanitizeFinite(butterfly25),
             butterflyArbitrageFree,
-            strikes: [...strikeSet].sort((a, b) => a - b),
-            calls,
-            puts,
+            maxPainStrike,
+            maxPainDistPct,
+            strikes: sortedStrikes,
+            calls: pricedCalls,
+            puts: pricedPuts,
           });
         }
 
@@ -5636,6 +6018,17 @@ export class ArgentinaMarketRuntime {
             gammaFlipStatus: expResult.gammaFlipStatus,
             expectedMoveAbs: sanitizeFinite(expResult.expectedMove.formulaMove),
             expectedMovePct: sanitizeFinite(expResult.expectedMove.formulaMovePct),
+            expectedMoveExpirySec: frontExp?.expiryUtcSec ?? null,
+            expectedMoveExpiryCode: frontExp?.expiryCode ?? null,
+            expectedMoveDays: frontExp?.days ?? null,
+            byStrike: expResult.byStrike.map((s) => ({
+              strike: s.strike,
+              callOi: sanitizeFinite(s.callOpenInterest),
+              putOi: sanitizeFinite(s.putOpenInterest),
+              callGex: sanitizeFinite(s.callGex),
+              putGex: sanitizeFinite(s.putGex),
+              netGex: sanitizeFinite(s.netGex),
+            })),
           };
         }
 

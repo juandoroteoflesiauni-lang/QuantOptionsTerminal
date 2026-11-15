@@ -134,7 +134,7 @@ import {
   type VolQuoteInput,
   type VolSlice,
 } from '../core/options/volSurface.js';
-import { getMarketParts } from '../core/sessions.js';
+import { getMarketParts, MAX_TIME_SECONDS } from '../core/sessions.js';
 import { computeSessionVwap } from '../core/sessionVwap.js';
 import { evaluateTerminalConfluence } from '../core/terminal/confluenceOrchestrator.js';
 import { computeIntradayRealizedVol } from '../core/terminal/realizedVol.js';
@@ -477,9 +477,15 @@ export interface SerializedUnifiedQuote {
   readonly dayHigh: number | null;
   readonly dayRangePos: number | null;
   readonly volumeM: number | null;
+  readonly tradedVolumeUsd?: number | null;
   readonly iv30d: number | null;
   readonly marketStatus: string | null;
   readonly volume: number | null;
+  readonly bid?: number | null | undefined;
+  readonly ask?: number | null | undefined;
+  readonly bidSize?: number | null | undefined;
+  readonly askSize?: number | null | undefined;
+  readonly spreadPct?: number | null | undefined;
 }
 
 export interface SerializedMarketContext {
@@ -680,6 +686,7 @@ export interface SerializedTerminalEngines {
 export interface TerminalSnapshotResponse {
   readonly status: 'OK' | 'PARTIAL';
   readonly feedMode?: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA';
+  readonly quoteMode?: 'LIVE_NBBO' | 'EOD_CLOSE_REF';
   readonly symbol: string;
   readonly correlatedSymbol: string;
   readonly isIndex: boolean;
@@ -691,6 +698,7 @@ export interface TerminalSnapshotResponse {
   readonly microstructure: SerializedMicrostructureSummary;
   readonly marketContext: SerializedMarketContext;
   readonly terminalEngines?: SerializedTerminalEngines | null;
+  readonly benchmarkBars1d?: readonly SerializedBar[] | undefined;
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
   readonly dataQuality: SnapshotDataQuality;
 }
@@ -722,7 +730,10 @@ export interface TerminalBarsResponse {
   readonly bars: readonly SerializedBar[];
   readonly formingBar: SerializedBar | null;
   readonly overlays: {
+    readonly ema9?: readonly (number | null)[];
     readonly ema21: readonly (number | null)[];
+    readonly ema50?: readonly (number | null)[];
+    readonly ema200?: readonly (number | null)[];
     readonly sma50: readonly (number | null)[];
     readonly sma200: readonly (number | null)[];
     readonly hma55: readonly (number | null)[];
@@ -1011,6 +1022,7 @@ export interface EquityRiskReturnMetrics {
   readonly dayHigh: number | null;
   readonly dayRangePos: number | null;
   readonly volumeM: number | null;
+  readonly tradedVolumeUsd?: number | null;
   readonly return1dPct: number | null;
   readonly return30dPct: number | null;
   readonly returnYtdOr252dPct: number | null;
@@ -1052,6 +1064,7 @@ export interface EquityPanelRowDto {
   readonly dayHigh: number | null;
   readonly dayRangePos: number | null;
   readonly volumeM: number | null;
+  readonly tradedVolumeUsd?: number | null;
   readonly return1dPct: number | null;
   readonly return30dPct: number | null;
   readonly returnYtdOr252dPct: number | null;
@@ -1084,7 +1097,28 @@ export interface CachedDailyBarsResult {
   readonly cacheHit: boolean;
 }
 
-const DEFAULT_DAILY_1D_CACHE_TTL_MS = 5 * 60 * 1_000;
+const DEFAULT_DAILY_1D_CACHE_TTL_MS = 15 * 60 * 1_000;
+const US_DAILY_1D_WEEKEND_TTL_MS = 2 * 60 * 60 * 1_000;
+const US_PANEL_CONCURRENCY_LIMIT = 6;
+const US_PANEL_MAX_CLOSED_BARS = 260;
+const NYFED_SOFR_LAST_URL = 'https://markets.newyorkfed.org/api/rates/secured/sofr/last/1.json';
+const FRED_GRAPH_CSV_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv';
+
+function computeUsHistoricalPanelTtlMs(nowMs: number): number {
+  const nowSec = Math.floor(nowMs / 1_000);
+  if (!Number.isFinite(nowSec) || nowSec < 0 || nowSec > MAX_TIME_SECONDS) {
+    return DEFAULT_DAILY_1D_CACHE_TTL_MS;
+  }
+  const parts = getMarketParts(nowSec, 'EQUITY');
+  const isWeekday = parts.weekday >= 1 && parts.weekday <= 5;
+  if (!isWeekday) {
+    return US_DAILY_1D_WEEKEND_TTL_MS;
+  }
+  if (parts.minutesOfDay >= 9 * 60 + 30 && parts.minutesOfDay < 16 * 60) {
+    return DEFAULT_DAILY_1D_CACHE_TTL_MS;
+  }
+  return US_DAILY_1D_WEEKEND_TTL_MS;
+}
 
 export function sanitizeFinite(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -2397,7 +2431,7 @@ export function computePanelVolumeAndVolSeries(params: {
     panelVolume40d,
     volumeAvg40dM,
     volumeShareBreakdown,
-    panelVolHistory: panelVolHistoryAll.slice(-180),
+    panelVolHistory: panelVolHistoryAll.slice(-60),
   };
 }
 
@@ -2421,6 +2455,494 @@ async function mapWithConcurrency<T, R>(
   };
   await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
   return results;
+}
+
+interface V2StockBatchQuote {
+  readonly ticker: string;
+  readonly price: number;
+  readonly dayClose: number;
+  readonly previousClose: number;
+  readonly change: number;
+  readonly changePct: number;
+  readonly dayLow: number;
+  readonly dayHigh: number;
+  readonly volume: number;
+  readonly vwap: number;
+  readonly bid: number;
+  readonly ask: number;
+  readonly bidSize: number;
+  readonly askSize: number;
+  readonly marketStatus: string | null;
+}
+
+function firstPositiveFinite(values: readonly (number | null | undefined)[]): number {
+  for (const v of values) {
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+      return v;
+    }
+  }
+  return Number.NaN;
+}
+
+function asFiniteNum(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : Number.NaN;
+}
+
+function asPositiveNum(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : Number.NaN;
+}
+
+function withMassiveAuthUrl(rawUrl: string, apiKey: string): string {
+  const parsed = new URL(rawUrl);
+  const host = parsed.hostname.toLowerCase();
+  const paramName = host === 'api.massive.com' || host.endsWith('.massive.com') ? 'apikey' : 'apiKey';
+  parsed.searchParams.set(paramName, apiKey);
+  return parsed.toString();
+}
+
+function parseV2StockTickerSnapshot(raw: unknown): V2StockBatchQuote | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const rec = raw as Record<string, unknown>;
+  const tickerRaw = rec['ticker'];
+  if (typeof tickerRaw !== 'string' || tickerRaw.trim() === '') {
+    return null;
+  }
+  const ticker = tickerRaw.trim().toUpperCase();
+  const day = (rec['day'] !== null && typeof rec['day'] === 'object' ? rec['day'] : {}) as Record<string, unknown>;
+  const prevDay = (rec['prevDay'] !== null && typeof rec['prevDay'] === 'object' ? rec['prevDay'] : {}) as Record<string, unknown>;
+  const minBar = (rec['min'] !== null && typeof rec['min'] === 'object' ? rec['min'] : {}) as Record<string, unknown>;
+  const lastTrade = (rec['lastTrade'] !== null && typeof rec['lastTrade'] === 'object' ? rec['lastTrade'] : {}) as Record<string, unknown>;
+  const lastQuote = (rec['lastQuote'] !== null && typeof rec['lastQuote'] === 'object' ? rec['lastQuote'] : {}) as Record<string, unknown>;
+
+  const dayClose = asPositiveNum(day['c']);
+  const dayLow = asPositiveNum(day['l']);
+  const dayHigh = asPositiveNum(day['h']);
+  const volume = asPositiveNum(day['v']);
+  const vwap = asPositiveNum(day['vw']);
+  const prevClose = asPositiveNum(prevDay['c']);
+  const lastTradePx = asPositiveNum(lastTrade['p']);
+  const minClose = asPositiveNum(minBar['c']);
+  const bid = asPositiveNum(lastQuote['p']);
+  const ask = asPositiveNum(lastQuote['P']);
+  const bidSize = asPositiveNum(lastQuote['s']);
+  const askSize = asPositiveNum(lastQuote['S']);
+  const quoteMid =
+    Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid ? 0.5 * (bid + ask) : Number.NaN;
+  const price = firstPositiveFinite([dayClose, lastTradePx, minClose, quoteMid]);
+  const change = asFiniteNum(rec['todaysChange']);
+  const changePct = asFiniteNum(rec['todaysChangePerc']);
+  const marketStatusRaw = rec['market_status'];
+  const marketStatus = typeof marketStatusRaw === 'string' && marketStatusRaw.trim() !== '' ? marketStatusRaw.trim() : null;
+
+  return {
+    ticker,
+    price,
+    dayClose,
+    previousClose: prevClose,
+    change,
+    changePct,
+    dayLow,
+    dayHigh,
+    volume,
+    vwap,
+    bid,
+    ask,
+    bidSize,
+    askSize,
+    marketStatus,
+  };
+}
+
+interface EffectiveOpraContractsResult {
+  readonly contracts: readonly OptionSnapshotContract[];
+  readonly usedEodCloseRef: boolean;
+  readonly liveNbboCount: number;
+}
+
+function applyEodCloseRefQuotes(
+  contracts: readonly OptionSnapshotContract[],
+  params: { readonly evalSecUs: number; readonly marketIsClosed: boolean },
+): EffectiveOpraContractsResult {
+  let liveNbboCount = 0;
+  let eodFixableCount = 0;
+  for (const c of contracts) {
+    if (c.expirationTime <= params.evalSecUs) {
+      continue;
+    }
+    const { bid, ask } = c.lastQuote;
+    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+      liveNbboCount += 1;
+    } else {
+      const ref = firstPositiveFinite([
+        c.day.close,
+        c.lastTrade.price,
+        c.day.vwap,
+        c.day.previousClose,
+      ]);
+      if (Number.isFinite(ref) && ref > 0) {
+        eodFixableCount += 1;
+      }
+    }
+  }
+
+  const shouldUseEodRef =
+    eodFixableCount > 0 &&
+    (liveNbboCount < 4 || (params.marketIsClosed && liveNbboCount < eodFixableCount));
+
+  if (!shouldUseEodRef) {
+    return { contracts, usedEodCloseRef: false, liveNbboCount };
+  }
+
+  let modified = false;
+  const mapped = contracts.map((c) => {
+    const { bid, ask, bidSize, askSize } = c.lastQuote;
+    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+      return c;
+    }
+    const ref = firstPositiveFinite([
+      c.day.close,
+      c.lastTrade.price,
+      c.day.vwap,
+      c.day.previousClose,
+    ]);
+    if (!Number.isFinite(ref) || ref <= 0) {
+      return c;
+    }
+    modified = true;
+    return {
+      ...c,
+      lastQuote: {
+        ...c.lastQuote,
+        bid: ref * 0.995,
+        ask: ref * 1.005,
+        midpoint: ref,
+        bidSize: Number.isFinite(bidSize) && bidSize > 0 ? bidSize : 1,
+        askSize: Number.isFinite(askSize) && askSize > 0 ? askSize : 1,
+      },
+    };
+  });
+
+  return {
+    contracts: mapped,
+    usedEodCloseRef: modified,
+    liveNbboCount,
+  };
+}
+
+function resolveStockSnapshotWith1dFallback(params: {
+  readonly ticker: string;
+  readonly v2: V2StockBatchQuote | undefined;
+  readonly v3: UnifiedStockSnapshot | undefined;
+  readonly bars1d: readonly Bar[];
+  readonly cachedIvMap: ReadonlyMap<string, number>;
+}): SerializedUnifiedQuote {
+  const { ticker, v2, v3, bars1d } = params;
+  const lastBar = bars1d.length > 0 ? bars1d[bars1d.length - 1] : undefined;
+  const prevBar = bars1d.length > 1 ? bars1d[bars1d.length - 2] : undefined;
+
+  const snapDayClose = firstPositiveFinite([
+    v2?.dayClose,
+    v3 !== undefined && Number.isFinite(v3.session.close) && v3.session.close > 0 ? v3.session.close : Number.NaN,
+  ]);
+  const v3Price = v3 !== undefined ? resolveUnifiedStockPrice(v3) : Number.NaN;
+  const use1dBarFallback = (!Number.isFinite(snapDayClose) || snapDayClose <= 0) && lastBar !== undefined;
+
+  const priceRaw = use1dBarFallback
+    ? firstPositiveFinite([lastBar.close, v2?.price, v3Price])
+    : firstPositiveFinite([v2?.price, v3Price, snapDayClose, lastBar?.close]);
+  const dayLowRaw = use1dBarFallback
+    ? firstPositiveFinite([lastBar.low, v2?.dayLow, v3?.session.low])
+    : firstPositiveFinite([v2?.dayLow, v3?.session.low, lastBar?.low]);
+  const dayHighRaw = use1dBarFallback
+    ? firstPositiveFinite([lastBar.high, v2?.dayHigh, v3?.session.high])
+    : firstPositiveFinite([v2?.dayHigh, v3?.session.high, lastBar?.high]);
+  const volumeRaw = use1dBarFallback
+    ? firstPositiveFinite([lastBar.volume, v2?.volume, v3?.session.volume])
+    : firstPositiveFinite([v2?.volume, v3?.session.volume, lastBar?.volume]);
+  const vwapRaw = use1dBarFallback
+    ? firstPositiveFinite([lastBar.vw, lastBar.close, v2?.vwap, v3?.session.vwap, priceRaw])
+    : firstPositiveFinite([v2?.vwap, v3?.session.vwap, priceRaw, lastBar?.vw]);
+  const prevCloseRaw = use1dBarFallback
+    ? firstPositiveFinite([prevBar?.close, v2?.previousClose, v3?.session.previousClose])
+    : firstPositiveFinite([v2?.previousClose, v3?.session.previousClose, prevBar?.close]);
+
+  const changeRaw =
+    Number.isFinite(priceRaw) && Number.isFinite(prevCloseRaw) && prevCloseRaw > 0
+      ? priceRaw - prevCloseRaw
+      : firstPositiveFinite([v2?.change, v3?.session.change]);
+  const changePctRaw =
+    use1dBarFallback && Number.isFinite(priceRaw) && Number.isFinite(prevCloseRaw) && prevCloseRaw > 0
+      ? ((priceRaw - prevCloseRaw) / prevCloseRaw) * 100
+      : Number.isFinite(v2?.changePct)
+        ? (v2?.changePct ?? Number.NaN)
+        : v3 !== undefined && Number.isFinite(v3.session.changePercent)
+          ? v3.session.changePercent
+          : Number.isFinite(priceRaw) && Number.isFinite(prevCloseRaw) && prevCloseRaw > 0
+            ? ((priceRaw - prevCloseRaw) / prevCloseRaw) * 100
+            : Number.NaN;
+
+  const price = sanitizeFinite(priceRaw);
+  const previousClose = sanitizeFinite(prevCloseRaw);
+  const change = Number.isFinite(changeRaw) ? changeRaw : price !== null && previousClose !== null ? price - previousClose : null;
+  const changePct = sanitizeFinite(changePctRaw);
+  const dayLow = sanitizeFinite(dayLowRaw);
+  const dayHigh = sanitizeFinite(dayHighRaw);
+  const dayRangePos =
+    price !== null && dayLow !== null && dayHigh !== null && dayHigh > dayLow
+      ? sanitizeFinite(Math.max(0, Math.min(1, (price - dayLow) / (dayHigh - dayLow))))
+      : null;
+
+  const volume = sanitizeFinite(volumeRaw);
+  const refVw = Number.isFinite(vwapRaw) && vwapRaw > 0 ? vwapRaw : priceRaw;
+  const tradedVolumeUsd =
+    Number.isFinite(volumeRaw) && volumeRaw > 0 && Number.isFinite(refVw) && refVw > 0
+      ? sanitizeFinite(volumeRaw * refVw)
+      : null;
+  const volumeM = tradedVolumeUsd !== null ? sanitizeFinite(tradedVolumeUsd / 1_000_000) : null;
+
+  const qBid = sanitizeFinite(firstPositiveFinite([v2?.bid, v3?.lastQuote?.bid]));
+  const qAsk = sanitizeFinite(firstPositiveFinite([v2?.ask, v3?.lastQuote?.ask]));
+  const qBidSize = sanitizeFinite(firstPositiveFinite([v2?.bidSize, v3?.lastQuote?.bidSize]));
+  const qAskSize = sanitizeFinite(firstPositiveFinite([v2?.askSize, v3?.lastQuote?.askSize]));
+  const qSpreadPct =
+    qBid !== null && qAsk !== null && qAsk >= qBid && qBid + qAsk > 0
+      ? sanitizeFinite(((qAsk - qBid) / (0.5 * (qBid + qAsk))) * 100)
+      : null;
+
+  return {
+    ticker,
+    assetType: 'stock',
+    price,
+    change,
+    changePct,
+    previousClose,
+    dayLow,
+    dayHigh,
+    dayRangePos,
+    volumeM,
+    tradedVolumeUsd,
+    iv30d: sanitizeFinite(params.cachedIvMap.get(ticker) ?? null),
+    marketStatus: v3?.marketStatus ?? v2?.marketStatus ?? null,
+    volume,
+    bid: qBid,
+    ask: qAsk,
+    bidSize: qBidSize,
+    askSize: qAskSize,
+    spreadPct: qSpreadPct,
+  };
+}
+
+function parseCsvLineValues(line: string): readonly string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      out.push(cur.trim());
+      cur = '';
+    } else if (ch !== undefined) {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function parseTreasuryDateIso(rawDate: string): string | null {
+  const trimmed = rawDate.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+  const slashMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmed);
+  if (
+    slashMatch !== null &&
+    slashMatch[1] !== undefined &&
+    slashMatch[2] !== undefined &&
+    slashMatch[3] !== undefined
+  ) {
+    return `${slashMatch[3]}-${slashMatch[1]}-${slashMatch[2]}`;
+  }
+  return null;
+}
+
+function parseTreasuryPercentToDecimal(rawVal: string | undefined): number {
+  if (rawVal === undefined) return Number.NaN;
+  const trimmed = rawVal.trim();
+  if (trimmed === '' || trimmed === '.' || trimmed.toUpperCase() === 'N/A' || trimmed.toUpperCase() === 'ND') {
+    return Number.NaN;
+  }
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n >= 0 ? n / 100 : Number.NaN;
+}
+
+async function fetchNyFedSofrDecimal(fetchFn: FetchFn): Promise<{ readonly sofr: number; readonly date: string | null; readonly error: string | null }> {
+  try {
+    const res = await fetchFn(NYFED_SOFR_LAST_URL);
+    if (!res.ok) {
+      return { sofr: Number.NaN, date: null, error: `NY Fed SOFR HTTP ${String(res.status)}` };
+    }
+    const parsed = JSON.parse(res.text) as Record<string, unknown>;
+    const refRates = parsed['refRates'];
+    if (!Array.isArray(refRates) || refRates.length === 0) {
+      return { sofr: Number.NaN, date: null, error: 'NY Fed SOFR empty refRates' };
+    }
+    const first = refRates[0] as Record<string, unknown>;
+    const pct = typeof first['percentRate'] === 'number' ? first['percentRate'] : Number(first['percentRate']);
+    const date = typeof first['effectiveDate'] === 'string' ? first['effectiveDate'] : null;
+    if (!Number.isFinite(pct) || pct < 0) {
+      return { sofr: Number.NaN, date, error: 'NY Fed SOFR invalid percentRate' };
+    }
+    return { sofr: pct / 100, date, error: null };
+  } catch (err: unknown) {
+    return { sofr: Number.NaN, date: null, error: extractErrorMessage(err, 'NY Fed SOFR request failed') };
+  }
+}
+
+async function fetchFredSeriesLatestDecimal(fetchFn: FetchFn, seriesId: string): Promise<{ readonly date: string | null; readonly rate: number }> {
+  try {
+    const res = await fetchFn(`${FRED_GRAPH_CSV_BASE}?id=${encodeURIComponent(seriesId)}`);
+    if (!res.ok) {
+      return { date: null, rate: Number.NaN };
+    }
+    const lines = res.text.trim().split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 1; i -= 1) {
+      const line = lines[i];
+      if (line === undefined || line.trim() === '') continue;
+      const [dateStr, valStr] = parseCsvLineValues(line);
+      const dec = parseTreasuryPercentToDecimal(valStr);
+      if (Number.isFinite(dec)) {
+        return { date: dateStr ?? null, rate: dec };
+      }
+    }
+    return { date: null, rate: Number.NaN };
+  } catch {
+    return { date: null, rate: Number.NaN };
+  }
+}
+
+async function fetchFallbackUsTreasuryCurve(
+  fetchFn: FetchFn,
+  nowMs: number,
+): Promise<{ readonly observation: TreasuryYieldObservation | null; readonly error: string | null }> {
+  const year = new Date(nowMs).getUTCFullYear();
+  const csvUrl = `https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/${String(year)}/all?type=daily_treasury_yield_curve&field_tdr_date_value=${String(year)}&_format=csv`;
+
+  let dateStr: string | null = null;
+  let y1m = Number.NaN;
+  let y3m = Number.NaN;
+  let y6m = Number.NaN;
+  let y1y = Number.NaN;
+  let y2y = Number.NaN;
+  let y3y = Number.NaN;
+  let y5y = Number.NaN;
+  let y7y = Number.NaN;
+  let y10y = Number.NaN;
+  let y20y = Number.NaN;
+  let y30y = Number.NaN;
+  const errors: string[] = [];
+
+  try {
+    const res = await fetchFn(csvUrl);
+    if (res.ok && res.text.trim() !== '') {
+      const lines = res.text.trim().split(/\r?\n/);
+      if (lines.length >= 2) {
+        const headers = parseCsvLineValues(lines[0] ?? '').map((h) => h.toLowerCase());
+        const findCol = (candidates: readonly string[]): number =>
+          headers.findIndex((h) => candidates.some((c) => h === c || h.includes(c)));
+        const idxDate = findCol(['date']);
+        const idx1m = findCol(['1 mo', '1 month']);
+        const idx3m = findCol(['3 mo', '3 month']);
+        const idx6m = findCol(['6 mo', '6 month']);
+        const idx1y = findCol(['1 yr', '1 year']);
+        const idx2y = findCol(['2 yr', '2 year']);
+        const idx3y = findCol(['3 yr', '3 year']);
+        const idx5y = findCol(['5 yr', '5 year']);
+        const idx7y = findCol(['7 yr', '7 year']);
+        const idx10y = findCol(['10 yr', '10 year']);
+        const idx20y = findCol(['20 yr', '20 year']);
+        const idx30y = findCol(['30 yr', '30 year']);
+
+        for (let r = 1; r < lines.length; r += 1) {
+          const cols = parseCsvLineValues(lines[r] ?? '');
+          const isoDate = idxDate >= 0 ? parseTreasuryDateIso(cols[idxDate] ?? '') : null;
+          if (isoDate === null) continue;
+          if (dateStr !== null && isoDate <= dateStr) continue;
+          const cand2y = idx2y >= 0 ? parseTreasuryPercentToDecimal(cols[idx2y]) : Number.NaN;
+          const cand10y = idx10y >= 0 ? parseTreasuryPercentToDecimal(cols[idx10y]) : Number.NaN;
+          if (!Number.isFinite(cand2y) && !Number.isFinite(cand10y)) continue;
+          dateStr = isoDate;
+          y1m = idx1m >= 0 ? parseTreasuryPercentToDecimal(cols[idx1m]) : Number.NaN;
+          y3m = idx3m >= 0 ? parseTreasuryPercentToDecimal(cols[idx3m]) : Number.NaN;
+          y6m = idx6m >= 0 ? parseTreasuryPercentToDecimal(cols[idx6m]) : Number.NaN;
+          y1y = idx1y >= 0 ? parseTreasuryPercentToDecimal(cols[idx1y]) : Number.NaN;
+          y2y = cand2y;
+          y3y = idx3y >= 0 ? parseTreasuryPercentToDecimal(cols[idx3y]) : Number.NaN;
+          y5y = idx5y >= 0 ? parseTreasuryPercentToDecimal(cols[idx5y]) : Number.NaN;
+          y7y = idx7y >= 0 ? parseTreasuryPercentToDecimal(cols[idx7y]) : Number.NaN;
+          y10y = cand10y;
+          y20y = idx20y >= 0 ? parseTreasuryPercentToDecimal(cols[idx20y]) : Number.NaN;
+          y30y = idx30y >= 0 ? parseTreasuryPercentToDecimal(cols[idx30y]) : Number.NaN;
+        }
+      }
+    } else if (!res.ok) {
+      errors.push(`US Treasury HTTP ${String(res.status)}`);
+    }
+  } catch (err: unknown) {
+    errors.push(extractErrorMessage(err, 'US Treasury CSV failed'));
+  }
+
+  if (!Number.isFinite(y2y) || !Number.isFinite(y10y)) {
+    const [f1m, f3m, f1y, f2y, f10y] = await Promise.all([
+      Number.isFinite(y1m) ? Promise.resolve({ date: dateStr, rate: y1m }) : fetchFredSeriesLatestDecimal(fetchFn, 'DGS1MO'),
+      Number.isFinite(y3m) ? Promise.resolve({ date: dateStr, rate: y3m }) : fetchFredSeriesLatestDecimal(fetchFn, 'DGS3MO'),
+      Number.isFinite(y1y) ? Promise.resolve({ date: dateStr, rate: y1y }) : fetchFredSeriesLatestDecimal(fetchFn, 'DGS1'),
+      Number.isFinite(y2y) ? Promise.resolve({ date: dateStr, rate: y2y }) : fetchFredSeriesLatestDecimal(fetchFn, 'DGS2'),
+      Number.isFinite(y10y) ? Promise.resolve({ date: dateStr, rate: y10y }) : fetchFredSeriesLatestDecimal(fetchFn, 'DGS10'),
+    ]);
+    y1m = Number.isFinite(y1m) ? y1m : f1m.rate;
+    y3m = Number.isFinite(y3m) ? y3m : f3m.rate;
+    y1y = Number.isFinite(y1y) ? y1y : f1y.rate;
+    y2y = Number.isFinite(y2y) ? y2y : f2y.rate;
+    y10y = Number.isFinite(y10y) ? y10y : f10y.rate;
+    dateStr = dateStr ?? f10y.date ?? f2y.date;
+  }
+
+  const allTenors = [y1m, y3m, y6m, y1y, y2y, y3y, y5y, y7y, y10y, y20y, y30y];
+  const finiteTenors = allTenors.filter((v) => Number.isFinite(v)).length;
+  if (finiteTenors === 0 || dateStr === null) {
+    return {
+      observation: null,
+      error: errors.length > 0 ? errors.join('; ') : 'Fallback Treasury curve empty',
+    };
+  }
+
+  const parsedMs = Date.parse(`${dateStr}T00:00:00Z`);
+  const dateTime = Number.isFinite(parsedMs) ? Math.floor(parsedMs / 1_000) : Math.floor(nowMs / 1_000);
+
+  return {
+    observation: {
+      date: dateStr,
+      dateTime,
+      yield1Month: y1m,
+      yield3Month: y3m,
+      yield6Month: y6m,
+      yield1Year: y1y,
+      yield2Year: y2y,
+      yield3Year: y3y,
+      yield5Year: y5y,
+      yield7Year: y7y,
+      yield10Year: y10y,
+      yield20Year: y20y,
+      yield30Year: y30y,
+      finiteTenors,
+    },
+    error: null,
+  };
 }
 
 /**
@@ -2450,6 +2972,19 @@ export class MarketRuntime {
   private readonly treasuryCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadTreasuryYields>>>;
   private readonly fundingCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadFundingConditions>>>;
   private readonly unifiedCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadUnifiedSnapshot>>>;
+  private readonly stocksV2Cache: SingleFlightRuntimeCache<{
+    readonly map: ReadonlyMap<string, V2StockBatchQuote>;
+    readonly error: string | null;
+  }>;
+  private readonly nyfedSofrCache: SingleFlightRuntimeCache<{
+    readonly sofr: number;
+    readonly date: string | null;
+    readonly error: string | null;
+  }>;
+  private readonly fallbackTreasuryCache: SingleFlightRuntimeCache<{
+    readonly observation: TreasuryYieldObservation | null;
+    readonly error: string | null;
+  }>;
   private readonly daily1dCache: SingleFlightRuntimeCache<readonly Bar[]>;
   private readonly usPanelCache: SingleFlightRuntimeCache<EquityPanelAnalyticsDto>;
 
@@ -2526,13 +3061,25 @@ export class MarketRuntime {
       nowFn: this.nowMsFn,
       ttlResolver,
     });
+    this.stocksV2Cache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver,
+    });
+    this.nyfedSofrCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: deps.ttlResolver ?? (() => 60 * 60 * 1_000),
+    });
+    this.fallbackTreasuryCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: deps.ttlResolver ?? (() => 2 * 60 * 60 * 1_000),
+    });
     this.daily1dCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
-      ttlResolver: deps.ttlResolver ?? (() => DEFAULT_DAILY_1D_CACHE_TTL_MS),
+      ttlResolver: deps.ttlResolver ?? ((nowMs) => computeUsHistoricalPanelTtlMs(nowMs)),
     });
     this.usPanelCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
-      ttlResolver: deps.ttlResolver ?? (() => 120_000),
+      ttlResolver: deps.ttlResolver ?? ((nowMs) => computeUsHistoricalPanelTtlMs(nowMs)),
     });
 
     if (
@@ -2938,6 +3485,53 @@ export class MarketRuntime {
     return result.value;
   }
 
+  private async getUsStocksV2Batch(
+    tickers: readonly string[],
+    forceRefresh = false,
+  ): Promise<{ readonly map: ReadonlyMap<string, V2StockBatchQuote>; readonly error: string | null }> {
+    const cleanTickers = [...new Set(tickers.map((t) => t.trim().toUpperCase()).filter((t) => t.length > 0))];
+    if (cleanTickers.length === 0) {
+      return { map: new Map(), error: null };
+    }
+    const cacheKey = `v2stocks:${[...cleanTickers].sort().join(',')}`;
+    const res = await this.stocksV2Cache.getOrCompute(
+      cacheKey,
+      async () => {
+        const base = (this.baseUrl ?? 'https://api.massive.com').replace(/\/+$/, '');
+        const rawUrl = `${base}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(cleanTickers.join(','))}`;
+        const authedUrl = withMassiveAuthUrl(rawUrl, this.apiKey);
+        try {
+          const httpRes = await this.fetchFn(authedUrl);
+          if (!httpRes.ok) {
+            return {
+              map: new Map<string, V2StockBatchQuote>(),
+              error: redactSecrets(`Massive v2 snapshot HTTP ${String(httpRes.status)}`, this.secrets),
+            };
+          }
+          const parsed = JSON.parse(httpRes.text) as Record<string, unknown>;
+          const rawTickers = parsed['tickers'];
+          const out = new Map<string, V2StockBatchQuote>();
+          if (Array.isArray(rawTickers)) {
+            for (const item of rawTickers) {
+              const q = parseV2StockTickerSnapshot(item);
+              if (q !== null) {
+                out.set(q.ticker, q);
+              }
+            }
+          }
+          return { map: out, error: null };
+        } catch (err: unknown) {
+          return {
+            map: new Map<string, V2StockBatchQuote>(),
+            error: redactSecrets(extractErrorMessage(err, 'Massive v2 snapshot failed'), this.secrets),
+          };
+        }
+      },
+      { forceRefresh },
+    );
+    return res.value;
+  }
+
   private async computeSnapshot(parsed: ParsedSymbol): Promise<TerminalSnapshotResponse> {
     const apiKey = this.assertApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
@@ -2973,6 +3567,7 @@ export class MarketRuntime {
       treasuryRes,
       fundingRes,
       unifiedRes,
+      v2StocksRes,
       bars1dRes,
       bars4hRes,
       bars15mRes,
@@ -2996,6 +3591,10 @@ export class MarketRuntime {
           this.loadUnifiedSnapshotFn({ ...baseTransport, tickers: unifiedTickers, limit: 250, maxPages: 1 }),
         )
         .then((r) => r.value),
+      this.getUsStocksV2Batch(
+        US_EQUITY_UNIVERSE.map((u) => u.symbol),
+        false,
+      ),
       this.loadBarsFn({
         provider: 'massive',
         symbol: canonicalSymbol,
@@ -3099,6 +3698,10 @@ export class MarketRuntime {
       bars5mRes.bars,
       bars1dRes.bars,
     );
+    const v2Own = v2StocksRes.map.get(canonicalSymbol);
+    if (!Number.isFinite(spot) && v2Own !== undefined && Number.isFinite(v2Own.price) && v2Own.price > 0) {
+      spot = v2Own.price;
+    }
 
     if (
       bars5mRes.bars.length === 0 &&
@@ -3114,7 +3717,7 @@ export class MarketRuntime {
       throw new RuntimeNoDataError('NO_MARKET_DATA', errDetail, this.secrets, 503);
     }
 
-    const latestTreasury =
+    let latestTreasury =
       [...treasuryRes.observations]
         .reverse()
         .find((obs) => obs.finiteTenors === TREASURY_TENORS.length) ??
@@ -3122,7 +3725,76 @@ export class MarketRuntime {
     const latestFunding = [...fundingRes.observations]
       .reverse()
       .find((obs) => Number.isFinite(obs.sofr));
-    const sofrRate = latestFunding?.sofr ?? Number.NaN;
+    let sofrRate = latestFunding?.sofr ?? Number.NaN;
+
+    const hasMassiveCoreData =
+      bars1dRes.bars.length > 0 ||
+      bars5mRes.bars.length > 0 ||
+      unifiedRes.stocks.length > 0 ||
+      unifiedRes.indices.length > 0 ||
+      v2StocksRes.map.size > 0;
+
+    if (hasMassiveCoreData) {
+      const needSofrFallback = !Number.isFinite(sofrRate);
+      const needTreasuryFallback =
+        latestTreasury === undefined ||
+        !Number.isFinite(latestTreasury.yield2Year) ||
+        !Number.isFinite(latestTreasury.yield10Year);
+      const [nyfedCacheRes, fbTreasuryCacheRes] = await Promise.all([
+        needSofrFallback
+          ? this.nyfedSofrCache
+              .getOrCompute('nyfed:sofr:last', () => fetchNyFedSofrDecimal(this.fetchFn))
+              .then((r) => r.value)
+          : Promise.resolve(null),
+        needTreasuryFallback
+          ? this.fallbackTreasuryCache
+              .getOrCompute('treasury:fallback:latest', () =>
+                fetchFallbackUsTreasuryCurve(this.fetchFn, this.nowMsFn()),
+              )
+              .then((r) => r.value)
+          : Promise.resolve(null),
+      ]);
+      if (needSofrFallback && nyfedCacheRes !== null && Number.isFinite(nyfedCacheRes.sofr)) {
+        sofrRate = nyfedCacheRes.sofr;
+      }
+      if (needTreasuryFallback && fbTreasuryCacheRes !== null && fbTreasuryCacheRes.observation !== null) {
+        const fb = fbTreasuryCacheRes.observation;
+        if (latestTreasury === undefined) {
+          latestTreasury = fb;
+        } else {
+          const merged: TreasuryYieldObservation = {
+            date: latestTreasury.date || fb.date,
+            dateTime: latestTreasury.dateTime || fb.dateTime,
+            yield1Month: Number.isFinite(latestTreasury.yield1Month) ? latestTreasury.yield1Month : fb.yield1Month,
+            yield3Month: Number.isFinite(latestTreasury.yield3Month) ? latestTreasury.yield3Month : fb.yield3Month,
+            yield6Month: Number.isFinite(latestTreasury.yield6Month) ? latestTreasury.yield6Month : fb.yield6Month,
+            yield1Year: Number.isFinite(latestTreasury.yield1Year) ? latestTreasury.yield1Year : fb.yield1Year,
+            yield2Year: Number.isFinite(latestTreasury.yield2Year) ? latestTreasury.yield2Year : fb.yield2Year,
+            yield3Year: Number.isFinite(latestTreasury.yield3Year) ? latestTreasury.yield3Year : fb.yield3Year,
+            yield5Year: Number.isFinite(latestTreasury.yield5Year) ? latestTreasury.yield5Year : fb.yield5Year,
+            yield7Year: Number.isFinite(latestTreasury.yield7Year) ? latestTreasury.yield7Year : fb.yield7Year,
+            yield10Year: Number.isFinite(latestTreasury.yield10Year) ? latestTreasury.yield10Year : fb.yield10Year,
+            yield20Year: Number.isFinite(latestTreasury.yield20Year) ? latestTreasury.yield20Year : fb.yield20Year,
+            yield30Year: Number.isFinite(latestTreasury.yield30Year) ? latestTreasury.yield30Year : fb.yield30Year,
+            finiteTenors: 0,
+          };
+          const count = [
+            merged.yield1Month,
+            merged.yield3Month,
+            merged.yield6Month,
+            merged.yield1Year,
+            merged.yield2Year,
+            merged.yield3Year,
+            merged.yield5Year,
+            merged.yield7Year,
+            merged.yield10Year,
+            merged.yield20Year,
+            merged.yield30Year,
+          ].filter((v) => Number.isFinite(v)).length;
+          latestTreasury = { ...merged, finiteTenors: count };
+        }
+      }
+    }
 
     let contracts: readonly OptionSnapshotContract[] = [];
     let chainUnderlying: OptionUnderlyingSnapshot | null = null;
@@ -3194,6 +3866,25 @@ export class MarketRuntime {
       bars5mRes.bars,
       bars1dRes.bars,
     );
+    if (!Number.isFinite(spot) && v2Own !== undefined && Number.isFinite(v2Own.price) && v2Own.price > 0) {
+      spot = v2Own.price;
+    }
+
+    const marketPartsEt = getMarketParts(nowSec, 'EQUITY');
+    const isWeekendEt = marketPartsEt.weekday === 0 || marketPartsEt.weekday === 6;
+    const anyClosedMarket =
+      unifiedRes.stocks.some((s) => s.marketStatus?.toLowerCase() === 'closed') ||
+      unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed') ||
+      [...v2StocksRes.map.values()].some((q) => q.marketStatus?.toLowerCase() === 'closed');
+
+    const rawOptionContracts: readonly OptionSnapshotContract[] = contracts;
+    const eodQuotesRes = applyEodCloseRefQuotes(rawOptionContracts, {
+      evalSecUs: nowSec,
+      marketIsClosed: anyClosedMarket || isWeekendEt,
+    });
+    contracts = eodQuotesRes.contracts;
+    const usedEodCloseRef = eodQuotesRes.usedEodCloseRef;
+    const quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF' = usedEodCloseRef ? 'EOD_CLOSE_REF' : 'LIVE_NBBO';
 
     const byExpiry = new Map<number, OptionSnapshotContract[]>();
     for (const c of contracts) {
@@ -3282,7 +3973,7 @@ export class MarketRuntime {
         },
       );
       let slice = strictSlice;
-      if (!slice.isValid && canonicalSymbol === 'GGAL') {
+      if (!slice.isValid && (canonicalSymbol === 'GGAL' || usedEodCloseRef || anyClosedMarket || isWeekendEt)) {
         const relaxedQuotes: VolQuoteInput[] = [];
         for (const c of expiryContracts) {
           const midRaw = resolveQuoteMid(c);
@@ -3693,7 +4384,17 @@ export class MarketRuntime {
     const vixSnap = indexByTicker.get('I:VIX');
     const skewSnap = indexByTicker.get('I:SKEW');
     const vixLevel = resolveUnifiedIndexLevel(vixSnap);
-    const skewLevel = resolveUnifiedIndexLevel(skewSnap);
+    let skewLevel = resolveUnifiedIndexLevel(skewSnap);
+    if ((!Number.isFinite(skewLevel) || skewLevel <= 0) && hasMassiveCoreData) {
+      const skewBarsRes = await this.getCachedDailyBars1d('I:SKEW', 10, false);
+      for (let i = skewBarsRes.bars.length - 1; i >= 0; i -= 1) {
+        const b = skewBarsRes.bars[i];
+        if (b !== undefined && b.time <= nowSec && Number.isFinite(b.close) && b.close > 0) {
+          skewLevel = b.close;
+          break;
+        }
+      }
+    }
     const vixSeries: { readonly time: number; readonly value: number }[] = [];
     let vixBarSeconds = 86_400;
     if (vixBars1dRes !== null && vixBars1dRes.bars.length > 0) {
@@ -3754,38 +4455,25 @@ export class MarketRuntime {
       canonicalSymbol,
       volSurfaceSummary?.iv30d ?? null,
     );
+    const unifiedStockTickers = [
+      ...new Set([
+        ...unifiedRes.stocks.map((s) => s.ticker.toUpperCase()),
+        ...v2StocksRes.map.keys(),
+      ]),
+    ];
     const unifiedQuotes: SerializedUnifiedQuote[] = [
-      ...unifiedRes.stocks.map((s) => {
-        const px = resolveUnifiedStockPrice(s);
-        const dayLow = sanitizeFinite(s.session.low > 0 ? s.session.low : null);
-        const dayHigh = sanitizeFinite(s.session.high > 0 ? s.session.high : null);
-        const dayRangePos =
-          Number.isFinite(px) && dayLow !== null && dayHigh !== null && dayHigh > dayLow
-            ? sanitizeFinite((px - dayLow) / (dayHigh - dayLow))
-            : null;
-        const refVw = Number.isFinite(s.session.vwap) && s.session.vwap > 0 ? s.session.vwap : px;
-        const volumeM =
-          Number.isFinite(s.session.volume) &&
-          s.session.volume > 0 &&
-          Number.isFinite(refVw) &&
-          refVw > 0
-            ? sanitizeFinite((s.session.volume * refVw) / 1_000_000)
-            : null;
-        return {
-          ticker: s.ticker,
-          assetType: 'stock' as const,
-          price: sanitizeFinite(px),
-          change: sanitizeFinite(s.session.change),
-          changePct: sanitizeFinite(s.session.changePercent),
-          previousClose: sanitizeFinite(s.session.previousClose),
-          dayLow,
-          dayHigh,
-          dayRangePos,
-          volumeM,
-          iv30d: sanitizeFinite(cachedIvMap.get(s.ticker.toUpperCase()) ?? null),
-          marketStatus: s.marketStatus,
-          volume: sanitizeFinite(s.session.volume),
-        };
+      ...unifiedStockTickers.map((sym) => {
+        const cached1d =
+          this.daily1dCache.peek(`us1d:${sym}:265`)?.value ??
+          (sym === canonicalSymbol ? bars1dRes.bars : []);
+        const closed1d = cached1d.length > 0 ? normalizeClosedDailyBarsUs(cached1d, nowSec) : [];
+        return resolveStockSnapshotWith1dFallback({
+          ticker: sym,
+          v2: v2StocksRes.map.get(sym),
+          v3: stockByTicker.get(sym),
+          bars1d: closed1d,
+          cachedIvMap,
+        });
       }),
       ...unifiedRes.indices.map((idx) => ({
         ticker: idx.ticker,
@@ -3801,6 +4489,11 @@ export class MarketRuntime {
         iv30d: null,
         marketStatus: idx.marketStatus,
         volume: null,
+        bid: null,
+        ask: null,
+        bidSize: null,
+        askSize: null,
+        spreadPct: null,
       })),
     ];
 
@@ -3939,6 +4632,11 @@ export class MarketRuntime {
             size: c.day.volume,
             bid: c.lastQuote.bid,
             ask: c.lastQuote.ask,
+            ...(Number.isFinite(c.day.previousClose) && c.day.previousClose > 0
+              ? { prevPrice: c.day.previousClose }
+              : Number.isFinite(c.day.change) && c.day.change !== 0
+                ? { prevPrice: Math.max(0.0001, (Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0 ? c.lastTrade.price : resolveQuoteMid(c)) - c.day.change) }
+                : {}),
             ...(Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
               ? { impliedVolatility: c.impliedVolatility }
               : {}),
@@ -3979,7 +4677,7 @@ export class MarketRuntime {
       if (printsUs.length > 0) {
         orderFlowUs = computeSignedOptionsOrderFlow(printsUs, flowCtxUs);
       }
-      agresionTicksUs = computeUsOptionsTickAggression(contracts, evalSecUs);
+      agresionTicksUs = computeUsOptionsTickAggression(rawOptionContracts, evalSecUs);
       if (volOiInputsUs.length >= 2) {
         volOiAnomaliesUs = detectVolOiAnomaliesMad(
           volOiInputsUs,
@@ -4490,20 +5188,27 @@ export class MarketRuntime {
       structureCostPercentile: structureCostPercentileUs,
     });
 
-    const anyClosedMarket =
-      unifiedRes.stocks.some((s) => s.marketStatus?.toLowerCase() === 'closed') ||
-      unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed');
     const feedMode: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA' =
       anyClosedMarket ||
-      (bars1dRes.bars.length > 0 && unifiedRes.stocks.length === 0 && unifiedRes.indices.length === 0)
+      usedEodCloseRef ||
+      isWeekendEt ||
+      (bars1dRes.bars.length > 0 && unifiedRes.stocks.length === 0 && unifiedRes.indices.length === 0 && v2StocksRes.map.size === 0)
         ? 'EOD_CIERRE'
         : envelope.envelopeStatus === 'OK' && warnings.length === 0
           ? 'LIVE'
           : 'PARTIAL';
 
+    if (canonicalSymbol === 'SPY' && this.usPanelCache.peek('us:equity:panel') === undefined && hasMassiveCoreData) {
+      void this.getUsEquityPanelAnalytics(false).catch(() => {});
+    }
+
+    const rateDecToPct = (dec: number | undefined): number | null =>
+      dec !== undefined && Number.isFinite(dec) ? dec * 100 : null;
+
     const response: TerminalSnapshotResponse = {
       status: envelope.envelopeStatus === 'OK' && warnings.length === 0 ? 'OK' : 'PARTIAL',
       feedMode,
+      quoteMode,
       symbol: canonicalSymbol,
       correlatedSymbol,
       isIndex,
@@ -4523,12 +5228,12 @@ export class MarketRuntime {
         unifiedQuotes,
         treasury: {
           date: latestTreasury?.date ?? null,
-          yield1M: sanitizeFinite(latestTreasury?.yield1Month),
-          yield3M: sanitizeFinite(latestTreasury?.yield3Month),
-          yield1Y: sanitizeFinite(latestTreasury?.yield1Year),
-          yield2Y: sanitizeFinite(latestTreasury?.yield2Year),
-          yield10Y: sanitizeFinite(latestTreasury?.yield10Year),
-          sofr: sanitizeFinite(sofrRate),
+          yield1M: rateDecToPct(latestTreasury?.yield1Month),
+          yield3M: rateDecToPct(latestTreasury?.yield3Month),
+          yield1Y: rateDecToPct(latestTreasury?.yield1Year),
+          yield2Y: rateDecToPct(latestTreasury?.yield2Year),
+          yield10Y: rateDecToPct(latestTreasury?.yield10Year),
+          sofr: rateDecToPct(sofrRate),
           rate30d: sanitizeFinite(r30d),
           dividendYieldFront: sanitizeFinite(frontSlicePkg?.parity.dividendYield),
         },
@@ -4539,6 +5244,9 @@ export class MarketRuntime {
         tailRiskAlert: macroVol?.tailRiskAlert ?? null,
       },
       terminalEngines,
+      benchmarkBars1d: (canonicalSymbol === 'SPY' ? bars1dRes.bars : spyBars1dRes?.bars ?? [])
+        .slice(-120)
+        .map(serializeBar),
       usEquityPanel: this.usPanelCache.peek('us:equity:panel')?.value ?? null,
       dataQuality: {
         ownSolvedIvContracts,
@@ -4612,7 +5320,10 @@ export class MarketRuntime {
 
     const bars = res.bars;
     const closes = bars.map((b) => b.close);
+    const ema9 = calculateEma(closes, 9);
     const ema21 = calculateEma(closes, 21);
+    const ema50 = calculateEma(closes, 50);
+    const ema200 = calculateEma(closes, 200);
     const sma50 = computeSmaSeries(closes, 50);
     const sma200 = computeSmaSeries(closes, 200);
     const hma55 = computeHmaSeries(closes, 55);
@@ -4699,7 +5410,10 @@ export class MarketRuntime {
           ? serializeBar(formingState.formingBar)
           : null,
       overlays: {
+        ema9: ema9.slice(startSlice).map((v) => sanitizeFinite(v)),
         ema21: ema21.slice(startSlice).map((v) => sanitizeFinite(v)),
+        ema50: ema50.slice(startSlice).map((v) => sanitizeFinite(v)),
+        ema200: ema200.slice(startSlice).map((v) => sanitizeFinite(v)),
         sma50: sma50.slice(startSlice).map((v) => sanitizeFinite(v)),
         sma200: sma200.slice(startSlice).map((v) => sanitizeFinite(v)),
         hma55: hma55.slice(startSlice).map((v) => sanitizeFinite(v)),
@@ -4991,7 +5705,8 @@ export class MarketRuntime {
           ]),
         ];
 
-        const [unifiedRes, barsResults] = await Promise.all([
+        const [v2StocksRes, unifiedRes, barsResults] = await Promise.all([
+          this.getUsStocksV2Batch(universeSymbols, forceRefresh),
           this.unifiedCache
             .getOrCompute(
               `unified:${[...unifiedTickers].sort().join(',')}`,
@@ -5010,14 +5725,15 @@ export class MarketRuntime {
               errors.push(redactSecrets(msg, this.secrets));
               return null;
             }),
-          mapWithConcurrency(universeSymbols, 8, (sym) =>
+          mapWithConcurrency(universeSymbols, US_PANEL_CONCURRENCY_LIMIT, (sym) =>
             this.getCachedDailyBars1d(sym, 265, forceRefresh),
           ),
         ]);
 
         const barsBySymbol = new Map<string, readonly Bar[]>();
         for (const res of barsResults) {
-          barsBySymbol.set(res.symbol, res.bars);
+          const closedBars = normalizeClosedDailyBarsUs(res.bars, nowSec).slice(-US_PANEL_MAX_CLOSED_BARS);
+          barsBySymbol.set(res.symbol, closedBars);
           if (res.error !== null) {
             errors.push(`Massive 1D ${res.symbol}: ${res.error}`);
           }
@@ -5042,48 +5758,19 @@ export class MarketRuntime {
 
         for (const meta of US_EQUITY_UNIVERSE) {
           const bars = barsBySymbol.get(meta.symbol) ?? [];
-          const snapQuote = unifiedBySymbol.get(meta.symbol);
-          const snapPx =
-            snapQuote !== undefined
-              ? resolveUnifiedStockPrice(snapQuote)
-              : Number.NaN;
-          const liveLast = Number.isFinite(snapPx) && snapPx > 0 ? snapPx : null;
-          const livePrevClose =
-            snapQuote !== undefined &&
-            Number.isFinite(snapQuote.session.previousClose) &&
-            snapQuote.session.previousClose > 0
-              ? snapQuote.session.previousClose
-              : null;
-          const liveLow =
-            snapQuote !== undefined &&
-            Number.isFinite(snapQuote.session.low) &&
-            snapQuote.session.low > 0
-              ? snapQuote.session.low
-              : null;
-          const liveHigh =
-            snapQuote !== undefined &&
-            Number.isFinite(snapQuote.session.high) &&
-            snapQuote.session.high > 0
-              ? snapQuote.session.high
-              : null;
-          const liveChangePct =
-            snapQuote !== undefined && Number.isFinite(snapQuote.session.changePercent)
-              ? snapQuote.session.changePercent
-              : null;
-          const refVw =
-            snapQuote !== undefined &&
-            Number.isFinite(snapQuote.session.vwap) &&
-            snapQuote.session.vwap > 0
-              ? snapQuote.session.vwap
-              : liveLast;
-          const liveVolumeM =
-            snapQuote !== undefined &&
-            Number.isFinite(snapQuote.session.volume) &&
-            snapQuote.session.volume > 0 &&
-            refVw !== null &&
-            refVw > 0
-              ? (snapQuote.session.volume * refVw) / 1_000_000
-              : null;
+          const resolvedQuote = resolveStockSnapshotWith1dFallback({
+            ticker: meta.symbol,
+            v2: v2StocksRes.map.get(meta.symbol),
+            v3: unifiedBySymbol.get(meta.symbol),
+            bars1d: bars,
+            cachedIvMap,
+          });
+          const liveLast = resolvedQuote.price;
+          const livePrevClose = resolvedQuote.previousClose;
+          const liveLow = resolvedQuote.dayLow;
+          const liveHigh = resolvedQuote.dayHigh;
+          const liveChangePct = resolvedQuote.changePct;
+          const liveVolumeM = resolvedQuote.volumeM;
 
           const metrics = computeEquityRiskAndReturnMetrics({
             bars,
@@ -5102,6 +5789,11 @@ export class MarketRuntime {
             rawIv !== null && Number.isFinite(rawIv) && rawIv > 0
               ? sanitizeFinite(rawIv * 100)
               : null;
+          const tradedVolumeUsd =
+            resolvedQuote.tradedVolumeUsd ??
+            (metrics.volumeM !== null && Number.isFinite(metrics.volumeM)
+              ? sanitizeFinite(metrics.volumeM * 1_000_000)
+              : null);
 
           rows.push({
             symbol: meta.symbol,
@@ -5115,6 +5807,7 @@ export class MarketRuntime {
             dayHigh: metrics.dayHigh,
             dayRangePos: metrics.dayRangePos,
             volumeM: metrics.volumeM,
+            tradedVolumeUsd,
             return1dPct: metrics.return1dPct,
             return30dPct: metrics.return30dPct,
             returnYtdOr252dPct: metrics.returnYtdOr252dPct,

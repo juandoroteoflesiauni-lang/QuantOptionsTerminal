@@ -149,6 +149,7 @@ export interface ArMacroResponse {
     readonly riesgoPaisPb: number | null;
     readonly mep: number | null;
     readonly ccl: number | null;
+    readonly canjePct?: number | null;
     readonly blue: number | null;
     readonly oficial: number | null;
   };
@@ -194,6 +195,7 @@ export interface EquityPanelRowDto {
   readonly dayHigh: number | null;
   readonly dayRangePos: number | null;
   readonly volumeM: number | null;
+  readonly tradedVolumeUsd?: number | null;
   readonly return1dPct: number | null;
   readonly return30dPct: number | null;
   readonly returnYtdOr252dPct: number | null;
@@ -249,6 +251,63 @@ export interface ArHistoricalBarDto {
   readonly dailyReturnPct: number | null;
 }
 
+export type TerminalTimeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1D';
+
+export interface SerializedBarDto {
+  readonly time: number;
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+  readonly volume: number;
+  readonly vw?: number | null;
+}
+
+export interface OrderBookLevelDto {
+  readonly price: number;
+  readonly size: number;
+}
+
+export interface OrderBook5LevelsDto {
+  readonly symbol: string;
+  readonly marketSymbol: string;
+  readonly settlement: string;
+  readonly marketState: string;
+  readonly source: string;
+  readonly asOfUtcSec: number;
+  readonly bids: readonly OrderBookLevelDto[];
+  readonly asks: readonly OrderBookLevelDto[];
+  readonly bestBid: number | null;
+  readonly bestAsk: number | null;
+  readonly mid: number | null;
+  readonly spreadArs: number | null;
+  readonly spreadPct: number | null;
+  readonly bidDepthSize: number | null;
+  readonly askDepthSize: number | null;
+  readonly vwapBid5: number | null;
+  readonly vwapAsk5: number | null;
+  readonly vwapBook5: number | null;
+  readonly obi5: number | null;
+  readonly last: number | null;
+  readonly open: number | null;
+  readonly high: number | null;
+  readonly low: number | null;
+  readonly close: number | null;
+  readonly settlementPrice: number | null;
+  readonly nominalVolume: number | null;
+}
+
+export interface PrimaryDlrContractDto {
+  readonly symbol: string;
+  readonly maturityCode?: string | null;
+  readonly maturityDate?: string | null;
+  readonly category?: string | null;
+  readonly price: number | null;
+  readonly implicitTnaPct?: number | null;
+  readonly volume?: number | null;
+  readonly openInterest?: number | null;
+}
+
 export interface ArStockDetailResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
@@ -257,6 +316,25 @@ export interface ArStockDetailResponse {
   readonly stock: ArStockDto | null;
   readonly bond: ArBondDto | null;
   readonly historicalBars: readonly ArHistoricalBarDto[];
+  readonly adrBars?: {
+    readonly timeframe: TerminalTimeframe;
+    readonly source: 'MASSIVE_ADR_CONVERTED';
+    readonly usTicker: string;
+    readonly adrRatio: number;
+    readonly cclUsed: number;
+    readonly bars: readonly ArHistoricalBarDto[];
+  } | null;
+  readonly benchmarkSymbol?: string | null;
+  readonly benchmarkBars1d?: readonly ArHistoricalBarDto[];
+  readonly nextExpiry?: {
+    readonly expiryCode: string;
+    readonly expirationDate: string;
+    readonly expiryUtcSec: number;
+    readonly daysToExpiry: number;
+    readonly ivAtm: number | null;
+    readonly expectedMoveAbs: number | null;
+    readonly expectedMovePct: number | null;
+  } | null;
   readonly realizedVol20d: number | null;
   readonly realizedVol60d: number | null;
   readonly realizedVolUsd20d: number | null;
@@ -267,6 +345,9 @@ export interface ArStockDetailResponse {
   readonly mtfRegime: string;
   readonly relatedOptionsCount: number;
   readonly institutionalEngines?: ArStockInstitutionalEnginesDto | null;
+  readonly orderBook5Levels?: OrderBook5LevelsDto | null;
+  readonly orderBookCi?: OrderBook5LevelsDto | null;
+  readonly rofexFrontContract?: PrimaryDlrContractDto | null;
   readonly providerErrors: readonly string[];
 }
 
@@ -723,6 +804,17 @@ export interface ArOptionsResponse {
     readonly gammaFlipStatus: string;
     readonly expectedMoveAbs: number | null;
     readonly expectedMovePct: number | null;
+    readonly expectedMoveExpirySec?: number | null;
+    readonly expectedMoveExpiryCode?: string | null;
+    readonly expectedMoveDays?: number | null;
+    readonly byStrike?: readonly {
+      readonly strike: number;
+      readonly callOi: number | null;
+      readonly putOi: number | null;
+      readonly callGex: number | null;
+      readonly putGex: number | null;
+      readonly netGex: number | null;
+    }[];
   } | null;
   readonly costSchedule: {
     readonly rvMarketFeeRate: number;
@@ -798,9 +890,56 @@ export interface UsUnifiedQuoteDto {
   readonly dayHigh?: number | null;
   readonly dayRangePos?: number | null;
   readonly volumeM?: number | null;
+  readonly tradedVolumeUsd?: number | null;
   readonly iv30d?: number | null;
   readonly marketStatus: string | null;
   readonly volume: number | null;
+  readonly bid?: number | null;
+  readonly ask?: number | null;
+  readonly bidSize?: number | null;
+  readonly askSize?: number | null;
+  readonly spreadPct?: number | null;
+}
+
+export interface UsStrikeExposureDto {
+  readonly strike: number;
+  readonly callOi: number | null;
+  readonly putOi: number | null;
+  readonly callVolume?: number | null;
+  readonly putVolume?: number | null;
+  readonly callGex: number | null;
+  readonly putGex: number | null;
+  readonly netGex: number | null;
+  readonly netDex?: number | null;
+}
+
+export interface UsTerminalBarsResponseDto {
+  readonly status: 'OK' | 'PARTIAL';
+  readonly symbol: string;
+  readonly timeframe: TerminalTimeframe;
+  readonly barSeconds: number;
+  readonly rthOnly: boolean;
+  readonly asOfUtcSec: number;
+  readonly visibleStartIndex: number;
+  readonly bars: readonly SerializedBarDto[];
+  readonly formingBar: SerializedBarDto | null;
+  readonly overlays: {
+    readonly ema9?: readonly (number | null)[];
+    readonly ema21: readonly (number | null)[];
+    readonly ema50?: readonly (number | null)[];
+    readonly ema200?: readonly (number | null)[];
+    readonly sma50: readonly (number | null)[];
+    readonly sma200: readonly (number | null)[];
+    readonly hma55: readonly (number | null)[];
+    readonly sessionVwap: readonly (number | null)[];
+    readonly sessionVwapSupported: boolean;
+    readonly avwap: readonly (number | null)[];
+  };
+  readonly subPanes: {
+    readonly rsi14: readonly (number | null)[];
+    readonly sessionCvd: readonly (number | null)[];
+    readonly deltaMode: string | null;
+  };
 }
 
 export interface UsOptionContractRowDto {
@@ -843,6 +982,7 @@ export interface UsVolSliceSummaryDto {
 export interface UsSnapshotResponseDto {
   readonly status: 'OK' | 'PARTIAL';
   readonly feedMode?: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA';
+  readonly quoteMode?: 'LIVE_NBBO' | 'EOD_CLOSE_REF';
   readonly symbol: string;
   readonly correlatedSymbol?: string;
   readonly isIndex?: boolean;
@@ -880,6 +1020,7 @@ export interface UsSnapshotResponseDto {
       readonly straddleMove: number | null;
       readonly straddleMovePct: number | null;
     };
+    readonly byStrike?: readonly UsStrikeExposureDto[];
   } | null;
   readonly volSurfaceSummary?: {
     readonly iv30d?: number | null;
@@ -906,5 +1047,16 @@ export interface UsSnapshotResponseDto {
     };
   };
   readonly terminalEngines?: SerializedTerminalEnginesDto | null;
+  readonly microstructure?: {
+    readonly mtf?: {
+      readonly effectiveMacroRegime?: string | null;
+      readonly setupStatus?: string | null;
+      readonly close5m?: number | null;
+      readonly ema21_15m?: number | null;
+      readonly sma50_4h?: number | null;
+      readonly sma200_1d?: number | null;
+    } | null;
+  } | null;
+  readonly benchmarkBars1d?: readonly SerializedBarDto[];
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
 }
