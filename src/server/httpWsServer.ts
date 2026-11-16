@@ -912,28 +912,32 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   });
 
   httpServer.on('upgrade', (request, socket, head) => {
+    const upgradeSocket = socket as Socket;
+    upgradeSocket.setNoDelay(true);
+    upgradeSocket.on('error', (err) => {
+      if (isBenignSocketError(err)) return;
+      console.warn(`[ws] upgrade socket error: ${err.message}`);
+    });
+
     let pathname: string;
     try {
       pathname = new URL(request.url ?? '/', `http://${request.headers.host ?? `${host}:${String(port)}`}`).pathname;
     } catch {
-      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      upgradeSocket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
       return;
     }
     if (pathname !== '/ws') {
-      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      upgradeSocket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       return;
     }
-    (socket as Socket).setNoDelay(true);
-    socket.on('error', (err) => {
-      if (isBenignSocketError(err)) return;
-      console.warn(`[ws] upgrade socket error: ${err.message}`);
-    });
     try {
-      wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.handleUpgrade(request, upgradeSocket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
     } catch {
-      if (socket.writable) socket.end('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n');
+      if (upgradeSocket.writable) {
+        upgradeSocket.end('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n');
+      }
     }
   });
 

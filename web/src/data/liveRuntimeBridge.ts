@@ -752,8 +752,10 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
       return;
     }
     try {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+      const url = import.meta.env.DEV
+        ? 'ws://127.0.0.1:8787/ws'
+        : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
+      const socket = new WebSocket(url);
       ws = socket;
       socket.addEventListener('open', () => {
         socket.send(

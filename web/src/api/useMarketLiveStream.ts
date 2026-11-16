@@ -651,11 +651,9 @@ function stopPolling(): void {
 }
 
 function socketUrl(): string {
-  if (import.meta.env.DEV) {
-    return 'ws://127.0.0.1:8787/ws';
-  }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/ws`;
+  return import.meta.env.DEV
+    ? 'ws://127.0.0.1:8787/ws'
+    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 }
 
 function connectSocket(): void {
