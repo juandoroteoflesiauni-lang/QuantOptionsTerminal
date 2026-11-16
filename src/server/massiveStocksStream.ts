@@ -205,10 +205,14 @@ export class MassiveStocksStream {
     if (this.started) return Promise.resolve();
     this.started = true;
     try {
+      // Suscripciones explícitas por trade channel `T.<símbolo>` para todo el
+      // universo configurado (acciones/ETFs/ADRs); los wildcards Q.*/AM.* se
+      // conservan para puntas y agregados. Los índices `I:*` no tienen canal T.
+      const tradeChannels = this.stockSymbols.map((symbol) => `T.${symbol}`);
       this.client = this.createWsClientFn({
         apiKey: this.apiKey,
         cluster: 'stocks',
-        initialSubscriptions: ['T.*', 'Q.*', 'AM.*'],
+        initialSubscriptions: [...tradeChannels, 'Q.*', 'AM.*'],
         autoReconnect: true,
         onEvents: (events) => {
           const configuredEvents = events.filter(
@@ -318,28 +322,73 @@ export class MassiveStocksStream {
       const asOfUtcSec = event.ev === 'T' || event.ev === 'Q' ? event.timeSec : Math.floor(event.endMs / 1_000);
       if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(asOfUtcSec)) continue;
       if (existing !== undefined && existing.asOfUtcSec !== null && asOfUtcSec < existing.asOfUtcSec) continue;
-      const previousClose = existing?.previousClose ?? null;
-      const nextLow = event.ev === 'T' || event.ev === 'Q' ? price : event.bar.low;
-      const nextHigh = event.ev === 'T' || event.ev === 'Q' ? price : event.bar.high;
-      const volume = event.ev === 'T' || event.ev === 'Q' ? existing?.volume ?? null : event.accumulatedVolume ?? event.bar.volume;
+
+      // Volumen de sesión: solo datos reales. Un trade incrementa el acumulado
+      // únicamente cuando existe una baseline previa (REST o `accumulatedVolume`);
+      // si no existe, permanece `null` (nunca se infiere desde un único trade).
+      // En agregados `A`/`AM`, `accumulatedVolume` del proveedor es autoritativo.
+      const tradeSize =
+        event.ev === 'T' && Number.isFinite(event.size) && event.size >= 0 ? event.size : null;
+      let volume: number | null;
+      if (event.ev === 'A' || event.ev === 'AM') {
+        const accumulated = event.accumulatedVolume;
+        volume =
+          typeof accumulated === 'number' && Number.isFinite(accumulated) && accumulated >= 0
+            ? accumulated
+            : existing?.volume ?? null;
+      } else if (tradeSize !== null) {
+        volume =
+          existing?.volume !== null && existing?.volume !== undefined
+            ? existing.volume + tradeSize
+            : null;
+      } else {
+        volume = existing?.volume ?? null;
+      }
+
+      // Turnover (monto monetario "operado"): notional real del trade acumulado
+      // sobre la baseline existente; nunca se estima desde precio sin baseline.
+      const turnover =
+        tradeSize !== null && existing?.turnover !== null && existing?.turnover !== undefined
+          ? existing.turnover + price * tradeSize
+          : existing?.turnover ?? null;
+
+      // Extremos del día: los trades solo expanden una observación previa; los
+      // agregados `A`/`AM` aportan low/high reales de la vela (semilla honesta).
+      const nextLow = event.ev === 'A' || event.ev === 'AM' ? event.bar.low : price;
+      const nextHigh = event.ev === 'A' || event.ev === 'AM' ? event.bar.high : price;
+      const prevLow = existing?.dayLow ?? null;
+      const prevHigh = existing?.dayHigh ?? null;
+      const nextLowFinite = Number.isFinite(nextLow) && nextLow > 0 ? nextLow : null;
+      const nextHighFinite = Number.isFinite(nextHigh) && nextHigh > 0 ? nextHigh : null;
+      const dayLow =
+        prevLow !== null
+          ? nextLowFinite !== null
+            ? Math.min(prevLow, nextLowFinite)
+            : prevLow
+          : event.ev === 'A' || event.ev === 'AM'
+            ? nextLowFinite
+            : null;
+      const dayHigh =
+        prevHigh !== null
+          ? nextHighFinite !== null
+            ? Math.max(prevHigh, nextHighFinite)
+            : prevHigh
+          : event.ev === 'A' || event.ev === 'AM'
+            ? nextHighFinite
+            : null;
+
       this.quotes.set(symbol, {
         market: 'US',
         symbol,
         kind: 'stock',
         currency: 'USD',
         price,
-        previousClose,
-        changePct: changePct(price, previousClose),
-        dayLow:
-          existing !== undefined && existing.dayLow !== null
-            ? Math.min(existing.dayLow, nextLow)
-            : null,
-        dayHigh:
-          existing !== undefined && existing.dayHigh !== null
-            ? Math.max(existing.dayHigh, nextHigh)
-            : null,
+        previousClose: existing?.previousClose ?? null,
+        changePct: changePct(price, existing?.previousClose ?? null),
+        dayLow,
+        dayHigh,
         volume: volume !== null && Number.isFinite(volume) ? volume : null,
-        turnover: existing?.turnover ?? null,
+        turnover: turnover !== null && Number.isFinite(turnover) ? turnover : null,
         asOfUtcSec,
         source: event.ev === 'Q' ? 'MASSIVE_WS_QUOTE' : 'MASSIVE_WS',
       });
@@ -432,16 +481,47 @@ export class MassiveStocksStream {
           : minuteTimeSec;
       const existing = this.quotes.get(symbol);
       const wsTickAt = this.wsTickAtMs.get(symbol);
-      const keepWsPrice =
+      const wsFresh =
         existing?.source === 'MASSIVE_WS' &&
         wsTickAt !== undefined &&
         nowMs >= wsTickAt &&
         nowMs - wsTickAt < 10_000;
-      const volume = nullable(nonNegative(day['v']));
+      const restVolume = nullable(nonNegative(day['v']));
       const vwap = positive(day['vw']);
-      const turnover = volume !== null && Number.isFinite(vwap) ? volume * vwap : null;
-      const effectivePrice = keepWsPrice ? existing.price : price;
+      const restTurnover = restVolume !== null && Number.isFinite(vwap) ? restVolume * vwap : null;
+      const restLow = nullable(positive(day['l']));
+      const restHigh = nullable(positive(day['h']));
+      const effectivePrice = wsFresh ? existing.price : price;
       const effectivePrevClose = previousClose ?? existing?.previousClose ?? null;
+      // Volumen/turnover: el batch REST no puede pisar lo acumulado por WS en la
+      // sesión. Con tick WS fresco manda el acumulado local (con baseline REST
+      // solo si aún no existe); si no hay tick fresco, el mayor del día actual gana.
+      const sameEtSession =
+        existing !== undefined &&
+        existing.asOfUtcSec !== null &&
+        getMarketParts(existing.asOfUtcSec, 'EQUITY').dateKey === currentEtDate;
+      const mergeCumulative = (wsValue: number | null, restValue: number | null): number | null => {
+        if (wsFresh) return wsValue ?? restValue;
+        if (wsValue !== null && restValue !== null) return sameEtSession ? Math.max(wsValue, restValue) : restValue;
+        return restValue ?? wsValue;
+      };
+      const volume = mergeCumulative(existing?.volume ?? null, restVolume);
+      const turnover = mergeCumulative(existing?.turnover ?? null, restTurnover);
+      // Extremos del día: unión de observaciones reales (REST y WS) dentro de la
+      // misma rueda ET; ante cambio de rueda manda el valor REST vigente y no se
+      // arrastran extremos de la sesión anterior.
+      const mergeExtreme = (
+        restExtreme: number | null,
+        wsExtreme: number | null,
+        op: (a: number, b: number) => number,
+      ): number | null => {
+        if (restExtreme !== null && wsExtreme !== null) return op(restExtreme, wsExtreme);
+        return restExtreme ?? wsExtreme;
+      };
+      const dayLow =
+        sameEtSession || wsFresh ? mergeExtreme(restLow, existing.dayLow, Math.min) : restLow;
+      const dayHigh =
+        sameEtSession || wsFresh ? mergeExtreme(restHigh, existing.dayHigh, Math.max) : restHigh;
       this.quotes.set(symbol, {
         market: 'US',
         symbol,
@@ -450,18 +530,18 @@ export class MassiveStocksStream {
         price: effectivePrice,
         previousClose: effectivePrevClose,
         changePct: changePct(effectivePrice, effectivePrevClose),
-        dayLow: nullable(positive(day['l'])) ?? existing?.dayLow ?? null,
-        dayHigh: nullable(positive(day['h'])) ?? existing?.dayHigh ?? null,
-        volume: volume ?? existing?.volume ?? null,
-        turnover: turnover ?? existing?.turnover ?? null,
-        asOfUtcSec: keepWsPrice
+        dayLow,
+        dayHigh,
+        volume,
+        turnover,
+        asOfUtcSec: wsFresh
           ? existing.asOfUtcSec
           : Number.isFinite(observationTimeSec)
             ? observationTimeSec
             : existing !== undefined && existing.price === price
               ? existing.asOfUtcSec
               : null,
-        source: keepWsPrice ? 'MASSIVE_WS' : 'MASSIVE_BATCH',
+        source: wsFresh ? 'MASSIVE_WS' : 'MASSIVE_BATCH',
       });
       updated += 1;
     }

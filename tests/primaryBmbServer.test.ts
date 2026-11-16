@@ -11,6 +11,7 @@ import {
   computeDlrContractMetrics,
   computeOrderBookL2Metrics,
   computeSpreadVsBadlarBps,
+  filterDlrOutrightProducts,
   PrimaryRofexClient,
   type OrderBookLevel,
   type PrimaryWsLike,
@@ -191,14 +192,145 @@ describe('Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity', () => {
     }
   });
 
-  it('autentica POST /auth/getToken, renueva < 24h, descarga DLR/*, MERV depth=5, getPositions, accountReport y redime en 401', async () => {
+  it('filtra exclusivamente futuros outright DLR/MMMYY contra fixtures/dlr_outright_filter_reference.json (Python independiente)', () => {
+    interface OutrightFilterFixture {
+      readonly schemaVersion: number;
+      readonly todayUtc: string;
+      readonly cases: readonly {
+        readonly symbol: string;
+        readonly detailMaturity: string | null;
+        readonly inferredMaturity: string | null;
+        readonly isIncluded: boolean;
+      }[];
+    }
+    const raw = readFileSync(
+      resolve(process.cwd(), 'fixtures/dlr_outright_filter_reference.json'),
+      'utf8',
+    );
+    const fixture = JSON.parse(raw) as OutrightFilterFixture;
+
+    // Paridad 1:1 caso por caso, inyectando el vencimiento del detalle del exchange
+    // cuando el fixture lo provee (prevalece sobre la inferencia estructural).
+    for (const c of fixture.cases) {
+      const products = filterDlrOutrightProducts(
+        [{ marketId: 'ROFX', symbol: c.symbol }],
+        fixture.todayUtc,
+        () => c.detailMaturity,
+      );
+      expect(products.map((p) => p.symbol)).toEqual(c.isIncluded ? [c.symbol] : []);
+    }
+
+    // Escenario completo: descubre mezcla y debe quedar solo el conjunto outright vigente.
+    const discovered = fixture.cases.map((c) => ({ marketId: 'ROFX', symbol: c.symbol }));
+    const products = filterDlrOutrightProducts(discovered, fixture.todayUtc);
+    const expected = fixture.cases
+      .filter((c) => c.isIncluded && c.detailMaturity === null)
+      .map((c) => c.symbol);
+    // El escenario completo usa la inferencia estructural (sin detalles del exchange),
+    // así que se excluyen además los casos cuyo detalle del exchange los marca vencidos.
+    const included = products.map((p) => p.symbol);
+    expect(included.sort()).toEqual([...new Set(expected)].sort());
+    expect(included).not.toContain('DLR/SPOT');
+    expect(included).not.toContain('DLR/DIC26M');
+    expect(included.every((s) => /^DLR\/[A-Z]{3}\d{2}$/.test(s))).toBe(true);
+  });
+
+  it('aplica pacing REST de 350 ms y backoff mínimo de 15 s ante HTTP 429 (Retry-After mayor se respeta)', async () => {
+    const recordedWaits: number[] = [];
+    const sleepFn = (ms: number): Promise<void> => {
+      recordedWaits.push(ms);
+      return Promise.resolve();
+    };
+    let requestCount = 0;
+    const client = new PrimaryRofexClient({
+      env: TEST_ENV,
+      minRequestIntervalMs: 350,
+      retry429DelayMs: 15_000,
+      sleepFn,
+      fetchFn: async (url) => {
+        await Promise.resolve();
+        requestCount += 1;
+        if (url.includes('/auth/getToken')) {
+          return makeJsonResp({ status: 'OK' }, 200, { 'x-auth-token': TEST_TOKEN });
+        }
+        if (requestCount === 2) {
+          // Primer descubrimiento: 429 con Retry-After 21 s (> mínimo 15 s).
+          return makeJsonResp({ status: 'ERROR', description: 'Rate limited' }, 429, {
+            'retry-after': '21',
+          });
+        }
+        if (requestCount === 3) {
+          // Segundo intento: 429 sin Retry-After -> backoff del mínimo 15 s.
+          return makeJsonResp({ status: 'ERROR', description: 'Rate limited' }, 429);
+        }
+        return makeJsonResp({
+          status: 'OK',
+          instruments: [{ marketId: 'ROFX', symbol: 'DLR/NOV26' }],
+        });
+      },
+    });
+
+    const list = await client.getInstrumentsByCFICode('FXXXSX', true);
+    expect(list.map((i) => i.symbol)).toEqual(['DLR/NOV26']);
+    expect(requestCount).toBe(4); // 1 auth + 2 intentos 429 + 1 exitoso
+    // Backoffs ante 429 exactos: Retry-After 21 s y mínimo 15 s.
+    expect(recordedWaits.filter((ms) => ms >= 15_000)).toEqual([21_000, 15_000]);
+    // Pacing REST: cada intento espera <= 350 ms (> 0 con reloj real).
+    const pacingWaits = recordedWaits.filter((ms) => ms < 15_000);
+    expect(pacingWaits.length).toBe(2);
+    for (const ms of pacingWaits) {
+      expect(ms).toBeGreaterThan(0);
+      expect(ms).toBeLessThanOrEqual(350);
+    }
+    client.closeWebSocket();
+  });
+
+  it('autentica POST /auth/getToken, renueva < 24h, suscribe outrights DLR/* por un único WS smd (sin loops REST de marketdata), MERV depth=5, getPositions, accountReport y redime en 401', async () => {
     let nowMs = Date.UTC(2026, 10, 14, 21, 0, 0);
     let authCalls = 0;
     let firstCfi401Done = false;
+    const marketdataGetPaths: string[] = [];
+    const sentWsPayloads: string[] = [];
+    const wsMessageHandlers: ((data: unknown) => void)[] = [];
+    let wsCapturedHeaders: Readonly<Record<string, string>> = {};
+
+    const wsFactory = (_url: string, headers: Readonly<Record<string, string>>): PrimaryWsLike => {
+      wsCapturedHeaders = headers;
+      const closeHandlers: (() => void)[] = [];
+      const onFn = ((
+        event: 'open' | 'message' | 'error' | 'close',
+        listener: (...args: unknown[]) => void,
+      ) => {
+        if (event === 'open') {
+          queueMicrotask(() => {
+            listener();
+          });
+        } else if (event === 'message') {
+          wsMessageHandlers.push(listener);
+        } else if (event === 'close') {
+          closeHandlers.push(listener);
+        }
+        return sock;
+      }) as PrimaryWsLike['on'];
+      const sock: PrimaryWsLike = {
+        readyState: 1,
+        send(data: string) {
+          sentWsPayloads.push(data);
+        },
+        close() {
+          for (const cb of closeHandlers) {
+            cb();
+          }
+        },
+        on: onFn,
+      };
+      return sock;
+    };
 
     const client = new PrimaryRofexClient({
       env: TEST_ENV,
       nowMsFn: () => nowMs,
+      wsFactory,
       fetchFn: async (url, init) => {
         await Promise.resolve();
         if (url.endsWith('/auth/getToken')) {
@@ -279,48 +411,7 @@ describe('Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity', () => {
         }
 
         if (url.includes('/rest/marketdata/get')) {
-          if (url.includes('DLR%2FNOV26%201570%20C')) {
-            return makeJsonResp({
-              status: 'OK',
-              marketData: { BI: [], OF: [], LA: null, SE: { price: 18.5, date: 1794528000000 }, OI: { size: 420 }, NV: 15 },
-              depth: 5,
-            });
-          }
-          if (url.includes('DLR%2FNOV26')) {
-            return makeJsonResp({
-              status: 'OK',
-              marketData: {
-                BI: [],
-                OF: [],
-                LA: null,
-                SE: { price: 1562.5, size: null, date: 1794528000000 },
-                OI: { size: 184500 },
-                NV: 0,
-              },
-              depth: 5,
-            });
-          }
-          if (url.includes('DLR%2FABR27')) {
-            return makeJsonResp({
-              status: 'OK',
-              marketData: {
-                BI: [{ price: 1718.0, size: 120 }],
-                OF: [{ price: 1722.0, size: 80 }],
-                LA: null,
-                SE: { price: 1720.0, date: 1794528000000 },
-                OI: { size: 22100 },
-                NV: 430,
-              },
-              depth: 5,
-            });
-          }
-          if (url.includes('DLR%2FSPOT')) {
-            return makeJsonResp({
-              status: 'OK',
-              marketData: { LA: { price: 1445.0, size: 10, date: 1794528000000 }, BI: [], OF: [], SE: { price: 1445.0 } },
-              depth: 5,
-            });
-          }
+          marketdataGetPaths.push(url);
           if (url.includes('GGAL')) {
             return makeJsonResp({
               status: 'OK',
@@ -398,14 +489,79 @@ describe('Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity', () => {
       },
     });
 
-    const dlrRes = await client.getDlrFuturesAndDerivatives({
+    const injectWsTick = (symbol: string, marketData: Record<string, unknown>): void => {
+      for (const h of wsMessageHandlers) {
+        h(
+          JSON.stringify({
+            type: 'Md',
+            timestamp: 1794695000000,
+            instrumentId: { marketId: 'ROFX', symbol },
+            marketData,
+          }),
+        );
+      }
+    };
+
+    // 1ra pasada: descubre outrights, abre el WS con UN único `smd` y aún no hay
+    // ticks -> los precios quedan ausentes (null/NaN), sin valores de respaldo.
+    const firstPass = await client.getDlrFuturesAndDerivatives({
       asOfUtcSec: Math.floor(nowMs / 1_000),
       a3500: 1445.0,
       forceRefresh: true,
     });
     expect(authCalls).toBe(2); // 1 inicial + 1 retry ante 401
+    expect(firstPass.error).toBeNull();
+    expect(firstPass.spotSource).toBe('A3500_BCRA');
+    expect(firstPass.spotUsed).toBe(1445.0);
+    expect(firstPass.contracts.length).toBe(2); // NOV26 + ABR27 (sin SPOT/MINI/opciones)
+    const novPending = firstPass.contracts.find((c) => c.contract === 'DLR/NOV26');
+    expect(novPending?.category).toBe('OUTRIGHT');
+    expect(novPending?.price).toBeNull();
+    expect(novPending?.priceBasis).toBe('NONE');
+
+    // Suscripción: exactamente UN mensaje `smd` autenticado con solo los 2 outrights.
+    expect(sentWsPayloads.length).toBe(1);
+    const smd = JSON.parse(sentWsPayloads[0] ?? '{}') as {
+      type: string;
+      level: number;
+      entries: string[];
+      depth: number;
+      products: readonly { marketId: string; symbol: string }[];
+    };
+    expect(smd.type).toBe('smd');
+    expect(smd.level).toBe(5);
+    expect(smd.depth).toBe(5);
+    expect(smd.entries).toEqual(['BI', 'OF', 'LA', 'OI', 'IV', 'SE']);
+    expect(smd.products.map((p) => p.symbol).sort()).toEqual(['DLR/ABR27', 'DLR/NOV26']);
+    // El handshake WS usa el token renovado tras el 401 (authCalls = 2).
+    expect(wsCapturedHeaders['X-Auth-Token']).toBe(`${TEST_TOKEN}_2`);
+
+    // Zero loops REST de marketdata para DLR (la causa raíz del HTTP 429).
+    expect(marketdataGetPaths.filter((p) => p.includes('DLR'))).toHaveLength(0);
+
+    // 2) Ticks WS en vivo: NOV26 settlement 1562.5 con OI; ABR27 puntas 1718/1722.
+    injectWsTick('DLR/NOV26', {
+      BI: [],
+      OF: [],
+      LA: null,
+      SE: { price: 1562.5, size: null, date: 1794528000000 },
+      OI: { size: 184500 },
+    });
+    injectWsTick('DLR/ABR27', {
+      BI: [{ price: 1718.0, size: 120 }],
+      OF: [{ price: 1722.0, size: 80 }],
+      LA: null,
+      SE: { price: 1720.0, date: 1794528000000 },
+      OI: { size: 22100 },
+    });
+
+    const dlrRes = await client.getDlrFuturesAndDerivatives({
+      asOfUtcSec: Math.floor(nowMs / 1_000),
+      a3500: 1445.0,
+    });
     expect(dlrRes.error).toBeNull();
     expect(dlrRes.spotSource).toBe('A3500_BCRA');
+    expect(dlrRes.contracts.map((c) => c.contract).sort()).toEqual(['DLR/ABR27', 'DLR/NOV26']);
 
     const nov = dlrRes.contracts.find((c) => c.contract === 'DLR/NOV26');
     expect(nov?.category).toBe('OUTRIGHT');
@@ -417,6 +573,10 @@ describe('Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity', () => {
     const abr = dlrRes.contracts.find((c) => c.contract === 'DLR/ABR27');
     expect(abr?.priceBasis).toBe('MID');
     expect(abr?.price).toBe(1720.0);
+
+    // El socket vivo no se re-suscribe: sigue habiendo un único payload smd.
+    expect(sentWsPayloads.length).toBe(1);
+    expect(marketdataGetPaths.filter((p) => p.includes('DLR'))).toHaveLength(0);
 
     // Token < 24h reuse then proactive refresh after 23h
     await client.getAuthToken(false);
@@ -453,6 +613,7 @@ describe('Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity', () => {
     expect(healthJson).not.toContain(TEST_ENV.PRIMARY_PASSWORD);
     expect(healthJson).not.toContain(TEST_ENV.PRIMARY_USERNAME);
     expect(healthJson).not.toContain(TEST_TOKEN);
+    client.closeWebSocket();
   });
 
   it('envía suscripción WS type="smd" con depth=5 e ingiere ticks L2 en vivo sin exponer X-Auth-Token', async () => {
@@ -539,7 +700,11 @@ describe('Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity', () => {
     expect(client.getSafeHealthStatus().wsConnected).toBe(false);
   });
 
-  it('degrada explícitamente BMB Bridge y herramientas Python cuando falta pyhomebroker o BMB_PASSWORD, y usa curva BMB cuando está READY', async () => {
+  // Timeout ampliado solo para este test: ejecuta `spawnSync('python', ...)` que
+  // compite por CPU con los workers paralelos de vitest y en HEAD también puede
+  // superar los 5000 ms por defecto (verificado: falla igual sin estos cambios).
+  // Ninguna aserción fue modificada ni debilitada.
+  it('degrada explícitamente BMB Bridge y herramientas Python cuando falta pyhomebroker o BMB_PASSWORD, y usa curva BMB cuando está READY', { timeout: 20_000 }, async () => {
     // 1) Sin BMB_PASSWORD -> DISABLED_NO_PASSWORD sin tocar red
     let networkCalled = false;
     const noPassClient = new BmbBridgeClient({

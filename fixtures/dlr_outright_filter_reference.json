@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "todayUtc": "20261114",
+  "description": "Referencia independiente del filtro outright DLR/MMMYY: isIncluded=false excluye SPOT/minis/opciones/spreads/pases/malformados/vencidos.",
+  "cases": [
+    {
+      "symbol": "DLR/NOV26",
+      "detailMaturity": null,
+      "inferredMaturity": "20261130",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/DIC26",
+      "detailMaturity": null,
+      "inferredMaturity": "20261231",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/ENE27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270129",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/FEB27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270226",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/MAR27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270331",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/ABR27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270430",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/MAY27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270531",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/JUN27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270630",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/JUL27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270730",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/AGO27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270831",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/SEP27",
+      "detailMaturity": null,
+      "inferredMaturity": "20270930",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/OCT27",
+      "detailMaturity": null,
+      "inferredMaturity": "20271029",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/DIC26M",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/NOV26M",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/SPOT",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/NOV26 1570 C",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/ABR27 1800 P",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/NOV26/MAR27 M",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/NOV26/MAR27",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/DIC26 1500/T2",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "GGAL/NOV26",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/XYZ26",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/NOV2",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/NOV266",
+      "detailMaturity": null,
+      "inferredMaturity": null,
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/OCT26",
+      "detailMaturity": null,
+      "inferredMaturity": "20261030",
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/ENE26",
+      "detailMaturity": "20260130",
+      "inferredMaturity": "20260130",
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/MAR26",
+      "detailMaturity": null,
+      "inferredMaturity": "20260331",
+      "isIncluded": false
+    },
+    {
+      "symbol": "DLR/JUN27",
+      "detailMaturity": "20270630",
+      "inferredMaturity": "20270630",
+      "isIncluded": true
+    },
+    {
+      "symbol": "DLR/NOV26",
+      "detailMaturity": "20260101",
+      "inferredMaturity": "20261130",
+      "isIncluded": false
+    }
+  ]
+}

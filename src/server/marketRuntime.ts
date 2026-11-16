@@ -1118,6 +1118,49 @@ export const US_LIQUID_OPTION_UNDERLYINGS: ReadonlySet<string> = new Set([
   'GLOB',
 ]);
 
+/**
+ * Tick-by-tick US panel: los ~73 símbolos líquidos del panel EE.UU. (acciones,
+ * ETFs sectoriales y ADRs ya presentes en `US_EQUITY_UNIVERSE`).
+ */
+export const US_PANEL_TICKERS: readonly string[] = US_EQUITY_UNIVERSE.map((u) => u.symbol);
+
+/**
+ * ADRs argentinos listados en NYSE/NASDAQ, derivados de `AR_STOCK_META`
+ * (adrTicker). Complementan el panel US para los overlays CEDEAR/ADR del
+ * Monitoreo: los que ya están en `US_EQUITY_UNIVERSE` no se duplican.
+ */
+export const US_ADR_TICKERS: readonly string[] = [
+  'GGAL',
+  'YPF',
+  'PAM',
+  'BMA',
+  'SUPV',
+  'BBAR',
+  'CEPU',
+  'TGS',
+  'EDN',
+  'TEO',
+  'LOMA',
+  'CRESY',
+  'IRS',
+] as const;
+
+/**
+ * Universo completo suscrito por tick (WS `T.<símbolo>` + batch REST):
+ * panel de 73 + ADRs argentinos + ETFs índice + VIX. Sin duplicados.
+ */
+export const US_STREAM_SYMBOLS: readonly string[] = [
+  ...new Set([
+    ...US_PANEL_TICKERS,
+    ...US_ADR_TICKERS,
+    'SPY',
+    'QQQ',
+    'IWM',
+    'DIA',
+    'I:VIX',
+  ]),
+] as const;
+
 export interface EquityRiskReturnMetrics {
   readonly last: number | null;
   readonly prevClose: number | null;
@@ -3824,21 +3867,8 @@ export class MarketRuntime {
 
     const symbols = [
       ...new Set([
-        ...US_EQUITY_UNIVERSE.map((item) => item.symbol),
+        ...US_STREAM_SYMBOLS,
         ...this.watchedSymbols.map((symbol) => symbol.trim().toUpperCase()),
-        'SPY',
-        'QQQ',
-        'IWM',
-        'DIA',
-        'GGAL',
-        'YPF',
-        'BMA',
-        'BBAR',
-        'SUPV',
-        'CEPU',
-        'VIST',
-        'MELI',
-        'I:VIX',
       ]),
     ];
     const stream = new MassiveStocksStream({

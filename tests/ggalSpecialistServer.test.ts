@@ -26,7 +26,7 @@ import {
 } from '../src/server/ggalSpecialistRuntime.js';
 import { createHttpWsServer, type HttpWsServerHandle } from '../src/server/httpWsServer.js';
 import { MarketRuntime } from '../src/server/marketRuntime.js';
-import { PrimaryRofexClient } from '../src/server/primaryRofexLoader.js';
+import { PrimaryRofexClient, type PrimaryWsLike } from '../src/server/primaryRofexLoader.js';
 
 const JSON_FORBIDDEN_TOKEN = /(?<=[:,[])\s*(?:NaN|-?Infinity|undefined)\b/;
 const FAKE_SECRET = 'TEST_GGAL_SECRET_991';
@@ -1026,11 +1026,46 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     }
   });
 
-  it('mapea BI/OF, OI y TV/NV en PrimaryRofexClient y expone Confluencia <=0.35 ATR, nivel cercano y agresionTicks en MarketRuntime US', async () => {
+  it('mapea BI/OF, OI y TV/NV en PrimaryRofexClient vía snapshots WS smd (sin loops REST) y expone Confluencia <=0.35 ATR, nivel cercano y agresionTicks en MarketRuntime US', async () => {
     const asOfUtcSec = Math.floor(Date.UTC(2026, 9, 15, 15, 30, 0) / 1_000);
     const asOfMs = asOfUtcSec * 1_000;
 
-    // 1. PrimaryRofexClient mapping BI/OF, OI y TV/NV
+    // 1. PrimaryRofexClient mapping BI/OF, OI y TV/NV desde ticks WS `Md`
+    const sentWsPayloads: string[] = [];
+    const marketdataGetPaths: string[] = [];
+    const wsMessageHandlers: ((data: unknown) => void)[] = [];
+    const wsFactory = (): PrimaryWsLike => {
+      const closeHandlers: (() => void)[] = [];
+      const onFn = ((
+        event: 'open' | 'message' | 'error' | 'close',
+        listener: (...args: unknown[]) => void,
+      ) => {
+        if (event === 'open') {
+          queueMicrotask(() => {
+            listener();
+          });
+        } else if (event === 'message') {
+          wsMessageHandlers.push(listener);
+        } else if (event === 'close') {
+          closeHandlers.push(listener);
+        }
+        return sock;
+      }) as PrimaryWsLike['on'];
+      const sock: PrimaryWsLike = {
+        readyState: 1,
+        send(data: string) {
+          sentWsPayloads.push(data);
+        },
+        close() {
+          for (const cb of closeHandlers) {
+            cb();
+          }
+        },
+        on: onFn,
+      };
+      return sock;
+    };
+
     const primaryClient = new PrimaryRofexClient({
       env: {
         PRIMARY_API_URL: 'https://primary.test',
@@ -1041,6 +1076,7 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
       },
       secrets: [FAKE_SECRET],
       nowMsFn: () => asOfMs,
+      wsFactory,
       fetchFn: (url) => {
         const u = new URL(url);
         if (u.pathname === '/auth/getToken') {
@@ -1073,65 +1109,59 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
             headers: {},
           });
         }
-        if (u.pathname === '/rest/instruments/detail') {
-          const sym = u.searchParams.get('symbol') ?? '';
-          const maturityDate = sym === 'DLR/DIC26' ? '20261230' : '20270129';
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            text: JSON.stringify({ status: 'OK', instrument: { maturityDate } }),
-            headers: {},
-          });
-        }
         if (u.pathname === '/rest/marketdata/get') {
-          expect(u.searchParams.get('entries')).toContain('TV');
-          expect(u.searchParams.get('entries')).toContain('NV');
-          expect(u.searchParams.get('entries')).toContain('OI');
-          expect(u.searchParams.get('depth')).toBe('5');
-          const sym = u.searchParams.get('symbol') ?? '';
-          if (sym === 'DLR/DIC26') {
-            return Promise.resolve({
-              ok: true,
-              status: 200,
-              text: JSON.stringify({
-                status: 'OK',
-                marketData: {
-                  BI: [{ price: 1210.5, size: 150 }],
-                  OF: [{ price: 1212.0, size: 220 }],
-                  LA: { price: 1211.0, date: asOfMs },
-                  SE: { price: 1210.0, date: asOfMs },
-                  OI: { size: 45_000 },
-                  TV: 12_800,
-                },
-              }),
-              headers: {},
-            });
-          }
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            text: JSON.stringify({
-              status: 'OK',
-              marketData: {
-                BI: [],
-                OF: [],
-                SE: { price: 1245.0, date: asOfMs },
-                OI: { price: 32_000 },
-                NV: 9_400,
-              },
-            }),
-            headers: {},
-          });
+          // Prohibido: el camino de futuros DLR no debe tocar marketdata REST (429).
+          marketdataGetPaths.push(url);
+          return Promise.resolve({ ok: false, status: 404, text: 'Not found', headers: {} });
         }
         return Promise.resolve({ ok: false, status: 404, text: 'Not found', headers: {} });
       },
     });
 
-    const dlrCurve = await primaryClient.getDlrFuturesAndDerivatives({
-      asOfUtcSec,
-      a3500: 1120,
-      forceRefresh: true,
+    const injectWsTick = (symbol: string, marketData: Record<string, unknown>): void => {
+      for (const h of wsMessageHandlers) {
+        h(
+          JSON.stringify({
+            type: 'Md',
+            timestamp: asOfMs,
+            instrumentId: { marketId: 'ROFX', symbol },
+            marketData,
+          }),
+        );
+      }
+    };
+
+    // 1ra pasada: descubre, abre el WS con un único `smd` y aún no hay ticks.
+    await primaryClient.getDlrFuturesAndDerivatives({ asOfUtcSec, a3500: 1120 });
+    expect(sentWsPayloads.length).toBe(1);
+    const smd = JSON.parse(sentWsPayloads[0] ?? '{}') as {
+      type: string;
+      depth: number;
+      products: readonly { symbol: string }[];
+    };
+    expect(smd.type).toBe('smd');
+    expect(smd.depth).toBe(5);
+    expect(smd.products.map((p) => p.symbol).sort()).toEqual(['DLR/DIC26', 'DLR/ENE27']);
+    expect(marketdataGetPaths).toHaveLength(0);
+
+    // Ticks WS en vivo: DIC26 con puntas/OI/TV; ENE27 con settlement/OI por price/NV.
+    injectWsTick('DLR/DIC26', {
+      BI: [{ price: 1210.5, size: 150 }],
+      OF: [{ price: 1212.0, size: 220 }],
+      LA: { price: 1211.0, date: asOfMs },
+      SE: { price: 1210.0, date: asOfMs },
+      OI: { size: 45_000 },
+      TV: 12_800,
     });
+    injectWsTick('DLR/ENE27', {
+      BI: [],
+      OF: [],
+      SE: { price: 1245.0, date: asOfMs },
+      OI: { price: 32_000 },
+      NV: 9_400,
+    });
+
+    const dlrCurve = await primaryClient.getDlrFuturesAndDerivatives({ asOfUtcSec, a3500: 1120 });
     expect(dlrCurve.contracts.length).toBe(2);
     const dic26 = dlrCurve.contracts.find((c) => c.contract === 'DLR/DIC26');
     const ene27 = dlrCurve.contracts.find((c) => c.contract === 'DLR/ENE27');
@@ -1142,6 +1172,7 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
       askSize: 220,
       openInterest: 45_000,
       nominalVolume: 12_800,
+      priceBasis: 'LAST',
     });
     expect(ene27).toMatchObject({
       bidPrice: null,
@@ -1150,6 +1181,10 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
       nominalVolume: 9_400,
       priceBasis: 'SETTLEMENT_EOD',
     });
+    // El socket vivo no se re-suscribe y sigue sin tocar marketdata REST.
+    expect(sentWsPayloads.length).toBe(1);
+    expect(marketdataGetPaths).toHaveLength(0);
+    primaryClient.closeWebSocket();
 
     // 2. MarketRuntime US para SPY: nearestInstitutionalLevel, Confluencia <= 0.35 ATR y agresionTicks
     const baseMocks = createOfflineMocks({ asOfUtcSec });

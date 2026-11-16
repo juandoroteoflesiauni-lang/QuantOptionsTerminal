@@ -362,6 +362,11 @@ const PRIMARY_WS_RECONNECT_MAX_MS = 30_000;
 const DETAIL_CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
 const MD_CACHE_TTL_MS = 10_000;
 const BMB_CACHE_TTL_MS = 8_000;
+// Pacing anti-429: intervalo mínimo entre requests REST de descubrimiento y backoff
+// mínimo ante HTTP 429 (se respeta `Retry-After` cuando es mayor, con tope de 60 s).
+const DEFAULT_PRIMARY_MIN_REQUEST_INTERVAL_MS = 350;
+const DEFAULT_PRIMARY_RETRY_429_DELAY_MS = 15_000;
+const PRIMARY_429_BACKOFF_MAX_MS = 60_000;
 
 const ROFEX_MONTH_TO_NUM: Readonly<Record<string, number>> = {
   ENE: 1,
@@ -844,6 +849,42 @@ export function classifyDlrSymbol(symbol: string): DlrContractCategory {
   return 'OTHER';
 }
 
+export interface DlrInstrumentRef {
+  readonly marketId: string;
+  readonly symbol: string;
+}
+
+/**
+ * Filtra exclusivamente futuros outright de dólar `DLR/MMMYY` (p. ej. `DLR/NOV26`,
+ * `DLR/ABR27`): descarta `DLR/SPOT`, minis `DLR/MMMYYM`, opciones, spreads/pases
+ * (`DLR/.../... M`) y cualquier símbolo con espacios o segundo `/`. Los contratos
+ * con vencimiento conocido y anterior a `todayUtc` (`YYYYMMDD`) se excluyen.
+ */
+export function filterDlrOutrightProducts(
+  instruments: readonly DlrInstrumentRef[],
+  todayUtc: string,
+  maturityDateBySymbol?: (symbol: string) => string | null,
+): readonly DlrInstrumentRef[] {
+  const out: DlrInstrumentRef[] = [];
+  const seen = new Set<string>();
+  for (const item of instruments) {
+    if (classifyDlrSymbol(item.symbol) !== 'OUTRIGHT') {
+      continue;
+    }
+    if (seen.has(item.symbol)) {
+      continue;
+    }
+    const maturity =
+      maturityDateBySymbol?.(item.symbol) ?? inferDlrMaturityDateStr(item.symbol);
+    if (maturity !== null && maturity < todayUtc) {
+      continue;
+    }
+    seen.add(item.symbol);
+    out.push(item);
+  }
+  return out;
+}
+
 export function parseMervInstrumentSymbol(rawSymbol: string): {
   readonly ticker: string;
   readonly settlement: string;
@@ -962,29 +1003,6 @@ function parsePrimaryMarketDataNode(
   };
 }
 
-async function runWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  worker: (item: T) => Promise<R>,
-): Promise<readonly R[]> {
-  if (items.length === 0) {
-    return [];
-  }
-  const results = new Array<R>(items.length);
-  let nextIdx = 0;
-  const workerCount = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (nextIdx < items.length) {
-        const current = nextIdx;
-        nextIdx += 1;
-        results[current] = await worker(items[current] as T);
-      }
-    }),
-  );
-  return results;
-}
-
 export interface PrimaryRofexClientDeps {
   readonly env?: NodeJS.ProcessEnv;
   readonly fetchFn?: PrimaryHttpFn;
@@ -994,6 +1012,8 @@ export interface PrimaryRofexClientDeps {
   readonly timeoutMs?: number;
   readonly minRequestIntervalMs?: number;
   readonly retry429DelayMs?: number;
+  /** Inyectable para tests: espera usada en pacing REST y backoff ante 429. */
+  readonly sleepFn?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -1004,6 +1024,7 @@ export class PrimaryRofexClient {
   private readonly fetchFn: PrimaryHttpFn;
   private readonly wsFactory: PrimaryWsFactory;
   private readonly nowMsFn: () => number;
+  private readonly sleepFn: (ms: number) => Promise<void>;
   private readonly baseSecrets: readonly string[];
   private readonly timeoutMs: number;
   private readonly minRequestIntervalMs: number;
@@ -1056,9 +1077,17 @@ export class PrimaryRofexClient {
           headers,
         }));
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
+    this.sleepFn =
+      deps.sleepFn ??
+      ((ms: number) =>
+        new Promise<void>((resolveSleep) => {
+          setTimeout(resolveSleep, ms);
+        }));
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_PRIMARY_TIMEOUT_MS;
-    this.minRequestIntervalMs = deps.minRequestIntervalMs ?? (deps.fetchFn !== undefined ? 0 : 180);
-    this.retry429DelayMs = deps.retry429DelayMs ?? (deps.fetchFn !== undefined ? 0 : 1_500);
+    this.minRequestIntervalMs =
+      deps.minRequestIntervalMs ?? (deps.fetchFn !== undefined ? 0 : DEFAULT_PRIMARY_MIN_REQUEST_INTERVAL_MS);
+    this.retry429DelayMs =
+      deps.retry429DelayMs ?? (deps.fetchFn !== undefined ? 0 : DEFAULT_PRIMARY_RETRY_429_DELAY_MS);
     this.wsEnvironment = /sandbox/i.test(this.config.wsUrl)
       ? 'PRIMARY_REMARKETS_SANDBOX'
       : 'PRIMARY_MATRIZ_WS';
@@ -1173,7 +1202,7 @@ export class PrimaryRofexClient {
       const elapsed = Date.now() - this.lastRequestAtMs;
       const waitMs = this.minRequestIntervalMs - elapsed;
       if (waitMs > 0) {
-        await new Promise<void>((res) => setTimeout(res, waitMs));
+        await this.sleepFn(waitMs);
       }
       this.lastRequestAtMs = Date.now();
     } finally {
@@ -1205,12 +1234,14 @@ export class PrimaryRofexClient {
     }
     if (res.status === 429 && retry429Left > 0) {
       const retryAfterRaw = Number(res.headers?.['retry-after'] ?? '');
+      // Backoff mínimo de 15 s ante 429; `Retry-After` del servidor se respeta cuando
+      // es mayor, con tope de 60 s para no colgar el ciclo de descubrimiento.
       const waitMs =
         Number.isFinite(retryAfterRaw) && retryAfterRaw > 0
-          ? Math.min(10_000, retryAfterRaw * 1_000)
-          : this.retry429DelayMs * (3 - retry429Left);
+          ? Math.max(this.retry429DelayMs, Math.min(PRIMARY_429_BACKOFF_MAX_MS, retryAfterRaw * 1_000))
+          : this.retry429DelayMs;
       if (waitMs > 0) {
-        await new Promise<void>((resolveWait) => setTimeout(resolveWait, waitMs));
+        await this.sleepFn(waitMs);
       }
       return this.requestJson(path, allowRetryAuth, retry429Left - 1);
     }
@@ -1744,6 +1775,8 @@ export class PrimaryRofexClient {
 
   /**
    * Descubre contratos DLR/* vigentes y abre el stream `smd` autenticado.
+   * Solo futuros outright `DLR/MMMYY` (sin SPOT, minis, opciones ni pases):
+   * un único mensaje `smd` con todos los productos, sin loops REST por contrato.
    * Idempotente: no duplica sockets ni suscripciones mientras el WS esté vivo.
    */
   public async startDlrLiveStream(): Promise<void> {
@@ -1755,15 +1788,11 @@ export class PrimaryRofexClient {
         this.lastError = discovered.firstError;
       }
       const todayUtc = new Date(this.nowMsFn()).toISOString().slice(0, 10).replace(/-/g, '');
-      const products = discovered.instruments
-        .filter((item) => {
-          const category = classifyDlrSymbol(item.symbol);
-          if (category === 'SPOT') return true;
-          if (category !== 'OUTRIGHT' && category !== 'MINI') return false;
-          const maturity = this.dlrDetailBySymbol.get(item.symbol)?.maturityDate ?? inferDlrMaturityDateStr(item.symbol);
-          return maturity === null || maturity >= todayUtc;
-        })
-        .map((item) => ({ marketId: item.marketId, symbol: item.symbol }));
+      const products = filterDlrOutrightProducts(
+        discovered.instruments,
+        todayUtc,
+        (symbol) => this.dlrDetailBySymbol.get(symbol)?.maturityDate ?? null,
+      );
       if (products.length === 0) return;
       await this.connectAndSubscribeWs(products, 5);
     };
@@ -1774,7 +1803,11 @@ export class PrimaryRofexClient {
   }
 
   /**
-   * Descarga contratos reales `DLR/*` y derivados `DDF` (`depth=5`), calculando métricas puras.
+   * Descarga contratos reales `DLR/*` outright y sus métricas puras consumiendo
+   * exclusivamente los snapshots del WebSocket `smd` (nunca loops REST de
+   * `/rest/marketdata/get` por contrato, que disparan HTTP 429). Antes del primer
+   * tick los campos de precio quedan en `null` (la interfaz muestra `—`): se
+   * prohíbe inventar valores de respaldo. El spot proviene de A3500 (BCRA).
    */
   public async getDlrFuturesAndDerivatives(params: {
     readonly asOfUtcSec: number;
@@ -1791,8 +1824,7 @@ export class PrimaryRofexClient {
     }
     try {
       const discovered = await this.discoverDlrInstruments(Boolean(params.forceRefresh));
-      const dlrInstruments = discovered.instruments;
-      if (dlrInstruments.length === 0) {
+      if (discovered.instruments.length === 0) {
         return {
           spotUsed: null,
           spotSource: 'NONE',
@@ -1801,98 +1833,73 @@ export class PrimaryRofexClient {
         };
       }
 
-      const mdResults = await runWithConcurrency(dlrInstruments, 2, async (inst) => {
-        const category = classifyDlrSymbol(inst.symbol);
-        let md: ParsedPrimaryMarketData | null = null;
-        let itemErr: string | null = null;
-        try {
-          md = await this.getMarketData(inst.symbol, inst.marketId, 5, Boolean(params.forceRefresh));
-        } catch (err: unknown) {
-          itemErr = this.redact(err instanceof Error ? err.message : String(err));
-        }
-        const det =
-          category === 'OUTRIGHT' || category === 'MINI'
-            ? await this.getInstrumentDetail(inst.symbol, inst.marketId, false).catch(() => null)
-            : null;
-        if (det !== null) {
-          this.dlrDetailBySymbol.set(inst.symbol, {
-            maturityDate: det.maturityDate,
-            contractMultiplier: det.contractMultiplier,
-            minPriceIncrement: det.minPriceIncrement,
-          });
-        }
-        return { inst, category, md, det, itemErr };
-      });
-      const firstErrMsg = mdResults.find((r) => r.itemErr !== null)?.itemErr ?? null;
-      if (mdResults.every((r) => r.itemErr !== null) && firstErrMsg !== null) {
-        return { spotUsed: null, spotSource: 'NONE', contracts: [], error: firstErrMsg };
+      // Garantiza el socket autenticado con el único mensaje `smd` de outrights
+      // (el descubrimiento ya está cacheado por la llamada anterior).
+      try {
+        await this.startDlrLiveStream();
+      } catch (err: unknown) {
+        this.lastError = this.redact(err instanceof Error ? err.message : String(err));
       }
 
-      const spotEntry = mdResults.find((r) => r.inst.symbol === 'DLR/SPOT')?.md ?? null;
-      const dlrSpotPrice =
-        spotEntry?.last ??
-        (spotEntry?.bids[0] && spotEntry.asks[0]
-          ? 0.5 * (spotEntry.bids[0].price + spotEntry.asks[0].price)
-          : null) ??
-        spotEntry?.settlement ??
-        spotEntry?.close ??
-        null;
+      const todayUtc = new Date(params.asOfUtcSec * 1_000).toISOString().slice(0, 10).replace(/-/g, '');
+      const products = filterDlrOutrightProducts(
+        discovered.instruments,
+        todayUtc,
+        (symbol) => this.dlrDetailBySymbol.get(symbol)?.maturityDate ?? null,
+      );
 
       const resolvedSpotUsed =
-        params.a3500 !== null && Number.isFinite(params.a3500) && params.a3500 > 0
-          ? params.a3500
-          : dlrSpotPrice !== null && Number.isFinite(dlrSpotPrice) && dlrSpotPrice > 0
-            ? dlrSpotPrice
-            : null;
+        params.a3500 !== null && Number.isFinite(params.a3500) && params.a3500 > 0 ? params.a3500 : null;
       const resolvedSpotSource: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE' =
-        params.a3500 !== null && Number.isFinite(params.a3500) && params.a3500 > 0
-          ? 'A3500_BCRA'
-          : dlrSpotPrice !== null && Number.isFinite(dlrSpotPrice) && dlrSpotPrice > 0
-            ? 'DLR_SPOT'
-            : 'NONE';
+        resolvedSpotUsed !== null ? 'A3500_BCRA' : 'NONE';
 
-      const contracts: PrimaryDlrContractDto[] = mdResults.map(({ inst, category, md, det }) => {
-        const maturityDateRaw = det?.maturityDate ?? inferDlrMaturityDateStr(inst.symbol);
+      const contracts: PrimaryDlrContractDto[] = products.map((inst) => {
+        const snap = this.wsSnapshots.get(`${inst.marketId}:${inst.symbol}`) ?? null;
+        const maturityDateRaw =
+          this.dlrDetailBySymbol.get(inst.symbol)?.maturityDate ?? inferDlrMaturityDateStr(inst.symbol);
+        // Sin snapshot WS todavía: todas las lecturas de precio quedan ausentes (NaN),
+        // de modo que la UI muestra "—" en lugar de un precio de respaldo.
         const metrics = computeDlrContractMetrics({
           asOfUtcSec: params.asOfUtcSec,
           maturityDate: maturityDateRaw,
-          last: md?.last,
-          bestBid: md?.bids[0]?.price,
-          bestAsk: md?.asks[0]?.price,
-          settlement: md?.settlement,
-          close: md?.close,
+          last: snap?.last,
+          bestBid: snap?.bids[0]?.price,
+          bestAsk: snap?.asks[0]?.price,
+          settlement: snap?.settlement,
+          close: snap?.close,
           a3500: params.a3500,
-          dlrSpot: dlrSpotPrice,
+          dlrSpot: null,
         });
         const expiryUtcSec = sanitizeNum(metrics.maturityUtcSec);
         const maturityIso =
           expiryUtcSec !== null ? new Date(expiryUtcSec * 1_000).toISOString().slice(0, 10) : null;
+        const detail = this.dlrDetailBySymbol.get(inst.symbol) ?? null;
 
         return {
           contract: inst.symbol,
-          category,
+          category: 'OUTRIGHT',
           marketId: inst.marketId,
           maturity: maturityIso,
           expiryUtcSec,
           days: sanitizeNum(metrics.days),
           price: sanitizeNum(metrics.referencePrice),
           priceBasis: metrics.priceBasis,
-          last: md?.last ?? null,
-          settlement: md?.settlement ?? null,
-          close: md?.close ?? null,
-          bid: md?.bids[0]?.price ?? null,
-          bidPrice: md?.bids[0]?.price ?? null,
-          bidSize: md?.bids[0]?.size ?? null,
-          ask: md?.asks[0]?.price ?? null,
-          askPrice: md?.asks[0]?.price ?? null,
-          askSize: md?.asks[0]?.size ?? null,
-          bids: md?.bids ?? [],
-          asks: md?.asks ?? [],
-          openInterest: md?.openInterest ?? null,
-          nominalVolume: md?.nominalVolume ?? null,
-          open: md?.open ?? null,
-          high: md?.high ?? null,
-          low: md?.low ?? null,
+          last: snap?.last ?? null,
+          settlement: snap?.settlement ?? null,
+          close: snap?.close ?? null,
+          bid: snap?.bids[0]?.price ?? null,
+          bidPrice: snap?.bids[0]?.price ?? null,
+          bidSize: snap?.bids[0]?.size ?? null,
+          ask: snap?.asks[0]?.price ?? null,
+          askPrice: snap?.asks[0]?.price ?? null,
+          askSize: snap?.asks[0]?.size ?? null,
+          bids: snap?.bids ?? [],
+          asks: snap?.asks ?? [],
+          openInterest: snap?.openInterest ?? null,
+          nominalVolume: snap?.nominalVolume ?? null,
+          open: snap?.open ?? null,
+          high: snap?.high ?? null,
+          low: snap?.low ?? null,
           spotUsed: sanitizeNum(metrics.spotUsed),
           spotSource: metrics.spotSource,
           devalDirectaPct: sanitizeNum(metrics.devalDirectaPct),
@@ -1900,9 +1907,9 @@ export class PrimaryRofexClient {
           teaImplicitaPct: sanitizeNum(metrics.teaImplicitaPct),
           temImplicitaPct: sanitizeNum(metrics.temImplicitaPct),
           forwardToForwardPct: null,
-          contractMultiplier: det?.contractMultiplier ?? null,
-          minPriceIncrement: det?.minPriceIncrement ?? null,
-          updatedAtUtcSec: md?.updatedAtUtcSec ?? null,
+          contractMultiplier: detail?.contractMultiplier ?? null,
+          minPriceIncrement: detail?.minPriceIncrement ?? null,
+          updatedAtUtcSec: snap?.updatedAtUtcSec ?? null,
           source: 'PRIMARY_ROFEX',
         };
       });
