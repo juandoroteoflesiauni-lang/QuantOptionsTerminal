@@ -20,6 +20,7 @@
  *  - `GET /api/ar/ggal-specialist/structure-pinning`
  *  - `POST /api/ar/ggal-specialist/strategy-selector`
  *  - `POST /api/ar/ggal-specialist/anexo-b/ingest`
+ *  - `GET /api/ar/ggal-specialist/margin-risk`
  *
  * WebSocket:
  *  - `ws://host:port/ws`
@@ -651,6 +652,82 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const regime2027 = await ggalRuntime.getRegime2027(forceRefresh);
         sendJson(res, 200, regime2027);
+        return;
+      }
+
+      if (pathname === '/api/ar/ggal-specialist/margin-risk') {
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const strategyParam = params.get('strategyKind') ?? undefined;
+        const allowedStrategies = new Set([
+          'UNCOVERED_SHORT',
+          'VERTICAL_DEBIT_SPREAD',
+          'VERTICAL_CREDIT_SPREAD',
+          'RATIO_SPREAD_1X2',
+          'RATIO_SPREAD_1X3',
+          'SHORT_STRADDLE_STRANGLE',
+          'COVERED_CALL',
+          'CROSS_COLLATERAL_STRATEGY',
+        ]);
+        if (strategyParam !== undefined && !allowedStrategies.has(strategyParam)) {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', `Unsupported strategyKind=${strategyParam}`, secrets, 400);
+        }
+        const collateralKindParam = params.get('collateralKind') ?? undefined;
+        const allowedCollateral = new Set([
+          'US_TREASURY_BILL',
+          'US_TREASURY_NOTE',
+          'US_TREASURY_BOND',
+          'CASH_ARS',
+          'CASH_USD',
+          'LECAP',
+          'SOVEREIGN_BOND_AR',
+          'EQUITY_LOCAL',
+        ]);
+        if (collateralKindParam !== undefined && !allowedCollateral.has(collateralKindParam)) {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', `Unsupported collateralKind=${collateralKindParam}`, secrets, 400);
+        }
+        const sideParam = params.get('side') ?? undefined;
+        if (sideParam !== undefined && sideParam !== 'BUY' && sideParam !== 'SELL') {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', `Unsupported side=${sideParam}`, secrets, 400);
+        }
+        const parseOptPosNum = (raw: string | null, name: string): number | undefined => {
+          if (raw === null || raw.trim() === '') return undefined;
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n <= 0) {
+            throw new RuntimeNoDataError('INVALID_PARAMETER', `Invalid ${name}=${raw}`, secrets, 400);
+          }
+          return n;
+        };
+        const capitalArs = parseOptPosNum(params.get('capitalArs'), 'capitalArs');
+        const collateralValueArs = (() => {
+          const raw = params.get('collateralValueArs');
+          if (raw === null || raw.trim() === '') return undefined;
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n < 0) {
+            throw new RuntimeNoDataError('INVALID_PARAMETER', `Invalid collateralValueArs=${raw}`, secrets, 400);
+          }
+          return n;
+        })();
+        const collateralAforo = parseOptPosNum(params.get('collateralAforo'), 'collateralAforo');
+        if (collateralAforo !== undefined && collateralAforo > 1) {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', 'collateralAforo must be in (0, 1]', secrets, 400);
+        }
+        const collateralDurationYears = parseOptPosNum(params.get('collateralDurationYears'), 'collateralDurationYears');
+        const desiredLots = parseOptPosNum(params.get('desiredLots'), 'desiredLots');
+
+        const report = await ggalRuntime.getMarginAndRiskReport(
+          {
+            ...(strategyParam !== undefined ? { strategyKind: strategyParam as NonNullable<Parameters<GgalSpecialistRuntime['getMarginAndRiskReport']>[0]>['strategyKind'] } : {}),
+            ...(capitalArs !== undefined ? { capitalArs } : {}),
+            ...(collateralKindParam !== undefined ? { collateralKind: collateralKindParam as NonNullable<Parameters<GgalSpecialistRuntime['getMarginAndRiskReport']>[0]>['collateralKind'] } : {}),
+            ...(collateralValueArs !== undefined ? { collateralValueArs } : {}),
+            ...(collateralAforo !== undefined ? { collateralAforo } : {}),
+            ...(collateralDurationYears !== undefined ? { collateralDurationYears } : {}),
+            ...(desiredLots !== undefined ? { desiredLots } : {}),
+            ...(sideParam !== undefined ? { side: sideParam } : {}),
+          },
+          forceRefresh,
+        );
+        sendJson(res, 200, report);
         return;
       }
 

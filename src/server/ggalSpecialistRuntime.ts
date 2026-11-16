@@ -55,10 +55,12 @@ import {
   formatIsoUtcFromSec,
   getBuenosAiresParts,
   GGAL_ADR_RATIO,
+  GGAL_BYMA_LOT_SIZE,
   type BidAskQuote,
   type BymaFeeSchedule,
   type ContinuousRateCurvePoint,
   type DstMode,
+  type OrderSide,
   type UsFeeSchedule,
 } from '../core/ggal/types.js';
 import {
@@ -70,11 +72,26 @@ import {
   type OpraSliceQuoteInput,
 } from '../core/ggal/volTriangle.js';
 import {
+  calibrateOvernightJumpDiffusionFromSeries,
+  evaluateBymaClearingMargin,
+  evaluateExecutionMicrostructure,
+  evaluateTailStressAndSizing,
+  type BookDepthSource,
+  type BookLevelInput,
+  type BymaClearingStrategyKind,
+  type BymaMarginLegInput,
+  type CollateralAssetKind,
+  type ExecutionMicrostructureOutput,
+  type MarginAndRiskOutput,
+  type StressTestMatrixOutput,
+} from '../core/ggal/marginRiskExecution.js';
+import {
   ArgentinaMarketRuntime,
   type ArHttpFn,
   type ArHttpRequestInit,
   type ArMacroResponse,
   type ArMonitoringResponse,
+  type ArOptionContractDto,
   type ArOptionExpiryDto,
   type ArOptionsResponse,
   type ArOverviewResponse,
@@ -399,6 +416,56 @@ export interface GgalSpecialistOverviewResponse {
 export interface GgalAnexoBIngestResponse {
   readonly ok: true;
   readonly record: Omit<AnexoBStoredRecord, 'rows'> & { readonly previewRows: readonly AnexoBIngestStrikeRowInput[] };
+}
+
+export interface GgalMarginRiskRequest {
+  readonly strategyKind?: BymaClearingStrategyKind | undefined;
+  readonly capitalArs?: number | undefined;
+  readonly collateralKind?: CollateralAssetKind | undefined;
+  readonly collateralValueArs?: number | undefined;
+  readonly collateralAforo?: number | undefined;
+  readonly collateralDurationYears?: number | undefined;
+  readonly desiredLots?: number | undefined;
+  readonly side?: OrderSide | undefined;
+}
+
+export interface GgalMarginRiskSelectedLegDto {
+  readonly ticker: string;
+  readonly contractType: 'call' | 'put';
+  readonly side: OrderSide;
+  readonly lots: number;
+  readonly strikeArs: number;
+  readonly optionPriceArs: number;
+  readonly ivPct: number;
+}
+
+export interface GgalMarginRiskResponse {
+  readonly telemetry: GgalTelemetryHeaderDto;
+  readonly requestResolved: {
+    readonly strategyKind: BymaClearingStrategyKind;
+    readonly capitalArs: number;
+    readonly collateralKind: CollateralAssetKind;
+    readonly collateralValueArs: number;
+    readonly collateralAforo: number | null;
+    readonly desiredLots: number;
+    readonly side: OrderSide;
+  };
+  readonly frontExpiryCode: string | null;
+  readonly frontExpiryDate: string | null;
+  readonly targetOptionSymbol: string | null;
+  readonly targetOptionStrikeArs: number | null;
+  readonly selectedLegs: readonly GgalMarginRiskSelectedLegDto[];
+  readonly executionBookDiagnostics: {
+    readonly bookSource: BookDepthSource;
+    readonly underlyingBook5LevelsSource: string | null;
+    readonly optionL1BidSizeLots: number | null;
+    readonly optionL1AskSizeLots: number | null;
+    readonly recorderPairsCount: number;
+  };
+  readonly marginRisk: JsonSafeValue<MarginAndRiskOutput> | null;
+  readonly executionMicrostructure: JsonSafeValue<ExecutionMicrostructureOutput> | null;
+  readonly tailStress: JsonSafeValue<StressTestMatrixOutput> | null;
+  readonly notice: string | null;
 }
 
 interface Data912RawRow {
@@ -3632,6 +3699,497 @@ export class GgalSpecialistRuntime {
       feeScheduleUsed: toJsonSafe(feeSchedule),
       physicalNodesCount: physicalNodes.length,
       result: toJsonSafe(filtered),
+    };
+  }
+
+  public async getMarginAndRiskReport(
+    req: GgalMarginRiskRequest = {},
+    forceRefresh = false,
+  ): Promise<GgalMarginRiskResponse> {
+    const bundle = await this.loadMarketBundle(forceRefresh);
+    this.appendRecorderObservation(bundle);
+
+    const strategyKind: BymaClearingStrategyKind = req.strategyKind ?? 'VERTICAL_CREDIT_SPREAD';
+    const capitalArs =
+      req.capitalArs !== undefined && Number.isFinite(req.capitalArs) && req.capitalArs > 0
+        ? req.capitalArs
+        : 25_000_000;
+    const collateralKind: CollateralAssetKind = req.collateralKind ?? 'CASH_ARS';
+    const collateralValueArs =
+      req.collateralValueArs !== undefined &&
+      Number.isFinite(req.collateralValueArs) &&
+      req.collateralValueArs >= 0
+        ? req.collateralValueArs
+        : 5_000_000;
+    const collateralAforo =
+      req.collateralAforo !== undefined &&
+      Number.isFinite(req.collateralAforo) &&
+      req.collateralAforo > 0 &&
+      req.collateralAforo <= 1
+        ? req.collateralAforo
+        : undefined;
+    const desiredLots =
+      req.desiredLots !== undefined && Number.isFinite(req.desiredLots) && req.desiredLots > 0
+        ? Math.round(req.desiredLots)
+        : 20;
+    const side: OrderSide = req.side ?? 'BUY';
+
+    const isClosed = bundle.overview.marketState === 'CERRADO';
+    const isEodMode =
+      bundle.overview.feedStatus === 'EOD_CIERRE' ||
+      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
+      isClosed;
+    const spots = this.resolveSpotQuotes(bundle, isEodMode);
+    const rates = this.resolveSofrAndRateBenchmarks(bundle);
+    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    const dual = this.buildDualDensityCore(bundle);
+    const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
+
+    const spot24hArs =
+      Number.isFinite(spots.byma24hQuote.bid) && Number.isFinite(spots.byma24hQuote.ask)
+        ? 0.5 * (spots.byma24hQuote.bid + spots.byma24hQuote.ask)
+        : Number.NaN;
+    const spotAdrUsd =
+      Number.isFinite(spots.adrQuote.bid) && Number.isFinite(spots.adrQuote.ask)
+        ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
+        : Number.NaN;
+    const cclArs =
+      Number.isFinite(spot24hArs) &&
+      spot24hArs > 0 &&
+      Number.isFinite(spotAdrUsd) &&
+      spotAdrUsd > 0
+        ? (spot24hArs / spotAdrUsd) * GGAL_ADR_RATIO
+        : Number.NaN;
+
+    const requestResolved = {
+      strategyKind,
+      capitalArs,
+      collateralKind,
+      collateralValueArs,
+      collateralAforo: collateralAforo ?? null,
+      desiredLots,
+      side,
+    };
+
+    const recorderBymaTicks = this.recorderSnapshots
+      .filter((s) => s.spotByma24hArs !== null && Number.isFinite(s.spotByma24hArs) && s.spotByma24hArs > 0)
+      .map((s) => ({ utcSec: s.asOfUtcSec, midPrice: s.spotByma24hArs as number }));
+    const recorderAdrTicks = this.recorderSnapshots
+      .filter((s) => s.spotAdrUsd !== null && Number.isFinite(s.spotAdrUsd) && s.spotAdrUsd > 0)
+      .map((s) => ({ utcSec: s.asOfUtcSec, midPrice: s.spotAdrUsd as number }));
+    const underlyingBook = bundle.ggalDetail.orderBook5Levels ?? null;
+
+    const buildOptionMid = (c: ArOptionContractDto): number | null => {
+      if (c.bid !== null && c.ask !== null && Number.isFinite(c.bid) && Number.isFinite(c.ask) && c.bid > 0 && c.ask >= c.bid) {
+        return 0.5 * (c.bid + c.ask);
+      }
+      if (c.last !== null && Number.isFinite(c.last) && c.last > 0) return c.last;
+      if (c.mark !== null && Number.isFinite(c.mark) && c.mark > 0) return c.mark;
+      return null;
+    };
+
+    if (
+      front === null ||
+      !Number.isFinite(spot24hArs) ||
+      spot24hArs <= 0 ||
+      rates.rateCurveArs.length === 0
+    ) {
+      return {
+        telemetry,
+        requestResolved,
+        frontExpiryCode: front?.expiryCode ?? null,
+        frontExpiryDate: front?.expirationDate ?? null,
+        targetOptionSymbol: null,
+        targetOptionStrikeArs: null,
+        selectedLegs: [],
+        executionBookDiagnostics: {
+          bookSource: 'NO_DATA',
+          underlyingBook5LevelsSource: underlyingBook?.source ?? null,
+          optionL1BidSizeLots: null,
+          optionL1AskSizeLots: null,
+          recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
+        },
+        marginRisk: null,
+        executionMicrostructure: null,
+        tailStress: null,
+        notice: 'Falta cadena líquida GGAL, spot 24h o curva ARS para evaluar Motor 6.',
+      };
+    }
+
+    const callsValid = front.calls
+      .filter((c) => buildOptionMid(c) !== null && c.iv !== null && Number.isFinite(c.iv) && c.iv > 0)
+      .slice()
+      .sort((a, b) => a.strike - b.strike);
+    const putsValid = front.puts
+      .filter((p) => buildOptionMid(p) !== null && p.iv !== null && Number.isFinite(p.iv) && p.iv > 0)
+      .slice()
+      .sort((a, b) => a.strike - b.strike);
+
+    const toLeg = (c: ArOptionContractDto, legSide: OrderSide, lots: number): BymaMarginLegInput => ({
+      ticker: c.symbol,
+      contractType: c.contractType,
+      side: legSide,
+      lots,
+      strikeArs: c.strike,
+      optionPriceArs: buildOptionMid(c) as number,
+      ivDecimal: c.iv as number,
+    });
+
+    const nearestIndex = (arr: readonly ArOptionContractDto[], targetStrike: number): number => {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      arr.forEach((item, idx) => {
+        const d = Math.abs(item.strike - targetStrike);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = idx;
+        }
+      });
+      return bestIdx;
+    };
+
+    const marginLegs: BymaMarginLegInput[] = [];
+    let targetContract: ArOptionContractDto | null = null;
+    let underlyingSharesHeld: number | undefined;
+
+    if (callsValid.length > 0 || putsValid.length > 0) {
+      const atmCallIdx = callsValid.length > 0 ? nearestIndex(callsValid, spot24hArs) : -1;
+      const atmPutIdx = putsValid.length > 0 ? nearestIndex(putsValid, spot24hArs) : -1;
+      const cAtm = atmCallIdx >= 0 ? callsValid[atmCallIdx] : undefined;
+      const cUpper =
+        atmCallIdx >= 0 && atmCallIdx + 1 < callsValid.length
+          ? callsValid[atmCallIdx + 1]
+          : callsValid[callsValid.length - 1];
+      const pAtm = atmPutIdx >= 0 ? putsValid[atmPutIdx] : undefined;
+      const pLower =
+        atmPutIdx > 0 ? putsValid[atmPutIdx - 1] : putsValid[0];
+
+      switch (strategyKind) {
+        case 'UNCOVERED_SHORT': {
+          const leg = cUpper ?? cAtm ?? pAtm;
+          if (leg) {
+            marginLegs.push(toLeg(leg, 'SELL', 10));
+            targetContract = leg;
+          }
+          break;
+        }
+        case 'VERTICAL_DEBIT_SPREAD': {
+          if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
+            marginLegs.push(toLeg(cAtm, 'BUY', 10), toLeg(cUpper, 'SELL', 10));
+            targetContract = cAtm;
+          } else if (cAtm) {
+            marginLegs.push(toLeg(cAtm, 'BUY', 10));
+            targetContract = cAtm;
+          }
+          break;
+        }
+        case 'VERTICAL_CREDIT_SPREAD': {
+          if (pAtm && pLower && pAtm.symbol !== pLower.symbol) {
+            marginLegs.push(toLeg(pAtm, 'SELL', 10), toLeg(pLower, 'BUY', 10));
+            targetContract = pAtm;
+          } else if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
+            marginLegs.push(toLeg(cAtm, 'SELL', 10), toLeg(cUpper, 'BUY', 10));
+            targetContract = cAtm;
+          } else {
+            const fb = pAtm ?? cAtm;
+            if (fb !== undefined) {
+              marginLegs.push(toLeg(fb, 'SELL', 10));
+              targetContract = fb;
+            }
+          }
+          break;
+        }
+        case 'RATIO_SPREAD_1X2': {
+          if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
+            marginLegs.push(toLeg(cAtm, 'BUY', 10), toLeg(cUpper, 'SELL', 20));
+            targetContract = cUpper;
+          } else if (cAtm) {
+            marginLegs.push(toLeg(cAtm, 'SELL', 20));
+            targetContract = cAtm;
+          }
+          break;
+        }
+        case 'RATIO_SPREAD_1X3': {
+          if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
+            marginLegs.push(toLeg(cAtm, 'BUY', 10), toLeg(cUpper, 'SELL', 30));
+            targetContract = cUpper;
+          } else if (cAtm) {
+            marginLegs.push(toLeg(cAtm, 'SELL', 30));
+            targetContract = cAtm;
+          }
+          break;
+        }
+        case 'SHORT_STRADDLE_STRANGLE': {
+          const shortCall = cUpper ?? cAtm;
+          const shortPut = pLower ?? pAtm;
+          if (shortCall) marginLegs.push(toLeg(shortCall, 'SELL', 10));
+          if (shortPut) marginLegs.push(toLeg(shortPut, 'SELL', 10));
+          targetContract = shortCall ?? shortPut ?? null;
+          break;
+        }
+        case 'COVERED_CALL': {
+          const shortCall = cUpper ?? cAtm;
+          if (shortCall) {
+            marginLegs.push(toLeg(shortCall, 'SELL', 10));
+            underlyingSharesHeld = 10 * GGAL_BYMA_LOT_SIZE;
+            targetContract = shortCall;
+          }
+          break;
+        }
+        case 'CROSS_COLLATERAL_STRATEGY': {
+          const shortPut = pLower ?? pAtm;
+          const longCall = cUpper ?? cAtm;
+          if (shortPut) marginLegs.push(toLeg(shortPut, 'SELL', 12));
+          if (longCall) marginLegs.push(toLeg(longCall, 'BUY', 6));
+          targetContract = shortPut ?? longCall ?? null;
+          break;
+        }
+      }
+    }
+
+    if (marginLegs.length === 0 || targetContract === null) {
+      return {
+        telemetry,
+        requestResolved,
+        frontExpiryCode: front.expiryCode,
+        frontExpiryDate: front.expirationDate,
+        targetOptionSymbol: null,
+        targetOptionStrikeArs: null,
+        selectedLegs: [],
+        executionBookDiagnostics: {
+          bookSource: 'NO_DATA',
+          underlyingBook5LevelsSource: underlyingBook?.source ?? null,
+          optionL1BidSizeLots: null,
+          optionL1AskSizeLots: null,
+          recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
+        },
+        marginRisk: null,
+        executionMicrostructure: null,
+        tailStress: null,
+        notice: `Sin contratos líquidos con VI válida en ${front.expiryCode} para armar ${strategyKind}.`,
+      };
+    }
+
+    const expiry1530UtcSec = computeExpiration1530ArtUtcSec(front.expirationDate);
+    const marginOut = evaluateBymaClearingMargin({
+      asOfUtcSec: bundle.asOfUtcSec,
+      expiryDateKey: front.expirationDate,
+      expiry1530UtcSec,
+      spot24hArs,
+      rateCurveArs: rates.rateCurveArs,
+      arHolidays: this.arHolidays,
+      strategyKind,
+      legs: marginLegs,
+      ...(underlyingSharesHeld !== undefined ? { underlyingSharesHeld } : {}),
+      collateralAssets: [
+        {
+          id: collateralKind,
+          kind: collateralKind,
+          marketValueArs: collateralValueArs,
+          ...(collateralAforo !== undefined ? { explicitAforo: collateralAforo } : {}),
+          ...(req.collateralDurationYears !== undefined
+            ? { modifiedDurationYears: req.collateralDurationYears }
+            : {}),
+        },
+      ],
+    });
+
+    // Microestructura L1–L2 real sin fabricar niveles
+    const optBid = targetContract.bid ?? Number.NaN;
+    const optAsk = targetContract.ask ?? Number.NaN;
+    const optLast = targetContract.last ?? buildOptionMid(targetContract) ?? Number.NaN;
+    const optBidSize = targetContract.bidSize ?? null;
+    const optAskSize = targetContract.askSize ?? null;
+    const hasPrimaryUnderlyingL2 =
+      underlyingBook !== null &&
+      (underlyingBook.source === 'BMB_HOMEBROKER' || underlyingBook.source === 'PRIMARY_MERV');
+    const hasOptionL1Sizes =
+      optBidSize !== null &&
+      optAskSize !== null &&
+      Number.isFinite(optBidSize) &&
+      Number.isFinite(optAskSize) &&
+      optBidSize > 0 &&
+      optAskSize > 0 &&
+      Number.isFinite(optBid) &&
+      Number.isFinite(optAsk) &&
+      optBid > 0 &&
+      optAsk > optBid;
+
+    const bookSource: BookDepthSource = hasPrimaryUnderlyingL2 && hasOptionL1Sizes
+      ? 'PRIMARY_L2'
+      : Number.isFinite(optBid) && Number.isFinite(optAsk) && optBid > 0
+        ? 'BYMA_L1_ONLY'
+        : 'NO_DATA';
+    const bidsL1L2: BookLevelInput[] =
+      bookSource === 'PRIMARY_L2'
+        ? [{ priceArs: optBid, sizeLots: optBidSize as number }]
+        : [];
+    const asksL1L2: BookLevelInput[] =
+      bookSource === 'PRIMARY_L2'
+        ? [{ priceArs: optAsk, sizeLots: optAskSize as number }]
+        : [];
+
+    const tickSizeArs = Number.isFinite(optBid) && optBid < 100 ? 0.5 : 1.0;
+    const targetAnexoRow = this.anexoBStore?.rows.find(
+      (r) => Math.abs(r.strikeArs - targetContract.strike) < 1e-6,
+    );
+    const bucketUncoveredNom =
+      targetAnexoRow === undefined
+        ? undefined
+        : targetContract.contractType === 'call'
+          ? targetAnexoRow.callOi.uncoveredNom
+          : targetAnexoRow.putOi.uncoveredNom;
+    const uncoveredOiLots =
+      bucketUncoveredNom !== undefined && bucketUncoveredNom > 0
+        ? bucketUncoveredNom / GGAL_BYMA_LOT_SIZE
+        : targetContract.openInterest !== null && targetContract.openInterest > 0
+          ? targetContract.openInterest
+          : Number.NaN;
+    const adv20Lots =
+      targetContract.volume !== null && Number.isFinite(targetContract.volume) && targetContract.volume > 0
+        ? targetContract.volume
+        : Number.NaN;
+
+    let lambdaBasePerSec = Number.NaN;
+    if (this.bymaFlowSnapshots.length >= 2) {
+      const f0 = this.bymaFlowSnapshots[0];
+      const fLast = this.bymaFlowSnapshots[this.bymaFlowSnapshots.length - 1];
+      if (f0 !== undefined && fLast !== undefined) {
+        const dtFlow = fLast.time - f0.time;
+        const dShares = fLast.cumVolumeShares - f0.cumVolumeShares;
+        if (dtFlow > 0 && dShares >= 0) {
+          lambdaBasePerSec = dShares / GGAL_BYMA_LOT_SIZE / dtFlow;
+        }
+      }
+    } else if (!isEodMode && Number.isFinite(adv20Lots) && adv20Lots > 0) {
+      // Flujo promedio observado en lo que va de la rueda (~18000s / sesión) solo si hay volumen real
+      lambdaBasePerSec = adv20Lots / 18_000;
+    }
+
+    const quoteAgeSecRef = telemetry.data912TimestampSec ?? bundle.asOfUtcSec;
+    const execOut = evaluateExecutionMicrostructure({
+      asOfUtcSec: bundle.asOfUtcSec,
+      telemetryMode: telemetry.marketMode,
+      side,
+      desiredLots,
+      quoteAsOfUtcSec: quoteAgeSecRef,
+      bidArs: optBid,
+      askArs: optAsk,
+      lastTradeArs: optLast,
+      tickSizeArs,
+      depthSource: bookSource,
+      bidsL1L2,
+      asksL1L2,
+      adv20Lots,
+      uncoveredOiLots,
+      lambdaBasePerSec,
+      expectedEdgeArsPerShare:
+        Number.isFinite(optAsk) && Number.isFinite(optBid) ? 0.25 * Math.max(0, optAsk - optBid) : Number.NaN,
+      optionIvDecimal: targetContract.iv ?? Number.NaN,
+      bymaTicks: recorderBymaTicks,
+      adrTicks: recorderAdrTicks,
+    });
+
+    // Motor 6.3 Stress Test + Jump-Diffusion Overnight + Sizing Kelly-CVaR
+    const calibratedOvernight = calibrateOvernightJumpDiffusionFromSeries(dual.historicalSeries);
+    const totalLotsInUnit = Math.max(
+      1,
+      marginLegs.reduce((acc, l) => acc + l.lots, 0),
+    );
+    const scaleDivisor = Math.max(
+      1,
+      marginLegs.reduce((acc, l) => Math.min(acc, l.lots), Infinity),
+    );
+    const bymaLegsPerUnit: BymaMarginLegInput[] = marginLegs.map((l) => ({
+      ...l,
+      lots: Math.max(1, Math.round(l.lots / scaleDivisor)),
+    }));
+    const marginPerUnitArs = Number.isFinite(marginOut.totalRequiredWithBuffersArs)
+      ? marginOut.totalRequiredWithBuffersArs / Math.max(1, scaleDivisor)
+      : Number.NaN;
+
+    let tailStressOut: StressTestMatrixOutput | null = null;
+    let tailNotice: string | null = null;
+    if (
+      calibratedOvernight !== null &&
+      Number.isFinite(spotAdrUsd) &&
+      spotAdrUsd > 0 &&
+      Number.isFinite(cclArs) &&
+      cclArs > 0 &&
+      Number.isFinite(marginOut.totalEffectiveCollateralArs)
+    ) {
+      tailStressOut = evaluateTailStressAndSizing({
+        asOfUtcSec: bundle.asOfUtcSec,
+        expiryDateKey: front.expirationDate,
+        expiry1530UtcSec,
+        spot24hArs,
+        spotAdrUsd,
+        cclArs,
+        rateCurveArs: rates.rateCurveArs,
+        arHolidays: this.arHolidays,
+        bymaLegsPerUnit,
+        capitalArs,
+        totalEffectiveCollateralArs: marginOut.totalEffectiveCollateralArs,
+        marginRequiredPerUnitArs: Number.isFinite(marginPerUnitArs) ? marginPerUnitArs : 0,
+        collateralAssets: [
+          {
+            id: collateralKind,
+            kind: collateralKind,
+            marketValueArs: collateralValueArs,
+            ...(collateralAforo !== undefined ? { explicitAforo: collateralAforo } : {}),
+            ...(req.collateralDurationYears !== undefined
+              ? { modifiedDurationYears: req.collateralDurationYears }
+              : {}),
+          },
+        ],
+        overnightParams: calibratedOvernight,
+      });
+    } else if (calibratedOvernight === null) {
+      tailNotice = `Historial ADR/CCL insuficiente (< 15 ruedas, actual=${String(dual.historicalSeries.length)}) para calibrar Jump-Diffusion overnight.`;
+    } else if (!Number.isFinite(marginOut.totalEffectiveCollateralArs)) {
+      tailNotice = `Falta aforo explícito válido en colateral ${collateralKind} para evaluar solvencia de estrés y sizing Kelly-CVaR.`;
+    }
+
+    const totalUnitNotice = [
+      marginOut.status === 'NO_DATA' && marginOut.collateralStatus === 'MISSING_EXPLICIT_AFORO'
+        ? `Colateral ${collateralKind} requiere aforo explícito (0 < aforo ≤ 1) sin valor de respaldo silencioso.`
+        : null,
+      execOut.status === 'DEGRADED_L1_ONLY'
+        ? `Microestructura L2 degradada (${underlyingBook?.source ?? 'SIN_L2_PRIMARIO'} / sin puntas de tamaño): cota máxima de orden marcada como —.`
+        : null,
+      tailNotice,
+      totalLotsInUnit > 0 ? null : null,
+    ]
+      .filter((x): x is string => x !== null)
+      .join(' ');
+
+    return {
+      telemetry,
+      requestResolved,
+      frontExpiryCode: front.expiryCode,
+      frontExpiryDate: front.expirationDate,
+      targetOptionSymbol: targetContract.symbol,
+      targetOptionStrikeArs: targetContract.strike,
+      selectedLegs: marginLegs.map((l) => ({
+        ticker: l.ticker,
+        contractType: l.contractType,
+        side: l.side,
+        lots: l.lots,
+        strikeArs: l.strikeArs,
+        optionPriceArs: l.optionPriceArs,
+        ivPct: l.ivDecimal * 100,
+      })),
+      executionBookDiagnostics: {
+        bookSource,
+        underlyingBook5LevelsSource: underlyingBook?.source ?? null,
+        optionL1BidSizeLots: optBidSize,
+        optionL1AskSizeLots: optAskSize,
+        recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
+      },
+      marginRisk: toJsonSafe(marginOut),
+      executionMicrostructure: toJsonSafe(execOut),
+      tailStress: tailStressOut !== null ? toJsonSafe(tailStressOut) : null,
+      notice: totalUnitNotice.length > 0 ? totalUnitNotice : null,
     };
   }
 

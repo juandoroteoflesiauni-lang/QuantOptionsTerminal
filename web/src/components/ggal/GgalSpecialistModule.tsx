@@ -17,6 +17,7 @@ import {
   fetchGgalDualChart,
   fetchGgalDualDensity,
   fetchGgalFeedStatus,
+  fetchGgalMarginRisk,
   fetchGgalMicrostructure,
   fetchGgalOptionsSurface,
   fetchGgalParityGap,
@@ -27,6 +28,8 @@ import {
   postGgalAnexoBIngest,
   postGgalStrategySelector,
   type ArFeedRouterStatusSnapshotDto,
+  type BymaClearingStrategyKindDto,
+  type CollateralAssetKindDto,
   type GgalAvwapAnchorMode,
   type GgalBadgeMode,
   type GgalClearingRiskResponseDto,
@@ -34,6 +37,7 @@ import {
   type GgalDualChartPayloadDto,
   type GgalDualChartTimeframe,
   type GgalDualDensityResponseDto,
+  type GgalMarginRiskResponseDto,
   type GgalMicrostructureResponseDto,
   type GgalOptionsSurfaceResponseDto,
   type GgalParityGapResponseDto,
@@ -59,7 +63,8 @@ export type GgalTabId =
   | 'structure-pinning'
   | 'strategy-selector'
   | 'microstructure-orats'
-  | 'regime-2027';
+  | 'regime-2027'
+  | 'margin-risk';
 
 const TAB_ITEMS: readonly { readonly id: GgalTabId; readonly label: string }[] = [
   { id: 'parity-gap', label: '1. Paridad & Gap' },
@@ -69,6 +74,29 @@ const TAB_ITEMS: readonly { readonly id: GgalTabId; readonly label: string }[] =
   { id: 'strategy-selector', label: '5. Selector de Estrategias' },
   { id: 'microstructure-orats', label: '6. Microestructura L2, VPIN & ORATS' },
   { id: 'regime-2027', label: '7. Régimen Electoral 2027' },
+  { id: 'margin-risk', label: '8. Riesgo, Márgenes & Ejecución' },
+];
+
+const BYMA_CLEARING_STRATEGIES: readonly { readonly value: BymaClearingStrategyKindDto; readonly label: string }[] = [
+  { value: 'VERTICAL_CREDIT_SPREAD', label: 'Vertical Spread Acreedor' },
+  { value: 'UNCOVERED_SHORT', label: 'Lanzamiento Descubierto' },
+  { value: 'VERTICAL_DEBIT_SPREAD', label: 'Vertical Spread Deudor' },
+  { value: 'RATIO_SPREAD_1X2', label: 'Ratio Spread 1x2' },
+  { value: 'RATIO_SPREAD_1X3', label: 'Ratio Spread 1x3' },
+  { value: 'SHORT_STRADDLE_STRANGLE', label: 'Straddle / Strangle Vendido' },
+  { value: 'COVERED_CALL', label: 'Lanzamiento Cubierto' },
+  { value: 'CROSS_COLLATERAL_STRATEGY', label: 'Estrategia Cruzada / Cross-Collateral' },
+];
+
+const COLLATERAL_KINDS: readonly { readonly value: CollateralAssetKindDto; readonly label: string; readonly requiresExplicitAforo: boolean }[] = [
+  { value: 'CASH_ARS', label: 'Pesos (CASH ARS · 100 %)', requiresExplicitAforo: false },
+  { value: 'CASH_USD', label: 'Dólares (CASH USD · 100 %)', requiresExplicitAforo: false },
+  { value: 'US_TREASURY_BILL', label: 'US Treasury Bill (98 %)', requiresExplicitAforo: false },
+  { value: 'US_TREASURY_NOTE', label: 'US Treasury Note (96 %)', requiresExplicitAforo: false },
+  { value: 'US_TREASURY_BOND', label: 'US Treasury Bond (94 %)', requiresExplicitAforo: false },
+  { value: 'LECAP', label: 'LECAP Local (Aforo + WWR 15 %)', requiresExplicitAforo: true },
+  { value: 'SOVEREIGN_BOND_AR', label: 'Bono Soberano AR (Aforo + WWR 15 %)', requiresExplicitAforo: true },
+  { value: 'EQUITY_LOCAL', label: 'Acciones Locales (Aforo + WWR 15 %)', requiresExplicitAforo: true },
 ];
 
 const STRATEGY_FAMILIES: readonly { readonly value: GgalStrategyFamily | 'ALL'; readonly label: string }[] = [
@@ -149,6 +177,7 @@ export const GgalSpecialistModule: React.FC<{
   const [surfaceData, setSurfaceData] = useState<GgalOptionsSurfaceResponseDto | null>(null);
   const [clearingRiskData, setClearingRiskData] = useState<GgalClearingRiskResponseDto | null>(null);
   const [regimeData, setRegimeData] = useState<GgalRegime2027ResponseDto | null>(null);
+  const [marginRiskData, setMarginRiskData] = useState<GgalMarginRiskResponseDto | null>(null);
 
   // Dual Synced Charts state
   const [coordMode, setCoordMode] = useState<GgalDualChartCoordMode>('ARS_BYMA');
@@ -163,6 +192,15 @@ export const GgalSpecialistModule: React.FC<{
   const [minBymaOiNom, setMinBymaOiNom] = useState<string>('0');
   const [minEvMultiple, setMinEvMultiple] = useState<string>('1.5');
   const [enforceThresholds, setEnforceThresholds] = useState<boolean>(false);
+
+  // Parámetros interactivos Motor 6
+  const [m6StrategyKind, setM6StrategyKind] = useState<BymaClearingStrategyKindDto>('VERTICAL_CREDIT_SPREAD');
+  const [m6CapitalArs, setM6CapitalArs] = useState<string>('25000000');
+  const [m6CollateralKind, setM6CollateralKind] = useState<CollateralAssetKindDto>('CASH_ARS');
+  const [m6CollateralValueArs, setM6CollateralValueArs] = useState<string>('5000000');
+  const [m6CollateralAforo, setM6CollateralAforo] = useState<string>('');
+  const [m6DesiredLots, setM6DesiredLots] = useState<string>('20');
+  const [m6Side, setM6Side] = useState<'BUY' | 'SELL'>('BUY');
 
   // Modal Anexo B IAMC
   const [anexoModalOpen, setAnexoModalOpen] = useState(false);
@@ -259,6 +297,27 @@ export const GgalSpecialistModule: React.FC<{
               setRegimeData(rRes);
             }
           });
+        } else if (tab === 'margin-risk') {
+          const parsedCap = Number(m6CapitalArs);
+          const parsedCollVal = Number(m6CollateralValueArs);
+          const parsedAforo = m6CollateralAforo.trim() !== '' ? Number(m6CollateralAforo) : undefined;
+          const parsedLots = Number(m6DesiredLots);
+          tabPromise = fetchGgalMarginRisk(
+            {
+              strategyKind: m6StrategyKind,
+              collateralKind: m6CollateralKind,
+              side: m6Side,
+              ...(Number.isFinite(parsedCap) && parsedCap > 0 ? { capitalArs: parsedCap } : {}),
+              ...(Number.isFinite(parsedCollVal) && parsedCollVal >= 0
+                ? { collateralValueArs: parsedCollVal }
+                : {}),
+              ...(parsedAforo !== undefined && Number.isFinite(parsedAforo) && parsedAforo > 0 && parsedAforo <= 1
+                ? { collateralAforo: parsedAforo }
+                : {}),
+              ...(Number.isFinite(parsedLots) && parsedLots > 0 ? { desiredLots: parsedLots } : {}),
+            },
+            { forceRefresh, signal: ctrl.signal },
+          ).then(setMarginRiskData);
         } else {
           const parsedOi = Number(minBymaOiNom);
           const parsedMult = Number(minEvMultiple);
@@ -291,7 +350,19 @@ export const GgalSpecialistModule: React.FC<{
         }
       }
     },
-    [enforceThresholds, familyFilter, minBymaOiNom, minEvMultiple],
+    [
+      enforceThresholds,
+      familyFilter,
+      m6CapitalArs,
+      m6CollateralAforo,
+      m6CollateralKind,
+      m6CollateralValueArs,
+      m6DesiredLots,
+      m6Side,
+      m6StrategyKind,
+      minBymaOiNom,
+      minEvMultiple,
+    ],
   );
 
   useEffect(() => {
@@ -314,8 +385,9 @@ export const GgalSpecialistModule: React.FC<{
     if (activeTab === 'dual-density' && dualData !== null) return dualData.telemetry;
     if (activeTab === 'structure-pinning' && structureData !== null) return structureData.telemetry;
     if (activeTab === 'strategy-selector' && strategyData !== null) return strategyData.telemetry;
+    if (activeTab === 'margin-risk' && marginRiskData !== null) return marginRiskData.telemetry;
     return overview?.telemetry ?? null;
-  }, [activeTab, dualData, overview, parityData, strategyData, structureData, volData]);
+  }, [activeTab, dualData, marginRiskData, overview, parityData, strategyData, structureData, volData]);
 
   const handleIngestAnexoB = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1954,6 +2026,604 @@ export const GgalSpecialistModule: React.FC<{
                 </div>
               );
             })()
+          )}
+        </div>
+      )}
+
+      {/* TAB 8: RIESGO, MÁRGENES BYMA CLEARING 2026 & MICROESTRUCTURA L1-L2 */}
+      {activeTab === 'margin-risk' && (
+        <div className="space-y-4">
+          {/* Panel interactivo de parámetros de margen, colateral y ejecución */}
+          <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3 items-end">
+            <label className="text-[11px] text-[#9A9CA6] space-y-1">
+              <span className="block uppercase font-semibold">Estrategia BYMA Clearing</span>
+              <select
+                value={m6StrategyKind}
+                onChange={(e) => setM6StrategyKind(e.target.value as BymaClearingStrategyKindDto)}
+                className="w-full rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2.5 py-1.5 text-[12px] text-[#FFFFFF]"
+              >
+                {BYMA_CLEARING_STRATEGIES.map((st) => (
+                  <option key={st.value} value={st.value}>
+                    {st.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-[11px] text-[#9A9CA6] space-y-1">
+              <span className="block uppercase font-semibold">Colateral / Garantía</span>
+              <select
+                value={m6CollateralKind}
+                onChange={(e) => setM6CollateralKind(e.target.value as CollateralAssetKindDto)}
+                className="w-full rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2.5 py-1.5 text-[12px] text-[#FFFFFF]"
+              >
+                {COLLATERAL_KINDS.map((ck) => (
+                  <option key={ck.value} value={ck.value}>
+                    {ck.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-[11px] text-[#9A9CA6] space-y-1">
+              <span className="block uppercase font-semibold">Val. Colateral (ARS)</span>
+              <input
+                type="number"
+                min={0}
+                value={m6CollateralValueArs}
+                onChange={(e) => setM6CollateralValueArs(e.target.value)}
+                className="w-full rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2.5 py-1.5 text-[12px] text-[#FFFFFF] font-mono-num"
+              />
+            </label>
+            <label className="text-[11px] text-[#9A9CA6] space-y-1">
+              <span className="block uppercase font-semibold">
+                Aforo Explícito (0-1)
+                {COLLATERAL_KINDS.find((c) => c.value === m6CollateralKind)?.requiresExplicitAforo
+                  ? ' · Req.'
+                  : ''}
+              </span>
+              <input
+                type="number"
+                step="0.01"
+                min={0.01}
+                max={1}
+                placeholder="Ej. 0.88"
+                value={m6CollateralAforo}
+                onChange={(e) => setM6CollateralAforo(e.target.value)}
+                className="w-full rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2.5 py-1.5 text-[12px] text-[#FFFFFF] font-mono-num"
+              />
+            </label>
+            <label className="text-[11px] text-[#9A9CA6] space-y-1">
+              <span className="block uppercase font-semibold">Capital Cartera (ARS)</span>
+              <input
+                type="number"
+                min={100000}
+                value={m6CapitalArs}
+                onChange={(e) => setM6CapitalArs(e.target.value)}
+                className="w-full rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2.5 py-1.5 text-[12px] text-[#FFFFFF] font-mono-num"
+              />
+            </label>
+            <div className="flex items-end gap-2">
+              <label className="flex-1 text-[11px] text-[#9A9CA6] space-y-1">
+                <span className="block uppercase font-semibold">Lotes / Lado</span>
+                <div className="flex gap-1.5">
+                  <input
+                    type="number"
+                    min={1}
+                    value={m6DesiredLots}
+                    onChange={(e) => setM6DesiredLots(e.target.value)}
+                    className="w-16 rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2 py-1.5 text-[12px] text-[#FFFFFF] font-mono-num"
+                  />
+                  <select
+                    value={m6Side}
+                    onChange={(e) => setM6Side(e.target.value as 'BUY' | 'SELL')}
+                    className="flex-1 rounded-[6px] bg-[#161622] border border-[#2A2A3B] px-2 py-1.5 text-[12px] text-[#FFFFFF]"
+                  >
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                  </select>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          {marginRiskData === null ? (
+            <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-6 text-[13px] text-[#787B86]">
+              Cargando evaluación BYMA Clearing 2026, Microestructura L1–L2 y Riesgo de Cola...
+            </div>
+          ) : (
+            <>
+              {marginRiskData.notice && (
+                <InsightBanner tag="Diagnóstico Motor 6" variant="warn">
+                  {marginRiskData.notice}
+                </InsightBanner>
+              )}
+
+              {/* Alerta Circular N° 3588 Sec. 1.3 */}
+              {marginRiskData.marginRisk && (
+                <div
+                  className={`rounded-[10px] px-4 py-2.5 border flex flex-wrap items-center justify-between gap-2 text-[12px] ${
+                    marginRiskData.marginRisk.circular3588Alert.active
+                      ? 'bg-[#361318] border-[#FF5C63]/60 text-[#FFB4B8]'
+                      : 'bg-[#11111A] border-[#1E1E2B] text-[#9A9CA6]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle
+                      className={`w-4 h-4 ${
+                        marginRiskData.marginRisk.circular3588Alert.active
+                          ? 'text-[#FF5C63]'
+                          : 'text-[#8B7CF6]'
+                      }`}
+                    />
+                    <span className="font-semibold text-[#FFFFFF]">
+                      Circular N° 3588 Sec. 1.3:
+                    </span>
+                    <span>{marginRiskData.marginRisk.circular3588Alert.reason}</span>
+                  </div>
+                  <div className="font-mono-num text-[11px] text-[#D1D5DB]">
+                    Vto {marginRiskData.frontExpiryCode ?? '—'} ({marginRiskData.frontExpiryDate ?? '—'}) · Δ ATM mín:{' '}
+                    {fmtPct(
+                      marginRiskData.marginRisk.circular3588Alert.atmDistancePctMin !== null
+                        ? marginRiskData.marginRisk.circular3588Alert.atmDistancePctMin * 100
+                        : null,
+                      2,
+                      false,
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* KPIs principales BYMA Clearing */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <KPICard
+                  title="Margen Total BYMA + Buffers"
+                  heroValue={fmtCurrency(marginRiskData.marginRisk?.totalRequiredWithBuffersArs, '$ ', 0)}
+                  badge={marginRiskData.frontExpiryCode ?? 'BYMA'}
+                  subtitle={`Base CCP/Piso: ${fmtCurrency(marginRiskData.marginRisk?.baseRequiredMarginArs, '$ ', 0)}`}
+                />
+                <KPICard
+                  title="Excedente / Déficit Neto"
+                  heroValue={fmtCurrency(marginRiskData.marginRisk?.excessOrDeficitArs, '$ ', 0)}
+                  badge={marginRiskData.marginRisk?.collateralStatus ?? '—'}
+                  subtitle={`Colateral Efec.: ${fmtCurrency(marginRiskData.marginRisk?.totalEffectiveCollateralArs, '$ ', 0)}`}
+                />
+                <KPICard
+                  title="Recargo WWR (15 %) + Buffer (10 %)"
+                  heroValue={fmtCurrency(
+                    marginRiskData.marginRisk &&
+                      marginRiskData.marginRisk.liquidBufferArs !== null &&
+                      marginRiskData.marginRisk.wrongWayRiskSurchargeArs !== null
+                      ? marginRiskData.marginRisk.liquidBufferArs +
+                          marginRiskData.marginRisk.wrongWayRiskSurchargeArs
+                      : null,
+                    '$ ',
+                    0,
+                  )}
+                  badge="WWR + LIQ"
+                  subtitle={`Buffer: ${fmtCurrency(marginRiskData.marginRisk?.liquidBufferArs, '$ ', 0)} · WWR: ${fmtCurrency(marginRiskData.marginRisk?.wrongWayRiskSurchargeArs, '$ ', 0)}`}
+                />
+                <KPICard
+                  title="T+0 Cashflow Neto & Carry/Día"
+                  heroValue={fmtCurrency(marginRiskData.marginRisk?.t0NetCashflowArs, '$ ', 0)}
+                  badge="AGO-2026"
+                  subtitle={`DM+IVA T+0: ${fmtCurrency(marginRiskData.marginRisk?.t0OptionFeesDmIvaArs, '$ ', 0)} · Carry/d: ${fmtCurrency(marginRiskData.marginRisk?.dailyMarginCarryCostArs, '$ ', 0)}`}
+                />
+              </div>
+
+              {/* Bloque A: Matriz 8 Estrategias Clearing + Desglose Colateral & Patas */}
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+                <div className="xl:col-span-7 rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-[#8B7CF6]" />
+                      <h3 className="text-[13px] font-bold text-[#FFFFFF]">
+                        Matriz BYMA Clearing 2026 — Las 8 Estrategias (Grilla CCP BS02 vs. Piso Escalonado)
+                      </h3>
+                    </div>
+                    <span className="text-[11px] font-mono-num text-[#787B86]">
+                      Peor nodo CCP: {fmtPct(
+                        marginRiskData.marginRisk?.worstCcpNode.spotShockPct !== null &&
+                          marginRiskData.marginRisk?.worstCcpNode.spotShockPct !== undefined
+                          ? marginRiskData.marginRisk.worstCcpNode.spotShockPct * 100
+                          : null,
+                        0,
+                        true,
+                      )}{' '}
+                      spot /{' '}
+                      {fmtPct(
+                        marginRiskData.marginRisk?.worstCcpNode.volShockDecimal !== null &&
+                          marginRiskData.marginRisk?.worstCcpNode.volShockDecimal !== undefined
+                          ? marginRiskData.marginRisk.worstCcpNode.volShockDecimal * 100
+                          : null,
+                        0,
+                        true,
+                      )}{' '}
+                      vol
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-[12px]">
+                      <thead>
+                        <tr className="border-b border-[#1E1E2B] text-[10.5px] uppercase text-[#787B86]">
+                          <th className="py-1.5 pr-3">Estrategia</th>
+                          <th className="py-1.5 px-2 text-right">Riesgo CCP BS02</th>
+                          <th className="py-1.5 px-2 text-right">Piso OTM (1/2.5/5%)</th>
+                          <th className="py-1.5 pl-2 text-right">Margen Base Req.</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1E1E2B]/70 font-mono-num">
+                        {(marginRiskData.marginRisk?.strategyReferenceMatrix ?? []).map((row) => {
+                          const isSelected = row.strategyKind === m6StrategyKind;
+                          return (
+                            <tr
+                              key={row.strategyKind}
+                              onClick={() => setM6StrategyKind(row.strategyKind)}
+                              className={`cursor-pointer transition-colors ${
+                                isSelected
+                                  ? 'bg-[#211B3A]/60 text-[#FFFFFF]'
+                                  : 'hover:bg-[#161622] text-[#D1D5DB]'
+                              }`}
+                            >
+                              <td className="py-1.5 pr-3 font-sans">
+                                <span className="font-medium">{row.label}</span>
+                                {isSelected && (
+                                  <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-[#8B7CF6]/20 text-[#A78BFA] border border-[#8B7CF6]/40">
+                                    ACTIVA
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                {fmtCurrency(row.ccpRiskArrayLossArs, '$ ', 0)}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                {fmtCurrency(row.steppedFloorArs, '$ ', 0)}
+                              </td>
+                              <td className="py-1.5 pl-2 text-right font-bold text-[#FFFFFF]">
+                                {fmtCurrency(row.requiredMarginArs, '$ ', 0)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="xl:col-span-5 rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[13px] font-bold text-[#FFFFFF]">
+                      Patas BYMA Seleccionadas & Costos Clearing Ago-2026
+                    </h3>
+                    <span className="text-[11px] font-mono-num text-[#9A9CA6]">
+                      Contrato foco: {marginRiskData.targetOptionSymbol ?? '—'}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 text-[11.5px] font-mono-num">
+                    {marginRiskData.selectedLegs.map((leg, i) => (
+                      <div
+                        key={`${leg.ticker}-${String(i)}`}
+                        className="flex items-center justify-between rounded-[6px] bg-[#161622] px-2.5 py-1.5 border border-[#1E1E2B]"
+                      >
+                        <span
+                          className={`font-semibold ${
+                            leg.side === 'BUY' ? 'text-[#2EDC7E]' : 'text-[#FF5C63]'
+                          }`}
+                        >
+                          {leg.side} {leg.lots}L {leg.ticker}
+                        </span>
+                        <span className="text-[#D1D5DB]">
+                          K {fmtNum(leg.strikeArs, 0)} · Prima {fmtCurrency(leg.optionPriceArs, '$ ', 2)} · VI{' '}
+                          {fmtPct(leg.ivPct, 1, false)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#1E1E2B] text-[11.5px]">
+                    <div className="rounded-[8px] bg-[#161622] p-2.5">
+                      <div className="text-[10px] text-[#787B86] uppercase">Prima T+0 Bruta / Neta</div>
+                      <div className="font-mono-num font-bold text-[#FFFFFF]">
+                        {fmtCurrency(marginRiskData.marginRisk?.t0GrossPremiumCashflowArs, '$ ', 0)} /{' '}
+                        {fmtCurrency(marginRiskData.marginRisk?.t0NetCashflowArs, '$ ', 0)}
+                      </div>
+                    </div>
+                    <div className="rounded-[8px] bg-[#161622] p-2.5">
+                      <div className="text-[10px] text-[#787B86] uppercase">Ejercicio T+1 / Acciones PPT</div>
+                      <div className="font-mono-num font-bold text-[#F5B544]">
+                        {fmtCurrency(marginRiskData.marginRisk?.projectedT1ExerciseFeeDmIvaArs, '$ ', 0)} /{' '}
+                        {fmtCurrency(marginRiskData.marginRisk?.projectedSpotEquityFeeDmIvaArs, '$ ', 0)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bloque B: Microestructura Asíncrona Hayashi-Yoshida + Filtro 4 Compuertas + Poisson L1-L2 */}
+              {marginRiskData.executionMicrostructure && (
+                <div className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-[#8B7CF6]" />
+                      <h3 className="text-[13px] font-bold text-[#FFFFFF]">
+                        Microestructura L1–L2, Correlación Asíncrona Hayashi-Yoshida & Enrutamiento
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-[5px] text-[11px] font-bold border ${
+                          marginRiskData.executionMicrostructure.decision === 'ABORT_STALE'
+                            ? 'bg-[#361318] text-[#FF5C63] border-[#6E232B]'
+                            : marginRiskData.executionMicrostructure.decision === 'POST_PASSIVE_L1'
+                              ? 'bg-[#0D2E1D] text-[#2EDC7E] border-[#1F6B43]'
+                              : marginRiskData.executionMicrostructure.decision === 'PRICE_IMPROVE_1_TICK'
+                                ? 'bg-[#35280F] text-[#F5B544] border-[#785315]'
+                                : 'bg-[#211B3A] text-[#A78BFA] border-[#43347A]'
+                        }`}
+                      >
+                        {marginRiskData.executionMicrostructure.decision}
+                      </span>
+                      <span className="text-[11px] font-mono-num text-[#787B86]">
+                        Book: {marginRiskData.executionBookDiagnostics.bookSource} · Subyacente L2:{' '}
+                        {marginRiskData.executionBookDiagnostics.underlyingBook5LevelsSource ?? '—'}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-[12px] text-[#D1D5DB]">
+                    {marginRiskData.executionMicrostructure.decisionReason}
+                  </p>
+
+                  {/* 4 Compuertas Anti-Flujo Tóxico */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-[11.5px]">
+                    {[
+                      {
+                        title: 'Gate 1 · Frescura',
+                        ok: marginRiskData.executionMicrostructure.gates.gate1FreshnessPassed,
+                        detail: `${marginRiskData.executionMicrostructure.gates.gate1Status} (${fmtAge(marginRiskData.executionMicrostructure.gates.quoteAgeSec)})`,
+                      },
+                      {
+                        title: 'Gate 2 · Spread <= 4 %',
+                        ok: marginRiskData.executionMicrostructure.gates.gate2SpreadPassed,
+                        detail: `Spread: ${fmtPct(
+                          marginRiskData.executionMicrostructure.gates.spreadPct !== null
+                            ? marginRiskData.executionMicrostructure.gates.spreadPct * 100
+                            : null,
+                          2,
+                          false,
+                        )} (${fmtNum(marginRiskData.executionMicrostructure.spreadTicks, 0)} ticks)`,
+                      },
+                      {
+                        title: 'Gate 3 · Depth L1 >= 5L',
+                        ok: marginRiskData.executionMicrostructure.gates.gate3DepthPassed,
+                        detail: `Join ${fmtNum(marginRiskData.executionMicrostructure.gates.l1JoinLots, 0)}L / Cross ${fmtNum(marginRiskData.executionMicrostructure.gates.l1CrossLots, 0)}L`,
+                      },
+                      {
+                        title: 'Gate 4 · Confirmación Tick',
+                        ok: marginRiskData.executionMicrostructure.gates.gate4TickConfirmPassed,
+                        detail: marginRiskData.executionMicrostructure.gates.gate4TickConfirmPassed
+                          ? 'BBO + Last consistente'
+                          : 'Anomalía tick / book vacío',
+                      },
+                    ].map((g) => (
+                      <div
+                        key={g.title}
+                        className={`rounded-[8px] px-3 py-2 border ${
+                          g.ok
+                            ? 'bg-[#0D2E1D]/40 border-[#1F6B43]'
+                            : 'bg-[#361318]/50 border-[#6E232B]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between font-semibold text-[#FFFFFF]">
+                          <span>{g.title}</span>
+                          <span className={g.ok ? 'text-[#2EDC7E]' : 'text-[#FF5C63]'}>
+                            {g.ok ? 'PASS' : 'FAIL'}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 text-[#9A9CA6] font-mono-num">{g.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Hayashi-Yoshida + Poisson + Orden Máxima */}
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-2 border-t border-[#1E1E2B] text-[11.5px]">
+                    <div>
+                      <div className="text-[10px] text-[#787B86] uppercase">Hayashi-Yoshida Lead-Lag</div>
+                      <div className="font-mono-num font-bold text-[#FFFFFF]">
+                        {marginRiskData.executionMicrostructure.hayashiYoshida.leadLagSignal}
+                      </div>
+                      <div className="text-[11px] font-mono-num text-[#9A9CA6]">
+                        Lag {fmtNum(marginRiskData.executionMicrostructure.hayashiYoshida.optimalLagSec, 0)}s · ρ={fmtNum(marginRiskData.executionMicrostructure.hayashiYoshida.optimalCorrelation, 3)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#787B86] uppercase">P(Fill L1) / +1 Tick</div>
+                      <div className="font-mono-num font-bold text-[#2EDC7E]">
+                        {fmtPct(
+                          marginRiskData.executionMicrostructure.fillProbPassiveL1 !== null
+                            ? marginRiskData.executionMicrostructure.fillProbPassiveL1 * 100
+                            : null,
+                          1,
+                          false,
+                        )}{' '}
+                        /{' '}
+                        {fmtPct(
+                          marginRiskData.executionMicrostructure.fillProbImprove1Tick !== null
+                            ? marginRiskData.executionMicrostructure.fillProbImprove1Tick * 100
+                            : null,
+                          1,
+                          false,
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#787B86] uppercase">ES Pasivo / +1 Tick</div>
+                      <div className="font-mono-num font-semibold text-[#FFFFFF]">
+                        {fmtCurrency(marginRiskData.executionMicrostructure.esPassiveL1Ars, '$ ', 2)} /{' '}
+                        {fmtCurrency(marginRiskData.executionMicrostructure.esImprove1TickArs, '$ ', 2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#787B86] uppercase">ES Cruce Book (VWAP)</div>
+                      <div className="font-mono-num font-semibold text-[#F5B544]">
+                        {fmtCurrency(marginRiskData.executionMicrostructure.esCrossBookArs, '$ ', 2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#787B86] uppercase">Máx. Orden Individual</div>
+                      <div className="font-mono-num font-bold text-[#8B7CF6]">
+                        {fmtNum(marginRiskData.executionMicrostructure.maxSingleOrderLots, 0)} lotes
+                      </div>
+                      <div className="text-[10.5px] text-[#787B86]">
+                        {marginRiskData.executionMicrostructure.liquidityCapBindingReason}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Bloque C: Estrés Macro (5 Escenarios) & Sizing Kelly-CVaR 99 % Overnight 18h */}
+              {marginRiskData.tailStress ? (
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+                  <div className="xl:col-span-7 rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4">
+                    <h3 className="text-[13px] font-bold text-[#FFFFFF] mb-3">
+                      Matriz de Estrés Conjunto ADR + CCL + IV + LECAP (5 Escenarios Macro)
+                    </h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-[12px]">
+                        <thead>
+                          <tr className="border-b border-[#1E1E2B] text-[10.5px] uppercase text-[#787B86]">
+                            <th className="py-1.5 pr-3">Escenario</th>
+                            <th className="py-1.5 px-2 text-right">ADR USD</th>
+                            <th className="py-1.5 px-2 text-right">CCL ARS</th>
+                            <th className="py-1.5 px-2 text-right">Spot ARS (%)</th>
+                            <th className="py-1.5 px-2 text-right">PnL / Lote-Unid.</th>
+                            <th className="py-1.5 pl-2 text-right">Colat. Estresado</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#1E1E2B]/70 font-mono-num">
+                          {marginRiskData.tailStress.scenarioResults.map((sc) => {
+                            const isWorst = sc.id === marginRiskData.tailStress?.worstScenarioId;
+                            return (
+                              <tr
+                                key={sc.id}
+                                className={isWorst ? 'bg-[#361318]/45 text-[#FFFFFF]' : 'text-[#D1D5DB]'}
+                              >
+                                <td className="py-1.5 pr-3 font-sans">
+                                  <span className="font-medium">{sc.label}</span>
+                                  {isWorst && (
+                                    <span className="ml-1.5 text-[10px] text-[#FF5C63] font-bold">
+                                      PEOR
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-1.5 px-2 text-right">{fmtNum(sc.shockedAdrUsd, 2)}</td>
+                                <td className="py-1.5 px-2 text-right">{fmtNum(sc.shockedCclArs, 1)}</td>
+                                <td className="py-1.5 px-2 text-right">
+                                  {fmtNum(sc.shockedSpotArs, 0)} (
+                                  {fmtPct(
+                                    sc.spotArsChangePct !== null ? sc.spotArsChangePct * 100 : null,
+                                    1,
+                                    true,
+                                  )}
+                                  )
+                                </td>
+                                <td
+                                  className={`py-1.5 px-2 text-right font-bold ${
+                                    (sc.portfolioPnlPerUnitArs ?? 0) >= 0
+                                      ? 'text-[#2EDC7E]'
+                                      : 'text-[#FF5C63]'
+                                  }`}
+                                >
+                                  {fmtCurrency(sc.portfolioPnlPerUnitArs, '$ ', 0)}
+                                </td>
+                                <td className="py-1.5 pl-2 text-right">
+                                  {fmtCurrency(sc.stressedEffectiveCollateralArs, '$ ', 0)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="xl:col-span-5 rounded-[12px] bg-[#11111A] border border-[#1E1E2B] p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[13px] font-bold text-[#FFFFFF]">
+                        Sizing Óptimo Overnight 18h (Quarter-Kelly + CVaR 99 %)
+                      </h3>
+                      <span className="text-[11px] font-mono-num text-[#8B7CF6]">
+                        {marginRiskData.tailStress.overnightNodesCount} nodos Merton
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="rounded-[8px] bg-[#161622] border border-[#2A2A3B] p-3">
+                        <div className="text-[10.5px] uppercase text-[#787B86]">
+                          Lotes BYMA Óptimos
+                        </div>
+                        <div className="text-[20px] font-bold font-mono-num text-[#2EDC7E]">
+                          {marginRiskData.tailStress.recommendedBymaLots} L
+                        </div>
+                        <div className="text-[10.5px] text-[#9A9CA6]">
+                          Cota activa: {marginRiskData.tailStress.sizingBreakdown.bindingConstraint}
+                        </div>
+                      </div>
+                      <div className="rounded-[8px] bg-[#161622] border border-[#2A2A3B] p-3">
+                        <div className="text-[10.5px] uppercase text-[#787B86]">
+                          Equiv. OPRA (1:10 lotes)
+                        </div>
+                        <div className="text-[20px] font-bold font-mono-num text-[#8B7CF6]">
+                          {fmtNum(marginRiskData.tailStress.recommendedOpraContractsExact, 1)} cts
+                        </div>
+                        <div className="text-[10.5px] text-[#9A9CA6]">
+                          Enteros redondeados: {marginRiskData.tailStress.recommendedOpraContractsFloored} cts
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11.5px] font-mono-num pt-1 border-t border-[#1E1E2B]">
+                      <div className="flex justify-between">
+                        <span className="text-[#787B86] font-sans">E[PnL 18h / Unid.]</span>
+                        <span className="text-[#FFFFFF]">
+                          {fmtCurrency(marginRiskData.tailStress.overnightExpectedPnlPerUnitArs, '$ ', 0)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#787B86] font-sans">CVaR 99 % / Unid.</span>
+                        <span className="text-[#FF5C63]">
+                          {fmtCurrency(marginRiskData.tailStress.overnightCvar99PerUnitArs, '$ ', 0)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#787B86] font-sans">Quarter-Kelly 0.25x</span>
+                        <span className="text-[#D1D5DB]">
+                          {fmtNum(marginRiskData.tailStress.sizingBreakdown.quarterKellyLots, 1)} L
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#787B86] font-sans">No-Ruin 95 %</span>
+                        <span className="text-[#D1D5DB]">
+                          {fmtNum(marginRiskData.tailStress.sizingBreakdown.noRuinCapLots, 1)} L
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#787B86] font-sans">CVaR 99 % Budget</span>
+                        <span className="text-[#D1D5DB]">
+                          {fmtNum(marginRiskData.tailStress.sizingBreakdown.cvar99CapLots, 1)} L
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#787B86] font-sans">Cap. Colateral</span>
+                        <span className="text-[#D1D5DB]">
+                          {fmtNum(marginRiskData.tailStress.sizingBreakdown.collateralMarginCapLots, 1)} L
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <InsightBanner tag="Sizing Kelly-CVaR no calculable" variant="default">
+                  Se requieren al menos 15 ruedas históricas alineadas ADR/CCL y colateral con aforo
+                  explícito válido para calibrar la distribución Jump-Diffusion 18h y el sizing.
+                </InsightBanner>
+              )}
+            </>
           )}
         </div>
       )}

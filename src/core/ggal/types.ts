@@ -22,6 +22,67 @@ export const BYMA_RV_BLOCK_FIXED_ARS = 10_500;
 export const BYMA_RV_BLOCK_EXCESS_RATE = 0.000484; // 0.0484 % sobre excedente de ARS 15M
 export const BYMA_SHORT_LOAN_PRORATE_RATE = 0.0002; // 0.02 % prorrateado hasta 90/360 d
 
+// Tarifario oficial BYMA Clearing Ago-2026 (Derechos de Mercado + 21 % IVA) — aditivo Motor 6
+export const BYMA_OPTION_PREMIUM_DM_RATE = 0.0020; // 0.20 % sobre prima opciones
+export const BYMA_OPTION_PREMIUM_DM_RATE_WITH_IVA = 0.00242; // 0.20 % + 21 % IVA = 0.242 %
+export const BYMA_EXERCISE_DM_RATE = 0.0005; // 0.05 % ejercicio opciones
+export const BYMA_EXERCISE_DM_RATE_WITH_IVA = 0.000605; // 0.05 % + 21 % IVA = 0.0605 %
+export const BYMA_EQUITY_PPT_DM_RATE = 0.0005; // 0.05 % PPT acciones
+export const BYMA_EQUITY_PPT_DM_RATE_WITH_IVA = 0.000605; // 0.05 % + 21 % IVA = 0.0605 %
+export const BYMA_SHORT_LOAN_DM_RATE_WITH_IVA = 0.000242; // 0.02 % + 21 % IVA = 0.0242 %
+
+export const BYMA_CLEARING_2026_RATES = {
+  lotSize: GGAL_BYMA_LOT_SIZE,
+  vatRate: BYMA_VAT_RATE,
+  optionPremiumDmRate: BYMA_OPTION_PREMIUM_DM_RATE,
+  optionPremiumDmRateWithIva: BYMA_OPTION_PREMIUM_DM_RATE_WITH_IVA,
+  exerciseDmRate: BYMA_EXERCISE_DM_RATE,
+  exerciseDmRateWithIva: BYMA_EXERCISE_DM_RATE_WITH_IVA,
+  equityPptDmRate: BYMA_EQUITY_PPT_DM_RATE,
+  equityPptDmRateWithIva: BYMA_EQUITY_PPT_DM_RATE_WITH_IVA,
+  shortLoanDmRate: BYMA_SHORT_LOAN_PRORATE_RATE,
+  shortLoanDmRateWithIva: BYMA_SHORT_LOAN_DM_RATE_WITH_IVA,
+  liquidBufferRate: 0.10,
+  wrongWayRiskSurchargeRate: 0.15,
+  circular3588CutoffArtHour: 15,
+  circular3588CutoffArtMinute: 30,
+  circular3588WindowMinutes: 60,
+  circular3588AtmBandPct: 0.005,
+  ccpSpotShocks: [-0.25, -0.15, 0, 0.15, 0.25],
+  ccpVolShocks: [-0.10, 0, 0.10],
+  minStressVol: 0.05,
+} as const;
+
+export type {
+  AsyncMidTick,
+  BookDepthSource,
+  BookLevelInput,
+  BymaClearingMarginInput,
+  BymaClearingStrategyKind,
+  BymaCollateralAssetInput,
+  BymaMarginLegInput,
+  CcpGridNodeResult,
+  Circular3588AlertOutput,
+  CollateralAssetKind,
+  CollateralBreakdownItem,
+  ExecutionDecisionKind,
+  ExecutionGateEvaluation,
+  ExecutionMicrostructureInput,
+  ExecutionMicrostructureOutput,
+  ExecutionTelemetryMode,
+  HayashiYoshidaLagPoint,
+  HayashiYoshidaOutput,
+  MarginAndRiskOutput,
+  OvernightJumpDiffusionParams,
+  SizingConstraintBreakdown,
+  StrategyMarginBreakdownItem,
+  StressOpraLegInput,
+  StressScenarioResult,
+  StressScenarioSpec,
+  StressTestMatrixOutput,
+  TailStressAndSizingInput,
+} from './marginRiskExecution.js';
+
 export const SEC_SECTION_31_RATE = 20.6 / 1_000_000; // USD 20.60 por USD 1,000,000 vendidos
 export const FINRA_TAF_HOLIDAY_START_UTC_SEC = 1_790_812_800; // 2026-10-01T00:00:00Z
 export const FINRA_TAF_HOLIDAY_END_EXCLUSIVE_UTC_SEC = 1_798_761_600; // 2027-01-01T00:00:00Z

@@ -1,0 +1,1954 @@
+{
+  "meta": {
+    "generator": "tools/gen_ggal_motor6_fixture.py",
+    "pieza": 25,
+    "tolerance": 1e-11
+  },
+  "marginCases": {
+    "uncovered_short_otm_gt5": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "UNCOVERED_SHORT",
+        "legs": [
+          {
+            "ticker": "GFGC8000JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 20,
+            "strikeArs": 8000.0,
+            "optionPriceArs": 420.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "TBILL_USD",
+            "kind": "US_TREASURY_BILL",
+            "marketValueArs": 500000.0
+          },
+          {
+            "id": "LECAP_S31G6",
+            "kind": "LECAP",
+            "marketValueArs": 1200000.0,
+            "explicitAforo": 0.88,
+            "modifiedDurationYears": 0.42
+          },
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 300000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "UNCOVERED_SHORT",
+        "ccpRiskArrayLossArs": 2832606.3154243347,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": 0.1,
+          "shockedSpotArs": 9275.0,
+          "portfolioMtmLossArs": 2832606.3154243347
+        },
+        "steppedFloorArs": 148400.0,
+        "baseRequiredMarginArs": 2832606.3154243347,
+        "liquidBufferArs": 283260.63154243346,
+        "wrongWayRiskSurchargeArs": 158400.0,
+        "totalRequiredWithBuffersArs": 3274266.9469667682,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 2000000.0,
+        "totalEffectiveCollateralArs": 1846000.0,
+        "localCorrelatedEffectiveArs": 1056000.0,
+        "nonCorrelatedEffectiveArs": 790000.0,
+        "excessOrDeficitArs": -1428266.9469667682,
+        "t0GrossPremiumCashflowArs": 840000.0,
+        "t0OptionFeesDmIvaArs": 2032.8,
+        "t0NetCashflowArs": 837967.2,
+        "projectedT1ExerciseFeeDmIvaArs": 9680.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 3063.8078658328272,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.0725,
+          "blockingAtmStrikes": []
+        }
+      }
+    },
+    "vertical_debit_spread": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "VERTICAL_DEBIT_SPREAD",
+        "legs": [
+          {
+            "ticker": "GFGC7400JU",
+            "contractType": "call",
+            "side": "BUY",
+            "lots": 10,
+            "strikeArs": 7400.0,
+            "optionPriceArs": 740.0,
+            "ivDecimal": 0.49
+          },
+          {
+            "ticker": "GFGC7800JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 10,
+            "strikeArs": 7800.0,
+            "optionPriceArs": 510.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 1000000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "VERTICAL_DEBIT_SPREAD",
+        "ccpRiskArrayLossArs": 183380.3243715493,
+        "worstCcpNode": {
+          "spotShockPct": -0.25,
+          "volShockDecimal": -0.1,
+          "shockedSpotArs": 5565.0,
+          "portfolioMtmLossArs": 183380.3243715493
+        },
+        "steppedFloorArs": 0.0,
+        "baseRequiredMarginArs": 0.0,
+        "liquidBufferArs": 0.0,
+        "wrongWayRiskSurchargeArs": 0.0,
+        "totalRequiredWithBuffersArs": 0.0,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 1000000.0,
+        "totalEffectiveCollateralArs": 1000000.0,
+        "localCorrelatedEffectiveArs": 0.0,
+        "nonCorrelatedEffectiveArs": 1000000.0,
+        "excessOrDeficitArs": 1000000.0,
+        "t0GrossPremiumCashflowArs": -230000.0,
+        "t0OptionFeesDmIvaArs": 3025.0,
+        "t0NetCashflowArs": -233025.0,
+        "projectedT1ExerciseFeeDmIvaArs": 9196.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 0.0,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.002702702702702703,
+          "blockingAtmStrikes": [
+            7400.0
+          ]
+        }
+      }
+    },
+    "vertical_credit_spread": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "VERTICAL_CREDIT_SPREAD",
+        "legs": [
+          {
+            "ticker": "GFGV7200JU",
+            "contractType": "put",
+            "side": "SELL",
+            "lots": 15,
+            "strikeArs": 7200.0,
+            "optionPriceArs": 385.0,
+            "ivDecimal": 0.51
+          },
+          {
+            "ticker": "GFGV6800JU",
+            "contractType": "put",
+            "side": "BUY",
+            "lots": 15,
+            "strikeArs": 6800.0,
+            "optionPriceArs": 215.0,
+            "ivDecimal": 0.53
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "TBILL_USD",
+            "kind": "US_TREASURY_BILL",
+            "marketValueArs": 500000.0
+          },
+          {
+            "id": "LECAP_S31G6",
+            "kind": "LECAP",
+            "marketValueArs": 1200000.0,
+            "explicitAforo": 0.88,
+            "modifiedDurationYears": 0.42
+          },
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 300000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "VERTICAL_CREDIT_SPREAD",
+        "ccpRiskArrayLossArs": 410181.12721515604,
+        "worstCcpNode": {
+          "spotShockPct": -0.25,
+          "volShockDecimal": -0.1,
+          "shockedSpotArs": 5565.0,
+          "portfolioMtmLossArs": 410181.12721515604
+        },
+        "steppedFloorArs": 278250.0,
+        "baseRequiredMarginArs": 410181.12721515604,
+        "liquidBufferArs": 41018.11272151561,
+        "wrongWayRiskSurchargeArs": 0.0,
+        "totalRequiredWithBuffersArs": 451199.2399366716,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 2000000.0,
+        "totalEffectiveCollateralArs": 1846000.0,
+        "localCorrelatedEffectiveArs": 1056000.0,
+        "nonCorrelatedEffectiveArs": 790000.0,
+        "excessOrDeficitArs": 1394800.7600633283,
+        "t0GrossPremiumCashflowArs": 255000.0,
+        "t0OptionFeesDmIvaArs": 2178.0,
+        "t0NetCashflowArs": 252822.0,
+        "projectedT1ExerciseFeeDmIvaArs": 12705.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 422.1976408051857,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.030555555555555555,
+          "blockingAtmStrikes": []
+        }
+      }
+    },
+    "ratio_spread_1x2": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "RATIO_SPREAD_1X2",
+        "legs": [
+          {
+            "ticker": "GFGC7400JU",
+            "contractType": "call",
+            "side": "BUY",
+            "lots": 10,
+            "strikeArs": 7400.0,
+            "optionPriceArs": 740.0,
+            "ivDecimal": 0.49
+          },
+          {
+            "ticker": "GFGC7700JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 20,
+            "strikeArs": 7700.0,
+            "optionPriceArs": 555.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "TBILL_USD",
+            "kind": "US_TREASURY_BILL",
+            "marketValueArs": 500000.0
+          },
+          {
+            "id": "LECAP_S31G6",
+            "kind": "LECAP",
+            "marketValueArs": 1200000.0,
+            "explicitAforo": 0.88,
+            "modifiedDurationYears": 0.42
+          },
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 300000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "RATIO_SPREAD_1X2",
+        "ccpRiskArrayLossArs": 1429505.1901679984,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": 0.1,
+          "shockedSpotArs": 9275.0,
+          "portfolioMtmLossArs": 1429505.1901679984
+        },
+        "steppedFloorArs": 185500.0,
+        "baseRequiredMarginArs": 1429505.1901679984,
+        "liquidBufferArs": 142950.51901679984,
+        "wrongWayRiskSurchargeArs": 95925.77852519976,
+        "totalRequiredWithBuffersArs": 1668381.487709998,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 2000000.0,
+        "totalEffectiveCollateralArs": 1846000.0,
+        "localCorrelatedEffectiveArs": 1056000.0,
+        "nonCorrelatedEffectiveArs": 790000.0,
+        "excessOrDeficitArs": 177618.51229000208,
+        "t0GrossPremiumCashflowArs": 370000.0,
+        "t0OptionFeesDmIvaArs": 4477.0,
+        "t0NetCashflowArs": 365523.0,
+        "projectedT1ExerciseFeeDmIvaArs": 13794.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 1561.1434278414824,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.002702702702702703,
+          "blockingAtmStrikes": [
+            7400.0
+          ]
+        }
+      }
+    },
+    "ratio_spread_1x3": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "RATIO_SPREAD_1X3",
+        "legs": [
+          {
+            "ticker": "GFGC7400JU",
+            "contractType": "call",
+            "side": "BUY",
+            "lots": 10,
+            "strikeArs": 7400.0,
+            "optionPriceArs": 740.0,
+            "ivDecimal": 0.49
+          },
+          {
+            "ticker": "GFGC8000JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 30,
+            "strikeArs": 8000.0,
+            "optionPriceArs": 420.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "TBILL_USD",
+            "kind": "US_TREASURY_BILL",
+            "marketValueArs": 500000.0
+          },
+          {
+            "id": "LECAP_S31G6",
+            "kind": "LECAP",
+            "marketValueArs": 1200000.0,
+            "explicitAforo": 0.88,
+            "modifiedDurationYears": 0.42
+          },
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 300000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "RATIO_SPREAD_1X3",
+        "ccpRiskArrayLossArs": 2670849.0694812783,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": 0.1,
+          "shockedSpotArs": 9275.0,
+          "portfolioMtmLossArs": 2670849.0694812783
+        },
+        "steppedFloorArs": 148400.0,
+        "baseRequiredMarginArs": 2670849.0694812783,
+        "liquidBufferArs": 267084.90694812784,
+        "wrongWayRiskSurchargeArs": 158400.0,
+        "totalRequiredWithBuffersArs": 3096333.976429406,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 2000000.0,
+        "totalEffectiveCollateralArs": 1846000.0,
+        "localCorrelatedEffectiveArs": 1056000.0,
+        "nonCorrelatedEffectiveArs": 790000.0,
+        "excessOrDeficitArs": -1250333.976429406,
+        "t0GrossPremiumCashflowArs": 520000.0,
+        "t0OptionFeesDmIvaArs": 4840.0,
+        "t0NetCashflowArs": 515160.0,
+        "projectedT1ExerciseFeeDmIvaArs": 18997.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 2897.3118398358047,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.002702702702702703,
+          "blockingAtmStrikes": [
+            7400.0
+          ]
+        }
+      }
+    },
+    "short_strangle": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "SHORT_STRADDLE_STRANGLE",
+        "legs": [
+          {
+            "ticker": "GFGC7800JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 10,
+            "strikeArs": 7800.0,
+            "optionPriceArs": 510.0,
+            "ivDecimal": 0.48
+          },
+          {
+            "ticker": "GFGV7000JU",
+            "contractType": "put",
+            "side": "SELL",
+            "lots": 10,
+            "strikeArs": 7000.0,
+            "optionPriceArs": 310.0,
+            "ivDecimal": 0.52
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "TBILL_USD",
+            "kind": "US_TREASURY_BILL",
+            "marketValueArs": 500000.0
+          },
+          {
+            "id": "LECAP_S31G6",
+            "kind": "LECAP",
+            "marketValueArs": 1200000.0,
+            "explicitAforo": 0.88,
+            "modifiedDurationYears": 0.42
+          },
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 300000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "SHORT_STRADDLE_STRANGLE",
+        "ccpRiskArrayLossArs": 1248292.7665947005,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": 0.1,
+          "shockedSpotArs": 9275.0,
+          "portfolioMtmLossArs": 1248292.7665947005
+        },
+        "steppedFloorArs": 148400.0,
+        "baseRequiredMarginArs": 1785497.5488902205,
+        "liquidBufferArs": 178549.75488902206,
+        "wrongWayRiskSurchargeArs": 149324.63233353305,
+        "totalRequiredWithBuffersArs": 2113371.9361127755,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 2000000.0,
+        "totalEffectiveCollateralArs": 1846000.0,
+        "localCorrelatedEffectiveArs": 1056000.0,
+        "nonCorrelatedEffectiveArs": 790000.0,
+        "excessOrDeficitArs": -267371.93611277547,
+        "t0GrossPremiumCashflowArs": 820000.0,
+        "t0OptionFeesDmIvaArs": 1984.3999999999999,
+        "t0NetCashflowArs": 818015.6,
+        "projectedT1ExerciseFeeDmIvaArs": 8954.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 1977.5313577565762,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.04871794871794872,
+          "blockingAtmStrikes": []
+        }
+      }
+    },
+    "covered_call_full": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "COVERED_CALL",
+        "underlyingSharesHeld": 2000,
+        "legs": [
+          {
+            "ticker": "GFGC7800JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 20,
+            "strikeArs": 7800.0,
+            "optionPriceArs": 510.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 500000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "COVERED_CALL",
+        "ccpRiskArrayLossArs": 0.0,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": 0.1,
+          "shockedSpotArs": 9275.0,
+          "portfolioMtmLossArs": 0.0
+        },
+        "steppedFloorArs": 0.0,
+        "baseRequiredMarginArs": 0.0,
+        "liquidBufferArs": 0.0,
+        "wrongWayRiskSurchargeArs": 0.0,
+        "totalRequiredWithBuffersArs": 0.0,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 500000.0,
+        "totalEffectiveCollateralArs": 500000.0,
+        "localCorrelatedEffectiveArs": 0.0,
+        "nonCorrelatedEffectiveArs": 500000.0,
+        "excessOrDeficitArs": 500000.0,
+        "t0GrossPremiumCashflowArs": 1020000.0,
+        "t0OptionFeesDmIvaArs": 2468.3999999999996,
+        "t0NetCashflowArs": 1017531.6,
+        "projectedT1ExerciseFeeDmIvaArs": 9438.0,
+        "projectedSpotEquityFeeDmIvaArs": 8978.199999999999,
+        "dailyMarginCarryCostArs": 0.0,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.04871794871794872,
+          "blockingAtmStrikes": []
+        }
+      }
+    },
+    "cross_collateral_strategy": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "CROSS_COLLATERAL_STRATEGY",
+        "legs": [
+          {
+            "ticker": "GFGV7100JU",
+            "contractType": "put",
+            "side": "SELL",
+            "lots": 12,
+            "strikeArs": 7100.0,
+            "optionPriceArs": 345.0,
+            "ivDecimal": 0.52
+          },
+          {
+            "ticker": "GFGC7900JU",
+            "contractType": "call",
+            "side": "BUY",
+            "lots": 6,
+            "strikeArs": 7900.0,
+            "optionPriceArs": 460.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "TBILL_USD",
+            "kind": "US_TREASURY_BILL",
+            "marketValueArs": 500000.0
+          },
+          {
+            "id": "LECAP_S31G6",
+            "kind": "LECAP",
+            "marketValueArs": 1200000.0,
+            "explicitAforo": 0.88,
+            "modifiedDurationYears": 0.42
+          },
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 300000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "CROSS_COLLATERAL_STRATEGY",
+        "ccpRiskArrayLossArs": 1680062.1039000337,
+        "worstCcpNode": {
+          "spotShockPct": -0.25,
+          "volShockDecimal": -0.1,
+          "shockedSpotArs": 5565.0,
+          "portfolioMtmLossArs": 1680062.1039000337
+        },
+        "steppedFloorArs": 222600.0,
+        "baseRequiredMarginArs": 1680062.1039000337,
+        "liquidBufferArs": 168006.2103900034,
+        "wrongWayRiskSurchargeArs": 133509.31558500507,
+        "totalRequiredWithBuffersArs": 1981577.6298750422,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 2000000.0,
+        "totalEffectiveCollateralArs": 1846000.0,
+        "localCorrelatedEffectiveArs": 1056000.0,
+        "nonCorrelatedEffectiveArs": 790000.0,
+        "excessOrDeficitArs": -135577.62987504224,
+        "t0GrossPremiumCashflowArs": 138000.0,
+        "t0OptionFeesDmIvaArs": 1669.8,
+        "t0NetCashflowArs": 136330.2,
+        "projectedT1ExerciseFeeDmIvaArs": 8022.299999999999,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 1854.2083548788742,
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.04507042253521127,
+          "blockingAtmStrikes": []
+        }
+      }
+    },
+    "missing_lecap_aforo_nan": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7420.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [
+          {
+            "exDivUtcSec": 1778767200,
+            "payDateUtcSec": 1779112800,
+            "amountArs": 85.0
+          }
+        ],
+        "strategyKind": "UNCOVERED_SHORT",
+        "legs": [
+          {
+            "ticker": "GFGC7600JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 10,
+            "strikeArs": 7600.0,
+            "optionPriceArs": 610.0,
+            "ivDecimal": 0.48
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "LECAP_NO_AFORO",
+            "kind": "LECAP",
+            "marketValueArs": 1000000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "NO_DATA",
+        "strategyKind": "UNCOVERED_SHORT",
+        "ccpRiskArrayLossArs": 1531097.2447818564,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": 0.1,
+          "shockedSpotArs": 9275.0,
+          "portfolioMtmLossArs": 1531097.2447818564
+        },
+        "steppedFloorArs": 371000.0,
+        "baseRequiredMarginArs": 1531097.2447818564,
+        "liquidBufferArs": 153109.72447818564,
+        "wrongWayRiskSurchargeArs": "__NaN__",
+        "totalRequiredWithBuffersArs": "__NaN__",
+        "collateralStatus": "MISSING_EXPLICIT_AFORO",
+        "totalCollateralMarketArs": 1000000.0,
+        "totalEffectiveCollateralArs": "__NaN__",
+        "localCorrelatedEffectiveArs": "__NaN__",
+        "nonCorrelatedEffectiveArs": 0.0,
+        "excessOrDeficitArs": "__NaN__",
+        "t0GrossPremiumCashflowArs": 610000.0,
+        "t0OptionFeesDmIvaArs": 1476.1999999999998,
+        "t0NetCashflowArs": 608523.8,
+        "projectedT1ExerciseFeeDmIvaArs": 4598.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": "__NaN__",
+        "circular3588Alert": {
+          "active": false,
+          "isExpiryDay": false,
+          "minutesToCutoff": 101010.0,
+          "atmDistancePctMin": 0.02368421052631579,
+          "blockingAtmStrikes": []
+        }
+      }
+    },
+    "circular_3588_atm_active": {
+      "input": {
+        "asOfUtcSec": 1781891700,
+        "expiryDateKey": "2026-06-19",
+        "spot24hArs": 7408.0,
+        "rateCurveArs": [
+          {
+            "days": 1.0,
+            "continuousRateAnnual": 0.34
+          },
+          {
+            "days": 30.0,
+            "continuousRateAnnual": 0.36
+          },
+          {
+            "days": 90.0,
+            "continuousRateAnnual": 0.38
+          }
+        ],
+        "dividendsArs": [],
+        "strategyKind": "UNCOVERED_SHORT",
+        "legs": [
+          {
+            "ticker": "GFGC7400JU",
+            "contractType": "call",
+            "side": "SELL",
+            "lots": 10,
+            "strikeArs": 7400.0,
+            "optionPriceArs": 180.0,
+            "ivDecimal": 0.5
+          }
+        ],
+        "collateralAssets": [
+          {
+            "id": "CASH",
+            "kind": "CASH_ARS",
+            "marketValueArs": 1000000.0
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "strategyKind": "UNCOVERED_SHORT",
+        "ccpRiskArrayLossArs": 1838429.334560661,
+        "worstCcpNode": {
+          "spotShockPct": 0.25,
+          "volShockDecimal": -0.1,
+          "shockedSpotArs": 9260.0,
+          "portfolioMtmLossArs": 1838429.334560661
+        },
+        "steppedFloorArs": 370400.0,
+        "baseRequiredMarginArs": 1838429.334560661,
+        "liquidBufferArs": 183842.93345606612,
+        "wrongWayRiskSurchargeArs": 0.0,
+        "totalRequiredWithBuffersArs": 2022272.2680167272,
+        "collateralStatus": "OK",
+        "totalCollateralMarketArs": 1000000.0,
+        "totalEffectiveCollateralArs": 1000000.0,
+        "localCorrelatedEffectiveArs": 0.0,
+        "nonCorrelatedEffectiveArs": 1000000.0,
+        "excessOrDeficitArs": -1022272.2680167272,
+        "t0GrossPremiumCashflowArs": 180000.0,
+        "t0OptionFeesDmIvaArs": 435.59999999999997,
+        "t0NetCashflowArs": 179564.4,
+        "projectedT1ExerciseFeeDmIvaArs": 4477.0,
+        "projectedSpotEquityFeeDmIvaArs": 0.0,
+        "dailyMarginCarryCostArs": 1892.2872758878093,
+        "circular3588Alert": {
+          "active": true,
+          "isExpiryDay": true,
+          "minutesToCutoff": 35.0,
+          "atmDistancePctMin": 0.001081081081081081,
+          "blockingAtmStrikes": [
+            7400.0
+          ]
+        }
+      }
+    }
+  },
+  "executionCases": {
+    "post_passive_l1": {
+      "input": {
+        "asOfUtcSec": 1775833120,
+        "telemetryMode": "LIVE",
+        "side": "BUY",
+        "desiredLots": 20,
+        "orderHorizonSec": 60.0,
+        "quoteAsOfUtcSec": 1775833112,
+        "bidArs": 500.0,
+        "askArs": 505.0,
+        "lastTradeArs": 502.0,
+        "tickSizeArs": 5.0,
+        "depthSource": "PRIMARY_L2",
+        "bidsL1L2": [
+          {
+            "priceArs": 500.0,
+            "sizeLots": 30
+          },
+          {
+            "priceArs": 495.0,
+            "sizeLots": 60
+          }
+        ],
+        "asksL1L2": [
+          {
+            "priceArs": 505.0,
+            "sizeLots": 25
+          },
+          {
+            "priceArs": 510.0,
+            "sizeLots": 80
+          }
+        ],
+        "adv20Lots": 2400.0,
+        "uncoveredOiLots": 1200.0,
+        "lambdaBasePerSec": 1.2,
+        "expectedEdgeArsPerShare": 1.8,
+        "optionIvDecimal": 0.48,
+        "bymaTicks": [
+          {
+            "utcSec": 1775833005,
+            "midPrice": 7340.0
+          },
+          {
+            "utcSec": 1775833015,
+            "midPrice": 7422.0
+          },
+          {
+            "utcSec": 1775833027,
+            "midPrice": 7328.0
+          },
+          {
+            "utcSec": 1775833040,
+            "midPrice": 7440.0
+          },
+          {
+            "utcSec": 1775833053,
+            "midPrice": 7358.0
+          },
+          {
+            "utcSec": 1775833065,
+            "midPrice": 7458.0
+          },
+          {
+            "utcSec": 1775833079,
+            "midPrice": 7376.0
+          },
+          {
+            "utcSec": 1775833091,
+            "midPrice": 7488.0
+          }
+        ],
+        "adrTicks": [
+          {
+            "utcSec": 1775833000,
+            "midPrice": 61.2
+          },
+          {
+            "utcSec": 1775833010,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833013,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833022,
+            "midPrice": 61.1
+          },
+          {
+            "utcSec": 1775833035,
+            "midPrice": 62.05
+          },
+          {
+            "utcSec": 1775833048,
+            "midPrice": 61.35
+          },
+          {
+            "utcSec": 1775833060,
+            "midPrice": 62.2
+          },
+          {
+            "utcSec": 1775833074,
+            "midPrice": 61.5
+          },
+          {
+            "utcSec": 1775833086,
+            "midPrice": 62.45
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "decision": "POST_PASSIVE_L1",
+        "hayashiYoshida": {
+          "status": "OK",
+          "genuineBymaReturns": 7,
+          "genuineAdrReturns": 7,
+          "contemporaneousCorrelation": 0.17238174232748496,
+          "optimalLagSec": 5,
+          "optimalCorrelation": 0.9999963701128896,
+          "leadLagSignal": "ADR_LEADS_BYMA",
+          "lagProfile": [
+            {
+              "lagSec": -15,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -10,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -5,
+              "correlation": 0.06654318167662074,
+              "overlappingPairs": 12
+            },
+            {
+              "lagSec": -2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": -1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 0,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 5,
+              "correlation": 0.9999963701128896,
+              "overlappingPairs": 7
+            },
+            {
+              "lagSec": 10,
+              "correlation": 0.17146678213833802,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 15,
+              "correlation": 0.06562822148747377,
+              "overlappingPairs": 12
+            }
+          ]
+        },
+        "gates": {
+          "gate1FreshnessPassed": true,
+          "gate1Status": "PASS",
+          "quoteAgeSec": 8,
+          "gate2SpreadPassed": true,
+          "spreadPct": 0.009950248756218905,
+          "gate3DepthPassed": true,
+          "l1JoinLots": 30,
+          "l1CrossLots": 25,
+          "gate4TickConfirmPassed": true,
+          "allGatesPassed": true
+        },
+        "spreadTicks": 1,
+        "halfSpreadArs": 2.5,
+        "lambdaEffectivePerSec": 2.3999956441354673,
+        "fillProbPassiveL1": 0.9438649437465925,
+        "fillProbImprove1Tick": "__NaN__",
+        "adverseSelectionCostArs": 0.26615757071267715,
+        "esPassiveL1Ars": -2.204383948528736,
+        "esImprove1TickArs": "__NaN__",
+        "esCrossBookArs": 2.5,
+        "crossBookVwapSlippageArs": 0.0,
+        "visibleTargetDepthLots": 105,
+        "sqrtImpactCapLots": 2368.7090605334,
+        "maxSingleOrderLots": 52.0
+      }
+    },
+    "price_improve_1_tick": {
+      "input": {
+        "asOfUtcSec": 1775833120,
+        "telemetryMode": "LIVE",
+        "side": "BUY",
+        "desiredLots": 25,
+        "orderHorizonSec": 45.0,
+        "quoteAsOfUtcSec": 1775833115,
+        "bidArs": 500.0,
+        "askArs": 515.0,
+        "lastTradeArs": 508.0,
+        "tickSizeArs": 5.0,
+        "depthSource": "PRIMARY_L2",
+        "bidsL1L2": [
+          {
+            "priceArs": 500.0,
+            "sizeLots": 90
+          },
+          {
+            "priceArs": 495.0,
+            "sizeLots": 100
+          }
+        ],
+        "asksL1L2": [
+          {
+            "priceArs": 515.0,
+            "sizeLots": 40
+          },
+          {
+            "priceArs": 520.0,
+            "sizeLots": 60
+          }
+        ],
+        "adv20Lots": 2400.0,
+        "uncoveredOiLots": 1200.0,
+        "lambdaBasePerSec": 1.0,
+        "expectedEdgeArsPerShare": 2.0,
+        "optionIvDecimal": 0.48,
+        "bymaTicks": [
+          {
+            "utcSec": 1775833005,
+            "midPrice": 7340.0
+          },
+          {
+            "utcSec": 1775833015,
+            "midPrice": 7422.0
+          },
+          {
+            "utcSec": 1775833027,
+            "midPrice": 7328.0
+          },
+          {
+            "utcSec": 1775833040,
+            "midPrice": 7440.0
+          },
+          {
+            "utcSec": 1775833053,
+            "midPrice": 7358.0
+          },
+          {
+            "utcSec": 1775833065,
+            "midPrice": 7458.0
+          },
+          {
+            "utcSec": 1775833079,
+            "midPrice": 7376.0
+          },
+          {
+            "utcSec": 1775833091,
+            "midPrice": 7488.0
+          }
+        ],
+        "adrTicks": [
+          {
+            "utcSec": 1775833000,
+            "midPrice": 61.2
+          },
+          {
+            "utcSec": 1775833010,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833013,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833022,
+            "midPrice": 61.1
+          },
+          {
+            "utcSec": 1775833035,
+            "midPrice": 62.05
+          },
+          {
+            "utcSec": 1775833048,
+            "midPrice": 61.35
+          },
+          {
+            "utcSec": 1775833060,
+            "midPrice": 62.2
+          },
+          {
+            "utcSec": 1775833074,
+            "midPrice": 61.5
+          },
+          {
+            "utcSec": 1775833086,
+            "midPrice": 62.45
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "decision": "PRICE_IMPROVE_1_TICK",
+        "hayashiYoshida": {
+          "status": "OK",
+          "genuineBymaReturns": 7,
+          "genuineAdrReturns": 7,
+          "contemporaneousCorrelation": 0.17238174232748496,
+          "optimalLagSec": 5,
+          "optimalCorrelation": 0.9999963701128896,
+          "leadLagSignal": "ADR_LEADS_BYMA",
+          "lagProfile": [
+            {
+              "lagSec": -15,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -10,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -5,
+              "correlation": 0.06654318167662074,
+              "overlappingPairs": 12
+            },
+            {
+              "lagSec": -2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": -1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 0,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 5,
+              "correlation": 0.9999963701128896,
+              "overlappingPairs": 7
+            },
+            {
+              "lagSec": 10,
+              "correlation": 0.17146678213833802,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 15,
+              "correlation": 0.06562822148747377,
+              "overlappingPairs": 12
+            }
+          ]
+        },
+        "gates": {
+          "gate1FreshnessPassed": true,
+          "gate1Status": "PASS",
+          "quoteAgeSec": 5,
+          "gate2SpreadPassed": true,
+          "spreadPct": 0.029556650246305417,
+          "gate3DepthPassed": true,
+          "l1JoinLots": 90,
+          "l1CrossLots": 40,
+          "gate4TickConfirmPassed": true,
+          "allGatesPassed": true
+        },
+        "spreadTicks": 3,
+        "halfSpreadArs": 7.5,
+        "lambdaEffectivePerSec": 1.9999963701128896,
+        "fillProbPassiveL1": 0.5427876226055399,
+        "fillProbImprove1Tick": 0.9726760990244739,
+        "adverseSelectionCostArs": 0.2327927422004303,
+        "esPassiveL1Ars": -0.5353786159814651,
+        "esImprove1TickArs": -2.220400184409034,
+        "esCrossBookArs": 7.5,
+        "crossBookVwapSlippageArs": 0.0,
+        "visibleTargetDepthLots": 100,
+        "sqrtImpactCapLots": 2368.7090605334,
+        "maxSingleOrderLots": 50.0
+      }
+    },
+    "cross_book_low_fill": {
+      "input": {
+        "asOfUtcSec": 1775833120,
+        "telemetryMode": "LIVE",
+        "side": "BUY",
+        "desiredLots": 60,
+        "orderHorizonSec": 20.0,
+        "quoteAsOfUtcSec": 1775833117,
+        "bidArs": 500.0,
+        "askArs": 505.0,
+        "lastTradeArs": 504.0,
+        "tickSizeArs": 5.0,
+        "depthSource": "PRIMARY_L2",
+        "bidsL1L2": [
+          {
+            "priceArs": 500.0,
+            "sizeLots": 150
+          },
+          {
+            "priceArs": 495.0,
+            "sizeLots": 120
+          }
+        ],
+        "asksL1L2": [
+          {
+            "priceArs": 505.0,
+            "sizeLots": 35
+          },
+          {
+            "priceArs": 510.0,
+            "sizeLots": 80
+          }
+        ],
+        "adv20Lots": 2400.0,
+        "uncoveredOiLots": 1200.0,
+        "lambdaBasePerSec": 0.4,
+        "expectedEdgeArsPerShare": 6.0,
+        "optionIvDecimal": 0.48,
+        "bymaTicks": [
+          {
+            "utcSec": 1775833005,
+            "midPrice": 7340.0
+          },
+          {
+            "utcSec": 1775833015,
+            "midPrice": 7422.0
+          },
+          {
+            "utcSec": 1775833027,
+            "midPrice": 7328.0
+          },
+          {
+            "utcSec": 1775833040,
+            "midPrice": 7440.0
+          },
+          {
+            "utcSec": 1775833053,
+            "midPrice": 7358.0
+          },
+          {
+            "utcSec": 1775833065,
+            "midPrice": 7458.0
+          },
+          {
+            "utcSec": 1775833079,
+            "midPrice": 7376.0
+          },
+          {
+            "utcSec": 1775833091,
+            "midPrice": 7488.0
+          }
+        ],
+        "adrTicks": [
+          {
+            "utcSec": 1775833000,
+            "midPrice": 61.2
+          },
+          {
+            "utcSec": 1775833010,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833013,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833022,
+            "midPrice": 61.1
+          },
+          {
+            "utcSec": 1775833035,
+            "midPrice": 62.05
+          },
+          {
+            "utcSec": 1775833048,
+            "midPrice": 61.35
+          },
+          {
+            "utcSec": 1775833060,
+            "midPrice": 62.2
+          },
+          {
+            "utcSec": 1775833074,
+            "midPrice": 61.5
+          },
+          {
+            "utcSec": 1775833086,
+            "midPrice": 62.45
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "decision": "CROSS_BOOK",
+        "hayashiYoshida": {
+          "status": "OK",
+          "genuineBymaReturns": 7,
+          "genuineAdrReturns": 7,
+          "contemporaneousCorrelation": 0.17238174232748496,
+          "optimalLagSec": 5,
+          "optimalCorrelation": 0.9999963701128896,
+          "leadLagSignal": "ADR_LEADS_BYMA",
+          "lagProfile": [
+            {
+              "lagSec": -15,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -10,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -5,
+              "correlation": 0.06654318167662074,
+              "overlappingPairs": 12
+            },
+            {
+              "lagSec": -2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": -1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 0,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 5,
+              "correlation": 0.9999963701128896,
+              "overlappingPairs": 7
+            },
+            {
+              "lagSec": 10,
+              "correlation": 0.17146678213833802,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 15,
+              "correlation": 0.06562822148747377,
+              "overlappingPairs": 12
+            }
+          ]
+        },
+        "gates": {
+          "gate1FreshnessPassed": true,
+          "gate1Status": "PASS",
+          "quoteAgeSec": 3,
+          "gate2SpreadPassed": true,
+          "spreadPct": 0.009950248756218905,
+          "gate3DepthPassed": true,
+          "l1JoinLots": 150,
+          "l1CrossLots": 35,
+          "gate4TickConfirmPassed": true,
+          "allGatesPassed": true
+        },
+        "spreadTicks": 1,
+        "halfSpreadArs": 2.5,
+        "lambdaEffectivePerSec": 0.7999985480451559,
+        "fillProbPassiveL1": 0.07336018491193508,
+        "fillProbImprove1Tick": "__NaN__",
+        "adverseSelectionCostArs": 0.153666145097821,
+        "esPassiveL1Ars": 2.2755922437190654,
+        "esImprove1TickArs": "__NaN__",
+        "esCrossBookArs": 4.583333333333314,
+        "crossBookVwapSlippageArs": 2.0833333333333144,
+        "visibleTargetDepthLots": 115,
+        "sqrtImpactCapLots": 2368.7090605334,
+        "maxSingleOrderLots": 57.0
+      }
+    },
+    "abort_stale_quote": {
+      "input": {
+        "asOfUtcSec": 1775833200,
+        "telemetryMode": "LIVE",
+        "side": "BUY",
+        "desiredLots": 10,
+        "orderHorizonSec": 60.0,
+        "quoteAsOfUtcSec": 1775833140,
+        "bidArs": 500.0,
+        "askArs": 505.0,
+        "lastTradeArs": 502.0,
+        "tickSizeArs": 5.0,
+        "depthSource": "PRIMARY_L2",
+        "bidsL1L2": [
+          {
+            "priceArs": 500.0,
+            "sizeLots": 30
+          }
+        ],
+        "asksL1L2": [
+          {
+            "priceArs": 505.0,
+            "sizeLots": 30
+          }
+        ],
+        "adv20Lots": 2000.0,
+        "uncoveredOiLots": 1000.0,
+        "lambdaBasePerSec": 1.0,
+        "expectedEdgeArsPerShare": 1.0,
+        "optionIvDecimal": 0.48,
+        "bymaTicks": [
+          {
+            "utcSec": 1775833005,
+            "midPrice": 7340.0
+          },
+          {
+            "utcSec": 1775833015,
+            "midPrice": 7422.0
+          },
+          {
+            "utcSec": 1775833027,
+            "midPrice": 7328.0
+          },
+          {
+            "utcSec": 1775833040,
+            "midPrice": 7440.0
+          },
+          {
+            "utcSec": 1775833053,
+            "midPrice": 7358.0
+          },
+          {
+            "utcSec": 1775833065,
+            "midPrice": 7458.0
+          },
+          {
+            "utcSec": 1775833079,
+            "midPrice": 7376.0
+          },
+          {
+            "utcSec": 1775833091,
+            "midPrice": 7488.0
+          }
+        ],
+        "adrTicks": [
+          {
+            "utcSec": 1775833000,
+            "midPrice": 61.2
+          },
+          {
+            "utcSec": 1775833010,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833013,
+            "midPrice": 61.9
+          },
+          {
+            "utcSec": 1775833022,
+            "midPrice": 61.1
+          },
+          {
+            "utcSec": 1775833035,
+            "midPrice": 62.05
+          },
+          {
+            "utcSec": 1775833048,
+            "midPrice": 61.35
+          },
+          {
+            "utcSec": 1775833060,
+            "midPrice": 62.2
+          },
+          {
+            "utcSec": 1775833074,
+            "midPrice": 61.5
+          },
+          {
+            "utcSec": 1775833086,
+            "midPrice": 62.45
+          }
+        ]
+      },
+      "output": {
+        "status": "OK",
+        "decision": "ABORT_STALE",
+        "hayashiYoshida": {
+          "status": "OK",
+          "genuineBymaReturns": 7,
+          "genuineAdrReturns": 7,
+          "contemporaneousCorrelation": 0.17238174232748496,
+          "optimalLagSec": 5,
+          "optimalCorrelation": 0.9999963701128896,
+          "leadLagSignal": "ADR_LEADS_BYMA",
+          "lagProfile": [
+            {
+              "lagSec": -15,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -10,
+              "correlation": -0.10966905074028607,
+              "overlappingPairs": 11
+            },
+            {
+              "lagSec": -5,
+              "correlation": 0.06654318167662074,
+              "overlappingPairs": 12
+            },
+            {
+              "lagSec": -2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": -1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 0,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 1,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 2,
+              "correlation": 0.17238174232748496,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 5,
+              "correlation": 0.9999963701128896,
+              "overlappingPairs": 7
+            },
+            {
+              "lagSec": 10,
+              "correlation": 0.17146678213833802,
+              "overlappingPairs": 13
+            },
+            {
+              "lagSec": 15,
+              "correlation": 0.06562822148747377,
+              "overlappingPairs": 12
+            }
+          ]
+        },
+        "gates": {
+          "gate1FreshnessPassed": false,
+          "gate1Status": "FAIL_STALE",
+          "quoteAgeSec": 60,
+          "gate2SpreadPassed": true,
+          "spreadPct": 0.009950248756218905,
+          "gate3DepthPassed": true,
+          "l1JoinLots": 30,
+          "l1CrossLots": 30,
+          "gate4TickConfirmPassed": true,
+          "allGatesPassed": false
+        },
+        "spreadTicks": 1,
+        "halfSpreadArs": 2.5,
+        "lambdaEffectivePerSec": 1.9999963701128896,
+        "fillProbPassiveL1": 0.9502126605492415,
+        "fillProbImprove1Tick": "__NaN__",
+        "adverseSelectionCostArs": 0.26615757071267715,
+        "esPassiveL1Ars": -2.237812025425746,
+        "esImprove1TickArs": "__NaN__",
+        "esCrossBookArs": 2.5,
+        "crossBookVwapSlippageArs": 0.0,
+        "visibleTargetDepthLots": 30,
+        "sqrtImpactCapLots": 1973.9242171111666,
+        "maxSingleOrderLots": 15.0
+      }
+    }
+  },
+  "tailStressCase": {
+    "input": {
+      "asOfUtcSec": 1775833200,
+      "expiryDateKey": "2026-06-19",
+      "spot24hArs": 7420.0,
+      "spotAdrUsd": 61.5,
+      "cclArs": 1206.5,
+      "rateCurveArs": [
+        {
+          "days": 1.0,
+          "continuousRateAnnual": 0.34
+        },
+        {
+          "days": 30.0,
+          "continuousRateAnnual": 0.36
+        },
+        {
+          "days": 90.0,
+          "continuousRateAnnual": 0.38
+        }
+      ],
+      "dividendsArs": [
+        {
+          "exDivUtcSec": 1778767200,
+          "payDateUtcSec": 1779112800,
+          "amountArs": 85.0
+        }
+      ],
+      "bymaLegsPerUnit": [
+        {
+          "ticker": "GFGC7400JU",
+          "contractType": "call",
+          "side": "BUY",
+          "lots": 1,
+          "strikeArs": 7400.0,
+          "optionPriceArs": 740.0,
+          "ivDecimal": 0.46
+        },
+        {
+          "ticker": "GFGC7800JU",
+          "contractType": "call",
+          "side": "SELL",
+          "lots": 1,
+          "strikeArs": 7800.0,
+          "optionPriceArs": 510.0,
+          "ivDecimal": 0.54
+        }
+      ],
+      "opraLegsPerTenBymaLots": [
+        {
+          "ticker": "GGAL260619P00060000",
+          "contractType": "put",
+          "side": "BUY",
+          "contracts": 1,
+          "strikeUsd": 60.0,
+          "expiryUtcSec": 1781893800,
+          "ivDecimal": 0.48,
+          "rateUsdContinuous": 0.043,
+          "dividendYieldUsd": 0.015
+        }
+      ],
+      "capitalArs": 25000000.0,
+      "totalEffectiveCollateralArs": 1856000.0,
+      "marginRequiredPerUnitArs": 18500.0,
+      "collateralAssets": [
+        {
+          "id": "TBILL_USD",
+          "kind": "US_TREASURY_BILL",
+          "marketValueArs": 500000.0
+        },
+        {
+          "id": "LECAP_S31G6",
+          "kind": "LECAP",
+          "marketValueArs": 1200000.0,
+          "explicitAforo": 0.88,
+          "modifiedDurationYears": 0.42
+        },
+        {
+          "id": "CASH",
+          "kind": "CASH_ARS",
+          "marketValueArs": 300000.0
+        }
+      ],
+      "overnightParams": {
+        "muAdrAnnual": 0.65,
+        "sigmaAdrDiffAnnual": 0.42,
+        "lambdaJumpAdrAnnual": 12.0,
+        "jumpMeanAdr": 0.02,
+        "jumpVolAdr": 0.05,
+        "muCclAnnual": 0.28,
+        "sigmaCclDiffAnnual": 0.22,
+        "rhoDiffAdrCcl": -0.3,
+        "cclCoJumpBeta": -0.35,
+        "sigmaCoJumpCcl": 0.03,
+        "nAdrQuantiles": 9,
+        "nCclQuantiles": 5
+      }
+    },
+    "output": {
+      "status": "OK",
+      "scenarioResults": [
+        {
+          "id": "CCL_UP_15_ADR_DOWN_10",
+          "shockedAdrUsd": 55.35,
+          "shockedCclArs": 1387.475,
+          "shockedSpotArs": 7679.7,
+          "spotArsChangePct": 0.03499999999999992,
+          "portfolioPnlPerUnitArs": 66622.89540970442,
+          "collateralRateImpactArs": -8870.4,
+          "stressedEffectiveCollateralArs": 1847129.6
+        },
+        {
+          "id": "GAP_COMPRESS_10_ADR_UP_12",
+          "shockedAdrUsd": 68.88000000000001,
+          "shockedCclArs": 1085.8500000000001,
+          "shockedSpotArs": 7479.3600000000015,
+          "spotArsChangePct": 0.00800000000000023,
+          "portfolioPnlPerUnitArs": -34514.9545555982,
+          "collateralRateImpactArs": 6652.799999999999,
+          "stressedEffectiveCollateralArs": 1862652.8
+        },
+        {
+          "id": "LECAP_RATE_SPIKE_1500BPS",
+          "shockedAdrUsd": 59.04,
+          "shockedCclArs": 1254.76,
+          "shockedSpotArs": 7408.128,
+          "spotArsChangePct": -0.0016000000000000458,
+          "portfolioPnlPerUnitArs": 22501.0460394057,
+          "collateralRateImpactArs": -66528.0,
+          "stressedEffectiveCollateralArs": 1789472.0
+        },
+        {
+          "id": "OVERNIGHT_ELECTION_TAIL",
+          "shockedAdrUsd": 47.97,
+          "shockedCclArs": 1508.125,
+          "shockedSpotArs": 7234.500000000001,
+          "spotArsChangePct": -0.02499999999999991,
+          "portfolioPnlPerUnitArs": 165741.20937644748,
+          "collateralRateImpactArs": -53222.399999999994,
+          "stressedEffectiveCollateralArs": 1802777.6
+        },
+        {
+          "id": "BAND_INTERVENTION_DOUBLE_DROP",
+          "shockedAdrUsd": 54.12,
+          "shockedCclArs": 1025.5249999999999,
+          "shockedSpotArs": 5550.16,
+          "spotArsChangePct": -0.252,
+          "portfolioPnlPerUnitArs": 35225.61712411154,
+          "collateralRateImpactArs": -26611.199999999997,
+          "stressedEffectiveCollateralArs": 1829388.8
+        }
+      ],
+      "worstScenarioId": "GAP_COMPRESS_10_ADR_UP_12",
+      "worstUnitLossArs": 34514.9545555982,
+      "overnightNodesCount": 135,
+      "overnightExpectedPnlPerUnitArs": -748.4588489561542,
+      "overnightStdDevPerUnitArs": 4918.072021939869,
+      "overnightMaxLossPerUnitArs": 34189.38516328652,
+      "overnightVar99PerUnitArs": 9156.699442885438,
+      "overnightCvar99PerUnitArs": 16633.44804539335,
+      "sizingBreakdown": {
+        "fullKellyLots": 0.0,
+        "quarterKellyLots": 0.0,
+        "noRuinCapLots": 694.6600497953203,
+        "cvar99CapLots": 225.4493469884355,
+        "drawdownCapLots": 144.86474238132868,
+        "collateralMarginCapLots": 100.32432432432432,
+        "bindingConstraint": "Quarter-Kelly 0.25x"
+      },
+      "recommendedBymaLots": 0,
+      "recommendedOpraContractsExact": 0.0,
+      "recommendedOpraContractsFloored": 0
+    }
+  }
+}

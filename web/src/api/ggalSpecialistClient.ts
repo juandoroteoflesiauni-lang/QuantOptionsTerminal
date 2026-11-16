@@ -1019,3 +1019,261 @@ export function fetchGgalDualChart(
     },
   );
 }
+
+// ---------- MOTOR 6 DTOs & CLIENT ----------
+
+export type BymaClearingStrategyKindDto =
+  | 'UNCOVERED_SHORT'
+  | 'VERTICAL_DEBIT_SPREAD'
+  | 'VERTICAL_CREDIT_SPREAD'
+  | 'RATIO_SPREAD_1X2'
+  | 'RATIO_SPREAD_1X3'
+  | 'SHORT_STRADDLE_STRANGLE'
+  | 'COVERED_CALL'
+  | 'CROSS_COLLATERAL_STRATEGY';
+
+export type CollateralAssetKindDto =
+  | 'US_TREASURY_BILL'
+  | 'US_TREASURY_NOTE'
+  | 'US_TREASURY_BOND'
+  | 'CASH_ARS'
+  | 'CASH_USD'
+  | 'LECAP'
+  | 'SOVEREIGN_BOND_AR'
+  | 'EQUITY_LOCAL';
+
+export interface GgalMarginRiskQueryDto {
+  readonly strategyKind?: BymaClearingStrategyKindDto;
+  readonly capitalArs?: number;
+  readonly collateralKind?: CollateralAssetKindDto;
+  readonly collateralValueArs?: number;
+  readonly collateralAforo?: number;
+  readonly collateralDurationYears?: number;
+  readonly desiredLots?: number;
+  readonly side?: 'BUY' | 'SELL';
+}
+
+export interface GgalMarginRiskResponseDto {
+  readonly telemetry: GgalTelemetryHeaderDto;
+  readonly requestResolved: {
+    readonly strategyKind: BymaClearingStrategyKindDto;
+    readonly capitalArs: number;
+    readonly collateralKind: CollateralAssetKindDto;
+    readonly collateralValueArs: number;
+    readonly collateralAforo: number | null;
+    readonly desiredLots: number;
+    readonly side: 'BUY' | 'SELL';
+  };
+  readonly frontExpiryCode: string | null;
+  readonly frontExpiryDate: string | null;
+  readonly targetOptionSymbol: string | null;
+  readonly targetOptionStrikeArs: number | null;
+  readonly selectedLegs: readonly {
+    readonly ticker: string;
+    readonly contractType: 'call' | 'put';
+    readonly side: 'BUY' | 'SELL';
+    readonly lots: number;
+    readonly strikeArs: number;
+    readonly optionPriceArs: number;
+    readonly ivPct: number;
+  }[];
+  readonly executionBookDiagnostics: {
+    readonly bookSource: 'PRIMARY_L2' | 'BYMA_L1_ONLY' | 'NO_DATA';
+    readonly underlyingBook5LevelsSource: string | null;
+    readonly optionL1BidSizeLots: number | null;
+    readonly optionL1AskSizeLots: number | null;
+    readonly recorderPairsCount: number;
+  };
+  readonly marginRisk: {
+    readonly status: 'OK' | 'NO_DATA';
+    readonly reason: string | null;
+    readonly strategyKind: BymaClearingStrategyKindDto;
+    readonly spot24hArs: number | null;
+    readonly expiryDateKey: string;
+    readonly ccpRiskArrayLossArs: number | null;
+    readonly worstCcpNode: {
+      readonly spotShockPct: number | null;
+      readonly volShockDecimal: number | null;
+      readonly shockedSpotArs: number | null;
+      readonly portfolioMtmLossArs: number | null;
+    };
+    readonly steppedFloorArs: number | null;
+    readonly baseRequiredMarginArs: number | null;
+    readonly liquidBufferArs: number | null;
+    readonly wrongWayRiskSurchargeArs: number | null;
+    readonly totalRequiredWithBuffersArs: number | null;
+    readonly collateralStatus: 'OK' | 'MISSING_EXPLICIT_AFORO' | 'NO_DATA';
+    readonly totalCollateralMarketArs: number | null;
+    readonly totalEffectiveCollateralArs: number | null;
+    readonly localCorrelatedEffectiveArs: number | null;
+    readonly nonCorrelatedEffectiveArs: number | null;
+    readonly excessOrDeficitArs: number | null;
+    readonly collateralBreakdown: readonly {
+      readonly id: string;
+      readonly kind: CollateralAssetKindDto;
+      readonly marketValueArs: number | null;
+      readonly aforo: number | null;
+      readonly effectiveValueArs: number | null;
+      readonly isLocalCorrelated: boolean;
+      readonly status: 'OK' | 'MISSING_EXPLICIT_AFORO' | 'INVALID_INPUT';
+    }[];
+    readonly t0GrossPremiumCashflowArs: number | null;
+    readonly t0OptionFeesDmIvaArs: number | null;
+    readonly t0NetCashflowArs: number | null;
+    readonly projectedT1ExerciseFeeDmIvaArs: number | null;
+    readonly projectedSpotEquityFeeDmIvaArs: number | null;
+    readonly dailyMarginCarryCostArs: number | null;
+    readonly circular3588Alert: {
+      readonly active: boolean;
+      readonly isExpiryDay: boolean;
+      readonly minutesToCutoff: number | null;
+      readonly atmDistancePctMin: number | null;
+      readonly blockingAtmStrikes: readonly number[];
+      readonly reason: string;
+    };
+    readonly strategyReferenceMatrix: readonly {
+      readonly strategyKind: BymaClearingStrategyKindDto;
+      readonly label: string;
+      readonly ccpRiskArrayLossArs: number | null;
+      readonly steppedFloorArs: number | null;
+      readonly requiredMarginArs: number | null;
+    }[];
+  } | null;
+  readonly executionMicrostructure: {
+    readonly status: 'OK' | 'DEGRADED_L1_ONLY' | 'NO_DATA';
+    readonly decision: 'POST_PASSIVE_L1' | 'PRICE_IMPROVE_1_TICK' | 'CROSS_BOOK' | 'ABORT_STALE';
+    readonly decisionReason: string;
+    readonly hayashiYoshida: {
+      readonly status: 'OK' | 'NO_DATA';
+      readonly reason: string | null;
+      readonly genuineBymaReturns: number;
+      readonly genuineAdrReturns: number;
+      readonly contemporaneousCorrelation: number | null;
+      readonly optimalLagSec: number | null;
+      readonly optimalCorrelation: number | null;
+      readonly leadLagSignal: 'ADR_LEADS_BYMA' | 'BYMA_LEADS_ADR' | 'SYNCHRONOUS' | 'NO_DATA';
+      readonly lagProfile: readonly {
+        readonly lagSec: number;
+        readonly correlation: number | null;
+        readonly overlappingPairs: number;
+      }[];
+    };
+    readonly gates: {
+      readonly gate1FreshnessPassed: boolean;
+      readonly gate1Status: 'PASS' | 'FAIL_STALE' | 'BYPASSED_EOD' | 'INVALID_TIMESTAMP';
+      readonly quoteAgeSec: number | null;
+      readonly gate2SpreadPassed: boolean;
+      readonly spreadPct: number | null;
+      readonly gate3DepthPassed: boolean;
+      readonly l1JoinLots: number | null;
+      readonly l1CrossLots: number | null;
+      readonly gate4TickConfirmPassed: boolean;
+      readonly allGatesPassed: boolean;
+    };
+    readonly spreadTicks: number | null;
+    readonly halfSpreadArs: number | null;
+    readonly queueAheadL1Lots: number | null;
+    readonly lambdaEffectivePerSec: number | null;
+    readonly fillProbPassiveL1: number | null;
+    readonly fillProbImprove1Tick: number | null;
+    readonly adverseSelectionCostArs: number | null;
+    readonly esPassiveL1Ars: number | null;
+    readonly esImprove1TickArs: number | null;
+    readonly esCrossBookArs: number | null;
+    readonly crossBookVwapSlippageArs: number | null;
+    readonly visibleTargetDepthLots: number | null;
+    readonly maxSingleOrderLots: number | null;
+    readonly sqrtImpactCapLots: number | null;
+    readonly liquidityCapBindingReason: string;
+  } | null;
+  readonly tailStress: {
+    readonly status: 'OK' | 'NO_DATA';
+    readonly reason: string | null;
+    readonly scenarioResults: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly adrShockPct: number;
+      readonly cclShockPct: number;
+      readonly ivShiftDecimal: number;
+      readonly lecapBpsShift: number;
+      readonly shockedAdrUsd: number | null;
+      readonly shockedCclArs: number | null;
+      readonly shockedSpotArs: number | null;
+      readonly spotArsChangePct: number | null;
+      readonly portfolioPnlPerUnitArs: number | null;
+      readonly collateralRateImpactArs: number | null;
+      readonly stressedEffectiveCollateralArs: number | null;
+      readonly unitCapitalStressPct: number | null;
+    }[];
+    readonly worstScenarioId: string;
+    readonly worstUnitLossArs: number | null;
+    readonly overnightNodesCount: number;
+    readonly overnightExpectedPnlPerUnitArs: number | null;
+    readonly overnightStdDevPerUnitArs: number | null;
+    readonly overnightMaxLossPerUnitArs: number | null;
+    readonly overnightVar99PerUnitArs: number | null;
+    readonly overnightCvar99PerUnitArs: number | null;
+    readonly sizingBreakdown: {
+      readonly fullKellyLots: number | null;
+      readonly quarterKellyLots: number | null;
+      readonly noRuinCapLots: number | null;
+      readonly cvar99CapLots: number | null;
+      readonly drawdownCapLots: number | null;
+      readonly collateralMarginCapLots: number | null;
+      readonly bindingConstraint: string;
+    };
+    readonly recommendedBymaLots: number;
+    readonly recommendedOpraContractsExact: number | null;
+    readonly recommendedOpraContractsFloored: number;
+  } | null;
+  readonly notice: string | null;
+}
+
+export function fetchGgalMarginRisk(
+  query: GgalMarginRiskQueryDto = {},
+  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<GgalMarginRiskResponseDto> {
+  const sp = new URLSearchParams();
+  if (options.forceRefresh) sp.set('refresh', '1');
+  if (query.strategyKind !== undefined) sp.set('strategyKind', query.strategyKind);
+  if (query.capitalArs !== undefined && Number.isFinite(query.capitalArs) && query.capitalArs > 0) {
+    sp.set('capitalArs', String(query.capitalArs));
+  }
+  if (query.collateralKind !== undefined) sp.set('collateralKind', query.collateralKind);
+  if (
+    query.collateralValueArs !== undefined &&
+    Number.isFinite(query.collateralValueArs) &&
+    query.collateralValueArs >= 0
+  ) {
+    sp.set('collateralValueArs', String(query.collateralValueArs));
+  }
+  if (
+    query.collateralAforo !== undefined &&
+    Number.isFinite(query.collateralAforo) &&
+    query.collateralAforo > 0 &&
+    query.collateralAforo <= 1
+  ) {
+    sp.set('collateralAforo', String(query.collateralAforo));
+  }
+  if (
+    query.collateralDurationYears !== undefined &&
+    Number.isFinite(query.collateralDurationYears) &&
+    query.collateralDurationYears > 0
+  ) {
+    sp.set('collateralDurationYears', String(query.collateralDurationYears));
+  }
+  if (query.desiredLots !== undefined && Number.isFinite(query.desiredLots) && query.desiredLots > 0) {
+    sp.set('desiredLots', String(query.desiredLots));
+  }
+  if (query.side !== undefined) sp.set('side', query.side);
+
+  const qs = sp.toString();
+  return requestJson<GgalMarginRiskResponseDto>(
+    `/api/ar/ggal-specialist/margin-risk${qs ? `?${qs}` : ''}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
+  );
+}
