@@ -3071,7 +3071,10 @@ export class MarketRuntime {
   private readonly nowMsFn: () => number;
   private readonly enableWs: boolean;
   private readonly watchedSymbols: readonly string[];
-  /** Clave inyectada explícitamente por deps (tests/harness); `null` => pool de entorno. */
+  /**
+   * Clave inyectada explícitamente por deps SOLO si difiere de la cadena de
+   * entorno (tests/harness); `null` => delega al pool multi-key (Pieza 32).
+   */
   private readonly depsApiKey: string | null;
   private readonly tradierConfig: TradierConfig;
   private tradierManager: TradierLiveManager | null;
@@ -3548,7 +3551,15 @@ export class MarketRuntime {
 
   public constructor(deps: MarketRuntimeDeps = {}) {
     const auth = loadRuntimeAuth();
-    this.depsApiKey = deps.apiKey ?? null;
+    // Pieza 32: `deps.apiKey` es una inyección explícita (tests/harness) SOLO cuando
+    // difiere de la clave resuelta por la cadena de entorno. Cuando el entrypoint
+    // re-pasa `loadRuntimeAuth().apiKey` (mismo valor), se delega al pool multi-key
+    // (`MASSIVE_WS_STOCKS_KEY` / `MASSIVE_REST_KEY` / `MASSIVE_REST_KEYS`) para que
+    // la separación WS/REST y el round-robin operen en producción.
+    this.depsApiKey =
+      deps.apiKey !== undefined && deps.apiKey.trim() !== '' && deps.apiKey !== auth.apiKey
+        ? deps.apiKey
+        : null;
     this.apiKey = deps.apiKey ?? auth.apiKey;
     const secretSet = new Set<string>(auth.secrets);
     if (deps.secrets !== undefined) {
@@ -3691,8 +3702,9 @@ export class MarketRuntime {
 
   /**
    * Pieza 32: slot REST del pool round-robin (`MASSIVE_REST_KEY` ->
-   * `MASSIVE_REST_KEYS` -> `MASSIVE_API_KEY`). Con `deps.apiKey` inyectada se usa
-   * esa clave directamente (tests/harness) sin rotación.
+   * `MASSIVE_REST_KEYS` -> `MASSIVE_API_KEY`). Con una inyección explícita de
+   * `deps.apiKey` distinta de la cadena de entorno (tests/harness) se usa esa
+   * clave directamente sin rotación.
    */
   private restKeySlot(): MassiveKeySlot {
     if (this.depsApiKey !== null) {
