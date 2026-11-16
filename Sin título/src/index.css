@@ -1,0 +1,328 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import 'tailwindcss';
+
+:root {
+  /* Dark Aesthetic Financial (suite de Opciones) */
+  --fx-base: #090B0E;
+  --fx-base-2: #0D1017;
+  --fx-panel: #121620;
+  --fx-panel-2: #161B26;
+  --fx-line: rgba(255, 255, 255, 0.07);
+  --fx-line-strong: rgba(255, 255, 255, 0.12);
+  --fx-gain: #10B981;
+  --fx-gain-2: #00D592;
+  --fx-loss: #EF4444;
+  --fx-loss-2: #FF4D5E;
+  --fx-call: #EAB308;
+  --fx-call-2: #FACC15;
+  --fx-put: #A855F7;
+  --fx-put-2: #C084FC;
+  --fx-target: #38BDF8;
+  --fx-be: #F59E0B;
+  --fx-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --bg-app: #08080D;
+  --bg-sidebar: #0C0C13;
+  --surface-1: #11111A;
+  --surface-2: #171722;
+  --surface-3: #1F1F2D;
+  --border-subtle: #1E1E2B;
+  --border-strong: #30303F;
+  --text-primary: #F3F3F9;
+  --text-secondary: #A4A4BA;
+  --text-tertiary: #6D6D84;
+  --accent-primary: #8B7CF6;
+  --accent-subtle: #241F48;
+  --pos-fg: #2EDC7E;
+  --pos-bg: #0E2F20;
+  --pos-border: #1C5C3C;
+  --neg-fg: #FF5C63;
+  --neg-bg: #331519;
+  --neg-border: #6C2931;
+  --warn-fg: #F5B544;
+  --warn-bg: #35280F;
+  --call-fg: #4BA3FF;
+  --call-tint: #0B1A2C;
+  --call-bg: #0F2641;
+  --put-fg: #E5558F;
+  --put-tint: #2A1124;
+  --put-bg: #3A1631;
+  --info-fg: #5B8CFF;
+  --info-bg: #14203D;
+
+  --heat-pos-1: #0E2F20;
+  --heat-pos-2: #14472F;
+  --heat-pos-3: #1C6B44;
+  --heat-pos-4: #25914F;
+  --heat-pos-5: #2EB866;
+  --heat-neg-1: #331519;
+  --heat-neg-2: #4D1D23;
+  --heat-neg-3: #7A2630;
+  --heat-neg-4: #A8323E;
+  --heat-neg-5: #D14450;
+
+  --chart-1: #8B7CF6;
+  --chart-2: #4BA3FF;
+  --chart-3: #2EDC7E;
+  --chart-4: #F5B544;
+  --chart-5: #E5558F;
+  --chart-6: #34D3C7;
+  --chart-7: #FF8A4C;
+  --chart-8: #A4A4BA;
+
+  --gauge-cheap: #3F9B5F;
+  --gauge-range: #4A4A5C;
+  --gauge-rich: #A88A2A;
+
+  --glass-bg: rgba(12, 12, 19, 0.76);
+
+  --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.40);
+  --elev-2: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  --elev-3: 0 16px 40px -12px rgba(0, 0, 0, 0.65), 0 2px 6px rgba(0, 0, 0, 0.40);
+  --elev-4: 0 32px 80px -20px rgba(0, 0, 0, 0.75);
+  --glow-accent: 0 0 0 1px #8B7CF6, 0 0 24px -4px rgba(139, 124, 246, 0.45);
+  --glow-pos: 0 0 16px -4px rgba(46, 220, 126, 0.40);
+  --glow-neg: 0 0 16px -4px rgba(255, 92, 99, 0.40);
+}
+
+[data-theme="light"] {
+  --bg-app: #F4F5FA;
+  --bg-sidebar: #ECEEF5;
+  --surface-1: #FFFFFF;
+  --surface-2: #F7F8FC;
+  --surface-3: #EDEEF6;
+  --border-subtle: #E1E3EE;
+  --border-strong: #C6C9DC;
+  --text-primary: #111320;
+  --text-secondary: #4E526A;
+  --text-tertiary: #7C819B;
+  --accent-primary: #6D5CE7;
+  --accent-subtle: #EAE7FD;
+  --pos-fg: #128E4B;
+  --pos-bg: #E2F6EB;
+  --pos-border: #9EE2BD;
+  --neg-fg: #D8313A;
+  --neg-bg: #FCE6E8;
+  --neg-border: #F5B1B6;
+  --warn-fg: #B87809;
+  --warn-bg: #FEF3DC;
+  --call-fg: #1971D4;
+  --call-tint: #ECF4FE;
+  --call-bg: #D9E9FD;
+  --put-fg: #C42B6E;
+  --put-tint: #FCECF3;
+  --put-bg: #F9D7E7;
+  --info-fg: #2B62D9;
+  --info-bg: #E6EEFC;
+  --glass-bg: rgba(236, 238, 245, 0.82);
+  --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 3px rgba(14, 16, 22, 0.08);
+  --elev-2: 0 8px 24px -8px rgba(14, 16, 22, 0.16);
+  --elev-3: 0 16px 40px -12px rgba(14, 16, 22, 0.22), 0 2px 6px rgba(14, 16, 22, 0.08);
+  --elev-4: 0 32px 80px -20px rgba(14, 16, 22, 0.28);
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+}
+
+.font-mono-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.qc-card {
+  background-color: var(--surface-1);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 100%);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--elev-1);
+  border-radius: 14px;
+  transition: transform 140ms cubic-bezier(0, 0, 0.2, 1), box-shadow 140ms cubic-bezier(0, 0, 0.2, 1), border-color 140ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.qc-card-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--elev-2);
+  border-color: var(--border-strong);
+}
+
+.qc-card-interactive:active {
+  transform: scale(0.985);
+}
+
+.qc-glass {
+  background-color: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.qc-cta-primary {
+  background: linear-gradient(135deg, #8B7CF6 0%, #5B8CFF 100%);
+  color: #FFFFFF;
+  box-shadow: 0 2px 10px -2px rgba(139, 124, 246, 0.45);
+  transition: transform 140ms cubic-bezier(0, 0, 0.2, 1), box-shadow 140ms cubic-bezier(0, 0, 0.2, 1), filter 140ms ease;
+}
+
+.qc-cta-primary:hover {
+  filter: brightness(1.08);
+  box-shadow: var(--glow-accent);
+}
+
+.qc-cta-primary:active {
+  transform: scale(0.98);
+}
+
+@keyframes tickFlashUp {
+  0% { background-color: rgba(46, 220, 126, 0.36); box-shadow: var(--glow-pos); }
+  100% { background-color: transparent; box-shadow: none; }
+}
+
+@keyframes tickFlashDown {
+  0% { background-color: rgba(255, 92, 99, 0.36); box-shadow: var(--glow-neg); }
+  100% { background-color: transparent; box-shadow: none; }
+}
+
+@keyframes numberRoll {
+  0% { transform: translateY(4px); opacity: 0.65; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes moduleCascade {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.88); }
+}
+
+@keyframes strokeDraw {
+  from { stroke-dashoffset: 1200; }
+  to { stroke-dashoffset: 0; }
+}
+
+.tick-up {
+  animation: tickFlashUp 600ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.tick-down {
+  animation: tickFlashDown 600ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.num-roll {
+  display: inline-block;
+  animation: numberRoll 140ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.animate-module {
+  animation: moduleCascade 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.live-dot {
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+.chart-line-draw {
+  stroke-dasharray: 1200;
+  animation: strokeDraw 700ms cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* =========================================================================
+   INFINITE SEAMLESS MARQUEE TICKER (GPU-ACCELERATED 60/120 FPS)
+   ========================================================================= */
+@keyframes qc-marquee-scroll {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.qc-marquee-viewport {
+  overflow: hidden;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000000 32px,
+    #000000 calc(100% - 32px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000000 32px,
+    #000000 calc(100% - 32px),
+    transparent 100%
+  );
+}
+
+.qc-marquee-track {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+  animation: qc-marquee-scroll var(--marquee-duration, 46s) linear infinite;
+}
+
+.qc-marquee-viewport:hover .qc-marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes qc-chip-flash-up {
+  0% {
+    background-color: rgba(8, 153, 129, 0.32);
+    border-color: rgba(34, 197, 94, 0.65);
+  }
+  100% {
+    background-color: #131722;
+    border-color: #2A2E3D;
+  }
+}
+
+@keyframes qc-chip-flash-down {
+  0% {
+    background-color: rgba(242, 54, 69, 0.32);
+    border-color: rgba(239, 68, 68, 0.65);
+  }
+  100% {
+    background-color: #131722;
+    border-color: #2A2E3D;
+  }
+}
+
+.qc-chip-flash-up {
+  animation: qc-chip-flash-up 550ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.qc-chip-flash-down {
+  animation: qc-chip-flash-down 550ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tick-up, .tick-down, .num-roll, .animate-module, .live-dot, .chart-line-draw, .qc-marquee-track {
+    animation: none !important;
+  }
+}

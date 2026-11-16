@@ -1,0 +1,10 @@
+{
+  "description": "Plataforma de aprendizaje en línea con lecciones en vídeo y seguimiento del progreso en cuestionarios para ayudar a los usuarios a aprender y medir sus avances.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
