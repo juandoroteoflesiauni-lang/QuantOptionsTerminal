@@ -220,9 +220,9 @@ function defaultHealthEntry(
     connected: false,
     qualityTier: 'UNAVAILABLE',
     lastMessageUtcSec: null,
-    latencyMs: null,
+    latencyMs: configured ? null : 0,
     stale: true,
-    errorReason: configured ? 'AWAITING_FIRST_SYNC' : 'PROVIDER_NOT_CONFIGURED',
+    errorReason: configured ? 'AWAITING_FIRST_SYNC' : 'NOT_CONFIGURED',
     roleDescription: ROLE_LABELS[provider],
   };
 }
@@ -301,13 +301,17 @@ export class ArFeedRouter {
         connected: configured && connected && !stale,
         qualityTier: configured && connected && !stale ? tier : 'UNAVAILABLE',
         lastMessageUtcSec: lastMsgUtcSec,
-        latencyMs: ageSec !== null ? Math.max(0, ageSec * 1000) : null,
+        latencyMs: !configured
+          ? 0
+          : ageSec !== null
+            ? Math.max(0, ageSec * 1000)
+            : null,
         stale,
         errorReason:
-          cleanError !== null
-            ? cleanError
-            : !configured
-              ? 'PROVIDER_NOT_CONFIGURED'
+          !configured
+            ? 'NOT_CONFIGURED'
+            : cleanError !== null
+              ? cleanError
               : !connected
                 ? 'DISCONNECTED'
                 : stale
@@ -332,7 +336,10 @@ export class ArFeedRouter {
       'PPI_REST',
       buildEntry(
         'PPI_REST',
-        input.ppiConfigured || (this.endpoints.ppiBaseUrl !== null && this.endpoints.ppiApiKey !== null),
+        input.ppiConfigured ||
+          (this.endpoints.ppiBaseUrl !== null &&
+            this.endpoints.ppiApiKey !== null &&
+            this.endpoints.ppiApiSecret !== null),
         input.ppiHealthy,
         'POLLING_L1_REST',
         input.ppiLastMsgUtcSec,

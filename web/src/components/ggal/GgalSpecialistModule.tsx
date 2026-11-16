@@ -785,9 +785,16 @@ export const GgalSpecialistModule: React.FC<{
         if (activeTelemetry === null) return null;
         const closedSession =
           activeTelemetry.marketMode === 'EOD_CIERRE' || activeTelemetry.sessionRegime === 'CLOSED';
-        const visibleWarnings = closedSession
-          ? activeTelemetry.providerErrors.filter((err) => !/open\.bymadata\.com\.ar/i.test(err))
-          : activeTelemetry.providerErrors;
+        const hasOperationalContingency = activeTelemetry.feedStatus !== 'NO_DATA';
+        const visibleWarnings = activeTelemetry.providerErrors.filter((err) => {
+          if (closedSession && /open\.bymadata\.com\.ar/i.test(err)) {
+            return false;
+          }
+          if ((closedSession || hasOperationalContingency) && /aborted due to timeout/i.test(err)) {
+            return false;
+          }
+          return true;
+        });
         if (visibleWarnings.length === 0) return null;
         return (
           <InsightBanner tag="Avisos de Fuente" variant="warn">
@@ -796,71 +803,81 @@ export const GgalSpecialistModule: React.FC<{
         );
       })()}
 
-      {/* Telemetría del Router AR (Zero Silent Fallbacks) */}
-      {routerStatus !== null && (
-        <div className="rounded-[10px] bg-[#10131D] border border-[#1E2538] p-3 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="font-semibold text-[#E5E7EB]">Enrutador Feeds AR:</span>
-              <span className="rounded px-2 py-0.5 font-mono text-[11px] bg-[#161B2B] text-[#93C5FD] border border-[#2B3554]">
-                Activo: {routerStatus.activePrimaryEquityProvider ?? 'NINGUNO'}
+      {/* Telemetría compacta del Router AR (Zero Silent Fallbacks) */}
+      {routerStatus !== null && (() => {
+        const hasBrokerConfigured = routerStatus.providers.some(
+          (p) =>
+            p.provider !== 'DATA912_EOD_CONTINGENCY' &&
+            p.provider !== 'IAMC_ANEXO_B_PDF' &&
+            p.configured,
+        );
+        const operatingContingency =
+          !hasBrokerConfigured &&
+          routerStatus.activePrimaryEquityProvider === 'DATA912_EOD_CONTINGENCY';
+        return (
+          <div className="rounded-[10px] bg-[#111116] border border-[#1C1C24] px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="font-semibold text-[#9CA3AF]">Enrutador Feeds AR:</span>
+              <span className="rounded px-2 py-0.5 font-mono bg-[#0A0A0D] text-[#E5C76B] border border-[#E5C76B]/35">
+                {operatingContingency
+                  ? 'Massive (ADR/OPRA) + Data912 (BYMA)'
+                  : `Activo: ${routerStatus.activePrimaryEquityProvider ?? 'NINGUNO'}`}
               </span>
               <span
-                className={`rounded px-2 py-0.5 font-mono text-[11px] border ${
-                  routerStatus.activeQualityTier === 'REALTIME_L2_TICK'
-                    ? 'bg-[#0D2E1D] text-[#2EDC7E] border-[#1F6B43]'
-                    : routerStatus.activeQualityTier === 'POLLING_L1_REST'
-                      ? 'bg-[#35280F] text-[#F5B544] border-[#785315]'
-                      : 'bg-[#361318] text-[#FF5C63] border-[#6E232B]'
-                }`}
-              >
-                Tier: {routerStatus.activeQualityTier}
-              </span>
-              <span
-                className={`rounded px-2 py-0.5 font-mono text-[11px] border ${
+                className={`rounded px-2 py-0.5 font-mono border ${
                   routerStatus.l2Available
-                    ? 'bg-[#0D2E1D] text-[#2EDC7E] border-[#1F6B43]'
-                    : 'bg-[#361318] text-[#FF5C63] border-[#6E232B]'
+                    ? 'bg-[#22C55E]/10 text-[#22C55E] border-[#22C55E]/35'
+                    : hasBrokerConfigured
+                      ? 'bg-[#EF4444]/10 text-[#EF4444] border-[#EF4444]/35'
+                      : 'bg-[#0A0A0D] text-[#9CA3AF] border-[#1C1C24]'
                 }`}
               >
-                {routerStatus.l2Available ? 'L2 5-PUNTAS OK' : 'L2 NO DISPONIBLE'}
+                {routerStatus.l2Available
+                  ? 'L2 5-Puntas OK'
+                  : hasBrokerConfigured
+                    ? 'L2 Desconectado'
+                    : 'L1 / EOD (Sin credenciales L2)'}
               </span>
-              {routerStatus.isContingencyEod && (
-                <span className="rounded px-2 py-0.5 font-mono text-[11px] bg-[#35280F] text-[#F5B544] border border-[#785315]">
-                  DATA912 CONTINGENCIA / EOD
+              {routerStatus.activeQualityTier !== 'REALTIME_L2_TICK' && (
+                <span className="rounded px-2 py-0.5 font-mono bg-[#0A0A0D] text-[#9CA3AF] border border-[#1C1C24]">
+                  {routerStatus.activeQualityTier}
+                </span>
+              )}
+              {hasBrokerConfigured && routerStatus.degradationReason !== null && (
+                <span className="rounded px-2 py-0.5 font-mono bg-[#EF4444]/10 text-[#EF4444] border border-[#EF4444]/35">
+                  {routerStatus.degradationReason}
                 </span>
               )}
             </div>
-            {routerStatus.degradationReason !== null && (
-              <span className="font-mono text-[11px] text-[#FCA5A5]">
-                Degradación explícita: {routerStatus.degradationReason}
-              </span>
-            )}
+            <div className="flex flex-wrap items-center gap-1">
+              {routerStatus.providers.map((p) => {
+                const label = p.provider
+                  .replace('PRIMARY_MATRIZ_WS', 'MATRIZ')
+                  .replace('_REST', '')
+                  .replace('_MARKETDATA_V1', '')
+                  .replace('BYMA_CLEARING', 'CLEARING')
+                  .replace('IAMC_ANEXO_B_PDF', 'ANEXO B')
+                  .replace('DATA912_EOD_CONTINGENCY', 'DATA912');
+                return (
+                  <span
+                    key={p.provider}
+                    title={`${p.roleDescription} | ${p.connected ? p.qualityTier : (p.errorReason ?? 'UNAVAILABLE')}${p.latencyMs !== null ? ` (${String(p.latencyMs)}ms)` : ''}`}
+                    className={`rounded px-1.5 py-0.5 font-mono text-[10px] border ${
+                      p.connected
+                        ? 'bg-[#22C55E]/10 border-[#22C55E]/35 text-[#22C55E]'
+                        : p.configured
+                          ? 'bg-[#E5C76B]/10 border-[#E5C76B]/35 text-[#E5C76B]'
+                          : 'bg-[#0A0A0D] border-[#1C1C24] text-[#6B7280]'
+                    }`}
+                  >
+                    {label}
+                  </span>
+                );
+              })}
+            </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5">
-            {routerStatus.providers.map((p) => (
-              <div
-                key={p.provider}
-                title={`${p.roleDescription}${p.errorReason ? ` | ${p.errorReason}` : ''}`}
-                className={`rounded px-2 py-1 border text-[10.5px] font-mono ${
-                  p.connected
-                    ? 'bg-[#0D2E1D]/45 border-[#1F6B43] text-[#A7F3D0]'
-                    : p.configured
-                      ? 'bg-[#35280F]/35 border-[#785315] text-[#FDE68A]'
-                      : 'bg-[#11131D] border-[#1E2230] text-[#6B7280]'
-                }`}
-              >
-                <div className="truncate font-semibold">
-                  #{p.priority} {p.provider.replace('_CONTINGENCY', '').replace('_MARKETDATA_V1', '')}
-                </div>
-                <div className="truncate text-[9.5px] opacity-80">
-                  {p.connected ? p.qualityTier : (p.errorReason ?? 'UNAVAILABLE')}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Gráficos Dedicados Sincronizados (Chart 1 68% + Chart 2 Mirror GEX/L2 32%) */}
       <GgalDualChartView

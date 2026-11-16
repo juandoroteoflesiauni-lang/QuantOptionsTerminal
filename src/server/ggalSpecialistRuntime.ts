@@ -80,12 +80,16 @@ import {
   type ArOverviewResponse,
   type ArStockDetailResponse,
 } from './argentinaMarketLoader.js';
-import { calculateEma } from '../core/ema.js';
-import { createInitialWelfordState, updateWelford } from '../core/welford.js';
+import {
+  BYMA_MARKET_TZ,
+  US_MARKET_TZ,
+  computeAnchoredVwapSeries,
+  computeEmaSeries,
+  computeVolumeProfile,
+} from '../core/ggal/technicalIndicators.js';
 import type {
   ArFeedRouterStatusSnapshot,
   GgalAvwapAnchorMode,
-  GgalAvwapBandPoint,
   GgalChartBarPoint,
   GgalChartStructureZone,
   GgalClearingRiskPayload,
@@ -98,10 +102,8 @@ import type {
   GgalL2ConfluenceAlert,
   GgalL2LadderState,
   GgalL2MicrostructureMetrics,
-  GgalLinePoint,
   GgalStrikeGreekProfileRow,
   GgalSubPanePoint,
-  GgalVolumeProfileSummary,
   OratsHybridSurfacePayload,
 } from '../core/ggal/institutionalContracts.js';
 import {
@@ -453,9 +455,12 @@ interface MarketBundle {
 
 const DEFAULT_DATA912_BASE_URL = 'https://data912.com';
 const DEFAULT_BCRA_BASE_URL = 'https://api.bcra.gob.ar';
-const DEFAULT_HTTP_TIMEOUT_MS = 9_000;
+const DEFAULT_HTTP_TIMEOUT_MS = 4_000;
 const DEFAULT_CACHE_TTL_MS = 12_000;
-const HISTORY_CACHE_TTL_MS = 120_000;
+const HISTORY_CACHE_TTL_MS = 300_000;
+const ANEXO_B_BG_CACHE_TTL_MS = 12 * 3_600_000;
+const DUAL_CHART_TARGET_BARS = 1_200;
+const DUAL_CHART_BYMA_DAILY_LIMIT = 1_000;
 const DEFAULT_RECORDER_INTERVAL_MS = 20_000;
 const DEFAULT_MAX_RECORDER_SNAPSHOTS = 500;
 const DEFAULT_STALENESS_SEC = 20;
@@ -1062,8 +1067,19 @@ export class GgalSpecialistRuntime {
   private historyInFlight: Promise<
     NonNullable<GgalSpecialistRuntime['historyCache']>['value']
   > | null = null;
+  private fullBymaHistoryCache: CachedEntry<readonly GgalChartBarPoint[]> | null = null;
+  private fullBymaHistoryInFlight: Promise<readonly GgalChartBarPoint[]> | null = null;
+  private fastQuotesCache: CachedEntry<{
+    readonly stocks: readonly Data912RawRow[];
+    readonly bonds: readonly Data912RawRow[];
+  }> | null = null;
 
   private anexoBStore: AnexoBStoredRecord | null = null;
+  private readonly iamcAnexoBUrl: string | null;
+  private anexoBBgLastAttemptMs: number | null = null;
+  private anexoBBgInFlight: Promise<void> | null = null;
+  private anexoBBgLastError: string | null = null;
+  private readonly isMockFetch: boolean;
   private readonly recorderSnapshots: GgalRecorderSnapshotEntry[] = [];
   private readonly bymaFlowSnapshots: BymaSnapshotFlowPoint[] = [];
   private recorderTimer: ReturnType<typeof setInterval> | null = null;
@@ -1080,6 +1096,9 @@ export class GgalSpecialistRuntime {
       ...collectArFeedSecrets(effectiveEnv),
       ...(oratsCfg.apiKey !== null ? [oratsCfg.apiKey] : []),
     ];
+    this.isMockFetch = deps.fetchFn !== undefined;
+    const rawIamcUrl = effectiveEnv['IAMC_ANEXO_B_URL']?.trim() ?? '';
+    this.iamcAnexoBUrl = rawIamcUrl !== '' ? rawIamcUrl : null;
     this.runtime = deps.runtime;
     this.arRuntime = deps.arRuntime;
     this.fetchFn = deps.fetchFn ?? defaultHttpFn;
@@ -1328,6 +1347,143 @@ export class GgalSpecialistRuntime {
     return out;
   }
 
+  private parseData912OhlcvHistory(data: unknown): GgalChartBarPoint[] {
+    const arr = Array.isArray(data)
+      ? data
+      : isPlainRecord(data) && Array.isArray(data['results'])
+        ? data['results']
+        : [];
+    const seen = new Set<number>();
+    const out: GgalChartBarPoint[] = [];
+    for (const item of arr) {
+      if (!isPlainRecord(item)) {
+        continue;
+      }
+      const d = parseUtcDateKey(readStr(item, ['date', 'd', 'fecha', 't', 'time']));
+      const close = readNum(item, ['c', 'close', 'last', 'cierre']);
+      if (d === null || close === null || !Number.isFinite(close) || close <= 0) {
+        continue;
+      }
+      const open = readNum(item, ['o', 'open', 'apertura']) ?? close;
+      const high = readNum(item, ['h', 'high', 'maximo']) ?? Math.max(open, close);
+      const low = readNum(item, ['l', 'low', 'minimo']) ?? Math.min(open, close);
+      const volume = Math.max(0, readNum(item, ['v', 'volume', 'q_op', 'nominalVolume']) ?? 0);
+      if (seen.has(d.time)) {
+        continue;
+      }
+      seen.add(d.time);
+      out.push({
+        timeSec: d.time,
+        open,
+        high: Math.max(high, open, close),
+        low: Math.min(low, open, close),
+        close,
+        volume,
+      });
+    }
+    out.sort((a, b) => a.timeSec - b.timeSec);
+    return out;
+  }
+
+  private async loadFullBymaGgalHistory(forceRefresh = false): Promise<readonly GgalChartBarPoint[]> {
+    const nowMs = this.nowMsFn();
+    if (
+      !forceRefresh &&
+      this.fullBymaHistoryCache !== null &&
+      nowMs - this.fullBymaHistoryCache.fetchedAtMs < HISTORY_CACHE_TTL_MS
+    ) {
+      return this.fullBymaHistoryCache.value;
+    }
+    if (!forceRefresh && this.fullBymaHistoryInFlight !== null) {
+      return this.fullBymaHistoryInFlight;
+    }
+
+    const work = (async (): Promise<readonly GgalChartBarPoint[]> => {
+      const res = await this.fetchJsonSafe(`${this.data912BaseUrl}/historical/stocks/GGAL`);
+      if (!res.ok) {
+        return this.fullBymaHistoryCache?.value ?? [];
+      }
+      const parsed = this.parseData912OhlcvHistory(res.data);
+      const sliced =
+        parsed.length > DUAL_CHART_BYMA_DAILY_LIMIT
+          ? parsed.slice(parsed.length - DUAL_CHART_BYMA_DAILY_LIMIT)
+          : parsed;
+      if (sliced.length > 0) {
+        this.fullBymaHistoryCache = { fetchedAtMs: this.nowMsFn(), value: sliced };
+      }
+      return sliced;
+    })();
+
+    this.fullBymaHistoryInFlight = work;
+    try {
+      return await work;
+    } finally {
+      this.fullBymaHistoryInFlight = null;
+    }
+  }
+
+  private triggerAnexoBBgRefresh(force = false): void {
+    if (this.iamcAnexoBUrl === null || this.isMockFetch) {
+      return;
+    }
+    const nowMs = this.nowMsFn();
+    if (
+      !force &&
+      this.anexoBBgLastAttemptMs !== null &&
+      nowMs - this.anexoBBgLastAttemptMs < ANEXO_B_BG_CACHE_TTL_MS
+    ) {
+      return;
+    }
+    if (this.anexoBBgInFlight !== null) {
+      return;
+    }
+
+    this.anexoBBgLastAttemptMs = nowMs;
+    const url = this.iamcAnexoBUrl;
+    this.anexoBBgInFlight = (async () => {
+      try {
+        const res = await this.fetchFn(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json, text/plain, text/csv, application/pdf' },
+          timeoutMs: DEFAULT_HTTP_TIMEOUT_MS,
+        });
+        if (!res.ok || res.text.trim() === '') {
+          this.anexoBBgLastError = `HTTP_${String(res.status)}`;
+          return;
+        }
+        const trimmed = res.text.trim();
+        let req: AnexoBIngestRequest;
+        if (trimmed.startsWith('{')) {
+          const parsedJson: unknown = JSON.parse(trimmed);
+          req = isPlainRecord(parsedJson)
+            ? {
+                ...(typeof parsedJson['asOfDate'] === 'string'
+                  ? { asOfDate: parsedJson['asOfDate'] }
+                  : {}),
+                ...(typeof parsedJson['expiryCode'] === 'string'
+                  ? { expiryCode: parsedJson['expiryCode'] }
+                  : {}),
+                ...(typeof parsedJson['rawText'] === 'string'
+                  ? { rawText: parsedJson['rawText'] }
+                  : {}),
+                sourceLabel: 'IAMC_ANEXO_B_BG',
+              }
+            : { rawText: trimmed, sourceLabel: 'IAMC_ANEXO_B_BG' };
+        } else {
+          req = { rawText: trimmed, sourceLabel: 'IAMC_ANEXO_B_BG' };
+        }
+        const record = parseAnexoBIamcInput(req, Math.floor(this.nowMsFn() / 1_000));
+        this.anexoBStore = record;
+        this.anexoBBgLastError = null;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.anexoBBgLastError = redactSecrets(msg, this.secrets);
+      } finally {
+        this.anexoBBgInFlight = null;
+      }
+    })();
+  }
+
   private parseBcraCerHistory(data: unknown): CerObservation[] {
     if (!isPlainRecord(data) || !Array.isArray(data['results'])) {
       return [];
@@ -1514,7 +1670,9 @@ export class GgalSpecialistRuntime {
           ? usBarsRes.bars.map((b) => ({ time: b.time, close: b.close }))
           : [];
       if (usDailyCloseBars.length < 75) {
-        const cached1d = await this.runtime.getCachedDailyBars1d('GGAL', 240, forceRefresh).catch(() => null);
+        const cached1d = await this.runtime
+          .getCachedDailyBars1d('GGAL', 240, forceRefresh)
+          .catch(() => null);
         if (cached1d !== null && cached1d.bars.length > usDailyCloseBars.length) {
           usDailyCloseBars = cached1d.bars.map((b) => ({ time: b.time, close: b.close }));
         }
@@ -1618,9 +1776,20 @@ export class GgalSpecialistRuntime {
       new Set([...bundle.overview.providerErrors, ...bundle.ggalOptions.providerErrors, ...bundle.errors]),
     );
     const hideClosedOpenByma = isClosedSession || parity.sessionRegime === 'CLOSED';
-    const visibleErrors = hideClosedOpenByma
-      ? allErrors.filter((err) => !/open\.bymadata\.com\.ar/i.test(err))
-      : allErrors;
+    const hasContingentFeed =
+      bundle.liveStocks.length > 0 || bundle.usSnapshot !== null || bundle.usBars !== null;
+    const visibleErrors = allErrors.filter((err) => {
+      if (hideClosedOpenByma && /open\.bymadata\.com\.ar/i.test(err)) {
+        return false;
+      }
+      if (
+        (hideClosedOpenByma || hasContingentFeed) &&
+        /the operation was aborted due to timeout/i.test(err)
+      ) {
+        return false;
+      }
+      return true;
+    });
 
     return {
       asOfUtcSec,
@@ -3526,11 +3695,11 @@ export class GgalSpecialistRuntime {
   }
 
   private syncFeedRouterWithBundle(bundle: MarketBundle): ArFeedRouterStatusSnapshot {
+    this.triggerAnexoBBgRefresh(false);
     const connHealth =
       typeof this.arRuntime.getConnectorHealth === 'function'
         ? this.arRuntime.getConnectorHealth()
         : null;
-    const primaryConfigured = connHealth?.primaryRofex.configured ?? false;
     const primaryWsConnected = connHealth?.primaryRofex.wsConnected ?? false;
     const bmbConnected = connHealth?.bullMarket.connected ?? false;
     const rawBook = bundle.ggalDetail.orderBook5Levels ?? null;
@@ -3546,6 +3715,7 @@ export class GgalSpecialistRuntime {
       (hasL2Levels ? bundle.asOfUtcSec : null);
 
     const endpoints = this.arFeedRouter.getEndpointsConfig();
+    const primaryConfigured = endpoints.matrizWsConfigured || primaryWsConnected || bmbConnected;
     const ppiConfigured =
       endpoints.ppiBaseUrl !== null && endpoints.ppiApiKey !== null && endpoints.ppiApiSecret !== null;
     const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
@@ -3557,7 +3727,7 @@ export class GgalSpecialistRuntime {
       primaryConfigured,
       primaryConnected: hasL2Levels,
       primaryLastMsgUtcSec: lastPrimarySec,
-      primaryError: connHealth?.primaryRofex.lastError ?? null,
+      primaryError: primaryConfigured ? (connHealth?.primaryRofex.lastError ?? null) : null,
       ppiConfigured,
       ppiHealthy: ppiConfigured && bundle.ggalDetail.stock !== null,
       ppiLastMsgUtcSec: ppiConfigured ? bundle.asOfUtcSec : null,
@@ -3576,7 +3746,7 @@ export class GgalSpecialistRuntime {
       bymaClearingError: null,
       anexoBLoaded: this.anexoBStore !== null,
       anexoBLastMsgUtcSec: this.anexoBStore?.ingestedAtUtcSec ?? null,
-      anexoBError: null,
+      anexoBError: this.anexoBStore === null ? this.anexoBBgLastError : null,
       data912Reachable: bundle.liveStocks.length > 0 || bundle.ggalDetail.stock !== null,
       data912LastMsgUtcSec:
         bundle.liveStocks.length > 0 || bundle.ggalDetail.stock !== null
@@ -4057,6 +4227,54 @@ export class GgalSpecialistRuntime {
     };
   }
 
+  private buildStandaloneFastRouterStatus(
+    asOfUtcSec: number,
+    liveStocksCount: number,
+  ): { readonly routerStatus: ArFeedRouterStatusSnapshot; readonly l2Ladder: GgalL2LadderState } {
+    this.triggerAnexoBBgRefresh(false);
+    const endpoints = this.arFeedRouter.getEndpointsConfig();
+    const ppiConfigured =
+      endpoints.ppiBaseUrl !== null && endpoints.ppiApiKey !== null && endpoints.ppiApiSecret !== null;
+    const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
+    const maeConfigured = endpoints.maeBaseUrl !== null && endpoints.maeApiKey !== null;
+    const bymaClearingConfigured = endpoints.bymaClearingUrl !== null;
+
+    this.arFeedRouter.updateFromRuntimeTelemetry({
+      asOfUtcSec,
+      primaryConfigured: endpoints.matrizWsConfigured,
+      primaryConnected: false,
+      primaryLastMsgUtcSec: null,
+      primaryError: null,
+      ppiConfigured,
+      ppiHealthy: false,
+      ppiLastMsgUtcSec: null,
+      ppiError: null,
+      iolConfigured,
+      iolHealthy: false,
+      iolLastMsgUtcSec: null,
+      iolError: null,
+      maeConfigured,
+      maeHealthy: false,
+      maeLastMsgUtcSec: null,
+      maeError: null,
+      bymaClearingConfigured,
+      bymaClearingHealthy: false,
+      bymaClearingLastMsgUtcSec: null,
+      bymaClearingError: null,
+      anexoBLoaded: this.anexoBStore !== null,
+      anexoBLastMsgUtcSec: this.anexoBStore?.ingestedAtUtcSec ?? null,
+      anexoBError: this.anexoBStore === null ? this.anexoBBgLastError : null,
+      data912Reachable: liveStocksCount > 0,
+      data912LastMsgUtcSec: liveStocksCount > 0 ? asOfUtcSec : null,
+      data912Error: null,
+    });
+
+    return {
+      routerStatus: this.arFeedRouter.getStatusSnapshot(asOfUtcSec),
+      l2Ladder: this.arFeedRouter.resolveL2LadderState('GGAL', null, asOfUtcSec),
+    };
+  }
+
   public async getDualChart(opts: {
     readonly coordMode: GgalDualChartCoordMode;
     readonly timeframe: GgalDualChartTimeframe;
@@ -4066,50 +4284,242 @@ export class GgalSpecialistRuntime {
     readonly routerStatus: ArFeedRouterStatusSnapshot;
     readonly dualChart: JsonSafeValue<GgalDualChartPayload>;
   }> {
-    const bundle = await this.loadMarketBundle(opts.forceRefresh);
-    const { routerStatus, l2Ladder } = this.buildL2MetricsFromBundle(bundle);
-    const structure = await this.getStructurePinning(false);
-
     const runtimeTf =
       opts.timeframe === '1H' ? '1h' : opts.timeframe === '4H' ? '4h' : opts.timeframe;
+    const peerTimeout = <T>(p: Promise<T>, ms = 2_500): Promise<T | null> =>
+      this.isMockFetch
+        ? p.catch(() => null)
+        : Promise.race<T | null>([
+            p.catch(() => null),
+            new Promise<null>((resolve) => {
+              const t = setTimeout(() => {
+                resolve(null);
+              }, ms);
+              t.unref();
+            }),
+          ]);
 
-    const [adrBarsRes, bmaBarsRes, bbarBarsRes, supvBarsRes] = await Promise.all([
-      this.runtime.getBars('GGAL', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
-      this.runtime.getBars('BMA', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
-      this.runtime.getBars('BBAR', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
-      this.runtime.getBars('SUPV', runtimeTf, { visibleBars: 240, forceRefresh: opts.forceRefresh }).catch(() => null),
+    const nowMs = this.nowMsFn();
+    const hasWarmBundle =
+      !opts.forceRefresh &&
+      this.bundleCache !== null &&
+      nowMs - this.bundleCache.fetchedAtMs < HISTORY_CACHE_TTL_MS;
+
+    if (hasWarmBundle && this.bundleCache !== null && nowMs - this.bundleCache.fetchedAtMs >= this.cacheTtlMs) {
+      // Stale-while-revalidate en segundo plano para mantener respuestas < 50 ms
+      void this.loadMarketBundle(false).catch(() => undefined);
+    }
+
+    let bundleRacePromise: Promise<MarketBundle | null>;
+    if (this.bundleCache !== null && !opts.forceRefresh) {
+      if (!hasWarmBundle) {
+        void this.loadMarketBundle(false).catch(() => undefined);
+      }
+      bundleRacePromise = Promise.resolve(this.bundleCache.value);
+    } else if (this.isMockFetch) {
+      bundleRacePromise = this.loadMarketBundle(opts.forceRefresh);
+    } else if (!opts.forceRefresh && this.bundleInFlight !== null) {
+      // Warmup ya corriendo en segundo plano: no bloquear cada cambio de timeframe
+      bundleRacePromise = Promise.resolve(null);
+    } else {
+      const bgPromise = this.loadMarketBundle(opts.forceRefresh);
+      bgPromise.catch(() => undefined);
+      bundleRacePromise = Promise.race<MarketBundle | null>([
+        bgPromise,
+        new Promise<null>((resolve) => {
+          const timer = setTimeout(() => {
+            resolve(null);
+          }, 1_000);
+          timer.unref();
+        }),
+      ]);
+    }
+
+    const [
+      racedBundle,
+      bymaFullDailyBars,
+      adrBarsRes,
+      adrDailyRes,
+      bmaBarsRes,
+      bbarBarsRes,
+      supvBarsRes,
+    ] = await Promise.all([
+      bundleRacePromise,
+      this.loadFullBymaGgalHistory(opts.forceRefresh),
+      this.runtime
+        .getBars('GGAL', runtimeTf, { visibleBars: DUAL_CHART_TARGET_BARS, forceRefresh: opts.forceRefresh })
+        .catch(() => null),
+      opts.timeframe === '1D'
+        ? Promise.resolve(null)
+        : this.runtime
+            .getBars('GGAL', '1D', { visibleBars: DUAL_CHART_TARGET_BARS, forceRefresh: false })
+            .catch(() => null),
+      peerTimeout(
+        this.runtime.getBars('BMA', runtimeTf, {
+          visibleBars: DUAL_CHART_TARGET_BARS,
+          forceRefresh: false,
+        }),
+      ),
+      peerTimeout(
+        this.runtime.getBars('BBAR', runtimeTf, {
+          visibleBars: DUAL_CHART_TARGET_BARS,
+          forceRefresh: false,
+        }),
+      ),
+      peerTimeout(
+        this.runtime.getBars('SUPV', runtimeTf, {
+          visibleBars: DUAL_CHART_TARGET_BARS,
+          forceRefresh: false,
+        }),
+      ),
     ]);
 
-    const adrRawBars = adrBarsRes?.bars ?? bundle.usBars?.bars ?? [];
-    const bymaRawBars = bundle.ggalDetail.historicalBars;
+    let bundle = racedBundle;
+    let fastLiveStocks: readonly Data912RawRow[] = [];
+    let fastLiveBonds: readonly Data912RawRow[] = [];
+    let fastUsSnap: TerminalSnapshotResponse | null = null;
+    if (bundle === null) {
+      const fastQuotesValid =
+        !opts.forceRefresh &&
+        !this.isMockFetch &&
+        this.fastQuotesCache !== null &&
+        this.nowMsFn() - this.fastQuotesCache.fetchedAtMs < 15_000;
+      const [quotesPair, snapFast] = await Promise.all([
+        fastQuotesValid && this.fastQuotesCache !== null
+          ? Promise.resolve(this.fastQuotesCache.value)
+          : Promise.all([
+              this.fetchJsonSafe(`${this.data912BaseUrl}/live/arg_stocks`),
+              this.fetchJsonSafe(`${this.data912BaseUrl}/live/arg_bonds`),
+            ]).then(([stocksFast, bondsFast]) => {
+              const pair = {
+                stocks: stocksFast.ok ? this.parseData912Rows(stocksFast.data) : [],
+                bonds: bondsFast.ok ? this.parseData912Rows(bondsFast.data) : [],
+              };
+              if (!this.isMockFetch && (pair.stocks.length > 0 || pair.bonds.length > 0)) {
+                this.fastQuotesCache = { fetchedAtMs: this.nowMsFn(), value: pair };
+              }
+              return pair;
+            }),
+        this.runtime.getSnapshot('GGAL', undefined).catch(() => null),
+      ]);
+      fastLiveStocks = quotesPair.stocks;
+      fastLiveBonds = quotesPair.bonds;
+      fastUsSnap = snapFast;
+      // Si cache llegó mientras buscábamos fast data, úsala directamente
+      if (this.bundleCache !== null) {
+        bundle = this.bundleCache.value;
+      }
+    }
 
-    const parity = this.computeParityGapCore(bundle);
-    const cclRate =
-      Number.isFinite(parity.output.ccl.cclGgal24h) && parity.output.ccl.cclGgal24h > 0
-        ? parity.output.ccl.cclGgal24h
-        : (bundle.macro.variables.ccl ?? Number.NaN);
+    const asOfUtcSec = bundle?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000);
+    const l2AndRouter =
+      bundle !== null
+        ? this.buildL2MetricsFromBundle(bundle)
+        : this.buildStandaloneFastRouterStatus(asOfUtcSec, fastLiveStocks.length);
+    const { routerStatus, l2Ladder } = l2AndRouter;
+    const structure =
+      bundle !== null ? await this.getStructurePinning(false).catch(() => null) : null;
 
+    const adrRawBars = adrBarsRes?.bars ?? bundle?.usBars?.bars ?? [];
+    const bymaDetailBars: readonly GgalChartBarPoint[] = (bundle?.ggalDetail.historicalBars ?? []).map(
+      (b) => ({
+        timeSec: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: b.volume,
+      }),
+    );
+    const bymaEffectiveDailyBars =
+      bymaFullDailyBars.length >= bymaDetailBars.length ? bymaFullDailyBars : bymaDetailBars;
+    const bymaLegacyRawBars = bymaEffectiveDailyBars.map((b) => ({
+      time: b.timeSec,
+      date: formatIsoUtcFromSec(b.timeSec).slice(0, 10),
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+      volume: b.volume,
+    }));
+
+    const parity = bundle !== null ? this.computeParityGapCore(bundle) : null;
+    const adrLastUsdFromFast =
+      fastUsSnap?.envelope.snapshot.metrics.spot ??
+      adrRawBars[adrRawBars.length - 1]?.close ??
+      Number.NaN;
     const adrLastUsd =
-      Number.isFinite(parity.output.spot.adrMidUsd) && parity.output.spot.adrMidUsd > 0
+      parity !== null &&
+      Number.isFinite(parity.output.spot.adrMidUsd) &&
+      parity.output.spot.adrMidUsd > 0
         ? parity.output.spot.adrMidUsd
-        : (adrRawBars[adrRawBars.length - 1]?.close ?? Number.NaN);
+        : adrLastUsdFromFast;
+
+    const ggalLiveFast = fastLiveStocks.find((r) => r.symbol === 'GGAL');
+    const bymaLastFast =
+      ggalLiveFast?.last ??
+      bymaEffectiveDailyBars[bymaEffectiveDailyBars.length - 1]?.close ??
+      Number.NaN;
+    const fastGgalCcl =
+      Number.isFinite(bymaLastFast) && bymaLastFast > 0 && Number.isFinite(adrLastUsd) && adrLastUsd > 0
+        ? (bymaLastFast * GGAL_ADR_RATIO) / adrLastUsd
+        : Number.NaN;
+    const fastAl30 = fastLiveBonds.find((r) => r.symbol === 'AL30')?.last;
+    const fastAl30c = fastLiveBonds.find((r) => r.symbol === 'AL30C')?.last;
+    const fastBondCcl =
+      fastAl30 !== undefined &&
+      fastAl30 !== null &&
+      fastAl30c !== undefined &&
+      fastAl30c !== null &&
+      fastAl30 > 0 &&
+      fastAl30c > 0
+        ? fastAl30 / fastAl30c
+        : Number.NaN;
+
+    const cclRate =
+      parity !== null &&
+      Number.isFinite(parity.output.ccl.cclGgal24h) &&
+      parity.output.ccl.cclGgal24h > 0
+        ? parity.output.ccl.cclGgal24h
+        : (bundle?.macro.variables.ccl ??
+          (Number.isFinite(fastGgalCcl) ? fastGgalCcl : fastBondCcl));
+
+    // Construir mapa histórico CCL diario por fecha YYYY-MM-DD para escalado fiel intradiario ARS
+    const adrDailyBars = opts.timeframe === '1D' ? adrRawBars : (adrDailyRes?.bars ?? bundle?.usBars?.bars ?? []);
+    const adrCloseByDate = new Map<string, number>();
+    for (const ab of adrDailyBars) {
+      if (Number.isFinite(ab.close) && ab.close > 0) {
+        adrCloseByDate.set(formatIsoUtcFromSec(ab.time).slice(0, 10), ab.close);
+      }
+    }
+    const cclByDate = new Map<string, number>();
+    let lastBymaDateKey = '';
+    for (const bb of bymaEffectiveDailyBars) {
+      const dateKey = formatIsoUtcFromSec(bb.timeSec).slice(0, 10);
+      if (dateKey > lastBymaDateKey) {
+        lastBymaDateKey = dateKey;
+      }
+      const adrClose = adrCloseByDate.get(dateKey);
+      if (adrClose !== undefined && adrClose > 0 && bb.close > 0) {
+        cclByDate.set(dateKey, (bb.close * GGAL_ADR_RATIO) / adrClose);
+      }
+    }
 
     const convertedBars: GgalChartBarPoint[] = [];
     if (opts.coordMode === 'ARS_BYMA') {
-      if (opts.timeframe === '1D' && bymaRawBars.length > 0) {
-        for (const b of bymaRawBars) {
-          const bar = convertOhlcBarToCoord(
-            { timeSec: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
-            null,
-            'ARS_BYMA',
-          );
+      if (opts.timeframe === '1D' && bymaEffectiveDailyBars.length > 0) {
+        for (const b of bymaEffectiveDailyBars) {
+          const bar = convertOhlcBarToCoord(b, null, 'ARS_BYMA');
           if (bar !== null) {
             convertedBars.push(bar);
           }
         }
       } else if (adrRawBars.length > 0 && Number.isFinite(cclRate) && cclRate > 0) {
-        const factor = cclRate / GGAL_ADR_RATIO;
         for (const b of adrRawBars) {
+          const dateKey = formatIsoUtcFromSec(b.time).slice(0, 10);
+          const effectiveCcl =
+            dateKey <= lastBymaDateKey ? (cclByDate.get(dateKey) ?? cclRate) : cclRate;
+          const factor = effectiveCcl / GGAL_ADR_RATIO;
           convertedBars.push({
             timeSec: b.time,
             open: b.open * factor,
@@ -4132,9 +4542,10 @@ export class GgalSpecialistRuntime {
         }
       }
     } else {
-      // RATIO_CCL: align daily BYMA + ADR bars by UTC date key
+      // RATIO_CCL: alinear barras diarias BYMA + ADR por fecha UTC
       const adrByDate = new Map<string, GgalChartBarPoint>();
-      for (const b of adrRawBars) {
+      const sourceAdrForRatio = opts.timeframe === '1D' ? adrRawBars : (adrDailyBars.length > 0 ? adrDailyBars : adrRawBars);
+      for (const b of sourceAdrForRatio) {
         const dateKey = formatIsoUtcFromSec(b.time).slice(0, 10);
         adrByDate.set(dateKey, {
           timeSec: b.time,
@@ -4145,14 +4556,10 @@ export class GgalSpecialistRuntime {
           volume: b.volume,
         });
       }
-      for (const b of bymaRawBars) {
-        const dateKey = b.date.slice(0, 10);
+      for (const b of bymaEffectiveDailyBars) {
+        const dateKey = formatIsoUtcFromSec(b.timeSec).slice(0, 10);
         const adrMatch = adrByDate.get(dateKey) ?? null;
-        const bar = convertOhlcBarToCoord(
-          { timeSec: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
-          adrMatch,
-          'RATIO_CCL',
-        );
+        const bar = convertOhlcBarToCoord(b, adrMatch, 'RATIO_CCL');
         if (bar !== null) {
           convertedBars.push(bar);
         }
@@ -4172,7 +4579,7 @@ export class GgalSpecialistRuntime {
         routerStatus,
         dualChart: toJsonSafe({
           status: 'UNAVAILABLE',
-          asOfUtcSec: bundle.asOfUtcSec,
+          asOfUtcSec,
           coordMode: opts.coordMode,
           timeframe: opts.timeframe,
           avwapAnchor: opts.avwapAnchor,
@@ -4182,25 +4589,12 @@ export class GgalSpecialistRuntime {
       };
     }
 
-    const closes = convertedBars.map((b) => b.close);
-    const toLineSeries = (vals: readonly number[]): readonly GgalLinePoint[] => {
-      const pts: GgalLinePoint[] = [];
-      for (let i = 0; i < convertedBars.length; i++) {
-        const v = vals[i];
-        const bar = convertedBars[i];
-        if (v !== undefined && Number.isFinite(v) && bar !== undefined) {
-          pts.push({ timeSec: bar.timeSec, value: v });
-        }
-      }
-      return pts;
-    };
+    const ema9 = computeEmaSeries(convertedBars, 9);
+    const ema21 = computeEmaSeries(convertedBars, 21);
+    const ema50 = computeEmaSeries(convertedBars, 50);
+    const ema200 = computeEmaSeries(convertedBars, 200);
 
-    const ema9 = toLineSeries(calculateEma(closes, 9));
-    const ema21 = toLineSeries(calculateEma(closes, 21));
-    const ema50 = toLineSeries(calculateEma(closes, 50));
-    const ema200 = toLineSeries(calculateEma(closes, 200));
-
-    // Resolve AVWAP anchor index
+    // Resolver ancla AVWAP consciente del horizonte temporal
     let anchorIdx = 0;
     const lastBar = convertedBars[convertedBars.length - 1];
     if (lastBar !== undefined) {
@@ -4211,13 +4605,17 @@ export class GgalSpecialistRuntime {
         );
         anchorIdx = found >= 0 ? found : 0;
       } else if (opts.avwapAnchor === 'LAST_BIMONTHLY_EXPIRY') {
-        anchorIdx = Math.max(0, convertedBars.length - Math.min(convertedBars.length, 42));
+        const targetSec = lastBar.timeSec - 45 * 86_400;
+        const found = convertedBars.findIndex((b) => b.timeSec >= targetSec);
+        anchorIdx = found >= 0 ? found : 0;
       } else if (opts.avwapAnchor === 'LAST_EARNINGS') {
-        anchorIdx = Math.max(0, convertedBars.length - Math.min(convertedBars.length, 60));
+        const targetSec = lastBar.timeSec - 90 * 86_400;
+        const found = convertedBars.findIndex((b) => b.timeSec >= targetSec);
+        anchorIdx = found >= 0 ? found : 0;
       } else {
-        // ELECTORAL_GAP: max absolute overnight open-vs-prev-close gap bar
+        // ELECTORAL_GAP: mayor gap overnight |open - prev.close| / prev.close
         let maxGap = -1;
-        for (let i = 1; i < convertedBars.length; i++) {
+        for (let i = 1; i < convertedBars.length; i += 1) {
           const prev = convertedBars[i - 1];
           const curr = convertedBars[i];
           if (prev !== undefined && curr !== undefined && prev.close > 0) {
@@ -4231,34 +4629,15 @@ export class GgalSpecialistRuntime {
       }
     }
 
-    const avwapAnchorUtcSec = convertedBars[anchorIdx]?.timeSec ?? convertedBars[0]?.timeSec ?? bundle.asOfUtcSec;
-    const avwapBands: GgalAvwapBandPoint[] = [];
-    let wState = createInitialWelfordState();
-    for (let i = anchorIdx; i < convertedBars.length; i++) {
-      const b = convertedBars[i];
-      if (b === undefined) {
-        continue;
-      }
-      const hlc3 = (b.high + b.low + b.close) / 3;
-      const step = updateWelford(wState, hlc3, b.volume > 0 ? b.volume : 1);
-      wState = step.state;
-      if (Number.isFinite(step.output.vwap) && Number.isFinite(step.output.stdDev)) {
-        avwapBands.push({
-          timeSec: b.timeSec,
-          avwap: step.output.vwap,
-          plus1Sigma: step.output.vwap + step.output.stdDev,
-          minus1Sigma: step.output.vwap - step.output.stdDev,
-          plus2Sigma: step.output.vwap + 2 * step.output.stdDev,
-          minus2Sigma: step.output.vwap - 2 * step.output.stdDev,
-        });
-      }
-    }
+    const avwapAnchorUtcSec =
+      convertedBars[anchorIdx]?.timeSec ?? convertedBars[0]?.timeSec ?? asOfUtcSec;
+    const avwapBands = computeAnchoredVwapSeries(convertedBars, avwapAnchorUtcSec);
 
-    // Volume Profile (32 bins across visible range + prior Naked POCs)
-    const volumeProfile = this.computeSimpleVolumeProfile(convertedBars);
+    const marketTz = opts.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+    const volumeProfile = computeVolumeProfile(convertedBars, 32, marketTz);
     const zones = this.detectUnmitigatedZones(convertedBars);
 
-    const strRes = structure.result ?? structure.proxyResult ?? null;
+    const strRes = structure?.result ?? structure?.proxyResult ?? null;
     const callWall = convertArsPriceToCoord(
       strRes?.callWallArs ?? Number.NaN,
       opts.coordMode,
@@ -4285,24 +4664,26 @@ export class GgalSpecialistRuntime {
     );
 
     const spotPrice = lastBar?.close ?? Number.NaN;
-    const volTriangle = this.buildVolTriangleCore(bundle);
+    const volTriangle = bundle !== null ? this.buildVolTriangleCore(bundle) : null;
     const atmIvDec =
-      volTriangle.output !== null && Number.isFinite(volTriangle.output.bymaAtmIvPct)
+      volTriangle?.output !== null &&
+      volTriangle?.output !== undefined &&
+      Number.isFinite(volTriangle.output.bymaAtmIvPct)
         ? volTriangle.output.bymaAtmIvPct / 100
         : 0.45;
-    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
-    const expiryUtcSec = front?.expiryUtcSec ?? bundle.asOfUtcSec + 30 * 86400;
+    const frontExpiry =
+      bundle !== null ? selectLiquidFrontAndBackExpiries(bundle.ggalOptions).front : null;
+    const expiryUtcSec = frontExpiry?.expiryUtcSec ?? asOfUtcSec + 30 * 86_400;
     const expectedCone = this.buildExpectedCone(
-      lastBar?.timeSec ?? bundle.asOfUtcSec,
+      lastBar?.timeSec ?? asOfUtcSec,
       spotPrice,
       atmIvDec,
       expiryUtcSec,
     );
 
-    // Sub-pane series: CVD (Lee-Ready / bar proxy), Brecha CCL %, Relative Strength vs BMA/BBAR/SUPV
     const subPaneSeries = this.buildSubPaneSeries(
       convertedBars,
-      bymaRawBars,
+      bymaLegacyRawBars,
       adrRawBars,
       cclRate,
       bmaBarsRes?.bars ?? [],
@@ -4395,7 +4776,7 @@ export class GgalSpecialistRuntime {
 
     const payload: GgalDualChartPayload = {
       status: 'OPERATIONAL',
-      asOfUtcSec: bundle.asOfUtcSec,
+      asOfUtcSec,
       coordMode: opts.coordMode,
       timeframe: opts.timeframe,
       avwapAnchor: opts.avwapAnchor,
@@ -4463,100 +4844,6 @@ export class GgalSpecialistRuntime {
       ...ladder,
       bids,
       asks,
-    };
-  }
-
-  private computeSimpleVolumeProfile(
-    bars: readonly GgalChartBarPoint[],
-  ): GgalVolumeProfileSummary {
-    let minLow = Infinity;
-    let maxHigh = -Infinity;
-    for (const b of bars) {
-      if (b.low < minLow) minLow = b.low;
-      if (b.high > maxHigh) maxHigh = b.high;
-    }
-    if (!Number.isFinite(minLow) || !Number.isFinite(maxHigh) || maxHigh <= minLow) {
-      return { poc: Number.NaN, vah: Number.NaN, val: Number.NaN, nakedPocs: [], bins: [] };
-    }
-    const numBins = 28;
-    const step = (maxHigh - minLow) / numBins;
-    const binVol = new Array<number>(numBins).fill(0);
-    let totalVol = 0;
-
-    for (const b of bars) {
-      const vol = b.volume > 0 ? b.volume : 1;
-      const typ = (b.high + b.low + b.close) / 3;
-      const idx = Math.min(numBins - 1, Math.max(0, Math.floor((typ - minLow) / step)));
-      binVol[idx] = (binVol[idx] ?? 0) + vol;
-      totalVol += vol;
-    }
-
-    let pocIdx = 0;
-    let maxBinVol = -1;
-    for (let i = 0; i < numBins; i++) {
-      const v = binVol[i] ?? 0;
-      if (v > maxBinVol) {
-        maxBinVol = v;
-        pocIdx = i;
-      }
-    }
-
-    let lo = pocIdx;
-    let hi = pocIdx;
-    let cumVol = binVol[pocIdx] ?? 0;
-    const targetVol = 0.7 * totalVol;
-    while (cumVol < targetVol && (lo > 0 || hi < numBins - 1)) {
-      const leftVol = lo > 0 ? (binVol[lo - 1] ?? 0) : -1;
-      const rightVol = hi < numBins - 1 ? (binVol[hi + 1] ?? 0) : -1;
-      if (rightVol >= leftVol && hi < numBins - 1) {
-        hi += 1;
-        cumVol += Math.max(0, rightVol);
-      } else if (lo > 0) {
-        lo -= 1;
-        cumVol += Math.max(0, leftVol);
-      } else {
-        break;
-      }
-    }
-
-    const bins = [];
-    for (let i = 0; i < numBins; i++) {
-      bins.push({
-        priceMid: minLow + (i + 0.5) * step,
-        volume: binVol[i] ?? 0,
-        isValToVah: i >= lo && i <= hi,
-        isPoc: i === pocIdx,
-      });
-    }
-
-    // Track up to 3 unmitigated local-high-volume Naked POCs from earlier thirds of history
-    const nakedPocs: number[] = [];
-    const sliceLen = Math.max(10, Math.floor(bars.length / 4));
-    for (let start = 0; start + sliceLen < bars.length - 5; start += sliceLen) {
-      const segment = bars.slice(start, start + sliceLen);
-      let peakBar: GgalChartBarPoint | null = null;
-      for (const sb of segment) {
-        if (peakBar === null || sb.volume > peakBar.volume) {
-          peakBar = sb;
-        }
-      }
-      if (peakBar === null) {
-        continue;
-      }
-      const pocCand = (peakBar.high + peakBar.low + peakBar.close) / 3;
-      const laterBars = bars.slice(start + sliceLen);
-      const mitigated = laterBars.some((lb) => lb.low <= pocCand && lb.high >= pocCand);
-      if (!mitigated) {
-        nakedPocs.push(pocCand);
-      }
-    }
-
-    return {
-      poc: minLow + (pocIdx + 0.5) * step,
-      val: minLow + lo * step,
-      vah: minLow + (hi + 1) * step,
-      nakedPocs: nakedPocs.slice(-3),
-      bins,
     };
   }
 
