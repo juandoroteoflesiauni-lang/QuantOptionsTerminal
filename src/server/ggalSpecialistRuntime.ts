@@ -103,6 +103,7 @@ import {
   computeAnchoredVwapSeries,
   computeEmaSeries,
   computeVolumeProfile,
+  getSessionDateKey,
 } from '../core/ggal/technicalIndicators.js';
 import type {
   ArFeedRouterStatusSnapshot,
@@ -5310,21 +5311,30 @@ export class GgalSpecialistRuntime {
     );
 
     const spotPrice = lastBar?.close ?? Number.NaN;
+    const frontExpiry =
+      bundle !== null ? selectLiquidFrontAndBackExpiries(bundle.ggalOptions).front : null;
     const volTriangle = bundle !== null ? this.buildVolTriangleCore(bundle) : null;
+    // Sin IV ATM real no se dibuja un cono: nada de volatilidades de respaldo.
     const atmIvDec =
       volTriangle?.output !== null &&
       volTriangle?.output !== undefined &&
-      Number.isFinite(volTriangle.output.bymaAtmIvPct)
+      Number.isFinite(volTriangle.output.bymaAtmIvPct) &&
+      volTriangle.output.bymaAtmIvPct > 0
         ? volTriangle.output.bymaAtmIvPct / 100
-        : 0.45;
-    const frontExpiry =
-      bundle !== null ? selectLiquidFrontAndBackExpiries(bundle.ggalOptions).front : null;
-    const expiryUtcSec = frontExpiry?.expiryUtcSec ?? asOfUtcSec + 30 * 86_400;
+        : frontExpiry?.ivAtm !== null &&
+            frontExpiry?.ivAtm !== undefined &&
+            Number.isFinite(frontExpiry.ivAtm) &&
+            frontExpiry.ivAtm > 0
+          ? frontExpiry.ivAtm
+          : Number.NaN;
+    // Cono al vencimiento activo: sin expiry real no se dibuja un cono sintético.
+    const expiryUtcSec = frontExpiry?.expiryUtcSec ?? Number.NaN;
     const expectedCone = this.buildExpectedCone(
       lastBar?.timeSec ?? asOfUtcSec,
       spotPrice,
       atmIvDec,
       expiryUtcSec,
+      opts.timeframe,
     );
 
     const subPaneSeries = this.buildSubPaneSeries(
@@ -5567,17 +5577,72 @@ export class GgalSpecialistRuntime {
     spotPrice: number,
     annVolDec: number,
     expiryUtcSec: number,
+    timeframe: GgalDualChartTimeframe,
   ): readonly GgalExpectedConePoint[] {
-    if (!Number.isFinite(spotPrice) || spotPrice <= 0 || !Number.isFinite(annVolDec)) {
+    if (
+      !Number.isInteger(startTimeSec) ||
+      startTimeSec <= 0 ||
+      !Number.isFinite(spotPrice) ||
+      spotPrice <= 0 ||
+      !Number.isFinite(annVolDec) ||
+      annVolDec <= 0
+    ) {
       return [];
     }
-    const horizonSec = Math.max(86400, expiryUtcSec - startTimeSec);
+
+    let horizonSec: number;
+    let yearFraction: number;
+    if (timeframe === '1m' || timeframe === '5m') {
+      // Cierre de rueda BYMA (17:00 ART = 20:00 UTC; ART no tiene DST).
+      let nextBymaCloseUtcSec = Number.NaN;
+      for (let dayOffset = 0; dayOffset < 10; dayOffset += 1) {
+        const dateKey = getSessionDateKey(startTimeSec + dayOffset * 86_400, BYMA_MARKET_TZ);
+        const dateParts = dateKey.split('-').map(Number);
+        const year = dateParts[0];
+        const month = dateParts[1];
+        const day = dateParts[2];
+        if (year === undefined || month === undefined || day === undefined) {
+          return [];
+        }
+        const closeUtcSec = Date.UTC(year, month - 1, day, 20, 0, 0) / 1_000;
+        const weekday = new Date(closeUtcSec * 1_000).getUTCDay();
+        if (closeUtcSec > startTimeSec && weekday >= 1 && weekday <= 5) {
+          nextBymaCloseUtcSec = closeUtcSec;
+          break;
+        }
+      }
+      if (!Number.isFinite(nextBymaCloseUtcSec)) {
+        return [];
+      }
+      horizonSec = Math.min(6 * 3_600, nextBymaCloseUtcSec - startTimeSec);
+      // T en años hábiles: 252 ruedas de 6 h.
+      yearFraction = horizonSec / (252 * 6 * 3_600);
+    } else if (timeframe === '15m' || timeframe === '1H') {
+      horizonSec = 5 * 86_400;
+      yearFraction = 5 / 252;
+    } else {
+      if (!Number.isFinite(expiryUtcSec) || expiryUtcSec <= startTimeSec) {
+        return [];
+      }
+      horizonSec = expiryUtcSec - startTimeSec;
+      yearFraction = horizonSec / (365 * 86_400);
+    }
+
+    if (
+      !Number.isFinite(horizonSec) ||
+      horizonSec <= 0 ||
+      !Number.isFinite(yearFraction) ||
+      yearFraction <= 0
+    ) {
+      return [];
+    }
+
     const steps = 6;
     const cone: GgalExpectedConePoint[] = [];
     for (let s = 0; s <= steps; s++) {
       const frac = s / steps;
       const t = startTimeSec + Math.round(horizonSec * frac);
-      const dtYears = (horizonSec * frac) / (365 * 86400);
+      const dtYears = yearFraction * frac;
       const sigma = spotPrice * annVolDec * Math.sqrt(dtYears);
       cone.push({
         timeSec: t,

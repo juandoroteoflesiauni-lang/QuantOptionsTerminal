@@ -186,6 +186,7 @@ export const GgalSpecialistModule: React.FC<{
   const [dualChartPayload, setDualChartPayload] = useState<GgalDualChartPayloadDto | null>(null);
   const [dualChartLoading, setDualChartLoading] = useState(false);
   const [dualChartError, setDualChartError] = useState<string | null>(null);
+  const [dualMicroError, setDualMicroError] = useState<string | null>(null);
 
   // Filtros interactivos Motor 5 (0 lotes/nom por defecto cuando no hay Anexo B ingestado o en EOD)
   const [familyFilter, setFamilyFilter] = useState<GgalStrategyFamily | 'ALL'>('ALL');
@@ -212,6 +213,12 @@ export const GgalSpecialistModule: React.FC<{
 
   const abortRef = useRef<AbortController | null>(null);
   const dualChartAbortRef = useRef<AbortController | null>(null);
+  const dualMicroAbortRef = useRef<AbortController | null>(null);
+  const dualWarmRetryRef = useRef<{ readonly key: string; readonly attempts: number }>({
+    key: '',
+    attempts: 0,
+  });
+  const dualWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadDualChart = useCallback(
     async (forceRefresh = false) => {
@@ -244,6 +251,23 @@ export const GgalSpecialistModule: React.FC<{
     },
     [avwapAnchor, chartTimeframe, coordMode],
   );
+
+  const loadDualMicro = useCallback(async (forceRefresh = false) => {
+    dualMicroAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    dualMicroAbortRef.current = ctrl;
+    setDualMicroError(null);
+    try {
+      const res = await fetchGgalMicrostructure({ forceRefresh, signal: ctrl.signal });
+      if (!ctrl.signal.aborted) {
+        setMicroData(res);
+      }
+    } catch (err: unknown) {
+      if (!ctrl.signal.aborted) {
+        setDualMicroError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }, []);
 
   const loadTab = useCallback(
     async (tab: GgalTabId, forceRefresh = false) => {
@@ -371,6 +395,45 @@ export const GgalSpecialistModule: React.FC<{
       dualChartAbortRef.current?.abort();
     };
   }, [loadDualChart]);
+
+  // Cold start: el bundle del especialista puede tardar >1 s. Si el primer payload
+  // llega sin cono (sin IV/vencimiento reales), reintentamos con espera acotada
+  // para completarlo cuando el bundle ya está caliente. Nunca se dibuja un cono sintético.
+  useEffect(() => {
+    if (dualChartPayload === null || dualChartPayload.status !== 'OPERATIONAL') {
+      return;
+    }
+    if ((dualChartPayload.expectedCone?.length ?? 0) >= 2) {
+      return;
+    }
+    const key = `${coordMode}|${chartTimeframe}|${avwapAnchor}`;
+    const previous = dualWarmRetryRef.current;
+    const attempts = previous.key === key ? previous.attempts : 0;
+    if (attempts >= 3) {
+      return;
+    }
+    const nextAttempt = attempts + 1;
+    dualWarmRetryRef.current = { key, attempts: nextAttempt };
+    const delaysMs = [8_000, 16_000, 24_000] as const;
+    const delay = delaysMs[nextAttempt - 1] ?? 24_000;
+    dualWarmTimerRef.current = setTimeout(() => {
+      dualWarmTimerRef.current = null;
+      void loadDualChart(false);
+    }, delay);
+    return () => {
+      if (dualWarmTimerRef.current !== null) {
+        clearTimeout(dualWarmTimerRef.current);
+        dualWarmTimerRef.current = null;
+      }
+    };
+  }, [dualChartPayload, coordMode, chartTimeframe, avwapAnchor, loadDualChart]);
+
+  useEffect(() => {
+    void loadDualMicro(false);
+    return () => {
+      dualMicroAbortRef.current?.abort();
+    };
+  }, [loadDualMicro]);
 
   useEffect(() => {
     void loadTab(activeTab, false);
@@ -951,9 +1014,11 @@ export const GgalSpecialistModule: React.FC<{
         );
       })()}
 
-      {/* Gráficos Dedicados Sincronizados (Chart 1 68% + Chart 2 Mirror GEX/L2 32%) */}
+      {/* Gráficos full-width: precio + CVD, con bloque inferior fijo GEX/L2/niveles */}
       <GgalDualChartView
         payload={dualChartPayload}
+        microstructure={microData}
+        microstructureError={dualMicroError}
         loading={dualChartLoading}
         error={dualChartError}
         coordMode={coordMode}
@@ -962,7 +1027,10 @@ export const GgalSpecialistModule: React.FC<{
         onChangeCoordMode={setCoordMode}
         onChangeTimeframe={setChartTimeframe}
         onChangeAvwapAnchor={setAvwapAnchor}
-        onRefresh={() => void loadDualChart(true)}
+        onRefresh={() => {
+          void loadDualChart(true);
+          void loadDualMicro(true);
+        }}
       />
 
       {/* Sub-navegación de 7 motores */}
