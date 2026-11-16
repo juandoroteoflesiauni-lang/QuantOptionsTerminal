@@ -35,7 +35,7 @@ export interface MarketTickQuote {
   readonly dayHigh: number | null;
   readonly volume: number | null;
   readonly turnover: number | null;
-  readonly asOfUtcSec: number;
+  readonly asOfUtcSec: number | null;
   readonly source: string;
 }
 
@@ -71,7 +71,7 @@ interface MutableQuote {
   dayHigh: number | null;
   volume: number | null;
   turnover: number | null;
-  asOfUtcSec: number;
+  asOfUtcSec: number | null;
   source: string;
 }
 
@@ -204,14 +204,15 @@ export class MassiveStocksStream {
         initialSubscriptions: ['T.*', 'AM.*'],
         autoReconnect: true,
         onEvents: (events) => {
-          const hasMarketData = events.some(
+          const configuredEvents = events.filter(
             (event) =>
               (event.ev === 'T' || event.ev === 'A' || event.ev === 'AM') &&
               this.symbols.has(event.sym.toUpperCase()),
           );
-          if (hasMarketData) this.lastWsMessageMs = this.nowMsFn();
-          this.ingestWsEvents(events);
-          this.onEventsCb?.(events);
+          if (configuredEvents.length === 0) return;
+          this.lastWsMessageMs = this.nowMsFn();
+          this.ingestWsEvents(configuredEvents);
+          this.onEventsCb?.(configuredEvents);
         },
         onStateChange: (state) => {
           this.onStateChangeCb?.(state);
@@ -264,12 +265,17 @@ export class MassiveStocksStream {
     readonly sourceMode: 'MASSIVE_WS' | 'MASSIVE_BATCH' | 'NO_DATA';
   } {
     const nowMs = this.nowMsFn();
-    const sourceMode =
-      this.lastWsMessageMs !== null && nowMs - this.lastWsMessageMs <= 15_000
-        ? 'MASSIVE_WS'
-        : this.quotes.size > 0
-          ? 'MASSIVE_BATCH'
-          : 'NO_DATA';
+    const wsFresh =
+      this.lastWsMessageMs !== null &&
+      nowMs >= this.lastWsMessageMs &&
+      nowMs - this.lastWsMessageMs <= 15_000;
+    const batchWindowMs = getMassiveBatchIntervalMs(nowMs) * 2 + 5_000;
+    const batchFresh =
+      this.lastBatchAtMs !== null &&
+      nowMs >= this.lastBatchAtMs &&
+      nowMs - this.lastBatchAtMs <= batchWindowMs &&
+      this.quotes.size > 0;
+    const sourceMode = wsFresh ? 'MASSIVE_WS' : batchFresh ? 'MASSIVE_BATCH' : 'NO_DATA';
     return {
       quoteCount: this.quotes.size,
       lastWsMessageMs: this.lastWsMessageMs,
@@ -293,7 +299,7 @@ export class MassiveStocksStream {
       const price = event.ev === 'T' ? event.price : event.bar.close;
       const asOfUtcSec = event.ev === 'T' ? event.timeSec : Math.floor(event.endMs / 1_000);
       if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(asOfUtcSec)) continue;
-      if (existing !== undefined && asOfUtcSec < existing.asOfUtcSec) continue;
+      if (existing !== undefined && existing.asOfUtcSec !== null && asOfUtcSec < existing.asOfUtcSec) continue;
       const previousClose = existing?.previousClose ?? null;
       const nextLow = event.ev === 'T' ? price : event.bar.low;
       const nextHigh = event.ev === 'T' ? price : event.bar.high;
@@ -346,27 +352,33 @@ export class MassiveStocksStream {
   }
 
   private async pollBatch(): Promise<void> {
-    const stockPromise = this.stockSymbols.length > 0 ? this.fetchStockBatch() : Promise.resolve();
-    const indexPromise = this.symbols.has('I:VIX') ? this.fetchVixBatch() : Promise.resolve();
-    await Promise.all([stockPromise, indexPromise]);
-    this.lastBatchAtMs = this.nowMsFn();
+    const stockRequested = this.stockSymbols.length > 0;
+    const vixRequested = this.symbols.has('I:VIX');
+    const [stockOk, vixOk] = await Promise.all([
+      stockRequested ? this.fetchStockBatch() : Promise.resolve(false),
+      vixRequested ? this.fetchVixBatch() : Promise.resolve(false),
+    ]);
+    if ((stockRequested && stockOk) || (vixRequested && vixOk)) {
+      this.lastBatchAtMs = this.nowMsFn();
+    }
   }
 
-  private async fetchStockBatch(): Promise<void> {
+  private async fetchStockBatch(): Promise<boolean> {
     const url = `${this.baseUrl}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(this.stockSymbols.join(','))}`;
     const response = await this.fetchFn(withAuth(url, this.apiKey));
     if (!response.ok) {
       this.reportError(`Massive stock batch HTTP ${String(response.status)}`);
-      return;
+      return false;
     }
     const body: unknown = JSON.parse(response.text);
     if (!isRecord(body) || !Array.isArray(body['tickers'])) {
       this.reportError('Massive stock batch returned no tickers array');
-      return;
+      return false;
     }
     const session = getUsLiveSession(this.nowMsFn());
     const nowMs = this.nowMsFn();
     const currentEtDate = getMarketParts(Math.floor(nowMs / 1_000), 'EQUITY').dateKey;
+    let updated = 0;
     for (const raw of body['tickers']) {
       if (!isRecord(raw) || typeof raw['ticker'] !== 'string') continue;
       const symbol = raw['ticker'].toUpperCase();
@@ -389,7 +401,13 @@ export class MassiveStocksStream {
       });
       if (!Number.isFinite(price) || price <= 0) continue;
       const previousClose = nullable(positive(prevDay['c']));
-      const asOfUtcSec = hasCurrentSessionTrade ? lastTradeTimeSec : Number.NaN;
+      const dayTimeSec = providerTimeSec(day['t']);
+      const minuteTimeSec = providerTimeSec(minute['t']);
+      const observationTimeSec = hasCurrentSessionTrade
+        ? lastTradeTimeSec
+        : Number.isFinite(dayTimeSec)
+          ? dayTimeSec
+          : minuteTimeSec;
       const existing = this.quotes.get(symbol);
       const wsTickAt = this.wsTickAtMs.get(symbol);
       const keepWsPrice =
@@ -416,23 +434,28 @@ export class MassiveStocksStream {
         turnover: turnover ?? existing?.turnover ?? null,
         asOfUtcSec: keepWsPrice
           ? existing.asOfUtcSec
-          : Number.isFinite(asOfUtcSec)
-            ? asOfUtcSec
-            : Math.floor(nowMs / 1_000),
+          : Number.isFinite(observationTimeSec)
+            ? observationTimeSec
+            : existing !== undefined && existing.price === price
+              ? existing.asOfUtcSec
+              : null,
         source: keepWsPrice ? 'MASSIVE_WS' : 'MASSIVE_BATCH',
       });
+      updated += 1;
     }
+    return updated > 0;
   }
 
-  private async fetchVixBatch(): Promise<void> {
-    const url = `${this.baseUrl}/v3/snapshot?tickers=${encodeURIComponent('I:VIX')}`;
+  private async fetchVixBatch(): Promise<boolean> {
+    const url = `${this.baseUrl}/v3/snapshot?ticker=${encodeURIComponent('I:VIX')}`;
     const response = await this.fetchFn(withAuth(url, this.apiKey));
     if (!response.ok) {
       this.reportError(`Massive VIX batch HTTP ${String(response.status)}`);
-      return;
+      return false;
     }
     const body: unknown = JSON.parse(response.text);
-    if (!isRecord(body) || !Array.isArray(body['results'])) return;
+    if (!isRecord(body) || !Array.isArray(body['results'])) return false;
+    let updated = 0;
     for (const raw of body['results']) {
       if (!isRecord(raw) || raw['ticker'] !== 'I:VIX') continue;
       const sessionRaw = isRecord(raw['session']) ? raw['session'] : {};
@@ -455,9 +478,11 @@ export class MassiveStocksStream {
         dayHigh: nullable(positive(sessionRaw['high'])),
         volume: null,
         turnover: null,
-        asOfUtcSec: Number.isFinite(asOfUtcSec) ? asOfUtcSec : Math.floor(this.nowMsFn() / 1_000),
+        asOfUtcSec: Number.isFinite(asOfUtcSec) ? asOfUtcSec : null,
         source: 'MASSIVE_BATCH',
       });
+      updated += 1;
     }
+    return updated > 0;
   }
 }

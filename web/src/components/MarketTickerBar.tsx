@@ -9,7 +9,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
-import { getMarketLiveQuote, useMarketLiveStream } from '../api/useMarketLiveStream';
+import { getMarketLiveQuote, isMarketLiveStreamFresh, useMarketLiveStream } from '../api/useMarketLiveStream';
 import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
 
@@ -185,7 +185,10 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
   const [flash, setFlash] = useState<{ readonly dir: 'up' | 'down'; readonly id: number } | null>(null);
 
   useEffect(() => {
-    if (!item?.lastTickDir || !item?.lastTickTs) return;
+    if (!item?.lastTickDir || !item?.lastTickTs) {
+      setFlash(null);
+      return;
+    }
     setFlash({ dir: item.lastTickDir, id: item.lastTickTs });
     const timer = setTimeout(() => {
       setFlash(null);
@@ -311,6 +314,7 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   useEffect(() => {
     if (!liveFeedEnabled) return;
     const updates: LiveTickerUpdate[] = [];
+    const streamFresh = isMarketLiveStreamFresh(liveStream);
     const pushQuote = (id: string, market: 'AR' | 'US', symbol: string): void => {
       const quote = getMarketLiveQuote(liveStream, market, symbol);
       if (quote === null) return;
@@ -329,10 +333,10 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
     for (const symbol of ['GGAL', 'SUPV', 'TXAR', 'YPFD', 'PAMP', 'BMA']) {
       pushQuote(symbol, 'AR', symbol);
     }
-    if (liveStream.cclMedian !== null) {
+    if (streamFresh && liveStream.cclMedian !== null) {
       updates.push({ id: 'CCL', symbol: 'Dólar CCL', price: liveStream.cclMedian, changePct: Number.NaN, dir: null });
     }
-    if (liveStream.mepMedian !== null) {
+    if (streamFresh && liveStream.mepMedian !== null) {
       updates.push({ id: 'MEP', symbol: 'Dólar MEP', price: liveStream.mepMedian, changePct: Number.NaN, dir: null });
     }
     if (updates.length > 0) globalTickerStore.applyRealUpdates(updates, true);
@@ -346,11 +350,12 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
     });
   }, [liveFeedEnabled]);
 
+  const streamIsFresh = isMarketLiveStreamFresh(liveStream);
   const liveClock =
     liveStream.lastReceivedAtMs !== null
       ? new Date(liveStream.lastReceivedAtMs).toLocaleTimeString('es-AR', { hour12: false })
       : '--:--:--';
-  const feedTag = liveStream.isLive
+  const feedTag = streamIsFresh
     ? liveStream.arSourceMode === 'LIVE_BMB'
       ? 'EN VIVO · BMB'
       : `EN VIVO · ${liveStream.transport ?? 'WS'}`
@@ -420,7 +425,7 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
           </span>
           <span className="tracking-tight whitespace-nowrap">
             NYSE / BYMA: {marketStatus} · {feedTag}
-            {liveStream.isLive ? ` · ${liveClock} · ${String(liveStream.ticksPerSecond)} ticks/s` : ''}
+            {streamIsFresh ? ` · ${liveClock} · ${String(liveStream.ticksPerSecond)} ticks/s` : ''}
           </span>
         </button>
 

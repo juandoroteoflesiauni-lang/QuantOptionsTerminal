@@ -2718,6 +2718,7 @@ function mergeBmbNormalizedRows(
   rows: readonly NormalizedQuoteRow[],
   snapshot: BmbBridgeSnapshotDto | null,
   nowUtcSec: number,
+  allowedSymbols: ReadonlySet<string>,
   maxAgeSec = 20,
 ): BmbNormalizedMergeResult {
   if (!bmbSnapshotHasLiveActivity(snapshot) || snapshot === null) {
@@ -2726,10 +2727,15 @@ function mergeBmbNormalizedRows(
   const bySymbol = new Map(rows.map((row) => [row.symbol.toUpperCase(), row]));
   let hasLiveActivity = false;
   let hasLiveLast = false;
-  const symbols = new Set([
-    ...Object.keys(snapshot.orderBooksBySymbol),
-    ...Object.keys(snapshot.tradesBySymbol ?? {}),
-  ]);
+  const symbols = new Set(
+    [...allowedSymbols]
+      .map((symbol) => symbol.toUpperCase())
+      .filter(
+        (symbol) =>
+          snapshot.orderBooksBySymbol[symbol] !== undefined ||
+          (snapshot.tradesBySymbol?.[symbol]?.length ?? 0) > 0,
+      ),
+  );
   for (const rawSymbol of symbols) {
     const symbol = rawSymbol.toUpperCase();
     const existing = bySymbol.get(symbol);
@@ -2816,7 +2822,7 @@ function mergeBmbNormalizedRows(
         : existing.quoteSource !== undefined
           ? { quoteSource: existing.quoteSource }
           : {}),
-      quoteAsOfUtcSec: latestTrade?.timeSec ?? book?.asOfUtcSec ?? existing?.quoteAsOfUtcSec ?? null,
+      quoteAsOfUtcSec: latestTrade?.timeSec ?? existing?.quoteAsOfUtcSec ?? null,
     });
   }
   return { rows: [...bySymbol.values()], hasLiveActivity, hasLiveLast };
@@ -3311,7 +3317,8 @@ export class ArgentinaMarketRuntime {
         };
         const panel = this.lastMonitoring?.panel;
         if (panel !== undefined) {
-          await this.getMonitoring(panel, true);
+          // getOverviewCore(true) above already refreshed the shared inputs.
+          await this.getMonitoring(panel, false);
         }
       } catch {
         // Existing endpoint/provider errors remain explicit in the next REST response.
@@ -3359,7 +3366,7 @@ export class ArgentinaMarketRuntime {
         : { quoteSource: 'DATA912' as const }),
       quoteAsOfUtcSec: stock.quoteAsOfUtcSec ?? null,
     };
-    const merged = mergeBmbNormalizedRows([baseRow], snapshot, nowUtcSec).rows.find(
+    const merged = mergeBmbNormalizedRows([baseRow], snapshot, nowUtcSec, new Set([stock.ticker])).rows.find(
       (row) => row.symbol === stock.ticker,
     );
     if (merged === undefined) return stock;
@@ -3392,19 +3399,31 @@ export class ArgentinaMarketRuntime {
     snapshot: BmbBridgeSnapshotDto | null,
   ): ArOverviewResponse {
     const nowUtcSec = Math.floor(this.nowMsFn() / 1_000);
-    const activity = mergeBmbNormalizedRows([], snapshot, nowUtcSec);
+    const activityUniverse = new Set([
+      ...AR_STOCK_META.map((meta) => meta.ticker),
+      ...Object.keys(CEDEAR_RATIOS),
+      ...SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
+    ]);
+    const activity = mergeBmbNormalizedRows([], snapshot, nowUtcSec, activityUniverse);
     if (!activity.hasLiveActivity) return { ...base, sourceMode: 'DATA912' };
     const mapStock = (stock: ArStockDto): ArStockDto => this.overlayStockWithCurrentBmb(stock, snapshot, nowUtcSec);
     let mervalStocks = base.mervalStocks.map(mapStock);
     let generalPanelStocks = base.generalPanelStocks.map(mapStock);
     let cedears = base.cedears.map(mapStock);
-    let cclMedian = base.cclMedian;
-    if (activity.hasLiveLast) {
-      const liveCclValues = [...mervalStocks, ...generalPanelStocks, ...cedears]
-        .map((stock) => stock.cclImplicit)
-        .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0);
-      cclMedian = computeMedian(liveCclValues) ?? base.cclMedian;
-    }
+    const liveCclValues = [...mervalStocks, ...generalPanelStocks, ...cedears]
+      .filter(
+        (stock) =>
+          stock.source === 'BMB_HOMEBROKER' &&
+          stock.quoteAsOfUtcSec !== null &&
+          stock.quoteAsOfUtcSec !== undefined &&
+          nowUtcSec >= stock.quoteAsOfUtcSec &&
+          nowUtcSec - stock.quoteAsOfUtcSec <= 20,
+      )
+      .map((stock) => stock.cclImplicit)
+      .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0);
+    const liveCclMedian = computeMedian(liveCclValues);
+    const hasLiveCcl = liveCclMedian !== null;
+    const cclMedian = liveCclMedian ?? base.cclMedian;
     const withParity = (stock: ArStockDto): ArStockDto => {
       const fairArsPrice =
         stock.adrPrice !== null && stock.adrPrice !== undefined && stock.adrPrice > 0 &&
@@ -3440,7 +3459,7 @@ export class ArgentinaMarketRuntime {
       cclMedian: sanitizeFinite(cclMedian),
       mepCclGapPct: sanitizeFinite(mepCclGapPct),
       globalIndicators: base.globalIndicators.map((indicator) =>
-        indicator.id === 'ccl'
+        indicator.id === 'ccl' && hasLiveCcl
           ? { ...indicator, value: sanitizeFinite(cclMedian), source: 'BMB_HOMEBROKER' }
           : indicator,
       ),
@@ -3469,10 +3488,7 @@ export class ArgentinaMarketRuntime {
         dayHigh: stock.high,
         volume: null,
         turnover: stock.volumeM !== null ? stock.volumeM * 1_000_000 : null,
-        asOfUtcSec: Math.max(
-          stock.quoteAsOfUtcSec ?? 0,
-          overview?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
-        ),
+        asOfUtcSec: stock.quoteAsOfUtcSec ?? null,
         source: stock.source,
       });
     };
@@ -3496,7 +3512,7 @@ export class ArgentinaMarketRuntime {
         dayHigh: null,
         volume: null,
         turnover: bond.volumeM !== null ? bond.volumeM * 1_000_000 : null,
-        asOfUtcSec: bond.quoteAsOfUtcSec ?? monitoring?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        asOfUtcSec: bond.quoteAsOfUtcSec ?? null,
         source: bond.source,
       });
     }
@@ -3514,7 +3530,7 @@ export class ArgentinaMarketRuntime {
         dayHigh: null,
         volume: null,
         turnover: note.volumeM !== null ? note.volumeM * 1_000_000 : null,
-        asOfUtcSec: note.quoteAsOfUtcSec ?? monitoring?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        asOfUtcSec: note.quoteAsOfUtcSec ?? null,
         source: note.source,
       });
     }
@@ -4474,6 +4490,14 @@ export class ArgentinaMarketRuntime {
       if (priceUsd === null && priceArs !== null && mepMedian !== null && mepMedian > 0) {
         priceUsd = priceArs / mepMedian;
       }
+      const selectedPriceRow =
+        currency === 'USD'
+          ? rowD?.last !== null && rowD?.last !== undefined
+            ? rowD
+            : rowC?.last !== null && rowC?.last !== undefined
+              ? rowC
+              : rowArs
+          : rowArs;
 
       let math: {
         readonly tirPct: number | null;
@@ -4518,7 +4542,7 @@ export class ArgentinaMarketRuntime {
         currency,
         priceUsd: sanitizeFinite(priceUsd),
         priceArs: sanitizeFinite(priceArs),
-        deltaPct: sanitizeFinite(rowD?.deltaPct ?? rowArs?.deltaPct),
+        deltaPct: sanitizeFinite(selectedPriceRow?.deltaPct ?? rowD?.deltaPct ?? rowC?.deltaPct ?? rowArs?.deltaPct),
         tirPct: math.tirPct,
         parityPct: math.parityPct,
         duration: math.duration,
@@ -4530,12 +4554,12 @@ export class ArgentinaMarketRuntime {
         mepImplicit: sanitizeFinite(mepImplicit),
         cclImplicit: sanitizeFinite(cclImplicit),
         source:
-          rowD?.quoteSource === 'BMB_HOMEBROKER_BRIDGE' || rowArs?.quoteSource === 'BMB_HOMEBROKER_BRIDGE'
+          selectedPriceRow?.quoteSource === 'BMB_HOMEBROKER_BRIDGE' && selectedPriceRow.last !== null
             ? 'BMB_HOMEBROKER'
-            : rowD !== undefined || rowArs !== undefined
+            : selectedPriceRow !== undefined
               ? 'DATA912'
               : 'NONE',
-        quoteAsOfUtcSec: rowD?.quoteAsOfUtcSec ?? rowArs?.quoteAsOfUtcSec ?? null,
+        quoteAsOfUtcSec: selectedPriceRow?.quoteAsOfUtcSec ?? null,
       };
     });
   }
@@ -4695,10 +4719,15 @@ export class ArgentinaMarketRuntime {
                   ...eodParityBonds.filter((p) => !bondPosSet.has(p.symbol)),
                 ]
               : bondsRes.rows;
-        const bmbStockMerge = mergeBmbNormalizedRows(effectiveStocks, bmbSnap, nowSec);
-        const bmbCedearMerge = mergeBmbNormalizedRows(effectiveCedears, bmbSnap, nowSec);
-        const bmbBondMerge = mergeBmbNormalizedRows(effectiveBonds, bmbSnap, nowSec);
-        const bmbBymaMerge = mergeBmbNormalizedRows(bymaMerged, bmbSnap, nowSec);
+        const stockUniverse = new Set(AR_STOCK_META.map((meta) => meta.ticker));
+        const cedearUniverse = new Set(Object.keys(CEDEAR_RATIOS));
+        const bondUniverse = new Set(
+          SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
+        );
+        const bmbStockMerge = mergeBmbNormalizedRows(effectiveStocks, bmbSnap, nowSec, stockUniverse);
+        const bmbCedearMerge = mergeBmbNormalizedRows(effectiveCedears, bmbSnap, nowSec, cedearUniverse);
+        const bmbBondMerge = mergeBmbNormalizedRows(effectiveBonds, bmbSnap, nowSec, bondUniverse);
+        const bmbBymaMerge = mergeBmbNormalizedRows(bymaMerged, bmbSnap, nowSec, stockUniverse);
         effectiveStocks = bmbStockMerge.rows;
         effectiveCedears = bmbCedearMerge.rows;
         effectiveBonds = bmbBondMerge.rows;
@@ -5241,7 +5270,10 @@ export class ArgentinaMarketRuntime {
     );
     this.lastBmbSnapshot = bmbSnap;
 
-    let effectiveBondRows = mergeBmbNormalizedRows(bondsRes.rows, bmbSnap, nowSec).rows;
+    const monitoringBondUniverse = new Set(
+      SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
+    );
+    let effectiveBondRows = mergeBmbNormalizedRows(bondsRes.rows, bmbSnap, nowSec, monitoringBondUniverse).rows;
     if (!hasPositiveLast(effectiveBondRows)) {
       const eodBonds = await this.populateEodRowsFromHistorical(
         'bonds',
@@ -5276,8 +5308,14 @@ export class ArgentinaMarketRuntime {
         quoteAsOfUtcSec: r.quoteAsOfUtcSec ?? null,
       }));
 
-    const notes = mapNoteOrCorp(mergeBmbNormalizedRows(notesRes.rows, bmbSnap, nowSec).rows, 'LECAP_BONCAP');
-    const corps = mapNoteOrCorp(mergeBmbNormalizedRows(corpRes.rows, bmbSnap, nowSec).rows, 'ON_CORP');
+    const notes = mapNoteOrCorp(
+      mergeBmbNormalizedRows(notesRes.rows, bmbSnap, nowSec, new Set(notesRes.rows.map((row) => row.symbol))).rows,
+      'LECAP_BONCAP',
+    );
+    const corps = mapNoteOrCorp(
+      mergeBmbNormalizedRows(corpRes.rows, bmbSnap, nowSec, new Set(corpRes.rows.map((row) => row.symbol))).rows,
+      'ON_CORP',
+    );
     const caucionesCurve = buildCaucionesLiquidityCurve({
       bmbSnapshot: bmbSnap,
       tpmTna: macroData.variables.tpmTna,

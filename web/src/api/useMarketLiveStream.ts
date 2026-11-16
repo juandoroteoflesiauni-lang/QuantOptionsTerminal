@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { refreshBackendHealth } from '../data/liveRuntimeBridge';
 
 export type LiveStreamMarket = 'AR' | 'US';
@@ -17,7 +17,7 @@ export interface MarketLiveQuote {
   readonly dayHigh: number | null;
   readonly volume: number | null;
   readonly turnover: number | null;
-  readonly asOfUtcSec: number;
+  readonly asOfUtcSec: number | null;
   readonly source: string;
   readonly direction: 'up' | 'down' | null;
   readonly revision: number;
@@ -68,6 +68,9 @@ interface MarketTickBatchWire {
 
 const WS_OPEN_TIMEOUT_MS = 2_000;
 const POLL_INTERVAL_MS = 2_000;
+const POLL_REQUEST_TIMEOUT_MS = 2_500;
+const QUOTE_RECEIVE_FRESHNESS_MS = 40_000;
+const LEGACY_FLUSH_INTERVAL_MS = 16;
 const RECONNECT_INTERVAL_MS = 1_500;
 
 let state: MarketLiveStreamState = {
@@ -97,6 +100,8 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollInFlight = false;
 let pollGeneration = 0;
 let lastBatchReceivedAtMs: number | null = null;
+const pendingLegacyQuotes = new Map<string, MarketLiveQuote>();
+let legacyFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function notify(next: MarketLiveStreamState): void {
   state = next;
@@ -123,11 +128,20 @@ export function liveQuoteKey(market: LiveStreamMarket, symbol: string): string {
   return `${market}:${symbol.trim().toUpperCase()}`;
 }
 
+export function isMarketLiveStreamFresh(snapshot: MarketLiveStreamState): boolean {
+  return (
+    snapshot.isLive &&
+    snapshot.lastReceivedAtMs !== null &&
+    Date.now() - snapshot.lastReceivedAtMs <= QUOTE_RECEIVE_FRESHNESS_MS
+  );
+}
+
 export function getMarketLiveQuote(
   snapshot: MarketLiveStreamState,
   market: LiveStreamMarket,
   symbol: string,
 ): MarketLiveQuote | null {
+  if (!isMarketLiveStreamFresh(snapshot)) return null;
   return snapshot.quotes[liveQuoteKey(market, symbol)] ?? null;
 }
 
@@ -137,13 +151,14 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
   const symbolRaw = raw['symbol'];
   const kindRaw = raw['kind'];
   const price = finitePositive(raw['price']);
-  const asOfUtcSec = finitePositive(raw['asOfUtcSec']);
+  const rawAsOf = raw['asOfUtcSec'];
+  const asOfUtcSec = rawAsOf === null ? null : finitePositive(rawAsOf);
   if (
     (market !== 'AR' && market !== 'US') ||
     typeof symbolRaw !== 'string' ||
     symbolRaw.trim() === '' ||
     price === null ||
-    asOfUtcSec === null
+    (rawAsOf !== null && asOfUtcSec === null)
   ) {
     return null;
   }
@@ -154,7 +169,14 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
   const symbol = symbolRaw.trim().toUpperCase();
   const currencyRaw = raw['currency'];
   const currency = currencyRaw === 'ARS' || currencyRaw === 'USD' ? currencyRaw : null;
-  if (previous !== null && asOfUtcSec < previous.asOfUtcSec) return null;
+  if (
+    previous !== null &&
+    previous.asOfUtcSec !== null &&
+    asOfUtcSec !== null &&
+    asOfUtcSec < previous.asOfUtcSec
+  ) {
+    return null;
+  }
 
   const changed = previous !== null && Math.abs(previous.price - price) > 1e-9;
   const direction = changed ? (price > previous.price ? 'up' : 'down') : null;
@@ -200,37 +222,42 @@ function parseCaucion(raw: unknown): MarketLiveCaucion | null {
   };
 }
 
-function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport): void {
-  if (batch.type !== 'MARKET_TICK_BATCH' || !Array.isArray(batch.quotes)) return;
+function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport): boolean {
+  if (batch.type !== 'MARKET_TICK_BATCH' || !Array.isArray(batch.quotes)) return false;
+  clearPendingLegacy();
   const receivedAtMs = Date.now();
   const elapsedSec =
     lastBatchReceivedAtMs === null ? null : Math.max(0.001, (receivedAtMs - lastBatchReceivedAtMs) / 1_000);
   lastBatchReceivedAtMs = receivedAtMs;
 
-  const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotes };
+  const arSourceMode =
+    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
+      ? batch.arSourceMode
+      : state.arSourceMode;
+  const usSourceMode =
+    batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
+      ? batch.usSourceMode
+      : state.usSourceMode;
+  const previousQuotes = state.quotes;
+  const nextQuotes: Record<string, MarketLiveQuote> = {};
   let changedTicks = 0;
   for (const raw of batch.quotes) {
     if (!isRecord(raw) || typeof raw['symbol'] !== 'string') continue;
     const market = raw['market'];
     if (market !== 'AR' && market !== 'US') continue;
+    if ((market === 'AR' && arSourceMode === 'NO_DATA') || (market === 'US' && usSourceMode === 'NO_DATA')) continue;
     const key = liveQuoteKey(market, raw['symbol']);
-    const parsed = parseQuote(raw, nextQuotes[key] ?? null);
+    const parsed = parseQuote(raw, previousQuotes[key] ?? null);
     if (parsed === null) continue;
     if (parsed.direction !== null) changedTicks += 1;
     nextQuotes[key] = parsed;
   }
 
-  const cauciones = Array.isArray(batch.cauciones)
-    ? batch.cauciones.map(parseCaucion).filter((row): row is MarketLiveCaucion => row !== null)
-    : state.cauciones;
-  const arSourceMode =
-    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'DATA912'
-      ? batch.arSourceMode
-      : state.arSourceMode;
-  const usSourceMode =
-    batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH'
-      ? batch.usSourceMode
-      : state.usSourceMode;
+  const cauciones = arSourceMode === 'NO_DATA'
+    ? []
+    : Array.isArray(batch.cauciones)
+      ? batch.cauciones.map(parseCaucion).filter((row): row is MarketLiveCaucion => row !== null)
+      : state.cauciones;
 
   notify({
     ...state,
@@ -239,8 +266,8 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     transport,
     isLive: true,
     quotes: nextQuotes,
-    cclMedian: batch.cclMedian === null ? null : finitePositive(batch.cclMedian) ?? state.cclMedian,
-    mepMedian: batch.mepMedian === null ? null : finitePositive(batch.mepMedian) ?? state.mepMedian,
+    cclMedian: arSourceMode === 'NO_DATA' ? null : batch.cclMedian === null ? null : finitePositive(batch.cclMedian) ?? state.cclMedian,
+    mepMedian: arSourceMode === 'NO_DATA' ? null : batch.mepMedian === null ? null : finitePositive(batch.mepMedian) ?? state.mepMedian,
     arSourceMode,
     usSourceMode,
     cauciones,
@@ -249,13 +276,45 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     ticksPerSecond: elapsedSec === null ? 0 : Math.round(changedTicks / elapsedSec),
     totalBatches: state.totalBatches + 1,
   });
+  return true;
+}
+
+function clearPendingLegacy(): void {
+  pendingLegacyQuotes.clear();
+  if (legacyFlushTimer !== null) clearTimeout(legacyFlushTimer);
+  legacyFlushTimer = null;
+}
+
+function flushLegacyQuotes(): void {
+  legacyFlushTimer = null;
+  if (pendingLegacyQuotes.size === 0 || managerCount === 0) return;
+  const quotes = { ...state.quotes };
+  pendingLegacyQuotes.forEach((quote, key) => {
+    quotes[key] = quote;
+  });
+  pendingLegacyQuotes.clear();
+  notify({
+    ...state,
+    version: state.version + 1,
+    status: 'LIVE',
+    transport: 'WS',
+    isLive: true,
+    usSourceMode: 'MASSIVE_WS',
+    quotes,
+    lastReceivedAtMs: Date.now(),
+  });
+}
+
+function scheduleLegacyFlush(): void {
+  if (legacyFlushTimer !== null) return;
+  legacyFlushTimer = setTimeout(flushLegacyQuotes, LEGACY_FLUSH_INTERVAL_MS);
 }
 
 function applyLegacyStockEvent(raw: unknown): void {
   if (!isRecord(raw) || raw['cluster'] !== 'stocks' || typeof raw['symbol'] !== 'string') return;
   const symbol = raw['symbol'].trim().toUpperCase();
   const key = liveQuoteKey('US', symbol);
-  const previous = state.quotes[key] ?? null;
+  const previous = pendingLegacyQuotes.get(key) ?? state.quotes[key] ?? null;
   const type = raw['type'];
   let price: number | null = null;
   let asOfUtcSec: number | null = null;
@@ -302,16 +361,8 @@ function applyLegacyStockEvent(raw: unknown): void {
     true,
   );
   if (parsed === null) return;
-  notify({
-    ...state,
-    version: state.version + 1,
-    status: 'LIVE',
-    transport: 'WS',
-    isLive: true,
-    usSourceMode: 'MASSIVE_WS',
-    quotes: { ...state.quotes, [key]: parsed },
-    lastReceivedAtMs: Date.now(),
-  });
+  pendingLegacyQuotes.set(key, parsed);
+  scheduleLegacyFlush();
 }
 
 function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
@@ -320,8 +371,8 @@ function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return;
     if (parsed['type'] === 'MARKET_TICK_BATCH') {
-      applyBatch(parsed as MarketTickBatchWire, transport);
-      if (transport === 'WS') stopPolling();
+      const accepted = applyBatch(parsed as MarketTickBatchWire, transport);
+      if (accepted && transport === 'WS') stopPolling();
     } else {
       applyLegacyStockEvent(parsed);
     }
@@ -333,21 +384,26 @@ function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
 async function pollOnce(generation: number): Promise<void> {
   if (pollInFlight) return;
   pollInFlight = true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), POLL_REQUEST_TIMEOUT_MS);
   try {
-    const [response] = await Promise.all([
-      fetch('/api/market/ticks', { headers: { accept: 'application/json' }, cache: 'no-store' }),
-      refreshBackendHealth(),
-    ]);
+    void refreshBackendHealth();
+    const response = await fetch('/api/market/ticks', {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
     if (generation !== pollGeneration) return;
-    if (response.ok) {
-      const body = (await response.json()) as MarketTickBatchWire;
-      applyBatch(body, 'POLL');
-    }
+    if (!response.ok) throw new Error(`Market tick polling HTTP ${String(response.status)}`);
+    const body = (await response.json()) as MarketTickBatchWire;
+    if (generation !== pollGeneration) return;
+    if (!applyBatch(body, 'POLL')) throw new Error('Invalid market tick batch');
   } catch {
     if (generation === pollGeneration) {
       notify({ ...state, version: state.version + 1, status: 'RECONNECTING', isLive: false });
     }
   } finally {
+    clearTimeout(timeout);
     pollInFlight = false;
   }
 }
@@ -447,6 +503,7 @@ function releaseConnection(): void {
   openTimeout = null;
   reconnectTimer = null;
   stopPolling();
+  clearPendingLegacy();
   const current = socket;
   socket = null;
   if (current !== null) {
@@ -465,8 +522,8 @@ function releaseConnection(): void {
  */
 export function useMarketLiveStream(options: { readonly manageConnection?: boolean } = {}): MarketLiveStreamState {
   const manage = options.manageConnection ?? false;
-  return useSyncExternalStore(
-    (listener) => {
+  const subscribe = useCallback(
+    (listener: () => void) => {
       listeners.add(listener);
       if (manage) acquireConnection();
       return () => {
@@ -474,7 +531,8 @@ export function useMarketLiveStream(options: { readonly manageConnection?: boole
         if (manage) releaseConnection();
       };
     },
-    () => state,
-    () => state,
+    [manage],
   );
+  const getSnapshot = useCallback(() => state, []);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

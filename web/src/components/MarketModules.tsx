@@ -55,7 +55,7 @@ import {
 import { CompanyLogo } from './common/CompanyLogo';
 import {
   getMarketLiveQuote,
-  liveQuoteKey,
+  isMarketLiveStreamFresh,
   useMarketLiveStream,
 } from '../api/useMarketLiveStream';
 
@@ -72,6 +72,7 @@ function useTickFlash(value: number | null): 'up' | 'down' | null {
       !Number.isFinite(value) ||
       Math.abs(previous - value) <= 1e-9
     ) {
+      setFlash(null);
       return;
     }
     setFlash({ dir: value > previous ? 'up' : 'down', id: Date.now() });
@@ -109,10 +110,8 @@ const LogoHeatTile: React.FC<{
   readonly priceValue?: number;
   readonly onClick?: () => void;
 }> = ({ ticker, name, deltaPct, price, priceValue, onClick }) => {
-  const liveStream = useMarketLiveStream();
-  const liveQuote = getMarketLiveQuote(liveStream, 'AR', ticker);
-  const effectiveDelta = liveQuote?.changePct ?? deltaPct;
-  const effectivePrice = liveQuote?.price ?? priceValue ?? Number.NaN;
+  const effectiveDelta = deltaPct;
+  const effectivePrice = priceValue ?? Number.NaN;
   const flashDirection = useTickFlash(effectivePrice);
   const finiteDelta = Number.isFinite(effectiveDelta);
   const isPos = finiteDelta && effectiveDelta > 0.001;
@@ -286,23 +285,25 @@ const EquitySixPanelsGrid: React.FC<{
   const rows = useMemo(
     () =>
       inputRows.map((row) => {
-        const live = liveStream.quotes[liveQuoteKey(mode, row.symbol)];
-        if (live === undefined) return row;
+        const live = getMarketLiveQuote(liveStream, mode, row.symbol);
+        if (live === null) return row;
+        const dayLow = live.dayLow ?? row.dayLow;
+        const dayHigh = live.dayHigh ?? row.dayHigh;
         return {
           ...row,
           last: live.price,
           prevClose: live.previousClose ?? row.prevClose,
-          dayLow: live.dayLow ?? row.dayLow,
-          dayHigh: live.dayHigh ?? row.dayHigh,
+          dayLow,
+          dayHigh,
           dayRangePos:
-            live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
-              ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
-              : Number.NaN,
+            Number.isFinite(dayLow) && Number.isFinite(dayHigh) && dayHigh > dayLow
+              ? Math.max(0, Math.min(1, (live.price - dayLow) / (dayHigh - dayLow)))
+              : row.dayRangePos,
           volumeM: live.turnover !== null ? live.turnover / 1_000_000 : row.volumeM,
           return1dPct: live.changePct ?? row.return1dPct,
         };
       }),
-    [inputRows, liveStream.quotes, mode],
+    [inputRows, liveStream, mode],
   );
   const [selectedSector, setSelectedSector] = useState<string>('Todos');
   const [restSearch, setRestSearch] = useState<string>('');
@@ -967,14 +968,32 @@ export const HomeDashboard: React.FC<{
       }),
     [liveStream],
   );
+  const liveGeneralStocks = useMemo(
+    () =>
+      AR_GENERAL_PANEL_STOCKS.map((stock) => {
+        const quote = getMarketLiveQuote(liveStream, 'AR', stock.ticker);
+        return quote === null
+          ? stock
+          : {
+              ...stock,
+              last: quote.price,
+              deltaPct: quote.changePct ?? stock.deltaPct,
+              low: quote.dayLow ?? stock.low,
+              high: quote.dayHigh ?? stock.high,
+              volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : stock.volumeM,
+            };
+      }),
+    [liveStream],
+  );
+  const liveStreamFresh = isMarketLiveStreamFresh(liveStream);
   const cclMedian =
-    liveStream.cclMedian ??
+    (liveStreamFresh ? liveStream.cclMedian : null) ??
     liveMarket.overview?.cclMedian ??
     liveMarket.macro?.variables.ccl ??
     GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.value ??
     null;
   const mepMedian =
-    liveStream.mepMedian ??
+    (liveStreamFresh ? liveStream.mepMedian : null) ??
     liveMarket.overview?.mepMedian ??
     liveMarket.macro?.variables.mep ??
     null;
@@ -987,9 +1006,11 @@ export const HomeDashboard: React.FC<{
       ? ((cclMedian / mepMedian) - 1) * 100
       : null;
   const canjeGapPct =
-    liveMarket.overview?.mepCclGapPct ??
-    liveMarket.macro?.variables.canjePct ??
-    computedCanjePct;
+    liveStreamFresh && liveStream.cclMedian !== null
+      ? computedCanjePct
+      : liveMarket.overview?.mepCclGapPct ??
+        liveMarket.macro?.variables.canjePct ??
+        computedCanjePct;
   const embiVal = GLOBAL_INDICATORS.find((g) => g.id === 'embi')?.value ?? Number.NaN;
   const validTirs = BONDS_DATA.map((b) => b.tir).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const medianTir =
@@ -1128,7 +1149,7 @@ export const HomeDashboard: React.FC<{
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-            {AR_GENERAL_PANEL_STOCKS.map((st) => (
+            {liveGeneralStocks.map((st) => (
               <LogoHeatTile
                 key={st.ticker}
                 ticker={st.ticker}
@@ -1198,7 +1219,8 @@ export const MonitoringModule: React.FC<{
       })
     | null;
 
-  const streamedCauciones: readonly ArCaucionRowExt[] = liveStream.cauciones.map((row) => ({
+  const liveStreamFresh = isMarketLiveStreamFresh(liveStream);
+  const streamedCauciones: readonly ArCaucionRowExt[] = liveStreamFresh ? liveStream.cauciones.map((row) => ({
     termDays: row.termDays,
     label: `${String(row.termDays)} días`,
     currency: row.currency,
@@ -1211,20 +1233,26 @@ export const MonitoringModule: React.FC<{
     referenceInstrument: row.referenceInstrument,
     originLabel: row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : 'Referencia BCRA / LECAP',
     source: row.source,
-  }));
+  })) : [];
   const liveCauciones: readonly ArCaucionRowExt[] =
-    streamedCauciones.length > 0 ? streamedCauciones : monitoringExt?.cauciones ?? [];
+    liveStreamFresh && liveStream.arSourceMode === 'NO_DATA'
+      ? []
+      : streamedCauciones.length > 0
+        ? streamedCauciones
+        : monitoringExt?.cauciones ?? [];
   const caucionesStatus =
-    liveStream.arSourceMode === 'LIVE_BMB' && streamedCauciones.length > 0
-      ? 'LIVE_BMB'
-      : monitoringExt?.caucionesStatus ?? 'NO_DATA';
+    liveStreamFresh && liveStream.arSourceMode === 'NO_DATA'
+      ? 'NO_DATA'
+      : liveStreamFresh && liveStream.arSourceMode === 'LIVE_BMB' && streamedCauciones.length > 0
+        ? 'LIVE_BMB'
+        : monitoringExt?.caucionesStatus ?? 'NO_DATA';
   const bmbHealth = monitoringExt?.bmbHealth;
   const totalCaucionVol = liveCauciones.reduce(
     (acc, r) => (r.volumeArs !== null && Number.isFinite(r.volumeArs) ? acc + r.volumeArs : acc),
     0,
   );
   const caucionesCount = liveCauciones.length > 0 ? liveCauciones.length : CAUCIONES_DATA.length;
-  const cclMedian = liveStream.cclMedian ?? liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
+  const cclMedian = (liveStreamFresh ? liveStream.cclMedian : null) ?? liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
   const [cedearFilterMode, setCedearFilterMode] = useState<'all' | 'mispriced' | 'byma_opts' | 'adrs'>('all');
   const [cedearSearch, setCedearSearch] = useState<string>('');
 
@@ -1485,7 +1513,7 @@ export const MonitoringModule: React.FC<{
           ? (usLast * cclMedian) / row.ratioNum
           : Number.NaN;
       const cclImplicit =
-        Number.isFinite(localArs) && localArs > 0 && Number.isFinite(usLast) && usLast > 0 && Number.isFinite(row.ratioNum)
+        Number.isFinite(localArs) && localArs > 0 && Number.isFinite(usLast) && usLast > 0 && Number.isFinite(row.ratioNum) && row.ratioNum > 0
           ? (localArs * row.ratioNum) / usLast
           : Number.NaN;
       return {
@@ -2566,6 +2594,9 @@ export const USMarketModule: React.FC<{
         finiteOrNull(extra?.tradedVolumeUsd) !== null
           ? (extra!.tradedVolumeUsd as number) / 1_000_000
           : finiteOrNull(extra?.volumeM);
+      const dayLow = live?.dayLow ?? finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? u.low;
+      const dayHigh = live?.dayHigh ?? finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? u.high;
+      const currentLast = live?.price ?? finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? u.price;
 
       return {
         symbol: u.ticker,
@@ -2573,13 +2604,13 @@ export const USMarketModule: React.FC<{
         sector: u.sector,
         panel: u.panel,
         color: u.color,
-        last: live?.price ?? finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? u.price,
+        last: currentLast,
         prevClose: live?.previousClose ?? finiteOrNull(uq?.previousClose) ?? finiteOrNull(extra?.prevClose) ?? u.prevClose,
-        dayLow: live?.dayLow ?? finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? u.low,
-        dayHigh: live?.dayHigh ?? finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? u.high,
+        dayLow,
+        dayHigh,
         dayRangePos:
-          live !== null && live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
-            ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
+          live !== null && Number.isFinite(dayLow) && Number.isFinite(dayHigh) && dayHigh > dayLow
+            ? Math.max(0, Math.min(1, (live.price - dayLow) / (dayHigh - dayLow)))
             : finiteOrNull(uq?.dayRangePos) ?? finiteOrNull(extra?.dayRangePos) ?? u.dayRangePos,
         volumeM: live?.turnover !== null && live?.turnover !== undefined ? live.turnover / 1_000_000 : uqVolM ?? extraVolM ?? u.volumeM,
         return1dPct: live?.changePct ?? finiteOrNull(uq?.changePct) ?? finiteOrNull(extra?.return1dPct) ?? u.deltaPct,

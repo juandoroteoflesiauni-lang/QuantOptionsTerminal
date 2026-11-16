@@ -3916,6 +3916,7 @@ export class MarketRuntime {
   }
 
   public getLiveUsQuotes(): readonly MarketTickQuote[] {
+    if (this.massiveStocksStream?.getDiagnostics().sourceMode === 'NO_DATA') return [];
     const bySymbol = new Map<string, MarketTickQuote>();
     const panel = this.lastUsPanelBase;
     if (panel !== null) {
@@ -3938,7 +3939,7 @@ export class MarketRuntime {
               : row.volumeM !== null
                 ? row.volumeM * 1_000_000
                 : null,
-          asOfUtcSec: panel.asOfUtcSec,
+          asOfUtcSec: null,
           source: 'MASSIVE_PANEL',
         });
       }
@@ -3964,7 +3965,7 @@ export class MarketRuntime {
     const rows = base.rows.map((row) => {
       const live = liveBySymbol.get(row.symbol);
       if (live === undefined) return row;
-      asOfUtcSec = Math.max(asOfUtcSec, live.asOfUtcSec);
+      if (live.asOfUtcSec !== null) asOfUtcSec = Math.max(asOfUtcSec, live.asOfUtcSec);
       const dayRangePos =
         live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
           ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
