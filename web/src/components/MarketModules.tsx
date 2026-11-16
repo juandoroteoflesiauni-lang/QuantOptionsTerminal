@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   TrendingUp,
   ArrowUpRight,
@@ -53,40 +53,102 @@ import {
   KPICard,
 } from './DesignSystem';
 import { CompanyLogo } from './common/CompanyLogo';
+import {
+  getMarketLiveQuote,
+  liveQuoteKey,
+  useMarketLiveStream,
+} from '../api/useMarketLiveStream';
+
+function useTickFlash(value: number | null): 'up' | 'down' | null {
+  const previousRef = useRef<number | null>(value);
+  const [flash, setFlash] = useState<{ readonly dir: 'up' | 'down'; readonly id: number } | null>(null);
+  useEffect(() => {
+    const previous = previousRef.current;
+    previousRef.current = value;
+    if (
+      previous === null ||
+      value === null ||
+      !Number.isFinite(previous) ||
+      !Number.isFinite(value) ||
+      Math.abs(previous - value) <= 1e-9
+    ) {
+      return;
+    }
+    setFlash({ dir: value > previous ? 'up' : 'down', id: Date.now() });
+    const timer = setTimeout(() => setFlash(null), 500);
+    return () => clearTimeout(timer);
+  }, [value]);
+  return flash?.dir ?? null;
+}
+
+const TickFlash: React.FC<{
+  readonly value: number | null;
+  readonly className?: string;
+  readonly children: React.ReactNode;
+}> = ({ value, className = '', children }) => {
+  const direction = useTickFlash(value);
+  return (
+    <span
+      className={`inline-flex items-center justify-end rounded-[4px] px-1 py-0.5 ${className}`}
+      style={{
+        transition: 'background-color 500ms ease, color 500ms ease',
+        backgroundColor:
+          direction === null ? 'transparent' : direction === 'up' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+      }}
+    >
+      {children}
+    </span>
+  );
+};
 
 const LogoHeatTile: React.FC<{
   readonly ticker: string;
   readonly name?: string;
   readonly deltaPct: number;
   readonly price?: string;
+  readonly priceValue?: number;
   readonly onClick?: () => void;
-}> = ({ ticker, name, deltaPct, price, onClick }) => {
-  const finiteDelta = Number.isFinite(deltaPct);
-  const isPos = finiteDelta && deltaPct > 0.001;
-  const isNeg = finiteDelta && deltaPct < -0.001;
+}> = ({ ticker, name, deltaPct, price, priceValue, onClick }) => {
+  const liveStream = useMarketLiveStream();
+  const liveQuote = getMarketLiveQuote(liveStream, 'AR', ticker);
+  const effectiveDelta = liveQuote?.changePct ?? deltaPct;
+  const effectivePrice = liveQuote?.price ?? priceValue ?? Number.NaN;
+  const flashDirection = useTickFlash(effectivePrice);
+  const finiteDelta = Number.isFinite(effectiveDelta);
+  const isPos = finiteDelta && effectiveDelta > 0.001;
+  const isNeg = finiteDelta && effectiveDelta < -0.001;
 
   let bgStyle = 'bg-[#1A1E29] border-[#262B3B]';
   if (isPos) {
     bgStyle =
-      deltaPct >= 2.5
+      effectiveDelta >= 2.5
         ? 'bg-[#0E382B]/90 border-[#165B43]/70'
         : 'bg-[#0D281E]/85 border-[#144634]/60';
   } else if (isNeg) {
     bgStyle =
-      deltaPct <= -2.0
+      effectiveDelta <= -2.0
         ? 'bg-[#381419]/90 border-[#63222B]/70'
         : 'bg-[#2D1418]/85 border-[#4D1E26]/60';
   }
 
   const pctColor = isPos ? 'text-[#22C55E]' : isNeg ? 'text-[#F23645]' : 'text-[#787B86]';
   const sign = isPos ? '+' : isNeg ? '-' : '';
-  const formattedPct = finiteDelta ? `${sign}${Math.abs(deltaPct).toFixed(2).replace('.', ',')} %` : '—';
+  const formattedPct = finiteDelta ? `${sign}${Math.abs(effectiveDelta).toFixed(2).replace('.', ',')} %` : '—';
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`group relative px-3.5 py-2.5 rounded-[8px] text-left transition-all duration-150 cursor-pointer flex flex-col justify-between min-h-[64px] border hover:border-[#3B82F6]/80 hover:brightness-110 ${bgStyle}`}
+      className={`group relative px-3.5 py-2.5 rounded-[8px] text-left cursor-pointer flex flex-col justify-between min-h-[64px] border hover:border-[#3B82F6]/80 hover:brightness-110 ${bgStyle}`}
+      style={{
+        transition: 'background-color 500ms ease, border-color 500ms ease',
+        backgroundColor:
+          flashDirection === null
+            ? undefined
+            : flashDirection === 'up'
+              ? 'rgba(34, 197, 94, 0.15)'
+              : 'rgba(239, 68, 68, 0.15)',
+      }}
     >
       <div className="flex items-center justify-between gap-2 w-full">
         <div className="flex items-center gap-2 min-w-0">
@@ -95,11 +157,15 @@ const LogoHeatTile: React.FC<{
             {ticker}
           </span>
         </div>
-        {price && (
+        {Number.isFinite(effectivePrice) ? (
+          <span className="font-mono-num text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] transition-colors shrink-0">
+            ${fmtNum(effectivePrice, effectivePrice < 1000 ? 1 : 0)}
+          </span>
+        ) : price ? (
           <span className="font-mono-num text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] transition-colors shrink-0">
             {price}
           </span>
-        )}
+        ) : null}
       </div>
       <div className="mt-1.5 flex items-center justify-between w-full">
         <span className={`font-mono-num text-[12.5px] font-semibold ${pctColor}`}>
@@ -115,9 +181,10 @@ const UsIndexLogoKpiCard: React.FC<{
   readonly iconNode?: React.ReactNode;
   readonly title: string;
   readonly heroValue: string;
+  readonly flashValue?: number;
   readonly deltaPct?: number;
   readonly subtitle: string;
-}> = ({ logoTicker, iconNode, title, heroValue, deltaPct, subtitle }) => (
+}> = ({ logoTicker, iconNode, title, heroValue, flashValue, deltaPct, subtitle }) => (
   <div className="px-4 py-3.5 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
     <div className="flex items-center gap-2.5 min-w-0">
       {logoTicker ? (
@@ -129,7 +196,7 @@ const UsIndexLogoKpiCard: React.FC<{
     </div>
     <div className="flex items-baseline gap-2.5 pt-0.5">
       <div className="font-mono-num text-[22px] leading-[26px] font-bold text-[#FFFFFF] tracking-tight">
-        {heroValue}
+        <TickFlash value={flashValue ?? null}>{heroValue}</TickFlash>
       </div>
       {deltaPct !== undefined && <DeltaPill value={deltaPct} size="md" />}
     </div>
@@ -207,7 +274,7 @@ const EquitySixPanelsGrid: React.FC<{
   readonly denseRowClass?: string;
 }> = ({
   mode,
-  rows,
+  rows: inputRows,
   analytics,
   currencyPrefix,
   benchmarkLabel,
@@ -215,6 +282,28 @@ const EquitySixPanelsGrid: React.FC<{
   onSelectRow,
   denseRowClass = 'h-8 text-[12px]',
 }) => {
+  const liveStream = useMarketLiveStream();
+  const rows = useMemo(
+    () =>
+      inputRows.map((row) => {
+        const live = liveStream.quotes[liveQuoteKey(mode, row.symbol)];
+        if (live === undefined) return row;
+        return {
+          ...row,
+          last: live.price,
+          prevClose: live.previousClose ?? row.prevClose,
+          dayLow: live.dayLow ?? row.dayLow,
+          dayHigh: live.dayHigh ?? row.dayHigh,
+          dayRangePos:
+            live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
+              ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
+              : Number.NaN,
+          volumeM: live.turnover !== null ? live.turnover / 1_000_000 : row.volumeM,
+          return1dPct: live.changePct ?? row.return1dPct,
+        };
+      }),
+    [inputRows, liveStream.quotes, mode],
+  );
   const [selectedSector, setSelectedSector] = useState<string>('Todos');
   const [restSearch, setRestSearch] = useState<string>('');
   const [rankHorizon, setRankHorizon] = useState<'Día' | 'Mes' | 'Año'>('Día');
@@ -285,9 +374,6 @@ const EquitySixPanelsGrid: React.FC<{
   );
 
   const topGainers = useMemo(() => {
-    if (analytics?.topGainers && analytics.topGainers.length > 0) {
-      return analytics.topGainers.slice(0, 6);
-    }
     return [...rows]
       .filter((r) => Number.isFinite(r.return1dPct) && r.return1dPct > 0)
       .sort((a, b) => b.return1dPct - a.return1dPct)
@@ -300,12 +386,9 @@ const EquitySixPanelsGrid: React.FC<{
         volumeM: Number.isFinite(r.volumeM) ? r.volumeM : null,
         return1dPct: r.return1dPct,
       }));
-  }, [analytics, rows]);
+  }, [rows]);
 
   const topLosers = useMemo(() => {
-    if (analytics?.topLosers && analytics.topLosers.length > 0) {
-      return analytics.topLosers.slice(0, 6);
-    }
     return [...rows]
       .filter((r) => Number.isFinite(r.return1dPct) && r.return1dPct < 0)
       .sort((a, b) => a.return1dPct - b.return1dPct)
@@ -318,7 +401,7 @@ const EquitySixPanelsGrid: React.FC<{
         volumeM: Number.isFinite(r.volumeM) ? r.volumeM : null,
         return1dPct: r.return1dPct,
       }));
-  }, [analytics, rows]);
+  }, [rows]);
 
   const volDays = analytics?.panelVolume40d ?? [];
   const maxDayVol = Math.max(1, ...volDays.map((d) => d.totalVolumeM));
@@ -371,7 +454,9 @@ const EquitySixPanelsGrid: React.FC<{
                   </div>
                 </td>
                 <td className="px-2.5 font-semibold text-[#F3F4F6]">
-                  {Number.isFinite(r.last) ? `${currencyPrefix}${fmtNum(r.last, r.last >= 1000 ? 0 : 2)}` : '—'}
+                  <TickFlash value={Number.isFinite(r.last) ? r.last : null}>
+                    {Number.isFinite(r.last) ? `${currencyPrefix}${fmtNum(r.last, r.last >= 1000 ? 0 : 2)}` : '—'}
+                  </TickFlash>
                 </td>
                 <td className="px-2.5">
                   <DeltaPill value={r.return1dPct} size="sm" />
@@ -864,12 +949,32 @@ export const HomeDashboard: React.FC<{
   }) => void;
 }> = ({ onSelectStock, onNavigate }) => {
   const liveMarket = useLiveMarketState();
+  const liveStream = useMarketLiveStream();
+  const liveLeaderStocks = useMemo(
+    () =>
+      AR_STOCKS.map((stock) => {
+        const quote = getMarketLiveQuote(liveStream, 'AR', stock.ticker);
+        return quote === null
+          ? stock
+          : {
+              ...stock,
+              last: quote.price,
+              deltaPct: quote.changePct ?? stock.deltaPct,
+              low: quote.dayLow ?? stock.low,
+              high: quote.dayHigh ?? stock.high,
+              volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : stock.volumeM,
+            };
+      }),
+    [liveStream],
+  );
   const cclMedian =
+    liveStream.cclMedian ??
     liveMarket.overview?.cclMedian ??
     liveMarket.macro?.variables.ccl ??
     GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.value ??
     null;
   const mepMedian =
+    liveStream.mepMedian ??
     liveMarket.overview?.mepMedian ??
     liveMarket.macro?.variables.mep ??
     null;
@@ -889,10 +994,10 @@ export const HomeDashboard: React.FC<{
   const validTirs = BONDS_DATA.map((b) => b.tir).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const medianTir =
     validTirs.length > 0 ? validTirs[Math.floor(validTirs.length / 2)] ?? Number.NaN : Number.NaN;
-  const totalVolM = AR_STOCKS.reduce((acc, s) => (Number.isFinite(s.volumeM) ? acc + s.volumeM : acc), 0);
-  const advCount = AR_STOCKS.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct > 0).length;
-  const decCount = AR_STOCKS.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct < 0).length;
-  const deltaFinite = AR_STOCKS.filter((s) => Number.isFinite(s.deltaPct)).map((s) => s.deltaPct);
+  const totalVolM = liveLeaderStocks.reduce((acc, s) => (Number.isFinite(s.volumeM) ? acc + s.volumeM : acc), 0);
+  const advCount = liveLeaderStocks.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct > 0).length;
+  const decCount = liveLeaderStocks.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct < 0).length;
+  const deltaFinite = liveLeaderStocks.filter((s) => Number.isFinite(s.deltaPct)).map((s) => s.deltaPct);
   const avgDelta = deltaFinite.length > 0 ? deltaFinite.reduce((a, b) => a + b, 0) / deltaFinite.length : Number.NaN;
   const overviewExt = liveMarket.overview as
     | (typeof liveMarket.overview & {
@@ -998,13 +1103,14 @@ export const HomeDashboard: React.FC<{
 
         {/* Grid de tarjetas rectangulares — Panel Líder */}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-          {AR_STOCKS.map((st) => (
+          {liveLeaderStocks.map((st) => (
             <LogoHeatTile
               key={st.ticker}
               ticker={st.ticker}
               name={st.name}
               deltaPct={st.deltaPct}
               price={Number.isFinite(st.last) ? `$${fmtNum(st.last, st.last < 1000 ? 1 : 0)}` : '—'}
+              priceValue={st.last}
               onClick={() => onSelectStock(st.ticker)}
             />
           ))}
@@ -1029,6 +1135,7 @@ export const HomeDashboard: React.FC<{
                 name={st.name}
                 deltaPct={st.deltaPct}
                 price={Number.isFinite(st.last) ? `$${fmtNum(st.last, st.last < 1000 ? 1 : 0)}` : '—'}
+                priceValue={st.last}
                 onClick={() => onSelectStock(st.ticker)}
               />
             ))}
@@ -1054,6 +1161,7 @@ export const MonitoringModule: React.FC<{
   }) => void;
 }> = ({ subPanel, onSelectSubPanel, density, tickFlashes, onSelectStock, onOpenOrderTicket }) => {
   const liveMarket = useLiveMarketState();
+  const liveStream = useMarketLiveStream();
 
   useEffect(() => {
     void requestMonitoringPanel(subPanel);
@@ -1090,15 +1198,33 @@ export const MonitoringModule: React.FC<{
       })
     | null;
 
-  const liveCauciones: readonly ArCaucionRowExt[] = monitoringExt?.cauciones ?? [];
-  const caucionesStatus = monitoringExt?.caucionesStatus ?? 'NO_DATA';
+  const streamedCauciones: readonly ArCaucionRowExt[] = liveStream.cauciones.map((row) => ({
+    termDays: row.termDays,
+    label: `${String(row.termDays)} días`,
+    currency: row.currency,
+    tnaWeighted: row.tnaWeighted,
+    teaEffective: row.teaEffective,
+    bidTna: row.bidTna,
+    askTna: row.askTna,
+    volumeArs: row.turnoverArs,
+    spreadVsBadlarBps: row.spreadVsBadlarBps,
+    referenceInstrument: row.referenceInstrument,
+    originLabel: row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : 'Referencia BCRA / LECAP',
+    source: row.source,
+  }));
+  const liveCauciones: readonly ArCaucionRowExt[] =
+    streamedCauciones.length > 0 ? streamedCauciones : monitoringExt?.cauciones ?? [];
+  const caucionesStatus =
+    liveStream.arSourceMode === 'LIVE_BMB' && streamedCauciones.length > 0
+      ? 'LIVE_BMB'
+      : monitoringExt?.caucionesStatus ?? 'NO_DATA';
   const bmbHealth = monitoringExt?.bmbHealth;
   const totalCaucionVol = liveCauciones.reduce(
     (acc, r) => (r.volumeArs !== null && Number.isFinite(r.volumeArs) ? acc + r.volumeArs : acc),
     0,
   );
   const caucionesCount = liveCauciones.length > 0 ? liveCauciones.length : CAUCIONES_DATA.length;
-  const cclMedian = liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
+  const cclMedian = liveStream.cclMedian ?? liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
   const [cedearFilterMode, setCedearFilterMode] = useState<'all' | 'mispriced' | 'byma_opts' | 'adrs'>('all');
   const [cedearSearch, setCedearSearch] = useState<string>('');
 
@@ -1349,8 +1475,35 @@ export const MonitoringModule: React.FC<{
             arbitrageSignal: s.arbitrageSignal ?? '—',
           }));
 
-    return [...adrRows, ...cedearRows];
-  }, [liveMarket.monitoring?.cedears, liveMarket.monitoring?.stocks, cclMedian, liveMarket.version]);
+    return [...adrRows, ...cedearRows].map((row) => {
+      const usQuote = getMarketLiveQuote(liveStream, 'US', row.usTicker);
+      const arQuote = getMarketLiveQuote(liveStream, 'AR', row.ticker);
+      const usLast = usQuote?.price ?? row.usLast;
+      const localArs = arQuote?.price ?? row.localArs;
+      const fairArsPrice =
+        Number.isFinite(usLast) && usLast > 0 && cclMedian !== null && cclMedian > 0 && Number.isFinite(row.ratioNum) && row.ratioNum > 0
+          ? (usLast * cclMedian) / row.ratioNum
+          : Number.NaN;
+      const cclImplicit =
+        Number.isFinite(localArs) && localArs > 0 && Number.isFinite(usLast) && usLast > 0 && Number.isFinite(row.ratioNum)
+          ? (localArs * row.ratioNum) / usLast
+          : Number.NaN;
+      return {
+        ...row,
+        usLast,
+        usDeltaPct: usQuote?.changePct ?? row.usDeltaPct,
+        localArs,
+        fairArsPrice,
+        cclImplicit,
+        cclMismatchPct:
+          cclMedian !== null && cclMedian > 0 && Number.isFinite(cclImplicit)
+            ? ((cclImplicit - cclMedian) / cclMedian) * 100
+            : Number.NaN,
+        cclMismatchArs:
+          Number.isFinite(localArs) && Number.isFinite(fairArsPrice) ? localArs - fairArsPrice : Number.NaN,
+      };
+    });
+  }, [liveMarket.monitoring?.cedears, liveMarket.monitoring?.stocks, cclMedian, liveMarket.version, liveStream]);
 
   const cedearRadarSummary = useMemo(() => {
     const discounts = [...combinedCedearsAndAdrs]
@@ -1415,7 +1568,22 @@ export const MonitoringModule: React.FC<{
     { id: 'cauciones', label: 'Cauciones por Plazo', count: caucionesCount },
   ];
 
-  const stockDeltas = AR_STOCKS.map((s) => s.deltaPct).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  const monitorBonds = BONDS_DATA.map((bond) => {
+    const quote = getMarketLiveQuote(liveStream, 'AR', bond.ticker);
+    return quote === null
+      ? bond
+      : {
+          ...bond,
+          price: quote.price,
+          deltaPct: quote.changePct ?? bond.deltaPct,
+          volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : bond.volumeM,
+        };
+  });
+
+  const stockDeltas = AR_STOCKS.map((s) => {
+    const live = getMarketLiveQuote(liveStream, 'AR', s.ticker);
+    return live?.changePct ?? s.deltaPct;
+  }).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const medianStockDelta = stockDeltas.length > 0 ? stockDeltas[Math.floor(stockDeltas.length / 2)] : Number.NaN;
   const stockAdv = stockDeltas.filter((d) => d > 0).length;
 
@@ -1584,7 +1752,7 @@ export const MonitoringModule: React.FC<{
                     'CER / Ajustables por inflación',
                   ] as const
                 ).map((group) => {
-                  const rows = BONDS_DATA.filter((b) => b.tranche === group);
+                  const rows = monitorBonds.filter((b) => b.tranche === group);
                   return (
                     <React.Fragment key={group}>
                       <tr className="bg-[var(--surface-2)]">
@@ -1609,9 +1777,11 @@ export const MonitoringModule: React.FC<{
                               </span>
                             </td>
                             <td className="px-2.5 font-bold text-[var(--text-primary)]">
-                              {Number.isFinite(b.price)
-                                ? `${b.currency === 'ARS' ? '$ ' : 'US$ '}${fmtNum(b.price, 2)}`
-                                : '—'}
+                              <TickFlash value={Number.isFinite(b.price) ? b.price : null}>
+                                {Number.isFinite(b.price)
+                                  ? `${b.currency === 'ARS' ? '$ ' : 'US$ '}${fmtNum(b.price, 2)}`
+                                  : '—'}
+                              </TickFlash>
                             </td>
                             <td className="px-2.5">
                               <DeltaPill value={b.deltaPct} size="sm" />
@@ -1957,16 +2127,20 @@ export const MonitoringModule: React.FC<{
                             </div>
                           </td>
                           <td className="px-2.5 font-bold text-[#F3F4F6]">
-                            {Number.isFinite(r.usLast) ? `US$ ${fmtNum(r.usLast, 2)}` : '—'}
+                            <TickFlash value={Number.isFinite(r.usLast) ? r.usLast : null}>
+                              {Number.isFinite(r.usLast) ? `US$ ${fmtNum(r.usLast, 2)}` : '—'}
+                            </TickFlash>
                           </td>
                           <td className="px-2.5">
                             <DeltaPill value={r.usDeltaPct} size="sm" />
                           </td>
                           <td className="px-2.5 text-[#9CA3AF] text-[11px]">{r.ratioStr}</td>
                           <td className="px-2.5">
-                            <div className="font-bold text-[#38BDF8]">
-                              {Number.isFinite(r.localArs) ? `$ ${fmtNum(r.localArs, 0)}` : '—'}
-                            </div>
+                            <TickFlash value={Number.isFinite(r.localArs) ? r.localArs : null}>
+                              <span className="block font-bold text-[#38BDF8]">
+                                {Number.isFinite(r.localArs) ? `$ ${fmtNum(r.localArs, 0)}` : '—'}
+                              </span>
+                            </TickFlash>
                             {Number.isFinite(r.fairArsPrice) && (
                               <div className="text-[10px] text-[#787B86]">
                                 Par: $ {fmtNum(r.fairArsPrice, 0)}
@@ -2098,7 +2272,9 @@ export const MonitoringModule: React.FC<{
                         <td className="px-3 text-left font-bold text-[var(--text-primary)]">{c.label}</td>
                         <td className="px-2.5 text-[var(--text-secondary)]">{c.currency}</td>
                         <td className="px-2.5 font-bold text-[#8B7CF6]">
-                          {c.tnaWeighted !== null ? `${fmtNum(c.tnaWeighted, 2)} %` : '—'}
+                          <TickFlash value={c.tnaWeighted}>
+                            {c.tnaWeighted !== null ? `${fmtNum(c.tnaWeighted, 2)} %` : '—'}
+                          </TickFlash>
                         </td>
                         <td className="px-2.5 text-[var(--text-primary)]">
                           {c.teaEffective !== null ? `${fmtNum(c.teaEffective, 2)} %` : '—'}
@@ -2310,6 +2486,7 @@ export const USMarketModule: React.FC<{
   }) => void;
 }> = ({ onOpenOrderTicket }) => {
   const liveMarket = useLiveMarketState();
+  const liveStream = useMarketLiveStream();
   const [directUsPanelAnalytics, setDirectUsPanelAnalytics] = useState<EquityPanelAnalyticsDto | null>(null);
 
   useEffect(() => {
@@ -2380,6 +2557,7 @@ export const USMarketModule: React.FC<{
     return US_MARKET_DATA.map((u) => {
       const extra = analyticsMap.get(u.ticker);
       const uq = unifiedQuoteMap.get(u.ticker);
+      const live = getMarketLiveQuote(liveStream, 'US', u.ticker);
       const uqVolM =
         finiteOrNull(uq?.tradedVolumeUsd) !== null
           ? (uq!.tradedVolumeUsd as number) / 1_000_000
@@ -2395,13 +2573,16 @@ export const USMarketModule: React.FC<{
         sector: u.sector,
         panel: u.panel,
         color: u.color,
-        last: finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? u.price,
-        prevClose: finiteOrNull(uq?.previousClose) ?? finiteOrNull(extra?.prevClose) ?? u.prevClose,
-        dayLow: finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? u.low,
-        dayHigh: finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? u.high,
-        dayRangePos: finiteOrNull(uq?.dayRangePos) ?? finiteOrNull(extra?.dayRangePos) ?? u.dayRangePos,
-        volumeM: uqVolM ?? extraVolM ?? u.volumeM,
-        return1dPct: finiteOrNull(uq?.changePct) ?? finiteOrNull(extra?.return1dPct) ?? u.deltaPct,
+        last: live?.price ?? finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? u.price,
+        prevClose: live?.previousClose ?? finiteOrNull(uq?.previousClose) ?? finiteOrNull(extra?.prevClose) ?? u.prevClose,
+        dayLow: live?.dayLow ?? finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? u.low,
+        dayHigh: live?.dayHigh ?? finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? u.high,
+        dayRangePos:
+          live !== null && live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
+            ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
+            : finiteOrNull(uq?.dayRangePos) ?? finiteOrNull(extra?.dayRangePos) ?? u.dayRangePos,
+        volumeM: live?.turnover !== null && live?.turnover !== undefined ? live.turnover / 1_000_000 : uqVolM ?? extraVolM ?? u.volumeM,
+        return1dPct: live?.changePct ?? finiteOrNull(uq?.changePct) ?? finiteOrNull(extra?.return1dPct) ?? u.deltaPct,
         return30dPct:
           extra?.return30dPct !== undefined && extra.return30dPct !== null
             ? extra.return30dPct
@@ -2421,19 +2602,18 @@ export const USMarketModule: React.FC<{
             : u.avgVolume40dM,
       };
     });
-  }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version]);
+  }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version, liveStream]);
 
   const handleSelectUsRow = (symbol: string) => {
     const item = US_MARKET_DATA.find((u) => u.ticker === symbol);
     if (!item) return;
+    const live = getMarketLiveQuote(liveStream, 'US', symbol);
     onOpenOrderTicket({
       ticker: item.ticker,
       side: 'Compra',
       price: Number.isFinite(item.cedearArsPrice)
         ? item.cedearArsPrice
-        : Number.isFinite(item.price)
-        ? item.price
-        : 0,
+        : live?.price ?? (Number.isFinite(item.price) ? item.price : 0),
       qty: 10,
       instrumentLabel: Number.isFinite(item.cedearRatioNum)
         ? `CEDEAR ${item.name} (Ratio ${item.cedearRatio})`
@@ -2441,9 +2621,24 @@ export const USMarketModule: React.FC<{
     });
   };
 
-  const spy = US_MARKET_DATA.find((u) => u.ticker === 'SPY');
-  const qqq = US_MARKET_DATA.find((u) => u.ticker === 'QQQ');
-  const iwm = US_MARKET_DATA.find((u) => u.ticker === 'IWM');
+  const withLiveUsQuote = (item: (typeof US_MARKET_DATA)[number] | undefined) => {
+    if (item === undefined) return undefined;
+    const live = getMarketLiveQuote(liveStream, 'US', item.ticker);
+    return live === null
+      ? item
+      : {
+          ...item,
+          price: live.price,
+          prevClose: live.previousClose ?? item.prevClose,
+          deltaPct: live.changePct ?? item.deltaPct,
+          low: live.dayLow ?? item.low,
+          high: live.dayHigh ?? item.high,
+          volumeM: live.turnover !== null ? live.turnover / 1_000_000 : item.volumeM,
+        };
+  };
+  const spy = withLiveUsQuote(US_MARKET_DATA.find((u) => u.ticker === 'SPY'));
+  const qqq = withLiveUsQuote(US_MARKET_DATA.find((u) => u.ticker === 'QQQ'));
+  const iwm = withLiveUsQuote(US_MARKET_DATA.find((u) => u.ticker === 'IWM'));
   const spyCtx = liveMarket.usSnapshotsBySymbol['SPY']?.marketContext;
   const ust10y = spyCtx?.treasury?.yield10Y ?? null;
   const ust2y = spyCtx?.treasury?.yield2Y ?? null;
@@ -2451,8 +2646,9 @@ export const USMarketModule: React.FC<{
     ust10y !== null && ust2y !== null && Number.isFinite(ust10y) && Number.isFinite(ust2y)
       ? Math.round((ust10y - ust2y) * 100)
       : null;
-  const vixVal = spyCtx?.vixLevel ?? GLOBAL_INDICATORS.find((g) => g.id === 'vix')?.value ?? Number.NaN;
-  const vixDelta = GLOBAL_INDICATORS.find((g) => g.id === 'vix')?.deltaPct;
+  const liveVix = getMarketLiveQuote(liveStream, 'US', 'I:VIX');
+  const vixVal = liveVix?.price ?? spyCtx?.vixLevel ?? GLOBAL_INDICATORS.find((g) => g.id === 'vix')?.value ?? Number.NaN;
+  const vixDelta = liveVix?.changePct ?? GLOBAL_INDICATORS.find((g) => g.id === 'vix')?.deltaPct;
 
   return (
     <div className="space-y-4 animate-module">
@@ -2473,6 +2669,7 @@ export const USMarketModule: React.FC<{
           logoTicker="SPY"
           title="S&P 500 (SPY)"
           heroValue={spy && Number.isFinite(spy.price) ? `US$ ${fmtNum(spy.price, 2)}` : '—'}
+          flashValue={spy?.price}
           deltaPct={spy?.deltaPct}
           subtitle={`CEDEAR SPY: $ ${fmtNum(spy?.cedearArsPrice, 0)} · Ratio 20:1`}
         />
@@ -2480,6 +2677,7 @@ export const USMarketModule: React.FC<{
           logoTicker="QQQ"
           title="Nasdaq 100 (QQQ)"
           heroValue={qqq && Number.isFinite(qqq.price) ? `US$ ${fmtNum(qqq.price, 2)}` : '—'}
+          flashValue={qqq?.price}
           deltaPct={qqq?.deltaPct}
           subtitle={`CEDEAR QQQ: $ ${fmtNum(qqq?.cedearArsPrice, 0)} · Ratio 20:1`}
         />
@@ -2487,6 +2685,7 @@ export const USMarketModule: React.FC<{
           logoTicker="IWM"
           title="Russell 2000 (IWM)"
           heroValue={iwm && Number.isFinite(iwm.price) ? `US$ ${fmtNum(iwm.price, 2)}` : '—'}
+          flashValue={iwm?.price}
           deltaPct={iwm?.deltaPct}
           subtitle={`CEDEAR IWM: $ ${fmtNum(iwm?.cedearArsPrice, 0)} · Ratio 10:1`}
         />
@@ -2504,6 +2703,7 @@ export const USMarketModule: React.FC<{
           logoTicker="VIX"
           title="CBOE VIX (Volatilidad S&P)"
           heroValue={fmtNum(vixVal, 2)}
+          flashValue={vixVal}
           deltaPct={vixDelta}
           subtitle={
             Number.isFinite(vixVal)

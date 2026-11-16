@@ -9,6 +9,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
+import { getMarketLiveQuote, useMarketLiveStream } from '../api/useMarketLiveStream';
 import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
 
@@ -63,6 +64,7 @@ const INITIAL_TICKER_ITEMS: TickerItem[] = [
   { id: 'SPY', symbol: 'SPY', displayName: 'S&P 500 ETF', category: 'MACRO_ETF', price: Number.NaN, changePct: Number.NaN, decimals: 2, prefix: '$' },
   { id: 'QQQ', symbol: 'QQQ', displayName: 'Nasdaq 100', category: 'MACRO_ETF', price: Number.NaN, changePct: Number.NaN, decimals: 2, prefix: '$' },
   { id: 'IWM', symbol: 'IWM', displayName: 'Russell 2000', category: 'MACRO_ETF', price: Number.NaN, changePct: Number.NaN, decimals: 2, prefix: '$' },
+  { id: 'DIA', symbol: 'DIA', displayName: 'Dow Jones ETF', category: 'MACRO_ETF', price: Number.NaN, changePct: Number.NaN, decimals: 2, prefix: '$' },
   { id: 'VIX', symbol: 'VIX', displayName: 'Volatilidad 30d', category: 'VOLATILITY_YIELD', price: Number.NaN, changePct: Number.NaN, decimals: 2 },
   { id: 'SUPV', symbol: 'SUPV', displayName: 'Banco Supervielle', category: 'TOP_GAINER', price: Number.NaN, changePct: Number.NaN, decimals: 2, prefix: '$' },
   { id: 'GGAL', symbol: 'GGAL', displayName: 'Grupo Galicia', category: 'TOP_GAINER', price: Number.NaN, changePct: Number.NaN, decimals: 2, prefix: '$' },
@@ -89,6 +91,7 @@ type Listener = () => void;
 class TickerFeedStore {
   private itemsMap = new Map<string, TickerItem>();
   private listenersMap = new Map<string, Set<Listener>>();
+  private streamAuthorityAtMs = new Map<string, number>();
 
   constructor(initialItems: TickerItem[]) {
     initialItems.forEach((item) => {
@@ -112,9 +115,12 @@ class TickerFeedStore {
     };
   };
 
-  public applyRealUpdates = (updates: readonly LiveTickerUpdate[]): void => {
+  public applyRealUpdates = (updates: readonly LiveTickerUpdate[], fromStream = false): void => {
     const now = Date.now();
     for (const u of updates) {
+      if (fromStream) this.streamAuthorityAtMs.set(u.id, now);
+      const streamAt = this.streamAuthorityAtMs.get(u.id);
+      if (!fromStream && streamAt !== undefined && now - streamAt < 5_000) continue;
       const current = this.itemsMap.get(u.id);
       if (!current || !Number.isFinite(u.price)) continue;
       const changed =
@@ -128,7 +134,10 @@ class TickerFeedStore {
         price: u.price,
         changePct: Number.isFinite(u.changePct) ? u.changePct : current.changePct,
         lastTickDir: u.dir ?? (Number.isFinite(current.price) ? (u.price > current.price ? 'up' : u.price < current.price ? 'down' : null) : null),
-        lastTickTs: u.dir ? now : current.lastTickTs,
+        lastTickTs:
+          (u.dir ?? (Number.isFinite(current.price) ? (u.price > current.price ? 'up' : u.price < current.price ? 'down' : null) : null)) !== null
+            ? now
+            : current.lastTickTs,
       };
       this.itemsMap.set(u.id, updated);
       const listeners = this.listenersMap.get(u.id);
@@ -173,14 +182,14 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
     () => globalTickerStore.getItem(tickerId)
   );
 
-  const [flashClass, setFlashClass] = useState<string>('');
+  const [flash, setFlash] = useState<{ readonly dir: 'up' | 'down'; readonly id: number } | null>(null);
 
   useEffect(() => {
     if (!item?.lastTickDir || !item?.lastTickTs) return;
-    setFlashClass(item.lastTickDir === 'up' ? 'qc-chip-flash-up' : 'qc-chip-flash-down');
+    setFlash({ dir: item.lastTickDir, id: item.lastTickTs });
     const timer = setTimeout(() => {
-      setFlashClass('');
-    }, 560);
+      setFlash(null);
+    }, 500);
     return () => clearTimeout(timer);
   }, [item?.lastTickTs, item?.lastTickDir]);
 
@@ -198,7 +207,14 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       type="button"
       onClick={() => onSelectTicker?.(clickableSymbol)}
       title={`${item.symbol} (${item.displayName}) — Click para inspeccionar`}
-      className={`group inline-flex items-center gap-2 px-2.5 h-[30px] rounded-[8px] bg-[#131722] hover:bg-[#1A1F2C] border border-[#2A2E3D] hover:border-[#3D4358] transition-colors shrink-0 cursor-pointer select-none ${flashClass}`}
+      className="group inline-flex items-center gap-2 px-2.5 h-[30px] rounded-[8px] bg-[#131722] hover:bg-[#1A1F2C] border border-[#2A2E3D] hover:border-[#3D4358] shrink-0 cursor-pointer select-none"
+      style={{
+        transition: 'background-color 500ms ease, border-color 500ms ease',
+        backgroundColor:
+          flash === null ? undefined : flash.dir === 'up' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+        borderColor:
+          flash === null ? undefined : flash.dir === 'up' ? 'rgba(34, 197, 94, 0.45)' : 'rgba(239, 68, 68, 0.45)',
+      }}
     >
       <CompanyLogo ticker={item.id} name={item.displayName} size="sm" />
 
@@ -290,6 +306,38 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   marqueeDurationSeconds = 48,
   liveFeedEnabled = true,
 }) => {
+  const liveStream = useMarketLiveStream({ manageConnection: liveFeedEnabled });
+
+  useEffect(() => {
+    if (!liveFeedEnabled) return;
+    const updates: LiveTickerUpdate[] = [];
+    const pushQuote = (id: string, market: 'AR' | 'US', symbol: string): void => {
+      const quote = getMarketLiveQuote(liveStream, market, symbol);
+      if (quote === null) return;
+      updates.push({
+        id,
+        symbol: id,
+        price: quote.price,
+        changePct: quote.changePct ?? Number.NaN,
+        dir: quote.direction,
+      });
+    };
+    for (const symbol of ['SPY', 'QQQ', 'IWM', 'DIA', 'NVDA', 'AAPL']) {
+      pushQuote(symbol, 'US', symbol);
+    }
+    pushQuote('VIX', 'US', 'I:VIX');
+    for (const symbol of ['GGAL', 'SUPV', 'TXAR', 'YPFD', 'PAMP', 'BMA']) {
+      pushQuote(symbol, 'AR', symbol);
+    }
+    if (liveStream.cclMedian !== null) {
+      updates.push({ id: 'CCL', symbol: 'Dólar CCL', price: liveStream.cclMedian, changePct: Number.NaN, dir: null });
+    }
+    if (liveStream.mepMedian !== null) {
+      updates.push({ id: 'MEP', symbol: 'Dólar MEP', price: liveStream.mepMedian, changePct: Number.NaN, dir: null });
+    }
+    if (updates.length > 0) globalTickerStore.applyRealUpdates(updates, true);
+  }, [liveFeedEnabled, liveStream]);
+
   // Suscripción a actualizaciones reales emitidas por liveRuntimeBridge (Data912 / BYMA / Massive WS)
   useEffect(() => {
     if (!liveFeedEnabled) return;
@@ -298,8 +346,15 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
     });
   }, [liveFeedEnabled]);
 
-  const feedTag =
-    feedStatus === 'LIVE'
+  const liveClock =
+    liveStream.lastReceivedAtMs !== null
+      ? new Date(liveStream.lastReceivedAtMs).toLocaleTimeString('es-AR', { hour12: false })
+      : '--:--:--';
+  const feedTag = liveStream.isLive
+    ? liveStream.arSourceMode === 'LIVE_BMB'
+      ? 'EN VIVO · BMB'
+      : `EN VIVO · ${liveStream.transport ?? 'WS'}`
+    : feedStatus === 'LIVE'
       ? 'EN VIVO'
       : feedStatus === 'EOD_CIERRE'
       ? 'EOD CIERRE'
@@ -307,7 +362,9 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
       ? 'DIFERIDO 20M'
       : feedStatus === 'PARTIAL'
       ? 'PARCIAL'
-      : 'SIN FEED';
+      : liveStream.status === 'CONNECTING' || liveStream.status === 'RECONNECTING'
+        ? 'CONECTANDO ...'
+        : 'SIN FEED';
 
   const isOpen = marketStatus === 'Abierto' && feedStatus !== 'NO_DATA';
   const isExtended =
@@ -363,6 +420,7 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
           </span>
           <span className="tracking-tight whitespace-nowrap">
             NYSE / BYMA: {marketStatus} · {feedTag}
+            {liveStream.isLive ? ` · ${liveClock} · ${String(liveStream.ticksPerSecond)} ticks/s` : ''}
           </span>
         </button>
 

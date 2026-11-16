@@ -217,7 +217,7 @@ function shouldSendBroadcast(
   if (event.type === 'status') {
     return true;
   }
-  if (state.symbols === null || state.symbols.size === 0) {
+  if (state.symbols === null || state.symbols.size === 0 || state.symbols.has('*')) {
     return true;
   }
   if (state.symbols.has(event.symbol)) {
@@ -246,6 +246,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const arRuntime = options.arRuntime ?? new ArgentinaMarketRuntime({
     secrets,
     env: options.env ?? process.env,
+    usRuntime: runtime,
   });
   const effectiveEnv = options.env ?? process.env;
   const oratsKey = loadOratsClientConfigFromEnv(effectiveEnv).apiKey;
@@ -271,6 +272,51 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   let warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY' = 'IDLE';
 
   const clientStates = new WeakMap<WebSocket, ClientSubscriptionState>();
+  let marketTickSequence = 0;
+  let marketTickTimer: ReturnType<typeof setInterval> | null = null;
+
+  const buildMarketTickBatch = () => {
+    marketTickSequence += 1;
+    const ar = arRuntime.getLiveArMarketSnapshot();
+    return {
+      type: 'MARKET_TICK_BATCH' as const,
+      sequence: marketTickSequence,
+      serverTimeSec: Math.floor(Date.now() / 1_000),
+      quotes: [...runtime.getLiveUsQuotes(), ...ar.quotes],
+      cclMedian: ar.overview?.cclMedian ?? ar.monitoring?.cclMedian ?? null,
+      mepMedian: ar.overview?.mepMedian ?? ar.monitoring?.mepMedian ?? null,
+      arSourceMode: ar.sourceMode,
+      usSourceMode: runtime.getUsLiveSourceMode(),
+      arFeedStatus: ar.overview?.feedStatus ?? ar.monitoring?.feedStatus ?? 'NO_DATA',
+      cauciones: ar.cauciones.map((row) => ({
+        termDays: row.termDays,
+        currency: row.currency,
+        tnaWeighted: row.tnaWeighted,
+        teaEffective: row.teaEffective,
+        bidTna: row.bidTna,
+        askTna: row.askTna,
+        turnoverArs: row.volumeArs,
+        spreadVsBadlarBps: row.spreadVsBadlarBps,
+        asOfUtcSec: row.asOfUtcSec,
+        source: row.source === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : 'BCRA_LECAP_REF',
+        referenceInstrument: row.referenceInstrument,
+      })),
+    };
+  };
+
+  const sendMarketTickBatch = (client: WebSocket): void => {
+    if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) return;
+    client.send(JSON.stringify(buildMarketTickBatch()));
+  };
+
+  const broadcastMarketTickBatch = (): void => {
+    const payload = JSON.stringify(buildMarketTickBatch());
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && client.bufferedAmount <= 1_048_576) {
+        client.send(payload);
+      }
+    }
+  };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     applyCorsHeaders(req, res);
@@ -307,6 +353,11 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     }
 
     try {
+      if (pathname === '/api/market/ticks') {
+        sendJson(res, 200, buildMarketTickBatch());
+        return;
+      }
+
       if (pathname === '/api/health') {
         const activeSecrets = getAllSecrets();
         const rawConnectors = arRuntime.getConnectorHealth();
@@ -781,6 +832,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     };
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(connectedEvent));
+      sendMarketTickBatch(ws);
     }
 
     ws.on('message', (raw) => {
@@ -805,7 +857,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const removeListener = runtime.addWsListener((event) => {
     const serialized = JSON.stringify(event);
     for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) {
+      if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) {
         continue;
       }
       const state = clientStates.get(client) ?? { symbols: null };
@@ -833,12 +885,18 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         });
       });
 
+      marketTickTimer = setInterval(() => {
+        broadcastMarketTickBatch();
+      }, 1_500);
+      marketTickTimer.unref();
+
       if (startRuntimeWs) {
         await runtime.startWs();
       }
 
       if (enableBackgroundWarmup) {
         warmupStatus = 'WARMING_UP';
+        arRuntime.startLiveStreaming();
         ggalRuntime.startRecorder();
         void (async () => {
           // Calentamos Argentina primero (ligero, <1.5s) para que /inicio responda de inmediato
@@ -859,6 +917,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       return { host, port };
     },
     async stop(): Promise<void> {
+      if (marketTickTimer !== null) clearInterval(marketTickTimer);
+      marketTickTimer = null;
       ggalRuntime.stop();
       arRuntime.close();
       removeListener();

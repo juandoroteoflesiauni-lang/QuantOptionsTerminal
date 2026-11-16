@@ -140,6 +140,7 @@ import {
   type BmbBridgeSnapshotDto,
   type BmbConnectorHealthDto,
   type BmbOptionRowDto,
+  type BmbTradeRowDto,
   type PrimaryConnectorHealthDto,
   type PrimaryDlrContractDto,
   type OrderBook5LevelsDto,
@@ -158,7 +159,8 @@ import {
   type TerminalSnapshotResponse,
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
-import { BmbFeedAdapter } from './bmbFeedAdapter.js';
+import { BmbFeedAdapter, isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
+import type { MarketTickQuote } from './massiveStocksStream.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
@@ -259,6 +261,7 @@ export interface ArStockDto {
   readonly arbitrageSignal?: string | null;
   readonly sparkline: readonly number[];
   readonly source: string;
+  readonly quoteAsOfUtcSec?: number | null;
 }
 
 export interface MepCclArbitrageRow {
@@ -291,6 +294,7 @@ export interface ArBondDto {
   readonly cclImplicit?: number | null;
   readonly mepImplicit?: number | null;
   readonly source: string;
+  readonly quoteAsOfUtcSec?: number | null;
 }
 
 export interface ArNoteOrCorpDto {
@@ -303,6 +307,7 @@ export interface ArNoteOrCorpDto {
   readonly deltaPct: number | null;
   readonly volumeM: number | null;
   readonly source: string;
+  readonly quoteAsOfUtcSec?: number | null;
 }
 
 export interface ArMacroCardDto {
@@ -320,6 +325,7 @@ export interface ArMacroCardDto {
 export interface ArOverviewResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
+  readonly sourceMode?: 'LIVE_BMB' | 'DATA912';
   readonly data912Status: 'OK' | 'ERROR';
   readonly openBymaStatus: 'OK' | 'DEGRADED';
   readonly marketState: 'ABIERTO' | 'SUBASTA' | 'CERRADO' | 'PREMARKET';
@@ -417,6 +423,7 @@ export interface ArCaucionCurveRowDto {
 export interface ArMonitoringResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
+  readonly sourceMode?: 'LIVE_BMB' | 'DATA912';
   readonly panel: 'acciones' | 'bonos' | 'cedears' | 'cauciones';
   readonly providerErrors: readonly string[];
   readonly stocks: readonly ArStockDto[];
@@ -433,6 +440,15 @@ export interface ArMonitoringResponse {
   readonly bmbHealth?: BmbConnectorHealthDto;
   readonly arPanelAnalytics?: EquityPanelAnalyticsDto | null;
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
+}
+
+export interface ArLiveMarketSnapshot {
+  readonly overview: ArOverviewResponse | null;
+  readonly monitoring: ArMonitoringResponse | null;
+  readonly quotes: readonly MarketTickQuote[];
+  readonly cauciones: readonly ArCaucionCurveRowDto[];
+  readonly sourceMode: 'LIVE_BMB' | 'DATA912' | 'NO_DATA';
+  readonly bmbHealth: BmbConnectorHealthDto | null;
 }
 
 export interface ArHistoricalBarDto {
@@ -746,6 +762,8 @@ const DEFAULT_NYFED_BASE = 'https://markets.newyorkfed.org';
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_CACHE_TTL_MS = 18_000;
+const AR_LIVE_QUOTE_CACHE_TTL_MS = 1_500;
+const AR_LIVE_REFRESH_INTERVAL_MS = 2_500;
 const DEFAULT_HIST_CACHE_TTL_MS = 15 * 60 * 1_000;
 const AR_HIST_WEEKEND_TTL_MS = 2 * 60 * 60 * 1_000;
 const DEFAULT_MACRO_CACHE_TTL_MS = 300_000;
@@ -2677,6 +2695,133 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
   return rows;
 }
 
+interface BmbNormalizedMergeResult {
+  readonly rows: readonly NormalizedQuoteRow[];
+  readonly hasLiveActivity: boolean;
+  readonly hasLiveLast: boolean;
+}
+
+function bmbSnapshotHasLiveActivity(snapshot: BmbBridgeSnapshotDto | null): boolean {
+  return (
+    snapshot !== null &&
+    snapshot.health.connected &&
+    (snapshot.health.status === 'READY' || snapshot.health.status === 'CONNECTED_L2')
+  );
+}
+
+/**
+ * Overlay only genuine BMB observations. A BBO updates bid/ask fields but is
+ * never promoted to a synthetic last trade. Data912 remains the explicit last-
+ * price baseline for symbols for which the bridge exposes books but no trades.
+ */
+function mergeBmbNormalizedRows(
+  rows: readonly NormalizedQuoteRow[],
+  snapshot: BmbBridgeSnapshotDto | null,
+  nowUtcSec: number,
+  maxAgeSec = 20,
+): BmbNormalizedMergeResult {
+  if (!bmbSnapshotHasLiveActivity(snapshot) || snapshot === null) {
+    return { rows, hasLiveActivity: false, hasLiveLast: false };
+  }
+  const bySymbol = new Map(rows.map((row) => [row.symbol.toUpperCase(), row]));
+  let hasLiveActivity = false;
+  let hasLiveLast = false;
+  const symbols = new Set([
+    ...Object.keys(snapshot.orderBooksBySymbol),
+    ...Object.keys(snapshot.tradesBySymbol ?? {}),
+  ]);
+  for (const rawSymbol of symbols) {
+    const symbol = rawSymbol.toUpperCase();
+    const existing = bySymbol.get(symbol);
+    const book = snapshot.orderBooksBySymbol[symbol];
+    const bookFresh =
+      book !== undefined &&
+      book.asOfUtcSec !== null &&
+      Number.isInteger(book.asOfUtcSec) &&
+      nowUtcSec >= book.asOfUtcSec &&
+      nowUtcSec - book.asOfUtcSec <= maxAgeSec;
+    const bids = bookFresh ? book.bids : [];
+    const asks = bookFresh ? book.asks : [];
+    const bestBid = bids[0];
+    const bestAsk = asks[0];
+    let latestTrade: BmbTradeRowDto | null = null;
+    for (const trade of snapshot.tradesBySymbol?.[symbol] ?? []) {
+      if (
+        !Number.isInteger(trade.timeSec) ||
+        trade.timeSec <= 0 ||
+        nowUtcSec < trade.timeSec ||
+        nowUtcSec - trade.timeSec > maxAgeSec ||
+        !Number.isFinite(trade.price) ||
+        trade.price <= 0
+      ) {
+        continue;
+      }
+      if (
+        latestTrade === null ||
+        trade.timeSec > latestTrade.timeSec ||
+        (trade.timeSec === latestTrade.timeSec && trade.sequence > latestTrade.sequence)
+      ) {
+        latestTrade = trade;
+      }
+    }
+    if (!bookFresh && latestTrade === null) continue;
+    hasLiveActivity = true;
+    if (latestTrade !== null) hasLiveLast = true;
+    const inferredPrevClose =
+      existing?.prevClose ??
+      (existing?.last !== null &&
+      existing?.last !== undefined &&
+      existing.last > 0 &&
+      existing.deltaPct !== null &&
+      Number.isFinite(existing.deltaPct) &&
+      existing.deltaPct > -99
+        ? existing.last / (1 + existing.deltaPct / 100)
+        : null);
+    const liveLast = latestTrade?.price ?? existing?.last ?? null;
+    const deltaPct =
+      latestTrade !== null && inferredPrevClose !== null && inferredPrevClose > 0
+        ? ((latestTrade.price - inferredPrevClose) / inferredPrevClose) * 100
+        : existing?.deltaPct ?? null;
+    const low =
+      latestTrade !== null && existing?.low !== null && existing?.low !== undefined
+        ? Math.min(existing.low, latestTrade.price)
+        : existing?.low ?? null;
+    const high =
+      latestTrade !== null && existing?.high !== null && existing?.high !== undefined
+        ? Math.max(existing.high, latestTrade.price)
+        : existing?.high ?? null;
+    bySymbol.set(symbol, {
+      symbol,
+      last: liveLast,
+      bid: bestBid?.price ?? existing?.bid ?? null,
+      bidSize: bestBid?.size ?? existing?.bidSize ?? null,
+      ask: bestAsk?.price ?? existing?.ask ?? null,
+      askSize: bestAsk?.size ?? existing?.askSize ?? null,
+      prevClose: inferredPrevClose,
+      deltaPct: sanitizeFinite(deltaPct),
+      low,
+      high,
+      vwap: existing?.vwap ?? null,
+      volumeArs: existing?.volumeArs ?? null,
+      nominalVol: existing?.nominalVol ?? null,
+      mark: existing?.mark ?? liveLast,
+      impliedUsdArs: existing?.impliedUsdArs ?? null,
+      arsBid: existing?.arsBid ?? null,
+      arsAsk: existing?.arsAsk ?? null,
+      usdBid: existing?.usdBid ?? null,
+      usdAsk: existing?.usdAsk ?? null,
+      ...(existing?.openInterest !== undefined ? { openInterest: existing.openInterest } : {}),
+      ...(latestTrade !== null || existing === undefined
+        ? { quoteSource: 'BMB_HOMEBROKER_BRIDGE' as const }
+        : existing.quoteSource !== undefined
+          ? { quoteSource: existing.quoteSource }
+          : {}),
+      quoteAsOfUtcSec: latestTrade?.timeSec ?? book?.asOfUtcSec ?? existing?.quoteAsOfUtcSec ?? null,
+    });
+  }
+  return { rows: [...bySymbol.values()], hasLiveActivity, hasLiveLast };
+}
+
 export interface MergeBmbOptionQuotesInput {
   readonly rows: readonly NormalizedQuoteRow[];
   readonly bmbSnapshot: BmbBridgeSnapshotDto | null;
@@ -3004,6 +3149,13 @@ export class ArgentinaMarketRuntime {
     | null;
   private readonly allowSharedUsRuntime: boolean;
   private lazyUsRuntime: MarketRuntime | null = null;
+  private lastOverview: ArOverviewResponse | null = null;
+  private lastMonitoring: ArMonitoringResponse | null = null;
+  private lastMacro: ArMacroResponse | null = null;
+  private lastBmbSnapshot: BmbBridgeSnapshotDto | null = null;
+  private liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private liveStreaming = false;
+  private liveRefreshInFlight = false;
 
   private readonly liveCache: SingleFlightRuntimeCache<unknown>;
   private readonly histCache: SingleFlightRuntimeCache<readonly Bar[]>;
@@ -3066,13 +3218,19 @@ export class ArgentinaMarketRuntime {
     this.allowSharedUsRuntime = deps.fetchFn === undefined || deps.env !== undefined;
 
     const ttlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    this.liveCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
+    const quoteTtlResolver = (nowMs: number): number => {
+      if (deps.cacheTtlMs !== undefined) return ttlMs;
+      return isBymaL2SessionUtcSec(Math.floor(nowMs / 1_000))
+        ? Math.min(ttlMs, AR_LIVE_QUOTE_CACHE_TTL_MS)
+        : ttlMs;
+    };
+    this.liveCache = new SingleFlightRuntimeCache({ ttlResolver: quoteTtlResolver, nowFn: this.nowMsFn });
     this.histCache = new SingleFlightRuntimeCache({
       ttlResolver: (nowMs) => computeArHistoricalPanelTtlMs(nowMs),
       nowFn: this.nowMsFn,
     });
     this.macroCache = new SingleFlightRuntimeCache({ ttlResolver: () => DEFAULT_MACRO_CACHE_TTL_MS, nowFn: this.nowMsFn });
-    this.computedCache = new SingleFlightRuntimeCache({ ttlResolver: () => ttlMs, nowFn: this.nowMsFn });
+    this.computedCache = new SingleFlightRuntimeCache({ ttlResolver: quoteTtlResolver, nowFn: this.nowMsFn });
   }
 
   public getSecrets(): readonly string[] {
@@ -3094,6 +3252,9 @@ export class ArgentinaMarketRuntime {
   }
 
   public close(): void {
+    this.liveStreaming = false;
+    if (this.liveRefreshTimer !== null) clearTimeout(this.liveRefreshTimer);
+    this.liveRefreshTimer = null;
     this.primaryClient.closeWebSocket();
     if (this.bmbClient instanceof BmbFeedAdapter) {
       this.bmbClient.stop();
@@ -3101,7 +3262,291 @@ export class ArgentinaMarketRuntime {
   }
 
   public async getBmbSnapshot(symbol?: string, forceRefresh = false): Promise<BmbBridgeSnapshotDto> {
-    return this.bmbClient.getSnapshot(symbol, null, forceRefresh);
+    const snapshot = await this.bmbClient.getSnapshot(symbol, null, forceRefresh);
+    this.lastBmbSnapshot = snapshot;
+    return snapshot;
+  }
+
+  private isLiveStreamingActive(): boolean {
+    return this.liveStreaming;
+  }
+
+  /** Starts AR refresh only from the explicit HTTP server lifecycle, never in offline constructors. */
+  public startLiveStreaming(): void {
+    if (this.liveStreaming) return;
+    this.liveStreaming = true;
+    if (this.bmbClient instanceof BmbFeedAdapter) {
+      const symbols = [
+        ...AR_STOCK_META.map((meta) => meta.ticker),
+        ...Object.keys(CEDEAR_RATIOS),
+        ...SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
+      ];
+      this.bmbClient.startLiveLoop(symbols);
+    }
+    const run = async (): Promise<void> => {
+      if (!this.liveStreaming || this.liveRefreshInFlight) return;
+      const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));
+      if (!inSession) {
+        this.liveRefreshTimer = setTimeout(() => {
+          void run();
+        }, 5_000);
+        this.liveRefreshTimer.unref();
+        return;
+      }
+      this.liveRefreshInFlight = true;
+      try {
+        const core = await this.getOverviewCore(true);
+        const previous = this.lastOverview;
+        this.lastOverview = {
+          ...core,
+          ...(previous === null
+            ? {}
+            : {
+                atmIvPct: previous.atmIvPct ?? null,
+                atmIvExpiryCode: previous.atmIvExpiryCode ?? null,
+                atmIvExpiryLabel: previous.atmIvExpiryLabel ?? null,
+                atmIvDaysToExpiry: previous.atmIvDaysToExpiry ?? null,
+                atmIvRateTnaPct: previous.atmIvRateTnaPct ?? null,
+              }),
+        };
+        const panel = this.lastMonitoring?.panel;
+        if (panel !== undefined) {
+          await this.getMonitoring(panel, true);
+        }
+      } catch {
+        // Existing endpoint/provider errors remain explicit in the next REST response.
+      } finally {
+        this.liveRefreshInFlight = false;
+        if (this.isLiveStreamingActive()) {
+          this.liveRefreshTimer = setTimeout(() => {
+            void run();
+          }, AR_LIVE_REFRESH_INTERVAL_MS);
+          this.liveRefreshTimer.unref();
+        }
+      }
+    };
+    void run();
+  }
+
+  private overlayStockWithCurrentBmb(
+    stock: ArStockDto,
+    snapshot: BmbBridgeSnapshotDto | null,
+    nowUtcSec: number,
+  ): ArStockDto {
+    if (!bmbSnapshotHasLiveActivity(snapshot)) return stock;
+    const baseRow: NormalizedQuoteRow = {
+      symbol: stock.ticker,
+      last: stock.last,
+      bid: stock.bid,
+      bidSize: null,
+      ask: stock.ask,
+      askSize: null,
+      prevClose: stock.prevClose,
+      deltaPct: stock.deltaPct,
+      low: stock.low,
+      high: stock.high,
+      vwap: stock.vwap,
+      volumeArs: stock.volumeM !== null ? stock.volumeM * 1_000_000 : null,
+      nominalVol: null,
+      mark: stock.last,
+      impliedUsdArs: null,
+      arsBid: null,
+      arsAsk: null,
+      usdBid: null,
+      usdAsk: null,
+      ...(stock.source === 'BMB_HOMEBROKER'
+        ? { quoteSource: 'BMB_HOMEBROKER_BRIDGE' as const }
+        : { quoteSource: 'DATA912' as const }),
+      quoteAsOfUtcSec: stock.quoteAsOfUtcSec ?? null,
+    };
+    const merged = mergeBmbNormalizedRows([baseRow], snapshot, nowUtcSec).rows.find(
+      (row) => row.symbol === stock.ticker,
+    );
+    if (merged === undefined) return stock;
+    const last = merged.last;
+    const cclImplicit =
+      last !== null && last > 0 && stock.adrPrice !== null && stock.adrPrice !== undefined && stock.adrPrice > 0 && stock.adrRatio !== undefined
+        ? (last * stock.adrRatio) / stock.adrPrice
+        : null;
+    return {
+      ...stock,
+      last: sanitizeFinite(last),
+      bid: sanitizeFinite(merged.bid),
+      ask: sanitizeFinite(merged.ask),
+      deltaPct: sanitizeFinite(merged.deltaPct),
+      prevClose: sanitizeFinite(merged.prevClose),
+      low: sanitizeFinite(merged.low),
+      high: sanitizeFinite(merged.high),
+      dayRangePos:
+        last !== null && merged.low !== null && merged.high !== null && merged.high > merged.low
+          ? sanitizeFinite((last - merged.low) / (merged.high - merged.low))
+          : null,
+      cclImplicit: sanitizeFinite(cclImplicit),
+      source: merged.quoteSource === 'BMB_HOMEBROKER_BRIDGE' ? 'BMB_HOMEBROKER' : stock.source,
+      quoteAsOfUtcSec: merged.quoteAsOfUtcSec ?? stock.quoteAsOfUtcSec ?? null,
+    };
+  }
+
+  private applyCurrentBmbToOverview(
+    base: ArOverviewResponse,
+    snapshot: BmbBridgeSnapshotDto | null,
+  ): ArOverviewResponse {
+    const nowUtcSec = Math.floor(this.nowMsFn() / 1_000);
+    const activity = mergeBmbNormalizedRows([], snapshot, nowUtcSec);
+    if (!activity.hasLiveActivity) return { ...base, sourceMode: 'DATA912' };
+    const mapStock = (stock: ArStockDto): ArStockDto => this.overlayStockWithCurrentBmb(stock, snapshot, nowUtcSec);
+    let mervalStocks = base.mervalStocks.map(mapStock);
+    let generalPanelStocks = base.generalPanelStocks.map(mapStock);
+    let cedears = base.cedears.map(mapStock);
+    let cclMedian = base.cclMedian;
+    if (activity.hasLiveLast) {
+      const liveCclValues = [...mervalStocks, ...generalPanelStocks, ...cedears]
+        .map((stock) => stock.cclImplicit)
+        .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0);
+      cclMedian = computeMedian(liveCclValues) ?? base.cclMedian;
+    }
+    const withParity = (stock: ArStockDto): ArStockDto => {
+      const fairArsPrice =
+        stock.adrPrice !== null && stock.adrPrice !== undefined && stock.adrPrice > 0 &&
+        stock.adrRatio !== undefined && stock.adrRatio > 0 && cclMedian !== null && cclMedian > 0
+          ? (stock.adrPrice * cclMedian) / stock.adrRatio
+          : null;
+      const cclMismatchPct =
+        stock.cclImplicit !== null && stock.cclImplicit !== undefined && cclMedian !== null && cclMedian > 0
+          ? ((stock.cclImplicit - cclMedian) / cclMedian) * 100
+          : null;
+      return {
+        ...stock,
+        fairArsPrice: sanitizeFinite(fairArsPrice),
+        cclMismatchPct: sanitizeFinite(cclMismatchPct),
+        cclMismatchArs:
+          stock.last !== null && fairArsPrice !== null ? sanitizeFinite(stock.last - fairArsPrice) : null,
+      };
+    };
+    mervalStocks = mervalStocks.map(withParity);
+    generalPanelStocks = generalPanelStocks.map(withParity);
+    cedears = cedears.map(withParity);
+    const mepCclGapPct =
+      base.mepMedian !== null && base.mepMedian > 0 && cclMedian !== null
+        ? ((cclMedian - base.mepMedian) / base.mepMedian) * 100
+        : null;
+    return {
+      ...base,
+      feedStatus: 'LIVE',
+      sourceMode: 'LIVE_BMB',
+      mervalStocks,
+      generalPanelStocks,
+      cedears,
+      cclMedian: sanitizeFinite(cclMedian),
+      mepCclGapPct: sanitizeFinite(mepCclGapPct),
+      globalIndicators: base.globalIndicators.map((indicator) =>
+        indicator.id === 'ccl'
+          ? { ...indicator, value: sanitizeFinite(cclMedian), source: 'BMB_HOMEBROKER' }
+          : indicator,
+      ),
+    };
+  }
+
+  public getLiveArMarketSnapshot(): ArLiveMarketSnapshot {
+    const cachedBmb = this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient.getCachedSnapshot() : null;
+    const bmbSnapshot = cachedBmb ?? this.lastBmbSnapshot;
+    const overviewBase = this.lastOverview;
+    const overview = overviewBase === null ? null : this.applyCurrentBmbToOverview(overviewBase, bmbSnapshot);
+    const monitoring = this.lastMonitoring;
+    const bonds = monitoring?.bonds ?? this.lastMacro?.sovereignCurve ?? [];
+    const quotes: MarketTickQuote[] = [];
+    const appendStock = (stock: ArStockDto): void => {
+      if (stock.last === null || !Number.isFinite(stock.last) || stock.last <= 0) return;
+      quotes.push({
+        market: 'AR',
+        symbol: stock.ticker,
+        kind: 'stock',
+        currency: 'ARS',
+        price: stock.last,
+        previousClose: stock.prevClose,
+        changePct: stock.deltaPct,
+        dayLow: stock.low,
+        dayHigh: stock.high,
+        volume: null,
+        turnover: stock.volumeM !== null ? stock.volumeM * 1_000_000 : null,
+        asOfUtcSec: Math.max(
+          stock.quoteAsOfUtcSec ?? 0,
+          overview?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        ),
+        source: stock.source,
+      });
+    };
+    if (overview !== null) {
+      overview.mervalStocks.forEach(appendStock);
+      overview.generalPanelStocks.forEach(appendStock);
+      overview.cedears.forEach(appendStock);
+    }
+    for (const bond of bonds) {
+      const price = bond.currency === 'USD' ? bond.priceUsd : bond.priceArs;
+      if (price === null || !Number.isFinite(price) || price <= 0) continue;
+      quotes.push({
+        market: 'AR',
+        symbol: bond.ticker,
+        kind: 'bond',
+        currency: bond.currency === 'USD' ? 'USD' : 'ARS',
+        price,
+        previousClose: null,
+        changePct: bond.deltaPct,
+        dayLow: null,
+        dayHigh: null,
+        volume: null,
+        turnover: bond.volumeM !== null ? bond.volumeM * 1_000_000 : null,
+        asOfUtcSec: bond.quoteAsOfUtcSec ?? monitoring?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        source: bond.source,
+      });
+    }
+    for (const note of [...(monitoring?.notes ?? []), ...(monitoring?.corps ?? [])]) {
+      if (note.price === null || !Number.isFinite(note.price) || note.price <= 0) continue;
+      quotes.push({
+        market: 'AR',
+        symbol: note.ticker,
+        kind: note.kind === 'ON_CORP' ? 'corp' : 'note',
+        currency: 'ARS',
+        price: note.price,
+        previousClose: null,
+        changePct: note.deltaPct,
+        dayLow: null,
+        dayHigh: null,
+        volume: null,
+        turnover: note.volumeM !== null ? note.volumeM * 1_000_000 : null,
+        asOfUtcSec: note.quoteAsOfUtcSec ?? monitoring?.asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        source: note.source,
+      });
+    }
+    const caucionesCurve = buildCaucionesLiquidityCurve({
+      bmbSnapshot:
+        bmbSnapshot ??
+        ({
+          health: this.bmbClient.getSafeHealthStatus(),
+          cauciones: [],
+          orderBooksBySymbol: {},
+          options: [],
+        } satisfies BmbBridgeSnapshotDto),
+      tpmTna: this.lastMacro?.variables.tpmTna ?? null,
+      badlarTna: monitoring?.badlarTna ?? this.lastMacro?.variables.badlarTna ?? null,
+      tamarTna: this.lastMacro?.variables.tamarTna ?? null,
+      plazoFijoTna: this.lastMacro?.variables.plazoFijoTna ?? null,
+      notes: monitoring?.notes ?? [],
+      nowSec: Math.floor(this.nowMsFn() / 1_000),
+    });
+    const sourceMode = overview?.sourceMode === 'LIVE_BMB' || caucionesCurve.status === 'LIVE_BMB'
+      ? 'LIVE_BMB'
+      : overview !== null
+        ? 'DATA912'
+        : 'NO_DATA';
+    return {
+      overview,
+      monitoring,
+      quotes,
+      cauciones: caucionesCurve.rows,
+      sourceMode,
+      bmbHealth: bmbSnapshot?.health ?? this.bmbClient.getSafeHealthStatus(),
+    };
   }
 
   private async scheduleData912<T>(task: () => Promise<T>): Promise<T> {
@@ -3496,6 +3941,8 @@ export class ArgentinaMarketRuntime {
     readonly argBonds: readonly NormalizedQuoteRow[];
     readonly fallbackMep: number | null;
     readonly fallbackCcl: number | null;
+    readonly preferredMepMedian?: number | null;
+    readonly preferredCclMedian?: number | null;
   }): {
     readonly mepMedian: number | null;
     readonly cclMedian: number | null;
@@ -3637,11 +4084,13 @@ export class ArgentinaMarketRuntime {
     // Cascada explícita compartida por /api/ar/overview y /api/ar/macro:
     // Data912 (/live/mep & /live/ccl) → Paridad implícita AL30/GD30 (y otros bonos/ADRs/CEDEARs) → ArgentinaDatos (bolsa / contadoconliqui)
     const mepMedian =
+      sanitizePositive(params.preferredMepMedian) ??
       computeMedian(liveMepRates) ??
       computeMedian(bondMepPriorityRates) ??
       computeMedian(bondMepOtherRates) ??
       sanitizePositive(params.fallbackMep);
     const cclMedian =
+      sanitizePositive(params.preferredCclMedian) ??
       computeMedian(liveCclRates) ??
       computeMedian(bondCclPriorityRates) ??
       computeMedian(bondCclOtherRates) ??
@@ -3822,7 +4271,14 @@ export class ArgentinaMarketRuntime {
       const byma = bymaMap.get(meta.ticker);
       const d912 = d912Map.get(meta.ticker);
       const primary = byma ?? d912;
-      const source = byma !== undefined ? 'OPEN_BYMA' : d912 !== undefined ? 'DATA912' : 'NONE';
+      const source =
+        primary?.quoteSource === 'BMB_HOMEBROKER_BRIDGE' && primary.last !== null
+          ? 'BMB_HOMEBROKER'
+          : byma !== undefined
+            ? 'OPEN_BYMA'
+            : d912 !== undefined
+              ? 'DATA912'
+              : 'NONE';
 
       const last = primary?.last ?? d912?.last ?? null;
       const prevClose = primary?.prevClose ?? d912?.prevClose ?? null;
@@ -3907,6 +4363,7 @@ export class ArgentinaMarketRuntime {
         arbitrageSignal: parity.arbitrageSignal,
         sparkline: [prevClose, low, high, last].filter((v): v is number => v !== null && Number.isFinite(v)),
         source,
+        quoteAsOfUtcSec: primary?.quoteAsOfUtcSec ?? d912?.quoteAsOfUtcSec ?? null,
       };
     });
   }
@@ -3992,7 +4449,8 @@ export class ArgentinaMarketRuntime {
         sparkline: [row?.prevClose ?? null, row?.low ?? null, row?.high ?? null, last].filter(
           (v): v is number => v !== null && Number.isFinite(v),
         ),
-        source: row !== undefined ? 'DATA912' : 'NONE',
+        source: row?.quoteSource === 'BMB_HOMEBROKER_BRIDGE' ? 'BMB_HOMEBROKER' : row !== undefined ? 'DATA912' : 'NONE',
+        quoteAsOfUtcSec: row?.quoteAsOfUtcSec ?? null,
       };
     });
   }
@@ -4071,7 +4529,13 @@ export class ArgentinaMarketRuntime {
             : null,
         mepImplicit: sanitizeFinite(mepImplicit),
         cclImplicit: sanitizeFinite(cclImplicit),
-        source: rowD !== undefined || rowArs !== undefined ? 'DATA912' : 'NONE',
+        source:
+          rowD?.quoteSource === 'BMB_HOMEBROKER_BRIDGE' || rowArs?.quoteSource === 'BMB_HOMEBROKER_BRIDGE'
+            ? 'BMB_HOMEBROKER'
+            : rowD !== undefined || rowArs !== undefined
+              ? 'DATA912'
+              : 'NONE',
+        quoteAsOfUtcSec: rowD?.quoteAsOfUtcSec ?? rowArs?.quoteAsOfUtcSec ?? null,
       };
     });
   }
@@ -4172,7 +4636,9 @@ export class ArgentinaMarketRuntime {
           this.fetchBcraAndArgDatos(forceRefresh),
         ]);
 
-        const bymaMerged = [...bymaBlueRes.rows, ...bymaGeneralRes.rows];
+        const bmbSnap = await this.bmbClient.getSnapshot(undefined, null, forceRefresh);
+        this.lastBmbSnapshot = bmbSnap;
+        let bymaMerged: readonly NormalizedQuoteRow[] = [...bymaBlueRes.rows, ...bymaGeneralRes.rows];
         const liveData912Ok =
           hasPositiveLast(stocksRes.rows) ||
           hasPositiveLast(bondsRes.rows) ||
@@ -4218,9 +4684,9 @@ export class ArgentinaMarketRuntime {
             : Promise.resolve([] as readonly NormalizedQuoteRow[]),
         ]);
 
-        const effectiveStocks = eodStocks.length > 0 ? eodStocks : stocksRes.rows;
-        const effectiveCedears = eodCedears.length > 0 ? eodCedears : cedearsRes.rows;
-        const effectiveBonds =
+        let effectiveStocks = eodStocks.length > 0 ? eodStocks : stocksRes.rows;
+        let effectiveCedears = eodCedears.length > 0 ? eodCedears : cedearsRes.rows;
+        let effectiveBonds =
           eodBonds.length > 0
             ? eodBonds
             : eodParityBonds.length > 0
@@ -4229,6 +4695,24 @@ export class ArgentinaMarketRuntime {
                   ...eodParityBonds.filter((p) => !bondPosSet.has(p.symbol)),
                 ]
               : bondsRes.rows;
+        const bmbStockMerge = mergeBmbNormalizedRows(effectiveStocks, bmbSnap, nowSec);
+        const bmbCedearMerge = mergeBmbNormalizedRows(effectiveCedears, bmbSnap, nowSec);
+        const bmbBondMerge = mergeBmbNormalizedRows(effectiveBonds, bmbSnap, nowSec);
+        const bmbBymaMerge = mergeBmbNormalizedRows(bymaMerged, bmbSnap, nowSec);
+        effectiveStocks = bmbStockMerge.rows;
+        effectiveCedears = bmbCedearMerge.rows;
+        effectiveBonds = bmbBondMerge.rows;
+        bymaMerged = bmbBymaMerge.rows;
+        const bmbLiveActive =
+          bmbStockMerge.hasLiveActivity ||
+          bmbCedearMerge.hasLiveActivity ||
+          bmbBondMerge.hasLiveActivity ||
+          bmbBymaMerge.hasLiveActivity;
+        const bmbLiveLast =
+          bmbStockMerge.hasLiveLast ||
+          bmbCedearMerge.hasLiveLast ||
+          bmbBondMerge.hasLiveLast ||
+          bmbBymaMerge.hasLiveLast;
         const usedEodFallback =
           eodStocks.length > 0 || eodCedears.length > 0 || eodBonds.length > 0;
 
@@ -4279,6 +4763,36 @@ export class ArgentinaMarketRuntime {
           }
         }
 
+        const bmbCclRates: number[] = [];
+        const bmbMepRates: number[] = [];
+        if (bmbLiveLast) {
+          const liveStockMap = new Map(effectiveStocks.map((row) => [row.symbol, row]));
+          const liveCedearMap = new Map(effectiveCedears.map((row) => [row.symbol, row]));
+          const liveBondMap = new Map(effectiveBonds.map((row) => [row.symbol, row]));
+          const adrMap = new Map(adrsRes.rows.map((row) => [row.symbol, row]));
+          const usaMap = new Map(usaStocksRes.rows.map((row) => [row.symbol, row]));
+          for (const meta of AR_STOCK_META) {
+            const local = liveStockMap.get(meta.ticker);
+            if (local?.quoteSource !== 'BMB_HOMEBROKER_BRIDGE' || local.last === null || local.last <= 0 || meta.adrTicker === undefined || meta.adrRatio === undefined) continue;
+            const usd = adrMap.get(meta.adrTicker)?.last ?? usaMap.get(meta.adrTicker)?.last ?? null;
+            if (usd !== null && usd > 0) bmbCclRates.push((local.last * meta.adrRatio) / usd);
+          }
+          for (const [ticker, info] of Object.entries(CEDEAR_RATIOS)) {
+            const local = liveCedearMap.get(ticker);
+            if (local?.quoteSource !== 'BMB_HOMEBROKER_BRIDGE' || local.last === null || local.last <= 0) continue;
+            const usd = usaMap.get(info.usTicker)?.last ?? adrMap.get(info.usTicker)?.last ?? null;
+            if (usd !== null && usd > 0) bmbCclRates.push((local.last * info.ratio) / usd);
+          }
+          for (const base of ['AL30', 'GD30', 'AL35', 'GD35']) {
+            const ars = liveBondMap.get(base);
+            if (ars?.quoteSource !== 'BMB_HOMEBROKER_BRIDGE' || ars.last === null || ars.last <= 0) continue;
+            const usdC = liveBondMap.get(`${base}C`)?.last ?? null;
+            const usdD = liveBondMap.get(`${base}D`)?.last ?? null;
+            if (usdC !== null && usdC > 0) bmbCclRates.push(ars.last / usdC);
+            if (usdD !== null && usdD > 0) bmbMepRates.push(ars.last / usdD);
+          }
+        }
+
         const matrix = this.computeMepCclMatrix({
           mepRows: mepRes.rows,
           cclRows: cclRes.rows,
@@ -4289,6 +4803,8 @@ export class ArgentinaMarketRuntime {
           argBonds: effectiveBonds,
           fallbackMep,
           fallbackCcl,
+          preferredMepMedian: computeMedian(bmbMepRates),
+          preferredCclMedian: computeMedian(bmbCclRates),
         });
 
         const useBymaFallback = bymaMerged.length === 0;
@@ -4385,23 +4901,26 @@ export class ArgentinaMarketRuntime {
           eodStocks.length > 0 ||
           eodCedears.length > 0 ||
           eodBonds.length > 0;
-        const feedStatus: FeedStatus = !data912Ok && !openBymaOk
-          ? 'NO_DATA'
-          : openBymaOk && liveData912Ok
-            ? 'LIVE'
-            : liveData912Ok
-              ? 'DIFERIDO_20M'
-              : openBymaOk
-                ? 'PARTIAL'
-                : usedEodFallback
-                  ? 'EOD_CIERRE'
-                  : 'NO_DATA';
+        const feedStatus: FeedStatus = bmbLiveActive
+          ? 'LIVE'
+          : !data912Ok && !openBymaOk
+            ? 'NO_DATA'
+            : openBymaOk && liveData912Ok
+              ? 'LIVE'
+              : liveData912Ok
+                ? 'DIFERIDO_20M'
+                : openBymaOk
+                  ? 'PARTIAL'
+                  : usedEodFallback
+                    ? 'EOD_CIERRE'
+                    : 'NO_DATA';
 
         const mktState = getArgentinaMarketState(nowSec);
 
         return {
           asOfUtcSec: nowSec,
           feedStatus,
+          sourceMode: bmbLiveActive ? 'LIVE_BMB' : 'DATA912',
           data912Status: data912Ok ? 'OK' : 'ERROR',
           openBymaStatus: openBymaOk ? 'OK' : 'DEGRADED',
           marketState: mktState.state,
@@ -4420,7 +4939,21 @@ export class ArgentinaMarketRuntime {
       { forceRefresh },
     );
 
-    return cached.value as ArOverviewResponse;
+    const core = cached.value as ArOverviewResponse;
+    const previous = this.lastOverview;
+    this.lastOverview = {
+      ...core,
+      ...(previous === null
+        ? {}
+        : {
+            atmIvPct: previous.atmIvPct ?? null,
+            atmIvExpiryCode: previous.atmIvExpiryCode ?? null,
+            atmIvExpiryLabel: previous.atmIvExpiryLabel ?? null,
+            atmIvDaysToExpiry: previous.atmIvDaysToExpiry ?? null,
+            atmIvRateTnaPct: previous.atmIvRateTnaPct ?? null,
+          }),
+    };
+    return core;
   }
 
   public async getOverview(forceRefresh = false): Promise<ArOverviewResponse> {
@@ -4456,7 +4989,9 @@ export class ArgentinaMarketRuntime {
       { forceRefresh },
     );
 
-    return cached.value as ArOverviewResponse;
+    const overview = cached.value as ArOverviewResponse;
+    this.lastOverview = overview;
+    return this.applyCurrentBmbToOverview(overview, this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient.getCachedSnapshot() : this.lastBmbSnapshot);
   }
 
   public async getMacro(forceRefresh = false): Promise<ArMacroResponse> {
@@ -4681,7 +5216,9 @@ export class ArgentinaMarketRuntime {
       { forceRefresh },
     );
 
-    return cached.value as ArMacroResponse;
+    const macro = cached.value as ArMacroResponse;
+    this.lastMacro = macro;
+    return macro;
   }
 
   public async getMonitoring(
@@ -4702,8 +5239,9 @@ export class ArgentinaMarketRuntime {
       macroData.variables.badlarTna,
       forceRefresh,
     );
+    this.lastBmbSnapshot = bmbSnap;
 
-    let effectiveBondRows = bondsRes.rows;
+    let effectiveBondRows = mergeBmbNormalizedRows(bondsRes.rows, bmbSnap, nowSec).rows;
     if (!hasPositiveLast(effectiveBondRows)) {
       const eodBonds = await this.populateEodRowsFromHistorical(
         'bonds',
@@ -4734,11 +5272,12 @@ export class ArgentinaMarketRuntime {
         ask: sanitizeFinite(r.ask),
         deltaPct: sanitizeFinite(r.deltaPct),
         volumeM: r.volumeArs !== null ? sanitizeFinite(r.volumeArs / 1_000_000) : null,
-        source: 'DATA912',
+        source: r.quoteSource === 'BMB_HOMEBROKER_BRIDGE' ? 'BMB_HOMEBROKER' : 'DATA912',
+        quoteAsOfUtcSec: r.quoteAsOfUtcSec ?? null,
       }));
 
-    const notes = mapNoteOrCorp(notesRes.rows, 'LECAP_BONCAP');
-    const corps = mapNoteOrCorp(corpRes.rows, 'ON_CORP');
+    const notes = mapNoteOrCorp(mergeBmbNormalizedRows(notesRes.rows, bmbSnap, nowSec).rows, 'LECAP_BONCAP');
+    const corps = mapNoteOrCorp(mergeBmbNormalizedRows(corpRes.rows, bmbSnap, nowSec).rows, 'ON_CORP');
     const caucionesCurve = buildCaucionesLiquidityCurve({
       bmbSnapshot: bmbSnap,
       tpmTna: macroData.variables.tpmTna,
@@ -4784,9 +5323,10 @@ export class ArgentinaMarketRuntime {
       providerErrors.push(...cedEnrichment.errors);
     }
 
-    return {
+    const response: ArMonitoringResponse = {
       asOfUtcSec: nowSec,
       feedStatus: overview.feedStatus,
+      sourceMode: overview.sourceMode ?? (caucionesCurve.status === 'LIVE_BMB' ? 'LIVE_BMB' : 'DATA912'),
       panel,
       providerErrors,
       stocks: enrichedMerval,
@@ -4804,6 +5344,9 @@ export class ArgentinaMarketRuntime {
       arPanelAnalytics,
       usEquityPanel,
     };
+    this.lastMonitoring = response;
+    this.lastOverview = overview;
+    return response;
   }
 
   private recordAndResolvePriorSmile(

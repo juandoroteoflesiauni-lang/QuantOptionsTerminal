@@ -227,6 +227,11 @@ import {
   computeDynamicTtlMs,
   redactSecrets,
 } from './runtimeCache.js';
+import {
+  getUsLiveSession,
+  MassiveStocksStream,
+  type MarketTickQuote,
+} from './massiveStocksStream.js';
 
 export const DEFAULT_TERMINAL_SYMBOLS = ['SPY', 'QQQ', 'I:SPX'] as const;
 
@@ -3006,6 +3011,8 @@ export class MarketRuntime {
 
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
+  private massiveStocksStream: MassiveStocksStream | null = null;
+  private lastUsPanelBase: EquityPanelAnalyticsDto | null = null;
   private readonly liveStates1m = new Map<string, LiveBarState>();
   private readonly closedInputs1m = new Map<
     string,
@@ -3473,9 +3480,15 @@ export class MarketRuntime {
     this.watchedSymbols = deps.watchedSymbols ?? [...DEFAULT_TERMINAL_SYMBOLS];
 
     const ttlResolver = deps.ttlResolver ?? computeDynamicTtlMs;
+    const quoteTtlResolver =
+      deps.ttlResolver ??
+      ((nowMs: number): number => {
+        const baseline = computeDynamicTtlMs(nowMs);
+        return getUsLiveSession(nowMs) === 'CLOSED' ? baseline : Math.min(baseline, 1_500);
+      });
     this.snapshotCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
-      ttlResolver,
+      ttlResolver: quoteTtlResolver,
     });
     this.barsCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
@@ -3495,11 +3508,11 @@ export class MarketRuntime {
     });
     this.unifiedCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
-      ttlResolver,
+      ttlResolver: quoteTtlResolver,
     });
     this.stocksV2Cache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
-      ttlResolver,
+      ttlResolver: quoteTtlResolver,
     });
     this.nyfedSofrCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
@@ -3579,7 +3592,7 @@ export class MarketRuntime {
       hasApiKey: this.apiKey.trim() !== '',
       watchedSymbols: this.watchedSymbols,
       ws: {
-        stocks: this.stockWsClient?.getSnapshot() ?? null,
+        stocks: this.stockWsClient?.getSnapshot() ?? this.massiveStocksStream?.getWsSnapshot() ?? null,
         options: this.optionsWsClient?.getSnapshot() ?? null,
         subscribedOptionQuotes: this.subscribedOptionContracts.size,
       },
@@ -3617,63 +3630,58 @@ export class MarketRuntime {
     if (!this.enableWs || this.apiKey.trim() === '') {
       return;
     }
-
-    const stockChannels: string[] = [];
-    for (const sym of this.watchedSymbols) {
-      const parsed = parseTerminalSymbol(sym, this.secrets);
-      if (!parsed.isIndex) {
-        stockChannels.push(
-          `T.${parsed.canonicalSymbol}`,
-          `A.${parsed.canonicalSymbol}`,
-          `AM.${parsed.canonicalSymbol}`,
-        );
-      }
+    if (this.massiveStocksStream !== null) {
+      await this.massiveStocksStream.start();
+      return;
     }
 
-    if (this.stockWsClient === null && stockChannels.length > 0) {
-      const client = this.createWsClientFn({
-        apiKey: this.apiKey,
-        cluster: 'stocks',
-        initialSubscriptions: stockChannels,
-        autoReconnect: true,
-        onEvents: (events: readonly WsNormalizedEvent[]) => {
-          this.handleStockWsEvents(events);
-        },
-        onStateChange: (state: WsConnectionState) => {
-          this.emitBroadcast({
-            type: 'status',
-            cluster: 'stocks',
-            state,
-            message: `stocks ws state: ${state}`,
-            time: Math.floor(this.nowMsFn() / 1_000),
-          });
-        },
-        onError: (err: WsClientError) => {
-          this.emitBroadcast({
-            type: 'status',
-            cluster: 'stocks',
-            state: 'error',
-            message: redactSecrets(err.message, this.secrets),
-            time: Math.floor(this.nowMsFn() / 1_000),
-          });
-        },
-      });
-      this.stockWsClient = client;
-      try {
-        await client.connect();
-      } catch (err: unknown) {
+    const symbols = [
+      ...new Set([
+        ...US_EQUITY_UNIVERSE.map((item) => item.symbol),
+        ...this.watchedSymbols.map((symbol) => symbol.trim().toUpperCase()),
+        'SPY',
+        'QQQ',
+        'IWM',
+        'DIA',
+        'I:VIX',
+      ]),
+    ];
+    const stream = new MassiveStocksStream({
+      apiKey: this.apiKey,
+      symbols,
+      fetchFn: this.fetchFn,
+      createWsClientFn: this.createWsClientFn,
+      nowMsFn: this.nowMsFn,
+      ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+      onEvents: (events) => {
+        this.handleStockWsEvents(events);
+      },
+      onStateChange: (state) => {
+        this.emitBroadcast({
+          type: 'status',
+          cluster: 'stocks',
+          state,
+          message: `stocks ws state: ${state}`,
+          time: Math.floor(this.nowMsFn() / 1_000),
+        });
+      },
+      onError: (message) => {
         this.emitBroadcast({
           type: 'status',
           cluster: 'stocks',
           state: 'error',
-          message: redactSecrets(extractErrorMessage(err, 'stocks ws connect error'), this.secrets),
+          message: redactSecrets(message, this.secrets),
           time: Math.floor(this.nowMsFn() / 1_000),
         });
-      }
-    }
+      },
+    });
+    this.massiveStocksStream = stream;
+    await stream.start();
   }
 
   public stopWs(): void {
+    this.massiveStocksStream?.stop();
+    this.massiveStocksStream = null;
     if (this.stockWsClient !== null) {
       this.stockWsClient.close(1000, 'server_shutdown');
       this.stockWsClient = null;
@@ -3907,6 +3915,129 @@ export class MarketRuntime {
     }
   }
 
+  public getLiveUsQuotes(): readonly MarketTickQuote[] {
+    const bySymbol = new Map<string, MarketTickQuote>();
+    const panel = this.lastUsPanelBase;
+    if (panel !== null) {
+      for (const row of panel.rows) {
+        if (row.last === null || !Number.isFinite(row.last) || row.last <= 0) continue;
+        bySymbol.set(row.symbol, {
+          market: 'US',
+          symbol: row.symbol,
+          kind: 'stock',
+          currency: 'USD',
+          price: row.last,
+          previousClose: row.prevClose,
+          changePct: row.return1dPct,
+          dayLow: row.dayLow,
+          dayHigh: row.dayHigh,
+          volume: null,
+          turnover:
+            row.tradedVolumeUsd !== undefined && row.tradedVolumeUsd !== null
+              ? row.tradedVolumeUsd
+              : row.volumeM !== null
+                ? row.volumeM * 1_000_000
+                : null,
+          asOfUtcSec: panel.asOfUtcSec,
+          source: 'MASSIVE_PANEL',
+        });
+      }
+    }
+    for (const quote of this.massiveStocksStream?.getQuotes() ?? []) {
+      bySymbol.set(quote.symbol, quote);
+    }
+    return [...bySymbol.values()];
+  }
+
+  public getUsLiveSourceMode(): 'MASSIVE_WS' | 'MASSIVE_BATCH' | 'NO_DATA' {
+    const streamMode = this.massiveStocksStream?.getDiagnostics().sourceMode;
+    if (streamMode !== undefined) return streamMode;
+    return this.lastUsPanelBase !== null ? 'MASSIVE_BATCH' : 'NO_DATA';
+  }
+
+  private overlayLiveUsPanel(base: EquityPanelAnalyticsDto): EquityPanelAnalyticsDto {
+    const liveBySymbol = new Map(
+      (this.massiveStocksStream?.getQuotes() ?? []).map((quote) => [quote.symbol, quote]),
+    );
+    if (liveBySymbol.size === 0) return base;
+    let asOfUtcSec = base.asOfUtcSec;
+    const rows = base.rows.map((row) => {
+      const live = liveBySymbol.get(row.symbol);
+      if (live === undefined) return row;
+      asOfUtcSec = Math.max(asOfUtcSec, live.asOfUtcSec);
+      const dayRangePos =
+        live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
+          ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
+          : null;
+      return {
+        ...row,
+        last: live.price,
+        prevClose: live.previousClose ?? row.prevClose,
+        dayLow: live.dayLow ?? row.dayLow,
+        dayHigh: live.dayHigh ?? row.dayHigh,
+        dayRangePos,
+        volumeM: live.turnover !== null ? live.turnover / 1_000_000 : row.volumeM,
+        tradedVolumeUsd: live.turnover ?? row.tradedVolumeUsd ?? null,
+        return1dPct: live.changePct ?? row.return1dPct,
+      };
+    });
+    return {
+      ...base,
+      asOfUtcSec,
+      rows,
+      topGainers: rows
+        .filter((row) => row.return1dPct !== null && row.return1dPct > 0)
+        .sort((a, b) => (b.return1dPct ?? 0) - (a.return1dPct ?? 0))
+        .slice(0, 8),
+      topLosers: rows
+        .filter((row) => row.return1dPct !== null && row.return1dPct < 0)
+        .sort((a, b) => (a.return1dPct ?? 0) - (b.return1dPct ?? 0))
+        .slice(0, 8),
+    };
+  }
+
+  private overlayLiveSnapshot(base: TerminalSnapshotResponse): TerminalSnapshotResponse {
+    const liveBySymbol = new Map(
+      (this.massiveStocksStream?.getQuotes() ?? []).map((quote) => [quote.symbol, quote]),
+    );
+    if (liveBySymbol.size === 0) return base;
+    const unifiedQuotes = base.marketContext.unifiedQuotes.map((quote) => {
+      const live = liveBySymbol.get(quote.ticker.toUpperCase());
+      if (live === undefined) return quote;
+      return {
+        ...quote,
+        price: live.price,
+        change:
+          live.previousClose !== null && live.previousClose > 0
+            ? live.price - live.previousClose
+            : quote.change,
+        changePct: live.changePct,
+        previousClose: live.previousClose ?? quote.previousClose,
+        dayLow: live.dayLow ?? quote.dayLow,
+        dayHigh: live.dayHigh ?? quote.dayHigh,
+        dayRangePos:
+          live.dayLow !== null && live.dayHigh !== null && live.dayHigh > live.dayLow
+            ? Math.max(0, Math.min(1, (live.price - live.dayLow) / (live.dayHigh - live.dayLow)))
+            : null,
+        volume: live.volume ?? quote.volume,
+        volumeM: live.turnover !== null ? live.turnover / 1_000_000 : quote.volumeM,
+        tradedVolumeUsd: live.turnover ?? quote.tradedVolumeUsd ?? null,
+      };
+    });
+    const vix = liveBySymbol.get('I:VIX');
+    return {
+      ...base,
+      marketContext: {
+        ...base.marketContext,
+        unifiedQuotes,
+        vixLevel: vix?.price ?? base.marketContext.vixLevel,
+      },
+      ...(base.usEquityPanel !== undefined && base.usEquityPanel !== null
+        ? { usEquityPanel: this.overlayLiveUsPanel(base.usEquityPanel) }
+        : {}),
+    };
+  }
+
   public async getSnapshot(
     rawSymbol: string,
     options: { readonly forceRefresh?: boolean } = {},
@@ -3918,7 +4049,7 @@ export class MarketRuntime {
       () => this.computeSnapshot(parsed),
       options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh },
     );
-    return result.value;
+    return this.overlayLiveSnapshot(result.value);
   }
 
   private async getUsStocksV2Batch(
@@ -6343,7 +6474,8 @@ export class MarketRuntime {
       },
       { forceRefresh },
     );
-    return cached.value;
+    this.lastUsPanelBase = cached.value;
+    return this.overlayLiveUsPanel(cached.value);
   }
 }
 

@@ -29,6 +29,7 @@ import {
 import { redactSecrets } from './runtimeCache.js';
 
 export const BMB_MIN_POLL_INTERVAL_MS = 1_500;
+export const BMB_LIVE_LOOP_INTERVAL_MS = 2_500;
 export const BMB_L2_STALE_THRESHOLD_SEC = 20;
 export const BMB_OUT_OF_SESSION_REASON = 'ARMED_OUT_OF_SESSION' as const;
 
@@ -219,6 +220,10 @@ export class BmbFeedAdapter {
   private lastPollStartedMs: number | null = null;
   private lastHealth: BmbConnectorHealthDto;
   private processError: string | null = null;
+  private liveLoopTimer: ReturnType<typeof setTimeout> | null = null;
+  private liveLoopRunning = false;
+  private liveLoopSymbols: readonly string[] = [];
+  private nextPrimeIndex = 0;
 
   public constructor(deps: BmbFeedAdapterDeps = {}) {
     this.env = deps.env ?? process.env;
@@ -308,6 +313,7 @@ export class BmbFeedAdapter {
       BMB_USERNAME: cfg.username,
       BMB_PASSWORD: cfg.password,
       BMB_ACCOUNT: cfg.account,
+      ...(this.env['BMB_LEADERS'] !== undefined ? { BMB_LEADERS: this.env['BMB_LEADERS'] } : {}),
       BMB_BRIDGE_HOST: endpoint.host,
       BMB_BRIDGE_PORT: String(endpoint.port),
     };
@@ -504,6 +510,53 @@ export class BmbFeedAdapter {
     }
   }
 
+  private isLiveLoopActive(): boolean {
+    return this.liveLoopRunning;
+  }
+
+  /**
+   * Starts the productive BYMA loop explicitly from the server lifecycle.
+   * Dynamic symbol priming asks the local bridge to subscribe additional books;
+   * ordinary polls always retain the complete, unfiltered snapshot in memory.
+   */
+  public startLiveLoop(symbols: readonly string[] = []): void {
+    if (this.liveLoopRunning) return;
+    this.liveLoopRunning = true;
+    this.liveLoopSymbols = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter((s) => s !== ''))];
+    this.nextPrimeIndex = 0;
+    const run = async (): Promise<void> => {
+      if (!this.liveLoopRunning) return;
+      const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));
+      try {
+        if (inSession) {
+          const symbol = this.liveLoopSymbols[this.nextPrimeIndex];
+          if (symbol !== undefined) {
+            this.nextPrimeIndex += 1;
+            await this.delegate.getSnapshot(symbol, null, true);
+          }
+          await this.getSnapshot(undefined, null, true);
+        } else if (this.lastSnapshot !== null || this.child !== null) {
+          await this.getSnapshot(undefined, null, false);
+        }
+      } catch (err: unknown) {
+        this.processError = redactSecrets(err instanceof Error ? err.message : String(err), this.secrets);
+      } finally {
+        if (this.isLiveLoopActive()) {
+          this.liveLoopTimer = setTimeout(() => {
+            void run();
+          }, inSession ? BMB_LIVE_LOOP_INTERVAL_MS : 5_000);
+          this.liveLoopTimer.unref();
+        }
+      }
+    };
+    void run();
+  }
+
+  public getCachedSnapshot(): BmbBridgeSnapshotDto | null {
+    if (!isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000))) return null;
+    return this.lastSnapshot;
+  }
+
   public getCachedOrderBook(symbol = 'GGAL'): BmbBridgeBookEntry | null {
     if (!isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000))) {
       return null;
@@ -525,6 +578,11 @@ export class BmbFeedAdapter {
   }
 
   public stop(): void {
+    this.liveLoopRunning = false;
+    if (this.liveLoopTimer !== null) clearTimeout(this.liveLoopTimer);
+    this.liveLoopTimer = null;
+    this.liveLoopSymbols = [];
+    this.nextPrimeIndex = 0;
     this.stopProcess();
     this.inFlight = null;
     this.lastSnapshot = null;
