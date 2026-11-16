@@ -62,6 +62,7 @@ export interface BmbConfig {
 export interface OrderBookLevel {
   readonly price: number;
   readonly size: number;
+  readonly orderCount?: number | null;
 }
 
 export interface OrderBookL2Metrics {
@@ -246,16 +247,33 @@ export interface BmbOptionRowDto {
   readonly symbol: string;
   readonly underlying: string | null;
   readonly bid: number | null;
+  readonly bidSize: number | null;
   readonly ask: number | null;
+  readonly askSize: number | null;
   readonly last: number | null;
   readonly volume: number | null;
   readonly turnover: number | null;
+  readonly varPct: number | null;
   readonly asOfUtcSec: number | null;
+}
+
+export interface BmbTradeRowDto {
+  readonly sequence: number;
+  readonly symbol: string;
+  readonly timeSec: number;
+  readonly price: number;
+  readonly size: number;
+  readonly side: 'BUY' | 'SELL' | 'UNKNOWN';
+  readonly buyVolume: number | null;
+  readonly sellVolume: number | null;
+  readonly attributableToLast?: boolean;
 }
 
 export interface BmbConnectorHealthDto {
   readonly status:
     | 'READY'
+    | 'CONNECTED_L2'
+    | 'OUT_OF_SESSION'
     | 'MISSING_DEPENDENCY'
     | 'DISABLED_NO_PASSWORD'
     | 'CONNECTING'
@@ -281,6 +299,7 @@ export interface BmbBridgeSnapshotDto {
   readonly cauciones: readonly BmbCaucionRowDto[];
   readonly orderBooksBySymbol: Readonly<Record<string, BmbBridgeBookEntry>>;
   readonly options: readonly BmbOptionRowDto[];
+  readonly tradesBySymbol?: Readonly<Record<string, readonly BmbTradeRowDto[]>>;
 }
 
 export interface PrimaryConnectorHealthDto {
@@ -456,9 +475,9 @@ export function loadBmbConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BmbC
   const parsedBroker = Number(rawBroker);
   const brokerId = Number.isInteger(parsedBroker) && parsedBroker > 0 ? parsedBroker : 153;
   const dni = (env['BMB_DNI'] ?? '').trim();
-  const username = (env['BMB_USERNAME'] ?? '').trim();
-  const password = (env['BMB_PASSWORD'] ?? '').trim();
-  const account = (env['BMB_ACCOUNT'] ?? '').trim();
+  const username = (env['BMB_USERNAME'] ?? env['BMB_USER'] ?? '').trim();
+  const password = (env['BMB_PASSWORD'] ?? env['BMB_PASS'] ?? '').trim();
+  const account = (env['BMB_ACCOUNT'] ?? env['BMB_COMITENTE'] ?? '').trim();
 
   return {
     bridgeUrl: bridgeUrl || DEFAULT_BMB_BRIDGE_URL,
@@ -479,8 +498,12 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'PRIMARY_PASSWORD',
     'PRIMARY_USERNAME',
     'BMB_PASSWORD',
+    'BMB_PASS',
     'BMB_DNI',
     'BMB_USERNAME',
+    'BMB_USER',
+    'BMB_ACCOUNT',
+    'BMB_COMITENTE',
   ] as const;
   const out = new Set<string>();
   for (const key of names) {
@@ -782,9 +805,16 @@ function parseDepthLevels(raw: unknown): readonly OrderBookLevel[] {
       continue;
     }
     const price = readNum(item, ['price']);
-    const size = readNum(item, ['size']) ?? 0;
-    if (price !== null && Number.isFinite(price) && price > 0 && Number.isFinite(size) && size >= 0) {
-      out.push({ price, size });
+    const size = readNum(item, ['size']);
+    const orderCount = readNum(item, ['orderCount', 'orders', 'order_count']);
+    if (price !== null && price > 0 && size !== null && size >= 0) {
+      out.push({
+        price,
+        size,
+        ...(orderCount !== null && Number.isInteger(orderCount) && orderCount >= 0
+          ? { orderCount }
+          : {}),
+      });
     }
   }
   return out;
@@ -1866,6 +1896,8 @@ export class BmbBridgeClient {
           const status = (
             [
               'READY',
+              'CONNECTED_L2',
+              'OUT_OF_SESSION',
               'MISSING_DEPENDENCY',
               'DISABLED_NO_PASSWORD',
               'CONNECTING',
@@ -1944,12 +1976,62 @@ export class BmbBridgeClient {
               symbol: optSym.toUpperCase(),
               underlying: readStr(item, ['underlying'])?.toUpperCase() ?? null,
               bid: readNum(item, ['bid']),
+              bidSize: readNum(item, ['bidSize', 'bid_size', 'bidsize', 'q_bid']),
               ask: readNum(item, ['ask']),
+              askSize: readNum(item, ['askSize', 'ask_size', 'asksize', 'q_ask']),
               last: readNum(item, ['last']),
               volume: readNum(item, ['volume']),
               turnover: readNum(item, ['turnover']),
+              varPct: readNum(item, ['varPct', 'changePct', 'pct_change', 'variation']),
               asOfUtcSec: toUtcSecFromMixed(readNum(item, ['asOfUtcSec'])),
             });
+          }
+
+          const tradesBySymbol: Record<string, readonly BmbTradeRowDto[]> = {};
+          if (isPlainRecord(raw['tradesBySymbol'])) {
+            for (const [tradeSymbol, rawTrades] of Object.entries(raw['tradesBySymbol'])) {
+              if (!Array.isArray(rawTrades)) {
+                continue;
+              }
+              const parsedTrades: BmbTradeRowDto[] = [];
+              for (const item of rawTrades) {
+                if (!isPlainRecord(item)) {
+                  continue;
+                }
+                const sequence = readNum(item, ['sequence']);
+                const timeSec = toUtcSecFromMixed(readNum(item, ['timeSec']));
+                const price = readNum(item, ['price']);
+                const size = readNum(item, ['size']);
+                const sideRaw = (readStr(item, ['side']) ?? 'UNKNOWN').toUpperCase();
+                const side = sideRaw === 'BUY' || sideRaw === 'SELL' ? sideRaw : 'UNKNOWN';
+                if (
+                  sequence === null ||
+                  !Number.isInteger(sequence) ||
+                  sequence < 0 ||
+                  timeSec === null ||
+                  price === null ||
+                  price <= 0 ||
+                  size === null ||
+                  size < 0
+                ) {
+                  continue;
+                }
+                parsedTrades.push({
+                  sequence,
+                  symbol: readStr(item, ['symbol'])?.toUpperCase() ?? tradeSymbol.toUpperCase(),
+                  timeSec,
+                  price,
+                  size,
+                  side,
+                  buyVolume: readNum(item, ['buyVolume']),
+                  sellVolume: readNum(item, ['sellVolume']),
+                  ...(typeof item['attributableToLast'] === 'boolean'
+                    ? { attributableToLast: item['attributableToLast'] }
+                    : {}),
+                });
+              }
+              tradesBySymbol[tradeSymbol.toUpperCase()] = parsedTrades;
+            }
           }
 
           const errRaw = readStr(raw, ['error']);
@@ -1966,7 +2048,7 @@ export class BmbBridgeClient {
               (this.config.account !== '' ? `BMB ${this.config.account}` : null),
             pyhomebrokerInstalled: pyInstalled,
             passwordConfigured: this.config.passwordConfigured,
-            connected: status === 'READY',
+            connected: status === 'READY' || status === 'CONNECTED_L2',
             lastUpdateUtcSec: asOfUtcSec,
             counts: {
               cauciones: cauciones.length,
@@ -1981,6 +2063,7 @@ export class BmbBridgeClient {
             cauciones,
             orderBooksBySymbol: booksOut,
             options,
+            tradesBySymbol,
           };
         } catch (err: unknown) {
           const safeMsg = redactSecrets(

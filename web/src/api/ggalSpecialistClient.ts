@@ -577,6 +577,7 @@ export type ArFeedProviderId =
   | 'PRIMARY_MATRIZ_WS'
   | 'PPI_REST'
   | 'IOL_REST'
+  | 'BMB_HOMEBROKER_BRIDGE'
   | 'MAE_MARKETDATA_V1'
   | 'BYMA_CLEARING'
   | 'IAMC_ANEXO_B_PDF'
@@ -633,7 +634,7 @@ export type GgalL2LadderStateDto =
     }
   | {
       readonly available: false;
-      readonly reason: 'NON_L2_FEED_ACTIVE' | 'FEED_DISCONNECTED' | 'INVALID_BOOK_STATE';
+      readonly reason: 'NON_L2_FEED_ACTIVE' | 'FEED_DISCONNECTED' | 'INVALID_BOOK_STATE' | 'OUT_OF_SESSION';
       readonly activeProvider: ArFeedProviderId | null;
       readonly qualityTier: FeedQualityTier;
       readonly asOfUtcSec: number;

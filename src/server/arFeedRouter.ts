@@ -5,13 +5,14 @@
  *   1. PRIMARY_MATRIZ_WS       -> REALTIME_L2_TICK (L1-L5 order book, trades, DLR/* futures)
  *   2. PPI_REST                -> POLLING_L1_REST
  *   3. IOL_REST                -> POLLING_L1_REST
- *   4. MAE_MARKETDATA_V1       -> POLLING_L1_REST (official/wholesale FX rates)
- *   5. BYMA_CLEARING           -> Clearing margins & haircuts
- *   6. IAMC_ANEXO_B_PDF        -> Daily Open Interest (pre-09:00 ART PDF/JSON)
- *   7. DATA912_EOD_CONTINGENCY -> EOD_CONTINGENCY ONLY (never L2, never silently promoted)
+ *   4. BMB_HOMEBROKER_BRIDGE   -> REALTIME_L2_TICK (HomeBroker L1-L5 + BYMA options)
+ *   5. MAE_MARKETDATA_V1       -> POLLING_L1_REST (official/wholesale FX rates)
+ *   6. BYMA_CLEARING           -> Clearing margins & haircuts
+ *   7. IAMC_ANEXO_B_PDF        -> Daily Open Interest (pre-09:00 ART PDF/JSON)
+ *   8. DATA912_EOD_CONTINGENCY -> EOD_CONTINGENCY ONLY (never L2, never silently promoted)
  *
- * Zero Silent Fallbacks: whenever `PRIMARY_MATRIZ_WS` is absent, disconnected, or stale,
- * L2 ladder state fails closed to `{ available: false, reason: 'NON_L2_FEED_ACTIVE' }`.
+ * Zero Silent Fallbacks: whenever neither `PRIMARY_MATRIZ_WS` nor a configured
+ * `BMB_HOMEBROKER_BRIDGE` has a fresh real book, L2 ladder state fails closed.
  */
 
 import type {
@@ -24,6 +25,7 @@ import type {
   GgalL2OrderLevel,
 } from '../core/ggal/institutionalContracts.js';
 import type { OrderBook5LevelsDto } from './primaryRofexLoader.js';
+import { BMB_OUT_OF_SESSION_REASON, isBmbFeedConfigured } from './bmbFeedAdapter.js';
 import { redactSecrets } from './runtimeCache.js';
 
 export type ArRouterHttpFn = (
@@ -65,29 +67,36 @@ export const DEFAULT_AR_MARKET_FEED_ROUTER_CONFIG: ArMarketFeedRouterConfig = {
       staleThresholdSec: 60,
     },
     {
-      provider: 'MAE_MARKETDATA_V1',
+      provider: 'BMB_HOMEBROKER_BRIDGE',
       priority: 4,
+      role: 'L2_EQUITY_OPTIONS_WS',
+      supportsL2OrderBook: true,
+      staleThresholdSec: 20,
+    },
+    {
+      provider: 'MAE_MARKETDATA_V1',
+      priority: 5,
       role: 'MAE_FX_RATES',
       supportsL2OrderBook: false,
       staleThresholdSec: 120,
     },
     {
       provider: 'BYMA_CLEARING',
-      priority: 5,
+      priority: 6,
       role: 'CLEARING_MARGINS',
       supportsL2OrderBook: false,
       staleThresholdSec: 900,
     },
     {
       provider: 'IAMC_ANEXO_B_PDF',
-      priority: 6,
+      priority: 7,
       role: 'ANEXO_B_OI',
       supportsL2OrderBook: false,
       staleThresholdSec: 86400,
     },
     {
       provider: 'DATA912_EOD_CONTINGENCY',
-      priority: 7,
+      priority: 8,
       role: 'EOD_CONTINGENCY',
       supportsL2OrderBook: false,
       staleThresholdSec: 86400,
@@ -102,6 +111,7 @@ const ROLE_LABELS: Readonly<Record<ArFeedProviderId, string>> = {
   PRIMARY_MATRIZ_WS: 'Primary / Matriz WS (L2 Order Book 5 Puntas & DLR Futuros)',
   PPI_REST: 'PPI REST API (L1 Polling Contingencia)',
   IOL_REST: 'IOL REST API (L1 Polling Respaldo)',
+  BMB_HOMEBROKER_BRIDGE: 'Bull Market Brokers HomeBroker Bridge (GGAL L2 5 Puntas & Opciones BYMA)',
   MAE_MARKETDATA_V1: 'MAE MarketData v1 (FX Mayorista & Curva)',
   BYMA_CLEARING: 'BYMA Clearing (Garantías & Aforos)',
   IAMC_ANEXO_B_PDF: 'IAMC Anexo B PDF Diario (<09:00 ART)',
@@ -114,6 +124,11 @@ export interface ArFeedRuntimeTelemetryInput {
   readonly primaryConfigured: boolean;
   readonly primaryLastMsgUtcSec: number | null;
   readonly primaryError: string | null;
+  readonly bmbConfigured?: boolean;
+  readonly bmbConnected?: boolean;
+  readonly bmbLastMsgUtcSec?: number | null;
+  readonly bmbError?: string | null;
+  readonly bmbOutOfSession?: boolean;
   readonly ppiConfigured: boolean;
   readonly ppiHealthy: boolean;
   readonly ppiLastMsgUtcSec: number | null;
@@ -140,6 +155,7 @@ export interface ArFeedRuntimeTelemetryInput {
 
 export interface ArProviderEndpointsConfig {
   readonly matrizWsConfigured: boolean;
+  readonly bmbConfigured: boolean;
   readonly ppiBaseUrl: string | null;
   readonly ppiApiKey: string | null;
   readonly ppiApiSecret: string | null;
@@ -160,6 +176,13 @@ export function collectArFeedSecrets(env: NodeJS.ProcessEnv): readonly string[] 
     'PRIMARY_PASSWORD',
     'PRIMARY_USERNAME',
     'BMB_CLIENT_SECRET',
+    'BMB_PASSWORD',
+    'BMB_PASS',
+    'BMB_USERNAME',
+    'BMB_USER',
+    'BMB_DNI',
+    'BMB_ACCOUNT',
+    'BMB_COMITENTE',
     'PPI_API_KEY',
     'PPI_API_SECRET',
     'IOL_TOKEN',
@@ -186,15 +209,14 @@ export function loadArProviderEndpointsFromEnv(env: NodeJS.ProcessEnv): ArProvid
   const matrizUrl =
     clean(env['MATRIZ_WS_URL']) ??
     clean(env['PRIMARY_WS_URL']) ??
-    clean(env['PRIMARY_BASE_URL']) ??
-    clean(env['BMB_BASE_URL']);
+    clean(env['PRIMARY_BASE_URL']);
   const matrizCred =
     clean(env['MATRIZ_TOKEN']) ??
-    clean(env['PRIMARY_PASSWORD']) ??
-    clean(env['BMB_CLIENT_SECRET']);
+    clean(env['PRIMARY_PASSWORD']);
 
   return {
     matrizWsConfigured: matrizUrl !== null && matrizCred !== null,
+    bmbConfigured: isBmbFeedConfigured(env),
     ppiBaseUrl: clean(env['PPI_BASE_URL']),
     ppiApiKey: clean(env['PPI_API_KEY']),
     ppiApiSecret: clean(env['PPI_API_SECRET']),
@@ -260,6 +282,8 @@ export class ArFeedRouter {
         return this.endpoints.ppiBaseUrl !== null && this.endpoints.ppiApiKey !== null && this.endpoints.ppiApiSecret !== null;
       case 'IOL_REST':
         return this.endpoints.iolBaseUrl !== null && this.endpoints.iolToken !== null;
+      case 'BMB_HOMEBROKER_BRIDGE':
+        return this.endpoints.bmbConfigured;
       case 'MAE_MARKETDATA_V1':
         return this.endpoints.maeBaseUrl !== null && this.endpoints.maeApiKey !== null;
       case 'BYMA_CLEARING':
@@ -330,6 +354,19 @@ export class ArFeedRouter {
         'REALTIME_L2_TICK',
         input.primaryLastMsgUtcSec,
         input.primaryError,
+      ),
+    );
+    this.providerHealth.set(
+      'BMB_HOMEBROKER_BRIDGE',
+      buildEntry(
+        'BMB_HOMEBROKER_BRIDGE',
+        input.bmbConfigured ?? this.endpoints.bmbConfigured,
+        input.bmbOutOfSession === true ? false : (input.bmbConnected ?? false),
+        'REALTIME_L2_TICK',
+        input.bmbOutOfSession === true ? null : (input.bmbLastMsgUtcSec ?? null),
+        input.bmbOutOfSession === true
+          ? BMB_OUT_OF_SESSION_REASON
+          : (input.bmbError ?? null),
       ),
     );
     this.providerHealth.set(
@@ -412,6 +449,7 @@ export class ArFeedRouter {
 
     const byId = new Map(providers.map((p) => [p.provider, p]));
     const primary = byId.get('PRIMARY_MATRIZ_WS');
+    const bmb = byId.get('BMB_HOMEBROKER_BRIDGE');
     const ppi = byId.get('PPI_REST');
     const iol = byId.get('IOL_REST');
     const mae = byId.get('MAE_MARKETDATA_V1');
@@ -425,27 +463,40 @@ export class ArFeedRouter {
     let isContingencyEod = false;
     let degradationReason: string | null = null;
 
-    if (primary !== undefined && primary.connected && !primary.stale && primary.qualityTier === 'REALTIME_L2_TICK') {
+    if (bmb !== undefined && bmb.connected && !bmb.stale && bmb.qualityTier === 'REALTIME_L2_TICK') {
+      activePrimaryEquityProvider = 'BMB_HOMEBROKER_BRIDGE';
+      activeQualityTier = 'REALTIME_L2_TICK';
+      l2Available = true;
+    } else if (primary !== undefined && primary.connected && !primary.stale && primary.qualityTier === 'REALTIME_L2_TICK') {
       activePrimaryEquityProvider = 'PRIMARY_MATRIZ_WS';
       activeQualityTier = 'REALTIME_L2_TICK';
       l2Available = true;
+      degradationReason = bmb?.configured ? 'BMB_HOMEBROKER_BRIDGE_UNAVAILABLE_USING_PRIMARY_MATRIZ_WS' : null;
     } else if (ppi !== undefined && ppi.connected && !ppi.stale) {
       activePrimaryEquityProvider = 'PPI_REST';
       activeQualityTier = 'POLLING_L1_REST';
-      degradationReason = 'PRIMARY_MATRIZ_WS_UNAVAILABLE_DEGRADED_TO_PPI_REST';
+      degradationReason = bmb?.errorReason === BMB_OUT_OF_SESSION_REASON
+        ? 'BMB_HOMEBROKER_BRIDGE_OUT_OF_SESSION_DEGRADED_TO_PPI_REST'
+        : 'PRIMARY_MATRIZ_WS_UNAVAILABLE_DEGRADED_TO_PPI_REST';
     } else if (iol !== undefined && iol.connected && !iol.stale) {
       activePrimaryEquityProvider = 'IOL_REST';
       activeQualityTier = 'POLLING_L1_REST';
-      degradationReason = 'PRIMARY_MATRIZ_WS_UNAVAILABLE_DEGRADED_TO_IOL_REST';
+      degradationReason = bmb?.errorReason === BMB_OUT_OF_SESSION_REASON
+        ? 'BMB_HOMEBROKER_BRIDGE_OUT_OF_SESSION_DEGRADED_TO_IOL_REST'
+        : 'PRIMARY_MATRIZ_WS_UNAVAILABLE_DEGRADED_TO_IOL_REST';
     } else if (data912 !== undefined && data912.connected && !data912.stale) {
       activePrimaryEquityProvider = 'DATA912_EOD_CONTINGENCY';
       activeQualityTier = 'EOD_CONTINGENCY';
       isContingencyEod = true;
-      degradationReason = 'DEGRADED_TO_DATA912_EOD_CONTINGENCY_NO_L2';
+      degradationReason = bmb?.errorReason === BMB_OUT_OF_SESSION_REASON
+        ? 'BMB_HOMEBROKER_BRIDGE_OUT_OF_SESSION_DEGRADED_TO_DATA912_EOD'
+        : 'DEGRADED_TO_DATA912_EOD_CONTINGENCY_NO_L2';
     } else {
       activePrimaryEquityProvider = null;
       activeQualityTier = 'UNAVAILABLE';
-      degradationReason = primary?.errorReason ?? 'NO_AR_EQUITY_FEED_OPERATIONAL';
+      degradationReason = bmb?.errorReason === BMB_OUT_OF_SESSION_REASON
+        ? BMB_OUT_OF_SESSION_REASON
+        : (bmb?.configured ? bmb.errorReason : null) ?? primary?.errorReason ?? 'NO_AR_EQUITY_FEED_OPERATIONAL';
     }
 
     const activeFxFuturesProvider: ArFeedProviderId | null =
@@ -480,9 +531,9 @@ export class ArFeedRouter {
   }
 
   /**
-   * Resolves explicit 5-level L2 book state.
-   * Zero Silent Fallbacks: if the active equity feed is NOT `REALTIME_L2_TICK` on
-   * `PRIMARY_MATRIZ_WS`, always returns `{ available: false, reason: 'NON_L2_FEED_ACTIVE' }`.
+   * Resolves explicit 5-level L2 book state for Primary or BMB.
+   * Zero Silent Fallbacks: non-L2, stale, crossed-source and out-of-session states
+   * never borrow Data912 or another provider's levels.
    */
   public resolveL2LadderState(
     symbol: string,
@@ -491,10 +542,26 @@ export class ArFeedRouter {
   ): GgalL2LadderState {
     const status = this.getStatusSnapshot(asOfUtcSecOverride);
     const asOfUtcSec = status.asOfUtcSec;
+    const bmb = status.providers.find((p) => p.provider === 'BMB_HOMEBROKER_BRIDGE');
+
+    if (
+      bmb?.configured === true &&
+      bmb.errorReason === BMB_OUT_OF_SESSION_REASON
+    ) {
+      return {
+        available: false,
+        reason: 'OUT_OF_SESSION',
+        activeProvider: status.activePrimaryEquityProvider,
+        qualityTier: status.activeQualityTier,
+        asOfUtcSec,
+        symbol,
+      };
+    }
 
     if (
       status.activeQualityTier !== 'REALTIME_L2_TICK' ||
-      status.activePrimaryEquityProvider !== 'PRIMARY_MATRIZ_WS' ||
+      (status.activePrimaryEquityProvider !== 'PRIMARY_MATRIZ_WS' &&
+        status.activePrimaryEquityProvider !== 'BMB_HOMEBROKER_BRIDGE') ||
       !status.l2Available
     ) {
       return {
@@ -510,6 +577,8 @@ export class ArFeedRouter {
     if (
       rawBook === null ||
       rawBook.source === 'BYMA_L1_ONLY' ||
+      (status.activePrimaryEquityProvider === 'BMB_HOMEBROKER_BRIDGE' && rawBook.source !== 'BMB_HOMEBROKER') ||
+      (status.activePrimaryEquityProvider === 'PRIMARY_MATRIZ_WS' && rawBook.source !== 'PRIMARY_MERV') ||
       rawBook.bids.length === 0 ||
       rawBook.asks.length === 0
     ) {
@@ -524,7 +593,7 @@ export class ArFeedRouter {
     }
 
     const toLevels = (
-      sideLevels: readonly { readonly price: number; readonly size: number }[],
+      sideLevels: readonly { readonly price: number; readonly size: number; readonly orderCount?: number | null }[],
     ): readonly GgalL2OrderLevel[] => {
       const out: GgalL2OrderLevel[] = [];
       for (let i = 0; i < Math.min(5, sideLevels.length); i++) {
@@ -537,7 +606,13 @@ export class ArFeedRouter {
           level: levelNum,
           price: lvl.price,
           size: lvl.size,
-          orderCount: null,
+          orderCount:
+            lvl.orderCount !== null &&
+            lvl.orderCount !== undefined &&
+            Number.isInteger(lvl.orderCount) &&
+            lvl.orderCount >= 0
+              ? lvl.orderCount
+              : null,
         });
       }
       return out;
@@ -559,7 +634,7 @@ export class ArFeedRouter {
 
     return {
       available: true,
-      activeProvider: 'PRIMARY_MATRIZ_WS',
+      activeProvider: status.activePrimaryEquityProvider,
       qualityTier: 'REALTIME_L2_TICK',
       asOfUtcSec,
       symbol,

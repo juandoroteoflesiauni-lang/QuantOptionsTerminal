@@ -10,6 +10,7 @@ export type ArFeedProviderId =
   | 'PRIMARY_MATRIZ_WS'
   | 'PPI_REST'
   | 'IOL_REST'
+  | 'BMB_HOMEBROKER_BRIDGE'
   | 'MAE_MARKETDATA_V1'
   | 'BYMA_CLEARING'
   | 'IAMC_ANEXO_B_PDF'
@@ -24,7 +25,7 @@ export type FeedQualityTier =
 export interface ArFeedProviderPriorityEntry {
   readonly provider: ArFeedProviderId;
   readonly priority: number;
-  readonly role: 'L2_EQUITY_FX_WS' | 'REST_L1_QUOTES' | 'MAE_FX_RATES' | 'CLEARING_MARGINS' | 'ANEXO_B_OI' | 'EOD_CONTINGENCY';
+  readonly role: 'L2_EQUITY_FX_WS' | 'L2_EQUITY_OPTIONS_WS' | 'REST_L1_QUOTES' | 'MAE_FX_RATES' | 'CLEARING_MARGINS' | 'ANEXO_B_OI' | 'EOD_CONTINGENCY';
   readonly supportsL2OrderBook: boolean;
   readonly staleThresholdSec: number;
 }
@@ -81,7 +82,7 @@ export interface GgalL2LadderAvailable {
 
 export interface GgalL2LadderUnavailable {
   readonly available: false;
-  readonly reason: 'NON_L2_FEED_ACTIVE' | 'FEED_DISCONNECTED' | 'INVALID_BOOK_STATE';
+  readonly reason: 'NON_L2_FEED_ACTIVE' | 'FEED_DISCONNECTED' | 'INVALID_BOOK_STATE' | 'OUT_OF_SESSION';
   readonly activeProvider: ArFeedProviderId | null;
   readonly qualityTier: FeedQualityTier;
   readonly asOfUtcSec: number;

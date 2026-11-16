@@ -48,6 +48,8 @@ export interface GgalDualChartViewProps {
   readonly onRefresh: () => void;
 }
 
+const BMB_OUT_OF_SESSION_MESSAGE = 'BYMA fuera de rueda (11:00–17:00 ART) — BMB Bridge armado';
+
 interface OverlayToggleState {
   readonly showEmas: boolean;
   readonly showSessionVwap: boolean;
@@ -503,18 +505,40 @@ export function GgalDualChartView({
     // Right: 5-Level L2 Order Book or explicit NON-L2 UNAVAILABLE message
     const ladder = p.l2Ladder;
     if (!ladder.available) {
+      const outOfSession = ladder.reason === 'OUT_OF_SESSION';
+      const boxHeight = outOfSession ? 112 : 78;
       ctx.fillStyle = 'rgba(17, 17, 22, 0.92)';
-      ctx.fillRect(splitX + 6, 26, Math.max(40, cssW - splitX - 12), 78);
-      ctx.strokeStyle = '#1C1C24';
-      ctx.strokeRect(splitX + 6, 26, Math.max(40, cssW - splitX - 12), 78);
-      ctx.fillStyle = '#E5E7EB';
+      ctx.fillRect(splitX + 6, 26, Math.max(40, cssW - splitX - 12), boxHeight);
+      ctx.strokeStyle = outOfSession ? 'rgba(229, 199, 107, 0.45)' : '#1C1C24';
+      ctx.strokeRect(splitX + 6, 26, Math.max(40, cssW - splitX - 12), boxHeight);
+      ctx.fillStyle = outOfSession ? '#E5C76B' : '#E5E7EB';
       ctx.font = "bold 10px 'Geist Mono', ui-monospace, SFMono-Regular, monospace";
-      ctx.fillText('L2 NO DISPONIBLE', splitX + 12, 44);
+      ctx.fillText(outOfSession ? 'BMB BRIDGE ARMADO' : 'L2 NO DISPONIBLE', splitX + 12, 44);
       ctx.fillStyle = '#9CA3AF';
       ctx.font = "9px 'Geist Mono', ui-monospace, SFMono-Regular, monospace";
-      ctx.fillText(ladder.reason, splitX + 12, 60);
-      ctx.fillText(`Feed: ${ladder.activeProvider ?? 'NINGUNO'}`, splitX + 12, 74);
-      ctx.fillText(`Tier: ${ladder.qualityTier}`, splitX + 12, 88);
+      if (outOfSession) {
+        const words = BMB_OUT_OF_SESSION_MESSAGE.split(' ');
+        const maxTextWidth = Math.max(40, cssW - splitX - 30);
+        let line = '';
+        let lineIndex = 0;
+        for (const word of words) {
+          const candidate = line === '' ? word : `${line} ${word}`;
+          if (line !== '' && ctx.measureText(candidate).width > maxTextWidth) {
+            ctx.fillText(line, splitX + 12, 62 + lineIndex * 13);
+            line = word;
+            lineIndex += 1;
+          } else {
+            line = candidate;
+          }
+        }
+        if (line !== '') {
+          ctx.fillText(line, splitX + 12, 62 + lineIndex * 13);
+        }
+      } else {
+        ctx.fillText(ladder.reason, splitX + 12, 60);
+        ctx.fillText(`Feed: ${ladder.activeProvider ?? 'NINGUNO'}`, splitX + 12, 74);
+        ctx.fillText(`Tier: ${ladder.qualityTier}`, splitX + 12, 88);
+      }
     } else {
       const rightAreaW = Math.max(30, cssW - splitX - 12);
       const maxL2Size = Math.max(
@@ -540,11 +564,11 @@ export function GgalDualChartView({
         ctx.fillStyle =
           side === 'BID'
             ? isConfluent
-              ? 'rgba(229, 199, 107, 0.78)'
-              : 'rgba(34, 197, 94, 0.65)'
+              ? '#E5C76B'
+              : '#22C55E'
             : isConfluent
-              ? 'rgba(229, 199, 107, 0.78)'
-              : 'rgba(239, 68, 68, 0.65)';
+              ? '#E5C76B'
+              : '#EF4444';
         ctx.fillRect(cssW - 6 - barW, y - 5, barW, 10);
 
         if (isConfluent) {
@@ -553,7 +577,7 @@ export function GgalDualChartView({
           ctx.strokeRect(splitX + 4, y - 6, cssW - splitX - 8, 12);
         }
 
-        ctx.fillStyle = isConfluent ? '#E5C76B' : '#E5E7EB';
+        ctx.fillStyle = isConfluent ? '#E5C76B' : side === 'BID' ? '#22C55E' : '#EF4444';
         ctx.font = "9px 'Geist Mono', ui-monospace, SFMono-Regular, monospace";
         const tag = `${side === 'BID' ? 'BI' : 'OF'} ${formatCoordPrice(price, latestCoordModeRef.current)} (${Math.round(size)})`;
         ctx.fillText(tag, splitX + 8, y + 3);
@@ -1119,6 +1143,11 @@ export function GgalDualChartView({
                     ? `ACTIVO (${payload.l2Ladder.activeProvider})`
                     : `NO DISPONIBLE (${payload.l2Ladder.reason})`}
               </div>
+              {payload?.l2Ladder.available === false && payload.l2Ladder.reason === 'OUT_OF_SESSION' && (
+                <div className="rounded border border-[#E5C76B]/35 bg-[#E5C76B]/10 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-[#E5C76B]">
+                  {BMB_OUT_OF_SESSION_MESSAGE}
+                </div>
+              )}
             </div>
           </div>
         </div>

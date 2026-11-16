@@ -739,7 +739,9 @@ export interface ArOptionContractDto {
   readonly expiryUtcSec: number;
   readonly daysToExpiry: number;
   readonly bid: number | null;
+  readonly bidSize?: number | null;
   readonly ask: number | null;
+  readonly askSize?: number | null;
   readonly last: number | null;
   readonly mark: number | null;
   readonly volume: number | null;
@@ -755,6 +757,8 @@ export interface ArOptionContractDto {
   readonly intrinsic: number;
   readonly extrinsic: number | null;
   readonly source: 'DATA912' | 'MODEL';
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
+  readonly quoteAsOfUtcSec?: number | null;
 }
 
 export interface ArOptionExpiryDto {

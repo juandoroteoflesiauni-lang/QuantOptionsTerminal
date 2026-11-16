@@ -143,6 +143,14 @@ import {
   collectArFeedSecrets,
 } from './arFeedRouter.js';
 import {
+  BMB_OUT_OF_SESSION_REASON,
+  bmbTradesToVpinInput,
+  buildBmbIcebergTrackingResult,
+  isBymaL2SessionUtcSec,
+  type BmbBestQuoteObservation,
+} from './bmbFeedAdapter.js';
+import type { BmbBridgeSnapshotDto } from './primaryRofexLoader.js';
+import {
   MarketRuntime,
   RuntimeNoDataError,
   sanitizeFinite,
@@ -504,6 +512,7 @@ interface MarketBundle {
   readonly monitoring: ArMonitoringResponse;
   readonly ggalDetail: ArStockDetailResponse;
   readonly ggalOptions: ArOptionsResponse;
+  readonly bmbSnapshot: BmbBridgeSnapshotDto | null;
   readonly usSnapshot: TerminalSnapshotResponse | null;
   readonly usBars: TerminalBarsResponse | null;
   readonly usDailyCloseBars: readonly { readonly time: number; readonly close: number }[];
@@ -1153,6 +1162,11 @@ export class GgalSpecialistRuntime {
   private readonly arFeedRouter: ArFeedRouter;
   private readonly oratsClient: OratsHybridClient;
   private regimePriorProbabilities: readonly [number, number, number] = [0.55, 0.35, 0.10];
+  private previousBmbBest: BmbBestQuoteObservation | null = null;
+  private bmbIcebergCache: {
+    readonly key: string;
+    readonly input: ReturnType<typeof buildBmbIcebergTrackingResult>['input'];
+  } | null = null;
 
   public constructor(deps: GgalSpecialistRuntimeDeps) {
     const effectiveEnv: NodeJS.ProcessEnv =
@@ -1225,6 +1239,8 @@ export class GgalSpecialistRuntime {
   }
 
   public stop(): void {
+    this.previousBmbBest = null;
+    this.bmbIcebergCache = null;
     if (this.recorderTimer !== null) {
       clearInterval(this.recorderTimer);
       this.recorderTimer = null;
@@ -1701,12 +1717,15 @@ export class GgalSpecialistRuntime {
       const errors: string[] = [];
       const asOfUtcSec = Math.floor(this.nowMsFn() / 1_000);
 
-      const [overview, macro, monitoring, ggalDetail, ggalOptions] = await Promise.all([
+      const [overview, macro, monitoring, ggalDetail, ggalOptions, bmbSnapshot] = await Promise.all([
         this.arRuntime.getOverview(forceRefresh),
         this.arRuntime.getMacro(forceRefresh),
         this.arRuntime.getMonitoring('bonos', forceRefresh),
         this.arRuntime.getStockDetail('GGAL', forceRefresh),
         this.arRuntime.getOptionsChain('GGAL', forceRefresh),
+        typeof this.arRuntime.getBmbSnapshot === 'function'
+          ? this.arRuntime.getBmbSnapshot('GGAL', forceRefresh).catch((): null => null)
+          : Promise.resolve(null),
       ]);
 
       const [usSnapshotRes, usBarsRes, stocksRes, bondsRes, notesRes, caucionesRes, histories] =
@@ -1752,6 +1771,7 @@ export class GgalSpecialistRuntime {
         monitoring,
         ggalDetail,
         ggalOptions,
+        bmbSnapshot,
         usSnapshot: usSnapshotRes,
         usBars: usBarsRes,
         usDailyCloseBars,
@@ -4259,21 +4279,26 @@ export class GgalSpecialistRuntime {
         ? this.arRuntime.getConnectorHealth()
         : null;
     const primaryWsConnected = connHealth?.primaryRofex.wsConnected ?? false;
-    const bmbConnected = connHealth?.bullMarket.connected ?? false;
     const rawBook = bundle.ggalDetail.orderBook5Levels ?? null;
-    const hasL2Levels =
+    const evaluationUtcSec = Math.floor(this.nowMsFn() / 1_000);
+    const endpoints = this.arFeedRouter.getEndpointsConfig();
+    const bmbOutOfSession = endpoints.bmbConfigured && !isBymaL2SessionUtcSec(evaluationUtcSec);
+    const bmbHealth = bundle.bmbSnapshot?.health ?? connHealth?.bullMarket ?? null;
+    const bmbHasL2Levels =
+      !bmbOutOfSession &&
       rawBook !== null &&
-      rawBook.source !== 'BYMA_L1_ONLY' &&
+      rawBook.source === 'BMB_HOMEBROKER' &&
       rawBook.bids.length > 0 &&
       rawBook.asks.length > 0 &&
-      (primaryWsConnected || bmbConnected);
+      bmbHealth?.connected === true;
+    const primaryHasL2Levels =
+      rawBook !== null &&
+      rawBook.source === 'PRIMARY_MERV' &&
+      rawBook.bids.length > 0 &&
+      rawBook.asks.length > 0 &&
+      primaryWsConnected;
 
-    const lastPrimarySec =
-      connHealth?.bullMarket.lastUpdateUtcSec ??
-      (hasL2Levels ? bundle.asOfUtcSec : null);
-
-    const endpoints = this.arFeedRouter.getEndpointsConfig();
-    const primaryConfigured = endpoints.matrizWsConfigured || primaryWsConnected || bmbConnected;
+    const primaryConfigured = endpoints.matrizWsConfigured;
     const ppiConfigured =
       endpoints.ppiBaseUrl !== null && endpoints.ppiApiKey !== null && endpoints.ppiApiSecret !== null;
     const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
@@ -4281,11 +4306,18 @@ export class GgalSpecialistRuntime {
     const bymaClearingConfigured = endpoints.bymaClearingUrl !== null;
 
     this.arFeedRouter.updateFromRuntimeTelemetry({
-      asOfUtcSec: bundle.asOfUtcSec,
+      asOfUtcSec: evaluationUtcSec,
       primaryConfigured,
-      primaryConnected: hasL2Levels,
-      primaryLastMsgUtcSec: lastPrimarySec,
+      primaryConnected: primaryHasL2Levels,
+      primaryLastMsgUtcSec:
+        rawBook?.source === 'PRIMARY_MERV' ? rawBook.asOfUtcSec : null,
       primaryError: primaryConfigured ? (connHealth?.primaryRofex.lastError ?? null) : null,
+      bmbConfigured: endpoints.bmbConfigured,
+      bmbConnected: bmbHasL2Levels,
+      bmbLastMsgUtcSec:
+        rawBook?.source === 'BMB_HOMEBROKER' ? rawBook.asOfUtcSec : null,
+      bmbError: bmbOutOfSession ? BMB_OUT_OF_SESSION_REASON : (bmbHealth?.error ?? null),
+      bmbOutOfSession,
       ppiConfigured,
       ppiHealthy: ppiConfigured && bundle.ggalDetail.stock !== null,
       ppiLastMsgUtcSec: ppiConfigured ? bundle.asOfUtcSec : null,
@@ -4313,7 +4345,7 @@ export class GgalSpecialistRuntime {
       data912Error: null,
     });
 
-    return this.arFeedRouter.getStatusSnapshot(bundle.asOfUtcSec);
+    return this.arFeedRouter.getStatusSnapshot(evaluationUtcSec);
   }
 
   private resolveMassiveSpotAndYzVol(bundle: MarketBundle): {
@@ -4392,6 +4424,12 @@ export class GgalSpecialistRuntime {
     }
     const adv20Shares = volCount > 0 ? volSum / volCount : Number.NaN;
 
+    const rawBook = bundle.ggalDetail.orderBook5Levels ?? null;
+    if (rawBook?.source === 'BMB_HOMEBROKER') {
+      const bmbTrades = bundle.bmbSnapshot?.tradesBySymbol?.['GGAL'] ?? [];
+      return { trades: bmbTradesToVpinInput(bmbTrades), adv20Shares };
+    }
+
     const trades: VpinSignedTradeInput[] = [];
     const sourceBars = bundle.ggalDetail.historicalBars.slice(-60);
     for (const bar of sourceBars) {
@@ -4411,6 +4449,47 @@ export class GgalSpecialistRuntime {
     return { trades, adv20Shares };
   }
 
+  private buildIcebergInputFromBmb(
+    bundle: MarketBundle,
+    ladder: GgalL2LadderState,
+  ) {
+    if (!ladder.available || ladder.activeProvider !== 'BMB_HOMEBROKER_BRIDGE') {
+      this.previousBmbBest = null;
+      this.bmbIcebergCache = null;
+      return null;
+    }
+    const bid = ladder.bids.find((level) => level.level === 1);
+    const ask = ladder.asks.find((level) => level.level === 1);
+    if (bid === undefined || ask === undefined) {
+      this.previousBmbBest = null;
+      this.bmbIcebergCache = null;
+      return null;
+    }
+    const current = {
+      bidPrice: bid.price,
+      bidSize: bid.size,
+      askPrice: ask.price,
+      askSize: ask.size,
+    };
+    const trades = bundle.bmbSnapshot?.tradesBySymbol?.['GGAL'] ?? [];
+    const maxSequence = trades.reduce((max, trade) => Math.max(max, trade.sequence), 0);
+    const snapshotKey = [
+      bundle.ggalDetail.orderBook5Levels?.asOfUtcSec ?? 'NO_BOOK_TIME',
+      maxSequence,
+      current.bidPrice,
+      current.bidSize,
+      current.askPrice,
+      current.askSize,
+    ].join(':');
+    if (this.bmbIcebergCache?.key === snapshotKey) {
+      return this.bmbIcebergCache.input;
+    }
+    const tracked = buildBmbIcebergTrackingResult(this.previousBmbBest, current, trades);
+    this.previousBmbBest = { ...current, lastTradeSequence: tracked.lastTradeSequence };
+    this.bmbIcebergCache = { key: snapshotKey, input: tracked.input };
+    return tracked.input;
+  }
+
   private buildL2MetricsFromBundle(bundle: MarketBundle): {
     readonly routerStatus: ArFeedRouterStatusSnapshot;
     readonly l2Ladder: GgalL2LadderState;
@@ -4420,7 +4499,7 @@ export class GgalSpecialistRuntime {
     const l2Ladder = this.arFeedRouter.resolveL2LadderState(
       'GGAL',
       bundle.ggalDetail.orderBook5Levels ?? null,
-      bundle.asOfUtcSec,
+      Math.floor(this.nowMsFn() / 1_000),
     );
 
     const { trades, adv20Shares } = this.buildVpinTradesFromBundle(bundle);
@@ -4438,7 +4517,7 @@ export class GgalSpecialistRuntime {
     const microstructure = computeL2Microstructure({
       ladder: l2Ladder,
       decayAlpha: 0.55,
-      icebergInput: null,
+      icebergInput: this.buildIcebergInputFromBmb(bundle, l2Ladder),
       vpinInput,
     });
 
@@ -4796,6 +4875,10 @@ export class GgalSpecialistRuntime {
     const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
     const maeConfigured = endpoints.maeBaseUrl !== null && endpoints.maeApiKey !== null;
     const bymaClearingConfigured = endpoints.bymaClearingUrl !== null;
+    const bmbOutOfSession = endpoints.bmbConfigured && !isBymaL2SessionUtcSec(asOfUtcSec);
+    const bmbHealth = typeof this.arRuntime.getConnectorHealth === 'function'
+      ? this.arRuntime.getConnectorHealth().bullMarket
+      : null;
 
     this.arFeedRouter.updateFromRuntimeTelemetry({
       asOfUtcSec,
@@ -4803,6 +4886,11 @@ export class GgalSpecialistRuntime {
       primaryConnected: false,
       primaryLastMsgUtcSec: null,
       primaryError: null,
+      bmbConfigured: endpoints.bmbConfigured,
+      bmbConnected: false,
+      bmbLastMsgUtcSec: null,
+      bmbError: bmbOutOfSession ? BMB_OUT_OF_SESSION_REASON : (bmbHealth?.error ?? 'AWAITING_BMB_L2_SNAPSHOT'),
+      bmbOutOfSession,
       ppiConfigured,
       ppiHealthy: false,
       ppiLastMsgUtcSec: null,

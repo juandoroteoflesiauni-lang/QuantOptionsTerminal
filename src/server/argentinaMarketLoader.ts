@@ -139,6 +139,7 @@ import {
   type ArBrokerPositionsResponse,
   type BmbBridgeSnapshotDto,
   type BmbConnectorHealthDto,
+  type BmbOptionRowDto,
   type PrimaryConnectorHealthDto,
   type PrimaryDlrContractDto,
   type OrderBook5LevelsDto,
@@ -157,6 +158,7 @@ import {
   type TerminalSnapshotResponse,
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
+import { BmbFeedAdapter } from './bmbFeedAdapter.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
@@ -190,7 +192,7 @@ export interface ArgentinaRuntimeDeps {
   readonly secrets?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
   readonly primaryClient?: PrimaryRofexClient;
-  readonly bmbClient?: BmbBridgeClient;
+  readonly bmbClient?: BmbBridgeClient | BmbFeedAdapter;
   readonly data912BaseUrl?: string;
   readonly openBymaBaseUrl?: string;
   readonly bcraBaseUrl?: string;
@@ -577,6 +579,9 @@ export interface ArOptionContractDto {
   /** Origen de la VI: `SOLVED` (invertida sobre precio de mercado) o `INHERITED` (paridad / superficie). */
   readonly ivOrigin?: 'SOLVED' | 'INHERITED' | 'NONE';
   readonly source: 'DATA912' | 'MODEL';
+  /** Proveedor de la caja de puntas; `source` se conserva para el origen de VI por compatibilidad. */
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
+  readonly quoteAsOfUtcSec?: number | null;
 }
 
 export interface ArOptionExpiryDto {
@@ -2548,7 +2553,7 @@ function getArgentinaMarketState(nowUtcSec: number): {
   return { state: 'CERRADO', label: 'Post-cierre BYMA · Datos consolidados' };
 }
 
-interface NormalizedQuoteRow {
+export interface NormalizedQuoteRow {
   readonly symbol: string;
   readonly last: number | null;
   readonly bid: number | null;
@@ -2568,6 +2573,9 @@ interface NormalizedQuoteRow {
   readonly arsAsk: number | null;
   readonly usdBid: number | null;
   readonly usdAsk: number | null;
+  readonly openInterest?: number | null;
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
+  readonly quoteAsOfUtcSec?: number | null;
 }
 
 function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
@@ -2608,6 +2616,8 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
     const vwap = readNum(item, ['vw', 'vwap']);
     const volumeArsRaw = readNum(item, ['v_ars', 'volumeAmount', 'monto', 'amount']);
     const nominalVol = readNum(item, ['v', 'q_op', 'volume', 'nominalVolume']);
+    const openInterestRaw = readNum(item, ['open_interest', 'openInterest', 'oi']);
+    const openInterest = openInterestRaw !== null && openInterestRaw >= 0 ? openInterestRaw : nominalVol;
     const mark = readNum(item, ['mark', 'c', 'close', 'last']);
     const arsBid = readNum(item, ['ars_bid']);
     const arsAsk = readNum(item, ['ars_ask']);
@@ -2659,9 +2669,141 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
       arsAsk,
       usdBid,
       usdAsk,
+      openInterest,
+      quoteSource: 'DATA912',
+      quoteAsOfUtcSec: null,
     });
   }
   return rows;
+}
+
+export interface MergeBmbOptionQuotesInput {
+  readonly rows: readonly NormalizedQuoteRow[];
+  readonly bmbSnapshot: BmbBridgeSnapshotDto | null;
+  readonly underlying: string;
+  readonly spotHint: number | null;
+  readonly nowUtcSec: number;
+  readonly maxQuoteAgeSec?: number;
+}
+
+/**
+ * Overlay fresh BMB option BBO/size/last/volume on Data912 contract metadata.
+ * OI is never inferred from BMB volume; stale or unauthenticated panels change nothing.
+ */
+export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly NormalizedQuoteRow[] {
+  const snapshot = input.bmbSnapshot;
+  const maxAgeSec = input.maxQuoteAgeSec ?? 30;
+  if (
+    snapshot === null ||
+    (snapshot.health.status !== 'READY' && snapshot.health.status !== 'CONNECTED_L2') ||
+    !snapshot.health.connected ||
+    !Number.isInteger(input.nowUtcSec) ||
+    !Number.isFinite(maxAgeSec) ||
+    maxAgeSec < 0
+  ) {
+    return input.rows;
+  }
+
+  const positiveOrNull = (value: number | null): number | null =>
+    value !== null && Number.isFinite(value) && value > 0 ? value : null;
+  const nonNegativeOrNull = (value: number | null): number | null =>
+    value !== null && Number.isFinite(value) && value >= 0 ? value : null;
+  const underlying = input.underlying.trim().toUpperCase();
+  const freshBySymbol = new Map<string, BmbOptionRowDto>();
+  for (const quote of snapshot.options) {
+    const symbol = quote.symbol.trim().toUpperCase();
+    const ageSec = quote.asOfUtcSec !== null ? input.nowUtcSec - quote.asOfUtcSec : Number.NaN;
+    if (
+      symbol === '' ||
+      quote.asOfUtcSec === null ||
+      !Number.isInteger(quote.asOfUtcSec) ||
+      ageSec < 0 ||
+      ageSec > maxAgeSec
+    ) {
+      continue;
+    }
+    const parsed = parseBymaOptionSymbol(symbol, input.spotHint, input.nowUtcSec);
+    if (parsed === null || parsed.underlying !== underlying) {
+      continue;
+    }
+    freshBySymbol.set(symbol, quote);
+  }
+  if (freshBySymbol.size === 0) {
+    return input.rows;
+  }
+
+  const applyQuote = (row: NormalizedQuoteRow, quote: BmbOptionRowDto): NormalizedQuoteRow => {
+    const bid = positiveOrNull(quote.bid);
+    const ask = positiveOrNull(quote.ask);
+    const last = positiveOrNull(quote.last);
+    const mid = bid !== null && ask !== null && ask >= bid ? 0.5 * (bid + ask) : last;
+    const openInterest = row.openInterest !== undefined ? row.openInterest : row.nominalVol;
+    return {
+      ...row,
+      symbol: quote.symbol.trim().toUpperCase(),
+      last,
+      bid,
+      bidSize: positiveOrNull(quote.bidSize),
+      ask,
+      askSize: positiveOrNull(quote.askSize),
+      deltaPct: quote.varPct !== null && Number.isFinite(quote.varPct) ? quote.varPct : null,
+      nominalVol: nonNegativeOrNull(quote.volume),
+      volumeArs: nonNegativeOrNull(quote.turnover),
+      mark: mid,
+      openInterest,
+      quoteSource: 'BMB_HOMEBROKER_BRIDGE',
+      quoteAsOfUtcSec: quote.asOfUtcSec,
+    };
+  };
+
+  const out: NormalizedQuoteRow[] = [];
+  const seen = new Set<string>();
+  for (const row of input.rows) {
+    const symbol = row.symbol.trim().toUpperCase();
+    const quote = freshBySymbol.get(symbol);
+    if (quote === undefined) {
+      out.push(row);
+    } else {
+      out.push(applyQuote(row, quote));
+      seen.add(symbol);
+    }
+  }
+
+  for (const [symbol, quote] of freshBySymbol) {
+    if (seen.has(symbol) || input.rows.some((row) => row.symbol.trim().toUpperCase() === symbol)) {
+      continue;
+    }
+    const bid = positiveOrNull(quote.bid);
+    const ask = positiveOrNull(quote.ask);
+    const last = positiveOrNull(quote.last);
+    const mid = bid !== null && ask !== null && ask >= bid ? 0.5 * (bid + ask) : last;
+    const row: NormalizedQuoteRow = {
+      symbol,
+      last,
+      bid,
+      bidSize: positiveOrNull(quote.bidSize),
+      ask,
+      askSize: positiveOrNull(quote.askSize),
+      prevClose: null,
+      deltaPct: quote.varPct !== null && Number.isFinite(quote.varPct) ? quote.varPct : null,
+      low: null,
+      high: null,
+      vwap: null,
+      volumeArs: nonNegativeOrNull(quote.turnover),
+      nominalVol: nonNegativeOrNull(quote.volume),
+      mark: mid,
+      impliedUsdArs: null,
+      arsBid: null,
+      arsAsk: null,
+      usdBid: null,
+      usdAsk: null,
+      openInterest: null,
+      quoteSource: 'BMB_HOMEBROKER_BRIDGE',
+      quoteAsOfUtcSec: quote.asOfUtcSec,
+    };
+    out.push(row);
+  }
+  return out;
 }
 
 function normalizeHistoricalBars(raw: unknown): readonly Bar[] {
@@ -2741,7 +2883,7 @@ export function buildCaucionesLiquidityCurve(params: {
 } {
   const { bmbSnapshot, tpmTna, badlarTna, tamarTna, plazoFijoTna, notes, nowSec } = params;
 
-  if (bmbSnapshot.health.status === 'READY' && bmbSnapshot.cauciones.length > 0) {
+  if ((bmbSnapshot.health.status === 'READY' || bmbSnapshot.health.status === 'CONNECTED_L2') && bmbSnapshot.health.connected && bmbSnapshot.cauciones.length > 0) {
     const rows: ArCaucionCurveRowDto[] = bmbSnapshot.cauciones.map((c) => {
       const tea =
         c.tnaWeighted !== null && Number.isFinite(c.tnaWeighted)
@@ -2855,7 +2997,7 @@ export class ArgentinaMarketRuntime {
   private readonly argDatosBaseUrl: string;
   private readonly nyfedBaseUrl: string;
   private readonly primaryClient: PrimaryRofexClient;
-  private readonly bmbClient: BmbBridgeClient;
+  private readonly bmbClient: BmbBridgeClient | BmbFeedAdapter;
   private readonly usRuntime: UsRuntimeAdapter | null;
   private readonly usDailyBarsFn:
     | ((symbol: string, lookbackBars?: number, forceRefresh?: boolean) => Promise<CachedDailyBarsResult>)
@@ -2913,7 +3055,7 @@ export class ArgentinaMarketRuntime {
       });
     this.bmbClient =
       deps.bmbClient ??
-      new BmbBridgeClient({
+      new BmbFeedAdapter({
         env: effectiveEnv,
         fetchFn: this.fetchFn,
         nowMsFn: this.nowMsFn,
@@ -2953,6 +3095,13 @@ export class ArgentinaMarketRuntime {
 
   public close(): void {
     this.primaryClient.closeWebSocket();
+    if (this.bmbClient instanceof BmbFeedAdapter) {
+      this.bmbClient.stop();
+    }
+  }
+
+  public async getBmbSnapshot(symbol?: string, forceRefresh = false): Promise<BmbBridgeSnapshotDto> {
+    return this.bmbClient.getSnapshot(symbol, null, forceRefresh);
   }
 
   private async scheduleData912<T>(task: () => Promise<T>): Promise<T> {
@@ -4701,7 +4850,7 @@ export class ArgentinaMarketRuntime {
     readonly targetDays: number;
   }): { readonly teaPct: number; readonly label: string } {
     const { bmbSnap, macroVars, continuousRate, targetDays } = params;
-    if (bmbSnap !== null && bmbSnap.health.status === 'READY' && bmbSnap.cauciones.length > 0) {
+    if (bmbSnap !== null && (bmbSnap.health.status === 'READY' || bmbSnap.health.status === 'CONNECTED_L2') && bmbSnap.health.connected && bmbSnap.cauciones.length > 0) {
       const valid = bmbSnap.cauciones
         .filter(
           (c) =>
@@ -5847,8 +5996,20 @@ export class ArgentinaMarketRuntime {
     const feedStatus: FeedStatus = stock === null && bond === null && bars.length === 0 ? 'NO_DATA' : overview.feedStatus;
 
     const bmbBook = bmbSnap.orderBooksBySymbol[symbol] ?? null;
+    const bmbBookFresh =
+      bmbBook?.asOfUtcSec !== null &&
+      bmbBook?.asOfUtcSec !== undefined &&
+      nowSec >= bmbBook.asOfUtcSec &&
+      nowSec - bmbBook.asOfUtcSec <= 20;
     let orderBook5Levels: OrderBook5LevelsDto | null = null;
-    if (bmbBook !== null && (bmbBook.bids.length > 0 || bmbBook.asks.length > 0)) {
+    if (
+      bmbBook !== null &&
+      bmbBookFresh &&
+      bmbSnap.health.connected &&
+      (bmbSnap.health.status === 'READY' || bmbSnap.health.status === 'CONNECTED_L2') &&
+      bmbBook.bids.length > 0 &&
+      bmbBook.asks.length > 0
+    ) {
       const l2 = computeOrderBookL2Metrics(bmbBook.bids, bmbBook.asks);
       orderBook5Levels = {
         symbol,
@@ -6026,12 +6187,26 @@ export class ArgentinaMarketRuntime {
         const rv60 = computeDailyRealizedVol(bars, 60);
         const historicalCloses = bars.slice(-90).map((b) => b.close);
 
+        const mergedOptionRows = mergeBmbOptionQuotes({
+          rows: optionsRes.rows,
+          bmbSnapshot: dualBmbSnap,
+          underlying,
+          spotHint: spot,
+          nowUtcSec: nowSec,
+        });
+        const hasLiveBmbOptions = mergedOptionRows.some(
+          (row) =>
+            row.quoteSource === 'BMB_HOMEBROKER_BRIDGE' &&
+            [row.bid, row.ask, row.last].some(
+              (value) => value !== null && Number.isFinite(value) && value > 0,
+            ),
+        );
         const parsedContracts: {
           readonly parsed: ParsedBymaOptionSymbol;
           readonly row: NormalizedQuoteRow;
         }[] = [];
         const rawRowBySymbol = new Map<string, NormalizedQuoteRow>();
-        for (const row of optionsRes.rows) {
+        for (const row of mergedOptionRows) {
           const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec);
           if (parsed !== null && parsed.underlying === underlying) {
             parsedContracts.push({ parsed, row });
@@ -6043,6 +6218,12 @@ export class ArgentinaMarketRuntime {
           ...overview.providerErrors,
           ...macroData.errors,
           ...[optionsRes.error, histRes.error].filter((e): e is string => e !== null),
+          ...(dualBmbSnap !== null &&
+          dualBmbSnap.health.error !== null &&
+          dualBmbSnap.health.status !== 'OUT_OF_SESSION' &&
+          dualBmbSnap.health.status !== 'DISABLED_NO_PASSWORD'
+            ? [redactSecrets(`BMB options degradado a Data912 EOD: ${dualBmbSnap.health.error}`, this.secrets)]
+            : []),
         ];
 
         const byExpiry = new Map<string, typeof parsedContracts>();
@@ -6167,6 +6348,13 @@ export class ArgentinaMarketRuntime {
                     ? 0.5 * (bid + ask)
                     : null;
 
+            const modelOpenInterest =
+              row.quoteSource === 'BMB_HOMEBROKER_BRIDGE'
+                ? row.openInterest !== null && row.openInterest !== undefined && Number.isFinite(row.openInterest) && row.openInterest > 0
+                  ? Math.round(row.openInterest)
+                  : null
+                : Math.max(1, Math.round(row.nominalVol ?? 1));
+
             const intrinsic =
               spot !== null
                 ? parsed.contractType === 'call'
@@ -6228,7 +6416,7 @@ export class ArgentinaMarketRuntime {
                       charm: Number.isFinite(rawAmGreeks.charm) ? rawAmGreeks.charm : bsmFallback.charm,
                     };
 
-            if (ivIsSolved && Number.isFinite(iv) && iv > 0 && mid !== null && mid > 0) {
+            if (modelOpenInterest !== null && ivIsSolved && Number.isFinite(iv) && iv > 0 && mid !== null && mid > 0) {
               const effBid = bid !== null && bid > 0 ? bid : mid * 0.98;
               const effAsk = ask !== null && ask >= effBid ? ask : mid * 1.02;
               volQuotes.push({
@@ -6238,7 +6426,7 @@ export class ArgentinaMarketRuntime {
                 bid: effBid,
                 ask: effAsk,
                 mid,
-                openInterest: Math.max(1, Math.round(row.nominalVol ?? 1)),
+                openInterest: modelOpenInterest,
               });
             }
 
@@ -6248,6 +6436,7 @@ export class ArgentinaMarketRuntime {
                 : Number.NaN;
 
             if (
+              modelOpenInterest !== null &&
               spot !== null &&
               spot > 0 &&
               Number.isFinite(evalRate) &&
@@ -6258,7 +6447,7 @@ export class ArgentinaMarketRuntime {
                 contractType: parsed.contractType,
                 strike: parsed.strike,
                 expiryUtcSec: parsed.expiryUtcSec,
-                openInterest: Math.max(1, Math.round(row.nominalVol ?? 1)),
+                openInterest: modelOpenInterest,
                 ...(row.nominalVol !== null ? { volume: row.nominalVol } : {}),
                 sharesPerContract: OPTION_LOT_SIZE,
                 spot,
@@ -6290,7 +6479,10 @@ export class ArgentinaMarketRuntime {
               mark: sanitizeFinite(mid),
               theoreticalPrice: null,
               volume: sanitizeFinite(row.nominalVol),
-              openInterest: sanitizeFinite(row.nominalVol),
+              openInterest:
+                row.openInterest !== undefined
+                  ? sanitizeFinite(row.openInterest)
+                  : sanitizeFinite(row.nominalVol),
               iv: sanitizeFinite(iv),
               delta: sanitizeFinite(greeks?.delta),
               gamma: sanitizeFinite(greeks?.gamma),
@@ -6302,6 +6494,9 @@ export class ArgentinaMarketRuntime {
               intrinsic: Math.round(intrinsic * 100) / 100,
               extrinsic: mid !== null ? sanitizeFinite(Math.max(0, mid - intrinsic)) : null,
               volumeArs: (() => {
+                if (row.quoteSource === 'BMB_HOMEBROKER_BRIDGE') {
+                  return sanitizeFinite(row.volumeArs);
+                }
                 const refPx = last !== null && last > 0 ? last : mid;
                 return row.nominalVol !== null && row.nominalVol > 0 && refPx !== null && refPx > 0
                   ? sanitizeFinite(row.nominalVol * refPx * OPTION_LOT_SIZE)
@@ -6309,6 +6504,8 @@ export class ArgentinaMarketRuntime {
               })(),
               ivOrigin: ivIsSolved ? ('SOLVED' as const) : Number.isFinite(iv) ? ('INHERITED' as const) : ('NONE' as const),
               source: Number.isFinite(iv) && !ivIsSolved ? ('MODEL' as const) : ('DATA912' as const),
+              quoteSource: row.quoteSource ?? 'DATA912',
+              quoteAsOfUtcSec: row.quoteAsOfUtcSec ?? null,
             };
 
             if (parsed.contractType === 'call') {
@@ -7204,7 +7401,9 @@ export class ArgentinaMarketRuntime {
             ? 'NO_DATA'
             : expiries.length === 0 || rateTnaPct === null
               ? 'PARTIAL'
-              : overview.feedStatus;
+              : hasLiveBmbOptions
+                ? 'LIVE'
+                : overview.feedStatus;
 
         return {
           asOfUtcSec: nowSec,

@@ -1,0 +1,371 @@
+{
+  "schemaVersion": 1,
+  "sessionCases": [
+    {
+      "utcSec": 1794837599,
+      "expected": false
+    },
+    {
+      "utcSec": 1794837600,
+      "expected": true
+    },
+    {
+      "utcSec": 1794859199,
+      "expected": true
+    },
+    {
+      "utcSec": 1794859200,
+      "expected": false
+    },
+    {
+      "utcSec": 1794754800,
+      "expected": false
+    },
+    {
+      "utcSec": 1794668400,
+      "expected": false
+    },
+    {
+      "utcSec": 1795183200,
+      "expected": true
+    },
+    {
+      "utcSec": -1,
+      "expected": false
+    },
+    {
+      "utcSec": 1.5,
+      "expected": false
+    }
+  ],
+  "optionMergeCase": {
+    "nowUtcSec": 1794841200,
+    "spotHint": 6400,
+    "underlying": "GGAL",
+    "rows": [
+      {
+        "symbol": "GFGC6400DI",
+        "last": 123,
+        "bid": 120,
+        "bidSize": 5,
+        "ask": 126,
+        "askSize": 7,
+        "prevClose": 122,
+        "deltaPct": 0.5,
+        "low": 120,
+        "high": 126,
+        "vwap": 123,
+        "volumeArs": 1000000,
+        "nominalVol": 180000,
+        "mark": 123,
+        "impliedUsdArs": null,
+        "arsBid": null,
+        "arsAsk": null,
+        "usdBid": null,
+        "usdAsk": null,
+        "openInterest": 987654,
+        "quoteSource": "DATA912",
+        "quoteAsOfUtcSec": null
+      },
+      {
+        "symbol": "GFGV6400DI",
+        "last": 82,
+        "bid": 80,
+        "bidSize": 5,
+        "ask": 84,
+        "askSize": 7,
+        "prevClose": 81,
+        "deltaPct": 0.5,
+        "low": 80,
+        "high": 84,
+        "vwap": 82,
+        "volumeArs": 1000000,
+        "nominalVol": 180000,
+        "mark": 82,
+        "impliedUsdArs": null,
+        "arsBid": null,
+        "arsAsk": null,
+        "usdBid": null,
+        "usdAsk": null,
+        "openInterest": 456789,
+        "quoteSource": "DATA912",
+        "quoteAsOfUtcSec": null
+      }
+    ],
+    "quotes": [
+      {
+        "symbol": "GFGC6400DI",
+        "underlying": "GGAL",
+        "bid": 123.4,
+        "bidSize": 42,
+        "ask": 125.6,
+        "askSize": 31,
+        "last": 124.5,
+        "volume": 500,
+        "turnover": 62000,
+        "varPct": 1.25,
+        "asOfUtcSec": 1794841198
+      },
+      {
+        "symbol": "GFGV6400DI",
+        "underlying": "GGAL",
+        "bid": 81,
+        "bidSize": 11,
+        "ask": 83,
+        "askSize": 12,
+        "last": 82,
+        "volume": 100,
+        "turnover": 8000,
+        "varPct": 0.8,
+        "asOfUtcSec": 1794841169
+      },
+      {
+        "symbol": "GFGV6600DI",
+        "underlying": "GGAL",
+        "bid": 50,
+        "bidSize": 12,
+        "ask": 52,
+        "askSize": 9,
+        "last": 51,
+        "volume": 75,
+        "turnover": 4000,
+        "varPct": -2.5,
+        "asOfUtcSec": 1794841199
+      }
+    ],
+    "expected": [
+      {
+        "symbol": "GFGC6400DI",
+        "last": 124.5,
+        "bid": 123.4,
+        "bidSize": 42,
+        "ask": 125.6,
+        "askSize": 31,
+        "prevClose": 122,
+        "deltaPct": 1.25,
+        "low": 120,
+        "high": 126,
+        "vwap": 123,
+        "volumeArs": 62000,
+        "nominalVol": 500,
+        "mark": 124.5,
+        "impliedUsdArs": null,
+        "arsBid": null,
+        "arsAsk": null,
+        "usdBid": null,
+        "usdAsk": null,
+        "openInterest": 987654,
+        "quoteSource": "BMB_HOMEBROKER_BRIDGE",
+        "quoteAsOfUtcSec": 1794841198
+      },
+      {
+        "symbol": "GFGV6400DI",
+        "last": 82,
+        "bid": 80,
+        "bidSize": 5,
+        "ask": 84,
+        "askSize": 7,
+        "prevClose": 81,
+        "deltaPct": 0.5,
+        "low": 80,
+        "high": 84,
+        "vwap": 82,
+        "volumeArs": 1000000,
+        "nominalVol": 180000,
+        "mark": 82,
+        "impliedUsdArs": null,
+        "arsBid": null,
+        "arsAsk": null,
+        "usdBid": null,
+        "usdAsk": null,
+        "openInterest": 456789,
+        "quoteSource": "DATA912",
+        "quoteAsOfUtcSec": null
+      },
+      {
+        "symbol": "GFGV6600DI",
+        "last": 51,
+        "bid": 50,
+        "bidSize": 12,
+        "ask": 52,
+        "askSize": 9,
+        "prevClose": null,
+        "deltaPct": -2.5,
+        "low": null,
+        "high": null,
+        "vwap": null,
+        "volumeArs": 4000,
+        "nominalVol": 75,
+        "mark": 51.0,
+        "impliedUsdArs": null,
+        "arsBid": null,
+        "arsAsk": null,
+        "usdBid": null,
+        "usdAsk": null,
+        "openInterest": null,
+        "quoteSource": "BMB_HOMEBROKER_BRIDGE",
+        "quoteAsOfUtcSec": 1794841199
+      }
+    ]
+  },
+  "tradeCases": [
+    {
+      "sequence": 11,
+      "symbol": "GGAL",
+      "timeSec": 1794841198,
+      "price": 99.9,
+      "size": 25,
+      "side": "SELL",
+      "buyVolume": 0,
+      "sellVolume": 25,
+      "attributableToLast": true
+    },
+    {
+      "sequence": 12,
+      "symbol": "GGAL",
+      "timeSec": 1794841199,
+      "price": 100.1,
+      "size": 8,
+      "side": "BUY",
+      "buyVolume": 8,
+      "sellVolume": 0,
+      "attributableToLast": true
+    },
+    {
+      "sequence": 13,
+      "symbol": "GGAL",
+      "timeSec": 1794841200,
+      "price": 100,
+      "size": 999,
+      "side": "UNKNOWN",
+      "buyVolume": null,
+      "sellVolume": null,
+      "attributableToLast": false
+    },
+    {
+      "sequence": 9,
+      "symbol": "GGAL",
+      "timeSec": 1794841197,
+      "price": 99.9,
+      "size": 700,
+      "side": "SELL",
+      "buyVolume": 0,
+      "sellVolume": 700,
+      "attributableToLast": true
+    }
+  ],
+  "expectedVpinTrades": [
+    {
+      "timeSec": 1794841197,
+      "price": 99.9,
+      "buyVolume": 0,
+      "sellVolume": 700
+    },
+    {
+      "timeSec": 1794841198,
+      "price": 99.9,
+      "buyVolume": 0,
+      "sellVolume": 25
+    },
+    {
+      "timeSec": 1794841199,
+      "price": 100.1,
+      "buyVolume": 8,
+      "sellVolume": 0
+    }
+  ],
+  "icebergCase": {
+    "previous": {
+      "bidPrice": 99.9,
+      "bidSize": 100,
+      "askPrice": 100.1,
+      "askSize": 80,
+      "lastTradeSequence": 10
+    },
+    "current": {
+      "bidPrice": 99.9,
+      "bidSize": 90,
+      "askPrice": 100.1,
+      "askSize": 75
+    },
+    "expectedTracking": {
+      "executedVolumeAtBid": 25,
+      "executedVolumeAtAsk": 8,
+      "lastTradeSequence": 13
+    },
+    "expectedSignal": {
+      "detected": true,
+      "side": "BID",
+      "priceLevel": 99.9,
+      "executedVolumeAtBest": 25,
+      "visibleDropAtBest": 10,
+      "reloadedVolumeEstimate": 15,
+      "reloadRatio": 2.5
+    }
+  },
+  "bookCase": {
+    "bids": [
+      {
+        "price": 6399,
+        "size": 1000,
+        "orderCount": 8
+      },
+      {
+        "price": 6398,
+        "size": 800,
+        "orderCount": 7
+      },
+      {
+        "price": 6397,
+        "size": 600,
+        "orderCount": 6
+      },
+      {
+        "price": 6396,
+        "size": 400,
+        "orderCount": 5
+      },
+      {
+        "price": 6395,
+        "size": 200,
+        "orderCount": 4
+      }
+    ],
+    "asks": [
+      {
+        "price": 6401,
+        "size": 700,
+        "orderCount": 3
+      },
+      {
+        "price": 6402,
+        "size": 900,
+        "orderCount": 4
+      },
+      {
+        "price": 6403,
+        "size": 1100,
+        "orderCount": 5
+      },
+      {
+        "price": 6404,
+        "size": 1300,
+        "orderCount": 6
+      },
+      {
+        "price": 6405,
+        "size": 1500,
+        "orderCount": 7
+      }
+    ],
+    "decayAlpha": 0.55,
+    "expected": {
+      "obiL1": 0.17647058823529413,
+      "obiMultiLevel": -0.06407460219100125,
+      "micropriceL1": 6400.176470588235,
+      "micropriceMultiLevel": 6400.202490004547,
+      "totalBidDepth5": 3000,
+      "totalAskDepth5": 5500
+    }
+  }
+}
