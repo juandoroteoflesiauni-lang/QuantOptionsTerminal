@@ -57,6 +57,11 @@ export interface MassiveStocksStreamDeps {
   readonly onEvents?: (events: readonly WsNormalizedEvent[]) => void;
   readonly onStateChange?: (state: WsConnectionState) => void;
   readonly onError?: (message: string) => void;
+  /**
+   * Pieza 32: clave REST para los batches de snapshot (round-robin del pool).
+   * Inyección explícita; si no se provee, los batches REST usan `apiKey`.
+   */
+  readonly restApiKeyFn?: () => string;
 }
 
 interface MutableQuote {
@@ -162,6 +167,7 @@ export function extractSnapshotPrice(input: {
 
 export class MassiveStocksStream {
   private readonly apiKey: string;
+  private readonly restApiKeyFn: (() => string) | null;
   private readonly symbols: ReadonlySet<string>;
   private readonly stockSymbols: readonly string[];
   private readonly fetchFn: FetchFn;
@@ -183,6 +189,7 @@ export class MassiveStocksStream {
 
   public constructor(deps: MassiveStocksStreamDeps) {
     this.apiKey = deps.apiKey;
+    this.restApiKeyFn = deps.restApiKeyFn ?? null;
     this.symbols = new Set(deps.symbols.map((symbol) => symbol.trim().toUpperCase()).filter((s) => s !== ''));
     this.stockSymbols = [...this.symbols].filter((symbol) => !symbol.startsWith('I:')).sort();
     this.fetchFn = deps.fetchFn;
@@ -374,9 +381,13 @@ export class MassiveStocksStream {
     }
   }
 
+  private restBatchApiKey(): string {
+    return this.restApiKeyFn !== null ? this.restApiKeyFn() : this.apiKey;
+  }
+
   private async fetchStockBatch(): Promise<boolean> {
     const url = `${this.baseUrl}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(this.stockSymbols.join(','))}`;
-    const response = await this.fetchFn(withAuth(url, this.apiKey));
+    const response = await this.fetchFn(withAuth(url, this.restBatchApiKey()));
     if (!response.ok) {
       this.reportError(`Massive stock batch HTTP ${String(response.status)}`);
       return false;
@@ -459,7 +470,7 @@ export class MassiveStocksStream {
 
   private async fetchVixBatch(): Promise<boolean> {
     const url = `${this.baseUrl}/v3/snapshot?ticker=${encodeURIComponent('I:VIX')}`;
-    const response = await this.fetchFn(withAuth(url, this.apiKey));
+    const response = await this.fetchFn(withAuth(url, this.restBatchApiKey()));
     if (!response.ok) {
       this.reportError(`Massive VIX batch HTTP ${String(response.status)}`);
       return false;

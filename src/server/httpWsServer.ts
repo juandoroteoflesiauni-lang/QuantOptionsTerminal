@@ -21,6 +21,8 @@
  *  - `POST /api/ar/ggal-specialist/strategy-selector`
  *  - `POST /api/ar/ggal-specialist/anexo-b/ingest`
  *  - `GET /api/ar/ggal-specialist/margin-risk`
+ *  - `GET /api/us/providers-status` (Pieza 32: MASSIVE_WS, MASSIVE_REST_POOL,
+ *    TRADIER_LIVE y ORATS con keySlot/activeRole, sin material secreto)
  *
  * WebSocket:
  *  - `ws://host:port/ws`
@@ -498,6 +500,32 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const analytics = await runtime.getUsEquityPanelAnalytics(forceRefresh);
         sendJson(res, 200, analytics);
+        return;
+      }
+
+      // Pieza 32: estado real de proveedores de mercado US. `TRADIER LIVE + ORATS`
+      // se muestra cuando el stream Tradier está configurado y conectado; en otro
+      // caso `MASSIVE + ORATS` (cero fallbacks silenciosos: cada proveedor expone
+      // configured/connected/keySlot/activeRole sin material secreto).
+      if (pathname === '/api/us/providers-status') {
+        const usProviders = runtime.getUsProvidersStatus();
+        const oratsStatus = ggalRuntime.getOratsStatus();
+        const tradierLive = usProviders.TRADIER_LIVE;
+        const usOptionsFeedBadge: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' =
+          tradierLive.configured && tradierLive.connected
+            ? 'TRADIER LIVE + ORATS'
+            : 'MASSIVE + ORATS';
+        sendJson(res, 200, {
+          status: 'OK' as const,
+          ...usProviders,
+          providers: {
+            MASSIVE_WS: usProviders.MASSIVE_WS,
+            MASSIVE_REST_POOL: usProviders.MASSIVE_REST_POOL,
+            TRADIER_LIVE: tradierLive,
+            ORATS: oratsStatus,
+          },
+          usOptionsFeedBadge,
+        });
         return;
       }
 

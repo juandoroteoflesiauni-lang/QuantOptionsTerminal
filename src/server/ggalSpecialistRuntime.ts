@@ -164,7 +164,11 @@ import {
   loadOratsClientConfigFromEnv,
   type OratsHttpFn,
 } from './oratsHybridClient.js';
+import type { TradierQuotesResult } from './tradierAdapter.js';
 import { redactSecrets } from './runtimeCache.js';
+
+/** Pieza 32: ADRs US consultados por NBBO Tradier en el GGAL Specialist. */
+const GGAL_TRADIER_ADR_SYMBOLS = ['GGAL', 'YPF', 'BMA', 'CEPU', 'VIST', 'MELI'] as const;
 
 export type GgalBadgeMode =
   | 'LIVE'
@@ -527,6 +531,7 @@ interface MarketBundle {
   readonly gd30cHistory: readonly HistoricalPriceSeriesPoint[];
   readonly cerHistory: readonly CerObservation[];
   readonly cerVarId: number;
+  readonly tradierAdrQuotes: TradierQuotesResult | null;
   readonly errors: readonly string[];
 }
 
@@ -1162,6 +1167,12 @@ export class GgalSpecialistRuntime {
   private recorderTimer: ReturnType<typeof setInterval> | null = null;
   private readonly arFeedRouter: ArFeedRouter;
   private readonly oratsClient: OratsHybridClient;
+  /** Pieza 32: último resultado de la superficie ORATS para providers-status. */
+  private oratsLastCall: {
+    readonly atUtcSec: number;
+    readonly ok: boolean;
+    readonly status: string;
+  } | null = null;
   private regimePriorProbabilities: readonly [number, number, number] = [0.55, 0.35, 0.10];
   private previousBmbBest: BmbBestQuoteObservation | null = null;
   private bmbIcebergCache: {
@@ -1256,6 +1267,28 @@ export class GgalSpecialistRuntime {
       snapshotsCount: this.recorderSnapshots.length,
       flowPointsCount: this.bymaFlowSnapshots.length,
       lastRecordedAtUtcSec: last?.asOfUtcSec ?? null,
+    };
+  }
+
+  /**
+   * Pieza 32: estado ORATS para `GET /api/us/providers-status` (rol superficie
+   * `smvVol` / `IV Rank` / `impliedMove` en el especialista GGAL).
+   */
+  public getOratsStatus(): {
+    readonly configured: boolean;
+    readonly connected: boolean | null;
+    readonly lastFetchAtUtcSec: number | null;
+    readonly lastStatus: string | null;
+    readonly activeRole: 'SURFACE';
+  } {
+    const configured = this.oratsClient.isConfigured();
+    const last = this.oratsLastCall;
+    return {
+      configured,
+      connected: !configured ? false : last === null ? null : last.ok,
+      lastFetchAtUtcSec: last?.atUtcSec ?? null,
+      lastStatus: last?.status ?? null,
+      activeRole: 'SURFACE',
     };
   }
 
@@ -1765,6 +1798,20 @@ export class GgalSpecialistRuntime {
         }
       }
 
+      // Pieza 32: NBBO Tradier para ADRs US (respaldo/complemento explícito de
+      // Massive en el especialista GGAL; `null` cuando Tradier no está configurado).
+      const tradierAdrQuotes: TradierQuotesResult | null = this.runtime.isTradierConfigured()
+        ? await this.runtime
+            .fetchTradierQuotesSafe([...GGAL_TRADIER_ADR_SYMBOLS])
+            .catch(
+              (err: unknown): null => {
+                const msg = err instanceof Error ? err.message : String(err);
+                errors.push(redactSecrets(`Tradier ADR NBBO: ${msg}`, this.secrets));
+                return null;
+              },
+            )
+        : null;
+
       const bundle: MarketBundle = {
         asOfUtcSec,
         overview,
@@ -1786,6 +1833,7 @@ export class GgalSpecialistRuntime {
         gd30cHistory: histories.gd30cHistory,
         cerHistory: histories.cerHistory,
         cerVarId: histories.cerVarId,
+        tradierAdrQuotes,
         errors,
       };
 
@@ -1862,8 +1910,7 @@ export class GgalSpecialistRuntime {
 
     const allErrors = Array.from(
       new Set([...bundle.overview.providerErrors, ...bundle.ggalOptions.providerErrors, ...bundle.errors]),
-    );
-    const hideClosedOpenByma = isClosedSession || parity.sessionRegime === 'CLOSED';
+    );    const hideClosedOpenByma = isClosedSession || parity.sessionRegime === 'CLOSED';
     const hasContingentFeed =
       bundle.liveStocks.length > 0 || bundle.usSnapshot !== null || bundle.usBars !== null;
     const visibleErrors = allErrors.filter((err) => {
@@ -1897,7 +1944,13 @@ export class GgalSpecialistRuntime {
       anexoBLagTradingDays: overrideAnexoBLag ?? null,
       recorder: this.getRecorderStatus(),
       providerErrors: visibleErrors,
-      sourceDiagnostics: allErrors,
+      sourceDiagnostics: [
+        ...allErrors,
+        // Pieza 32: origen explícito del NBBO del ADR (Tradier Live vs Massive).
+        bundle.tradierAdrQuotes === null
+          ? 'ADR NBBO GGAL: MASSIVE (Tradier no configurado o sin respuesta)'
+          : `ADR NBBO GGAL: TRADIER (rows=${String(bundle.tradierAdrQuotes.provenance.rows)}, http=${String(bundle.tradierAdrQuotes.provenance.httpStatus ?? 'n/a')})`,
+      ],
     };
   }
 
@@ -2117,7 +2170,18 @@ export class GgalSpecialistRuntime {
         ? makeBidAskQuote(ggalCiRow.bid, ggalCiRow.ask, ggalCiRow.last, isEodMode)
         : null;
 
-    // ADR NASDAQ desde Massive snapshot / bars o Data912 usa_adrs reflejado en ggalOverview.adrPrice
+    // ADR NASDAQ desde Massive snapshot / bars o Data912 usa_adrs reflejado en ggalOverview.adrPrice.
+    // Pieza 32: cuando Tradier está configurado, las puntas NBBO del ADR se
+    // refrescan con Tradier Live (`provider: 'TRADIER'`); si las puntas no son
+    // válidas se mantiene explícitamente la referencia Massive (EOD/close).
+    const tradierGgal =
+      bundle.tradierAdrQuotes?.quotes.find((q) => q.symbol === 'GGAL') ?? null;
+    const tradierNbboValid =
+      tradierGgal !== null &&
+      Number.isFinite(tradierGgal.bid) &&
+      tradierGgal.bid > 0 &&
+      Number.isFinite(tradierGgal.ask) &&
+      tradierGgal.ask >= tradierGgal.bid;
     const lastAdrBarClose =
       bundle.usBars !== null && bundle.usBars.bars.length > 0
         ? (bundle.usBars.bars[bundle.usBars.bars.length - 1]?.close ?? null)
@@ -2127,7 +2191,17 @@ export class GgalSpecialistRuntime {
       lastAdrBarClose ??
       ggalOverview?.adrPrice ??
       null;
-    const adrBuilt = makeBidAskQuote(null, null, adrSpot, true);
+    const adrBuilt = tradierNbboValid
+      ? makeBidAskQuote(
+          tradierGgal.bid,
+          tradierGgal.ask,
+          Number.isFinite(tradierGgal.last) && tradierGgal.last > 0 ? tradierGgal.last : adrSpot,
+          isEodMode,
+        )
+      : makeBidAskQuote(null, null, adrSpot, true);
+    const adrQuoteSource: 'TRADIER_LIVE_NBBO' | 'MASSIVE' = tradierNbboValid
+      ? 'TRADIER_LIVE_NBBO'
+      : 'MASSIVE';
 
     const basis: ExecutionPriceBasis =
       bymaBuilt.basis === 'LIVE_BID_ASK'
@@ -2141,6 +2215,7 @@ export class GgalSpecialistRuntime {
       bymaCiQuote: bymaCiBuilt?.quote,
       bymaPrevClose: ggalLive?.prevClose ?? ggalOverview?.prevClose ?? null,
       adrQuote: adrBuilt.quote,
+      adrQuoteSource,
       lastAdrBarClose,
       basis,
     };
@@ -4642,6 +4717,11 @@ export class GgalSpecialistRuntime {
       yangZhangAdrVol,
       forceRefresh,
     });
+    this.oratsLastCall = {
+      atUtcSec: Math.floor(this.nowMsFn() / 1_000),
+      ok: surface.status === 'OPERATIONAL',
+      status: surface.status,
+    };
     const otmWingCclVol = this.buildOtmWingCclFromBundle(bundle);
 
     return {

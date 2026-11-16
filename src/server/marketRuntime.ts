@@ -232,6 +232,27 @@ import {
   MassiveStocksStream,
   type MarketTickQuote,
 } from './massiveStocksStream.js';
+import {
+  getMassiveKeyPoolStatus,
+  getMassiveRestKey,
+  getMassiveStocksWsKey,
+  type MassiveKeySlot,
+} from './massiveKeyPool.js';
+import {
+  fetchTradierOptionChain,
+  fetchTradierQuotes,
+  loadTradierConfigFromEnv,
+  overlayTradierChainOnCanonicalContracts,
+  TRADIER_PROD_REST_BASE,
+  TRADIER_WS_BASE,
+  TradierLiveManager,
+  type TradierChainOverlaySummary,
+  type TradierConfig,
+  type TradierOptionChainResult,
+  type TradierOptionContractNormalized,
+  type TradierQuotesResult,
+  type TradierStreamTick,
+} from './tradierAdapter.js';
 
 export const DEFAULT_TERMINAL_SYMBOLS = ['SPY', 'QQQ', 'I:SPX'] as const;
 
@@ -308,6 +329,59 @@ export class RuntimeNoDataError extends Error {
 export interface MassiveAuthConfig {
   readonly apiKey: string;
   readonly secrets: readonly string[];
+}
+
+/** Slot seguro del pool REST/WS para exponer por HTTP (sin material secreto). */
+export interface UsProviderKeySlotStatus {
+  readonly envName: string;
+  readonly slotIndex: number;
+  readonly poolSize: number;
+}
+
+export interface UsMassiveWsProviderStatus {
+  readonly configured: boolean;
+  readonly connected: boolean;
+  readonly state: string;
+  readonly keySlot: UsProviderKeySlotStatus | null;
+  readonly activeRole: 'WS_STOCKS';
+  readonly lastError: string | null;
+  readonly subscribedOptionQuotes: number;
+}
+
+export interface UsRestPoolProviderStatus {
+  readonly configured: boolean;
+  readonly poolSize: number;
+  readonly slots: readonly { readonly envName: string; readonly slotIndex: number }[];
+  readonly lastSlotIndex: number | null;
+  readonly roundRobinRequests: number;
+  readonly activeRole: 'REST_LOADERS';
+}
+
+export interface UsTradierProviderStatus {
+  readonly configured: boolean;
+  readonly connected: boolean;
+  readonly state: string;
+  readonly sessionCreated: boolean;
+  readonly subscribedSymbols: readonly string[];
+  readonly lastTickAtUtcSec: number | null;
+  readonly lastError: string | null;
+  readonly activeRole: 'LIVE_STREAM' | 'STANDBY';
+}
+
+export interface UsProvidersStatus {
+  readonly asOfUtcSec: number;
+  readonly MASSIVE_WS: UsMassiveWsProviderStatus;
+  readonly MASSIVE_REST_POOL: UsRestPoolProviderStatus;
+  readonly TRADIER_LIVE: UsTradierProviderStatus;
+}
+
+/** Origen declarado del feed de opciones US en el snapshot (Pieza 32). */
+export type UsOptionsFeedBadge = 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
+
+export interface UsOptionsFeedProvenance {
+  readonly provider: 'TRADIER' | 'MASSIVE';
+  readonly badge: UsOptionsFeedBadge;
+  readonly tradierOverlay: TradierChainOverlaySummary | null;
 }
 
 export interface SerializedStrikeExposure {
@@ -721,6 +795,7 @@ export interface TerminalSnapshotResponse {
   readonly terminalEngines?: SerializedTerminalEngines | null;
   readonly benchmarkBars1d?: readonly SerializedBar[] | undefined;
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
+  readonly usOptionsFeed?: UsOptionsFeedProvenance | undefined;
   readonly dataQuality: SnapshotDataQuality;
 }
 
@@ -875,6 +950,13 @@ export interface MarketRuntimeDeps {
   readonly ttlResolver?: (nowMs: number) => number;
   readonly enableWs?: boolean;
   readonly watchedSymbols?: readonly string[];
+  /** Pieza 32: configuración Tradier inyectada explícitamente (tests/harness). */
+  readonly tradierConfig?: TradierConfig;
+  /** Pieza 32: manager Tradier pre-construido (tests/harness). */
+  readonly tradierManager?: TradierLiveManager;
+  /** Pieza 32: funciones Tradier inyectables para determinismo en tests. */
+  readonly tradierChainFetchFn?: typeof fetchTradierOptionChain;
+  readonly tradierQuotesFetchFn?: typeof fetchTradierQuotes;
 }
 
 interface ParsedSymbol {
@@ -1122,6 +1204,10 @@ const DEFAULT_DAILY_1D_CACHE_TTL_MS = 15 * 60 * 1_000;
 const US_DAILY_1D_WEEKEND_TTL_MS = 2 * 60 * 60 * 1_000;
 const US_PANEL_CONCURRENCY_LIMIT = 6;
 const US_PANEL_MAX_CLOSED_BARS = 260;
+/** Pieza 32: TTL de cache de cadenas de opciones Tradier por (símbolo, vencimiento). */
+const TRADIER_CHAIN_CACHE_TTL_MS = 15_000;
+/** Pieza 32: máximo de vencimientos distintos refrescados por snapshot. */
+const TRADIER_MAX_CHAIN_EXPIRIES = 6;
 const NYFED_SOFR_LAST_URL = 'https://markets.newyorkfed.org/api/rates/secured/sofr/last/1.json';
 const FRED_GRAPH_CSV_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv';
 
@@ -1224,8 +1310,7 @@ export function loadRuntimeAuth(
   };
 }
 
-export function createRedactingFetch(secrets: readonly string[]): FetchFn {
-  return async (url: string) => {
+export function createRedactingFetch(secrets: readonly string[]): FetchFn {  return async (url: string) => {
     const parsedUrl = new URL(url);
     const endpoint = `${parsedUrl.origin}${parsedUrl.pathname}`;
     try {
@@ -2986,6 +3071,18 @@ export class MarketRuntime {
   private readonly nowMsFn: () => number;
   private readonly enableWs: boolean;
   private readonly watchedSymbols: readonly string[];
+  /** Clave inyectada explícitamente por deps (tests/harness); `null` => pool de entorno. */
+  private readonly depsApiKey: string | null;
+  private readonly tradierConfig: TradierConfig;
+  private tradierManager: TradierLiveManager | null;
+  private readonly tradierChainFetchFn: typeof fetchTradierOptionChain;
+  private readonly tradierQuotesFetchFn: typeof fetchTradierQuotes;
+  private readonly tradierChainCache = new Map<
+    string,
+    { readonly atMs: number; readonly result: TradierOptionChainResult }
+  >();
+  private readonly tradierChainInFlight = new Map<string, Promise<TradierOptionChainResult>>();
+  private readonly tradierQuoteTicks = new Map<string, MarketTickQuote>();
 
   private readonly snapshotCache: SingleFlightRuntimeCache<TerminalSnapshotResponse>;
   private readonly barsCache: SingleFlightRuntimeCache<TerminalBarsResponse>;
@@ -3451,6 +3548,7 @@ export class MarketRuntime {
 
   public constructor(deps: MarketRuntimeDeps = {}) {
     const auth = loadRuntimeAuth();
+    this.depsApiKey = deps.apiKey ?? null;
     this.apiKey = deps.apiKey ?? auth.apiKey;
     const secretSet = new Set<string>(auth.secrets);
     if (deps.secrets !== undefined) {
@@ -3461,6 +3559,27 @@ export class MarketRuntime {
     if (this.apiKey !== '') {
       secretSet.add(this.apiKey);
     }
+    // Pieza 32: en modo fetch simulado (tests) Tradier queda explícitamente no
+    // configurado salvo inyección directa, para no golpear la red real.
+    const isMockFetch = deps.fetchFn !== undefined;
+    this.tradierConfig =
+      deps.tradierConfig ??
+      (isMockFetch
+        ? {
+            accessToken: null,
+            tokenEnvName: null,
+            apiEnv: 'prod' as const,
+            restBaseUrl: TRADIER_PROD_REST_BASE,
+            wsBaseUrl: TRADIER_WS_BASE,
+            configured: false,
+          }
+        : loadTradierConfigFromEnv());
+    if (this.tradierConfig.accessToken !== null) {
+      secretSet.add(this.tradierConfig.accessToken);
+    }
+    this.tradierManager = deps.tradierManager ?? null;
+    this.tradierChainFetchFn = deps.tradierChainFetchFn ?? fetchTradierOptionChain;
+    this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
     this.secrets = [...secretSet];
     this.baseUrl = deps.baseUrl;
     this.fetchFn = deps.fetchFn ?? createRedactingFetch(this.secrets);
@@ -3570,6 +3689,56 @@ export class MarketRuntime {
     return this.apiKey;
   }
 
+  /**
+   * Pieza 32: slot REST del pool round-robin (`MASSIVE_REST_KEY` ->
+   * `MASSIVE_REST_KEYS` -> `MASSIVE_API_KEY`). Con `deps.apiKey` inyectada se usa
+   * esa clave directamente (tests/harness) sin rotación.
+   */
+  private restKeySlot(): MassiveKeySlot {
+    if (this.depsApiKey !== null) {
+      return {
+        key: this.depsApiKey,
+        envName: 'deps.apiKey',
+        slotIndex: 0,
+        poolSize: 1,
+        role: 'REST',
+      };
+    }
+    return getMassiveRestKey();
+  }
+
+  /** Pieza 32: clave del socket de stocks (`MASSIVE_WS_STOCKS_KEY` -> `MASSIVE_API_KEY`). */
+  private wsStocksKeySlot(): MassiveKeySlot {
+    if (this.depsApiKey !== null) {
+      return {
+        key: this.depsApiKey,
+        envName: 'deps.apiKey',
+        slotIndex: 0,
+        poolSize: 1,
+        role: 'WS_STOCKS',
+      };
+    }
+    return getMassiveStocksWsKey();
+  }
+
+  private restBatchApiKey(): string {
+    return this.restKeySlot().key;
+  }
+
+  /** Clave REST obligatoria para loaders Massive (lanza 503 si el pool está vacío). */
+  private assertRestApiKey(): string {
+    const key = this.restKeySlot().key;
+    if (key.trim() === '') {
+      throw new RuntimeNoDataError(
+        'MISSING_API_KEY',
+        'Massive REST key pool is empty: MASSIVE_REST_KEY / MASSIVE_REST_KEYS / MASSIVE_API_KEY missing',
+        this.secrets,
+        503,
+      );
+    }
+    return key;
+  }
+
   public getHealth(): {
     readonly ok: boolean;
     readonly nowUtcSec: number;
@@ -3627,7 +3796,13 @@ export class MarketRuntime {
   }
 
   public async startWs(): Promise<void> {
-    if (!this.enableWs || this.apiKey.trim() === '') {
+    if (!this.enableWs) {
+      return;
+    }
+    // Pieza 32: el socket de stocks usa su clave dedicada (MASSIVE_WS_STOCKS_KEY ->
+    // MASSIVE_API_KEY); los batches REST internos rotan el pool REST.
+    const wsStocksKey = this.wsStocksKeySlot();
+    if (wsStocksKey.key.trim() === '') {
       return;
     }
     if (this.massiveStocksStream !== null) {
@@ -3655,7 +3830,8 @@ export class MarketRuntime {
       ]),
     ];
     const stream = new MassiveStocksStream({
-      apiKey: this.apiKey,
+      apiKey: wsStocksKey.key,
+      restApiKeyFn: () => this.restBatchApiKey(),
       symbols,
       fetchFn: this.fetchFn,
       createWsClientFn: this.createWsClientFn,
@@ -3685,11 +3861,150 @@ export class MarketRuntime {
     });
     this.massiveStocksStream = stream;
     await stream.start();
+    this.ensureTradierLiveStream(symbols);
+  }
+
+  /**
+   * Pieza 32: stream Tradier live (`ws.tradier.com`) como respaldo/complemento
+   * instantáneo del socket de stocks de Massive. Solo equities (los índices `I:`
+   * de Massive no tienen símbolo Tradier equivalente y se excluyen explícitamente).
+   */
+  private ensureTradierLiveStream(symbols: readonly string[]): void {
+    if (!this.tradierConfig.configured || this.tradierManager !== null) {
+      return;
+    }
+    const equities = symbols
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s !== '' && !s.startsWith('I:'));
+    if (equities.length === 0) {
+      return;
+    }
+    const manager = new TradierLiveManager({
+      config: this.tradierConfig,
+      nowMsFn: this.nowMsFn,
+      secrets: this.secrets,
+      onTick: (tick) => {
+        this.ingestTradierTick(tick);
+      },
+      onStateChange: (state) => {
+        this.emitBroadcast({
+          type: 'status',
+          cluster: 'stocks',
+          state: state === 'CONNECTED' ? 'ready' : state === 'ERROR' ? 'error' : 'connecting',
+          message: `tradier stream state: ${state}`,
+          time: Math.floor(this.nowMsFn() / 1_000),
+        });
+      },
+      onError: (message) => {
+        this.emitBroadcast({
+          type: 'status',
+          cluster: 'stocks',
+          state: 'error',
+          message: redactSecrets(message, this.secrets),
+          time: Math.floor(this.nowMsFn() / 1_000),
+        });
+      },
+    });
+    this.tradierManager = manager;
+    void manager.start(equities).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emitBroadcast({
+        type: 'status',
+        cluster: 'stocks',
+        state: 'error',
+        message: redactSecrets(`tradier stream start failed: ${message}`, this.secrets),
+        time: Math.floor(this.nowMsFn() / 1_000),
+      });
+    });
+  }
+
+  /**
+   * Pieza 32: ingiere un tick Tradier al bus interno (wsListeners) y al estado de
+   * cotizaciones US como complemento explícito de Massive (source `TRADIER_WS`).
+   * Regla de fusión: gana el timestamp más nuevo; empate/indeterminado queda
+   * Massive (fuente primaria). Campos no calculables se omiten (nunca 0 fake).
+   */
+  private ingestTradierTick(tick: TradierStreamTick): void {
+    const symbol = tick.symbol.trim().toUpperCase();
+    if (symbol === '') return;
+    const existing = this.tradierQuoteTicks.get(symbol) ?? null;
+    const bidAskMid =
+      Number.isFinite(tick.bid) && Number.isFinite(tick.ask) && tick.bid > 0 && tick.ask >= tick.bid
+        ? 0.5 * (tick.bid + tick.ask)
+        : Number.NaN;
+    const price = Number.isFinite(tick.price) && tick.price > 0 ? tick.price : bidAskMid;
+    const asOfUtcSec = Number.isFinite(tick.asOfUtcSec) ? tick.asOfUtcSec : null;
+    if (existing !== null && asOfUtcSec !== null && existing.asOfUtcSec !== null && asOfUtcSec < existing.asOfUtcSec) {
+      return;
+    }
+    if (!Number.isFinite(price) || price <= 0) {
+      if (tick.event === 'quote' && Number.isFinite(tick.bid) && Number.isFinite(tick.ask)) {
+        this.emitBroadcast({
+          type: 'quote',
+          cluster: 'stocks',
+          symbol,
+          time: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+          bid: Number.isFinite(tick.bid) ? tick.bid : null,
+          ask: Number.isFinite(tick.ask) ? tick.ask : null,
+          mid: Number.isFinite(bidAskMid) ? bidAskMid : null,
+        });
+      }
+      return;
+    }
+    const previousClose =
+      Number.isFinite(tick.previousClose) && tick.previousClose > 0
+        ? tick.previousClose
+        : existing?.previousClose ?? null;
+    const volume = Number.isFinite(tick.cumulativeVolume) && tick.cumulativeVolume >= 0
+      ? tick.cumulativeVolume
+      : existing?.volume ?? null;
+    const quote: MarketTickQuote = {
+      market: 'US',
+      symbol,
+      kind: 'stock',
+      currency: 'USD',
+      price,
+      previousClose,
+      changePct:
+        previousClose !== null && previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : null,
+      dayLow: existing?.dayLow ?? null,
+      dayHigh: existing?.dayHigh ?? null,
+      volume,
+      turnover: existing?.turnover ?? null,
+      asOfUtcSec,
+      source: 'TRADIER_WS',
+    };
+    this.tradierQuoteTicks.set(symbol, quote);
+    if (tick.event === 'trade') {
+      this.emitBroadcast({
+        type: 'trade',
+        cluster: 'stocks',
+        symbol,
+        time: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        price,
+        size: Number.isFinite(tick.size) ? tick.size : 0,
+      });
+    } else {
+      this.emitBroadcast({
+        type: 'quote',
+        cluster: 'stocks',
+        symbol,
+        time: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        bid: Number.isFinite(tick.bid) ? tick.bid : null,
+        ask: Number.isFinite(tick.ask) ? tick.ask : null,
+        mid: Number.isFinite(bidAskMid) ? bidAskMid : null,
+      });
+    }
   }
 
   public stopWs(): void {
     this.massiveStocksStream?.stop();
     this.massiveStocksStream = null;
+    if (this.tradierManager !== null) {
+      this.tradierManager.stop();
+      this.tradierManager = null;
+    }
+    this.tradierQuoteTicks.clear();
     if (this.stockWsClient !== null) {
       this.stockWsClient.close(1000, 'server_shutdown');
       this.stockWsClient = null;
@@ -3924,7 +4239,6 @@ export class MarketRuntime {
   }
 
   public getLiveUsQuotes(): readonly MarketTickQuote[] {
-    if (this.massiveStocksStream?.getDiagnostics().sourceMode === 'NO_DATA') return [];
     const bySymbol = new Map<string, MarketTickQuote>();
     const panel = this.lastUsPanelBase;
     if (panel !== null) {
@@ -3955,6 +4269,26 @@ export class MarketRuntime {
     for (const quote of this.massiveStocksStream?.getQuotes() ?? []) {
       bySymbol.set(quote.symbol, quote);
     }
+    // Pieza 32: complemento Tradier live. Gana el timestamp más nuevo; empate o
+    // timestamp indeterminado mantiene Massive (fuente primaria explícita).
+    for (const tradierQuote of this.tradierQuoteTicks.values()) {
+      const massive = bySymbol.get(tradierQuote.symbol);
+      if (massive === undefined) {
+        bySymbol.set(tradierQuote.symbol, tradierQuote);
+        continue;
+      }
+      if (massive.asOfUtcSec === null && tradierQuote.asOfUtcSec !== null) {
+        bySymbol.set(tradierQuote.symbol, tradierQuote);
+        continue;
+      }
+      if (
+        massive.asOfUtcSec !== null &&
+        tradierQuote.asOfUtcSec !== null &&
+        tradierQuote.asOfUtcSec > massive.asOfUtcSec
+      ) {
+        bySymbol.set(tradierQuote.symbol, tradierQuote);
+      }
+    }
     return [...bySymbol.values()];
   }
 
@@ -3962,6 +4296,100 @@ export class MarketRuntime {
     const streamMode = this.massiveStocksStream?.getDiagnostics().sourceMode;
     if (streamMode !== undefined) return streamMode;
     return this.lastUsPanelBase !== null ? 'MASSIVE_BATCH' : 'NO_DATA';
+  }
+
+  /** Pieza 32: Tradier configurado con token explícito. */
+  public isTradierConfigured(): boolean {
+    return this.tradierConfig.configured;
+  }
+
+  /** Pieza 32: estado del stream Tradier live (sin material secreto). */
+  public getTradierLiveStatus(): UsTradierProviderStatus {
+    const status = this.tradierManager?.getStatus() ?? null;
+    if (status === null) {
+      return {
+        configured: this.tradierConfig.configured,
+        connected: false,
+        state: 'IDLE',
+        sessionCreated: false,
+        subscribedSymbols: [],
+        lastTickAtUtcSec: null,
+        lastError: null,
+        activeRole: 'STANDBY',
+      };
+    }
+    return {
+      configured: status.configured,
+      connected: status.connected,
+      state: status.state,
+      sessionCreated: status.sessionCreated,
+      subscribedSymbols: [...status.subscribedSymbols],
+      lastTickAtUtcSec: status.lastTickAtUtcSec,
+      lastError: status.lastError,
+      activeRole: status.activeRole,
+    };
+  }
+
+  /**
+   * Pieza 32: estado real de los proveedores de mercado US para
+   * `GET /api/us/providers-status`. ORATS se compone en `httpWsServer` con el
+   * cliente híbrido del GGAL Specialist (rol superficie).
+   */
+  public getUsProvidersStatus(): UsProvidersStatus {
+    const nowUtcSec = Math.floor(this.nowMsFn() / 1_000);
+    const wsSlot = this.wsStocksKeySlot();
+    const wsSnapshot = this.massiveStocksStream?.getWsSnapshot() ?? null;
+    const wsConfigured = wsSlot.key.trim() !== '' && this.apiKey.trim() !== '';
+    const poolStatus = this.depsApiKey !== null ? null : getMassiveKeyPoolStatus();
+    const restSlots: readonly { readonly envName: string; readonly slotIndex: number }[] =
+      poolStatus?.rest.slots ??
+      (this.depsApiKey !== null ? [{ envName: 'deps.apiKey', slotIndex: 0 }] : []);
+    const wsKeySlot: UsProviderKeySlotStatus | null =
+      wsSlot.envName === ''
+        ? null
+        : {
+            envName: wsSlot.envName,
+            slotIndex: wsSlot.slotIndex,
+            poolSize: wsSlot.poolSize,
+          };
+    return {
+      asOfUtcSec: nowUtcSec,
+      MASSIVE_WS: {
+        configured: wsConfigured,
+        connected: wsSnapshot?.state === 'ready',
+        state: wsSnapshot?.state ?? 'disconnected',
+        keySlot: wsKeySlot,
+        activeRole: 'WS_STOCKS',
+        lastError: wsSnapshot?.lastError?.message ?? null,
+        subscribedOptionQuotes: this.subscribedOptionContracts.size,
+      },
+      MASSIVE_REST_POOL: {
+        configured: this.restKeySlot().key.trim() !== '',
+        poolSize: poolStatus?.rest.poolSize ?? (this.depsApiKey !== null ? 1 : 0),
+        slots: restSlots,
+        lastSlotIndex: poolStatus?.rest.lastSlotIndex ?? (this.depsApiKey !== null ? 0 : null),
+        roundRobinRequests: poolStatus?.rest.roundRobinRequests ?? 0,
+        activeRole: 'REST_LOADERS',
+      },
+      TRADIER_LIVE: this.getTradierLiveStatus(),
+    };
+  }
+
+  /**
+   * Pieza 32: cotizaciones NBBO Tradier para ADRs/acciones US (uso del GGAL
+   * Specialist). Devuelve `null` explícito cuando Tradier no está configurado.
+   */
+  public async fetchTradierQuotesSafe(
+    symbols: readonly string[],
+  ): Promise<TradierQuotesResult | null> {
+    if (!this.tradierConfig.configured) {
+      return null;
+    }
+    return this.tradierQuotesFetchFn(symbols, {
+      config: this.tradierConfig,
+      nowMsFn: this.nowMsFn,
+      secrets: this.secrets,
+    });
   }
 
   private overlayLiveUsPanel(base: EquityPanelAnalyticsDto): EquityPanelAnalyticsDto {
@@ -4075,7 +4503,7 @@ export class MarketRuntime {
       async () => {
         const base = (this.baseUrl ?? 'https://api.massive.com').replace(/\/+$/, '');
         const rawUrl = `${base}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(cleanTickers.join(','))}`;
-        const authedUrl = withMassiveAuthUrl(rawUrl, this.apiKey);
+        const authedUrl = withMassiveAuthUrl(rawUrl, this.restBatchApiKey());
         try {
           const httpRes = await this.fetchFn(authedUrl);
           if (!httpRes.ok) {
@@ -4108,8 +4536,130 @@ export class MarketRuntime {
     return res.value;
   }
 
+  /**
+   * Pieza 32: obtiene la cadena Tradier por vencimiento con cache (15s) y
+   * single-flight; lanza el error redactado hacia el caller.
+   */
+  private async getTradierChainWithCache(
+    symbol: string,
+    expiration: string,
+  ): Promise<TradierOptionChainResult> {
+    const cacheKey = `${symbol}:${expiration}`;
+    const nowMs = this.nowMsFn();
+    const cached = this.tradierChainCache.get(cacheKey);
+    if (cached !== undefined && nowMs - cached.atMs < TRADIER_CHAIN_CACHE_TTL_MS) {
+      return cached.result;
+    }
+    const inflight = this.tradierChainInFlight.get(cacheKey);
+    if (inflight !== undefined) {
+      return inflight;
+    }
+    const promise = this.tradierChainFetchFn(symbol, expiration, {
+      config: this.tradierConfig,
+      nowMsFn: this.nowMsFn,
+      secrets: this.secrets,
+    })
+      .then((result) => {
+        this.tradierChainCache.set(cacheKey, { atMs: nowMs, result });
+        if (this.tradierChainCache.size > 64) {
+          const oldestKey = this.tradierChainCache.keys().next().value;
+          if (oldestKey !== undefined) {
+            this.tradierChainCache.delete(oldestKey);
+          }
+        }
+        return result;
+      })
+      .finally(() => {
+        this.tradierChainInFlight.delete(cacheKey);
+      });
+    this.tradierChainInFlight.set(cacheKey, promise);
+    return promise;
+  }
+
+  /**
+   * Pieza 32: refresco en vivo de puntas `bid/ask/size`, volumen, open interest y
+   * griegas de la cadena US/ADR con Tradier (`provider: 'TRADIER'`), manteniendo
+   * Massive como base canónica. Índices (`I:*`) y snapshots sin contratos quedan
+   * explícitamente fuera (summary `null`); los errores se reportan como warnings.
+   */
+  private async tryTradierChainOverlay(
+    canonicalSymbol: string,
+    isIndex: boolean,
+    contracts: readonly OptionSnapshotContract[],
+    nowSec: number,
+    warnings: string[],
+  ): Promise<{
+    readonly contracts: readonly OptionSnapshotContract[];
+    readonly summary: TradierChainOverlaySummary | null;
+  }> {
+    if (!this.tradierConfig.configured || isIndex || contracts.length === 0) {
+      return { contracts, summary: null };
+    }
+    const expirations = [...new Set(contracts.map((c) => c.expirationDate))]
+      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+      .sort()
+      .slice(0, TRADIER_MAX_CHAIN_EXPIRIES);
+    if (expirations.length === 0) {
+      return { contracts, summary: null };
+    }
+
+    const chainParts: TradierOptionContractNormalized[] = [];
+    const errors: string[] = [];
+    let httpStatus: number | null = null;
+    for (const expiration of expirations) {
+      try {
+        const res = await this.getTradierChainWithCache(canonicalSymbol, expiration);
+        chainParts.push(...res.contracts);
+        if (res.provenance.httpStatus !== null) {
+          httpStatus = res.provenance.httpStatus;
+        }
+      } catch (err: unknown) {
+        errors.push(
+          `Tradier chain ${expiration}: ${redactSecrets(extractErrorMessage(err, 'tradier chain failed'), this.secrets)}`,
+        );
+      }
+    }
+
+    const lastError = errors.length > 0 ? errors.join('; ') : null;
+    if (chainParts.length === 0) {
+      warnings.push(...errors);
+      return {
+        contracts,
+        summary: {
+          provider: 'TRADIER',
+          requestedExpirations: expirations,
+          tradierContracts: 0,
+          matchedByOcc: 0,
+          matchedByStrikeType: 0,
+          unmatchedTradierContracts: 0,
+          overlaidContracts: 0,
+          overlaidBidAsk: 0,
+          overlaidSizes: 0,
+          overlaidVolume: 0,
+          overlaidOpenInterest: 0,
+          overlaidGreeks: 0,
+          overlaidMidIv: 0,
+          skippedStaleQuotes: 0,
+          httpStatus,
+          lastError,
+        },
+      };
+    }
+    warnings.push(...errors);
+    const overlay = overlayTradierChainOnCanonicalContracts(contracts, chainParts, { nowSec });
+    return {
+      contracts: overlay.contracts,
+      summary: {
+        ...overlay.summary,
+        requestedExpirations: expirations,
+        httpStatus,
+        lastError,
+      },
+    };
+  }
+
   private async computeSnapshot(parsed: ParsedSymbol): Promise<TerminalSnapshotResponse> {
-    const apiKey = this.assertApiKey();
+    const apiKey = this.assertRestApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const { canonicalSymbol, correlatedSymbol, isIndex } = parsed;
     const warnings: string[] = [];
@@ -4452,6 +5002,9 @@ export class MarketRuntime {
       unifiedRes.stocks.some((s) => s.marketStatus?.toLowerCase() === 'closed') ||
       unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed') ||
       [...v2StocksRes.map.values()].some((q) => q.marketStatus?.toLowerCase() === 'closed');
+
+    const tradierOverlay = await this.tryTradierChainOverlay(canonicalSymbol, isIndex, contracts, nowSec, warnings);
+    contracts = tradierOverlay.contracts;
 
     const rawOptionContracts: readonly OptionSnapshotContract[] = contracts;
     const eodQuotesRes = applyEodCloseRefQuotes(rawOptionContracts, {
@@ -5870,6 +6423,23 @@ export class MarketRuntime {
         .slice(-120)
         .map(serializeBar),
       usEquityPanel: this.usPanelCache.peek('us:equity:panel')?.value ?? null,
+      ...(tradierOverlay.summary !== null
+        ? {
+            usOptionsFeed: {
+              provider:
+                tradierOverlay.summary.tradierContracts > 0 &&
+                tradierOverlay.summary.matchedByOcc + tradierOverlay.summary.matchedByStrikeType > 0
+                  ? ('TRADIER' as const)
+                  : ('MASSIVE' as const),
+              badge:
+                tradierOverlay.summary.tradierContracts > 0 &&
+                tradierOverlay.summary.matchedByOcc + tradierOverlay.summary.matchedByStrikeType > 0
+                  ? ('TRADIER LIVE + ORATS' as const)
+                  : ('MASSIVE + ORATS' as const),
+              tradierOverlay: tradierOverlay.summary,
+            },
+          }
+        : {}),
       dataQuality: {
         ownSolvedIvContracts,
         providerFallbackIvContracts,
@@ -5915,7 +6485,7 @@ export class MarketRuntime {
     visibleBars: number,
     rthOnly: boolean,
   ): Promise<TerminalBarsResponse> {
-    const apiKey = this.assertApiKey();
+    const apiKey = this.assertRestApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const barSeconds = TIMEFRAME_SECONDS[timeframe];
 
@@ -6100,7 +6670,7 @@ export class MarketRuntime {
     readonly limit: number;
     readonly minPremium?: number;
   }): Promise<TerminalUnusualResponse> {
-    const apiKey = this.assertApiKey();
+    const apiKey = this.assertRestApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
 
     const loadOpts: LoadUnusualTradesOptions = {
@@ -6197,7 +6767,7 @@ export class MarketRuntime {
             rthOnly: false,
             maxPages: 2,
             now: nowSec,
-            apiKey: this.apiKey,
+            apiKey: this.restBatchApiKey(),
             fetchFn: this.fetchFn,
             ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
           });
@@ -6304,7 +6874,7 @@ export class MarketRuntime {
         }
 
         const baseTransport = {
-          apiKey: this.apiKey,
+          apiKey: this.restBatchApiKey(),
           fetchFn: this.fetchFn,
           ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
         };

@@ -2522,6 +2522,78 @@ export const MacroModule: React.FC = () => {
 };
 
 /* MÓDULO MERCADO EE.UU. */
+
+/* Pieza 32: estado de proveedores US expuesto por /api/us/providers-status
+   (sin material secreto: configured/connected/keySlot/activeRole). */
+type UsProviderNodeDto = {
+  readonly configured?: boolean;
+  readonly connected?: boolean | null;
+  readonly state?: string;
+  readonly keySlot?: {
+    readonly envName?: string;
+    readonly slotIndex?: number;
+    readonly poolSize?: number;
+  } | null;
+  readonly activeRole?: string;
+  readonly lastError?: string | null;
+  readonly poolSize?: number;
+  readonly lastSlotIndex?: number | null;
+  readonly roundRobinRequests?: number;
+  readonly slots?: readonly { readonly envName?: string; readonly slotIndex?: number }[];
+};
+type UsProvidersStatusDto = {
+  readonly status?: string;
+  readonly asOfUtcSec?: number;
+  readonly usOptionsFeedBadge?: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
+  readonly providers?: {
+    readonly MASSIVE_WS?: UsProviderNodeDto;
+    readonly MASSIVE_REST_POOL?: UsProviderNodeDto;
+    readonly TRADIER_LIVE?: UsProviderNodeDto;
+    readonly ORATS?: UsProviderNodeDto;
+  };
+};
+
+const useUsProvidersStatus = (pollMs = 30_000): UsProvidersStatusDto | null => {
+  const [status, setStatus] = useState<UsProvidersStatusDto | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    let active = true;
+    const load = async () => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 5_000);
+      try {
+        const res = await fetch('/api/us/providers-status', {
+          signal: controller.signal,
+          headers: { accept: 'application/json' },
+        });
+        if (!res.ok) {
+          if (active) setStatus(null);
+          return;
+        }
+        const json = (await res.json()) as UsProvidersStatusDto;
+        if (active) setStatus(json);
+      } catch {
+        // Endpoint ausente o caído: la UI muestra '—' explícito, nunca un proveedor falso.
+        if (active) setStatus(null);
+      } finally {
+        window.clearTimeout(timer);
+      }
+    };
+    void load();
+    const intervalId = window.setInterval(() => {
+      void load();
+    }, pollMs);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [pollMs]);
+  return status;
+};
+
+const usProviderDotClass = (connected: boolean | null | undefined, configured: boolean | null | undefined): string =>
+  connected === true ? 'bg-[#22C55E]' : configured === true ? 'bg-[#F5B544]' : 'bg-[#4A4E5A]';
+
 export const USMarketModule: React.FC<{
   onOpenOrderTicket: (preset: {
     ticker: string;
@@ -2534,6 +2606,14 @@ export const USMarketModule: React.FC<{
   const liveMarket = useLiveMarketState();
   const liveStream = useMarketLiveStream();
   const [directUsPanelAnalytics, setDirectUsPanelAnalytics] = useState<EquityPanelAnalyticsDto | null>(null);
+  // Pieza 32: estado real de proveedores US (Massive WS/REST pool, Tradier Live, ORATS).
+  const usProviders = useUsProvidersStatus();
+  const prov = usProviders?.providers;
+  const massiveWs = prov?.MASSIVE_WS;
+  const restPool = prov?.MASSIVE_REST_POOL;
+  const tradierLive = prov?.TRADIER_LIVE;
+  const oratsProv = prov?.ORATS;
+  const usFeedBadge = usProviders?.usOptionsFeedBadge ?? null;
 
   useEffect(() => {
     let active = true;
@@ -2712,6 +2792,61 @@ export const USMarketModule: React.FC<{
         <strong className="text-[var(--text-primary)] font-mono-num">{fmtNum(vixVal, 2)}</strong> · UST 10Y:{' '}
         <strong className="text-[var(--text-primary)] font-mono-num">{fmtPct(ust10y, 2, false)}</strong>.
       </InsightBanner>
+
+      {/* Pieza 32: estado de proveedores US en vivo + badge de origen de opciones US */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[10px] bg-[#131722] border border-[#232733] px-3 py-2 text-[10.5px] font-mono-num text-[#9CA3AF]">
+        <span className="font-semibold text-[#D1D4DC] tracking-wider">PROVEEDORES US</span>
+        <span className="flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${usProviderDotClass(massiveWs?.connected, massiveWs?.configured)}`} />
+          MASSIVE_WS{' '}
+          <strong className="text-[#D1D4DC]">
+            {massiveWs?.connected === true
+              ? 'ON'
+              : massiveWs?.configured === true
+                ? (massiveWs.state ?? '—')
+                : '—'}
+          </strong>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${usProviderDotClass(restPool?.configured, restPool?.configured)}`} />
+          MASSIVE_REST_POOL{' '}
+          <strong className="text-[#D1D4DC]">
+            {restPool?.configured === true
+              ? `x${String(restPool.poolSize ?? 0)} · slot ${String(restPool.lastSlotIndex ?? '—')}`
+              : '—'}
+          </strong>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${usProviderDotClass(tradierLive?.connected, tradierLive?.configured)}`} />
+          TRADIER_LIVE{' '}
+          <strong className="text-[#D1D4DC]">
+            {tradierLive?.connected === true
+              ? 'ON'
+              : tradierLive?.configured === true
+                ? (tradierLive.state ?? '—')
+                : 'OFF'}
+          </strong>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${usProviderDotClass(oratsProv?.connected, oratsProv?.configured)}`} />
+          ORATS{' '}
+          <strong className="text-[#D1D4DC]">
+            {oratsProv?.connected === true ? 'ON' : oratsProv?.configured === true ? 'CFG' : '—'}
+          </strong>
+        </span>
+        <span
+          className={`ml-auto rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+            usFeedBadge === 'TRADIER LIVE + ORATS'
+              ? 'border-[#22C55E]/40 bg-[#22C55E]/10 text-[#22C55E]'
+              : usFeedBadge === 'MASSIVE + ORATS'
+                ? 'border-[#38BDF8]/40 bg-[#38BDF8]/10 text-[#38BDF8]'
+                : 'border-[#232733] bg-[#0B0E14] text-[#787B86]'
+          }`}
+          title="Origen del feed de opciones US: puntas/griegas (Tradier Live o Massive) + superficie ORATS (smvVol, IV Rank, impliedMove)"
+        >
+          {usFeedBadge ?? 'ORIGEN OPCIONES US —'}
+        </span>
+      </div>
 
       {/* Estructura superior de 5 índices macro alargados */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">

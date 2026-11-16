@@ -131,6 +131,51 @@ function badgeToneClass(badge: GgalBadgeMode): string {
   }
 }
 
+/* Pieza 32: origen del feed de opciones US/OPRA (Tradier Live + ORATS o
+   Massive + ORATS) expuesto por /api/us/providers-status. */
+type UsProvidersBadgeDto = {
+  readonly status?: string;
+  readonly usOptionsFeedBadge?: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
+};
+
+const useUsOptionsFeedBadge = (pollMs = 30_000): 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null => {
+  const [badge, setBadge] = useState<'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    let active = true;
+    const load = async () => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 5_000);
+      try {
+        const res = await fetch('/api/us/providers-status', {
+          signal: controller.signal,
+          headers: { accept: 'application/json' },
+        });
+        if (!res.ok) {
+          if (active) setBadge(null);
+          return;
+        }
+        const json = (await res.json()) as UsProvidersBadgeDto;
+        if (active) setBadge(json.usOptionsFeedBadge ?? null);
+      } catch {
+        // Endpoint ausente: badge explícito '—', sin origen falso.
+        if (active) setBadge(null);
+      } finally {
+        window.clearTimeout(timer);
+      }
+    };
+    void load();
+    const intervalId = window.setInterval(() => {
+      void load();
+    }, pollMs);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [pollMs]);
+  return badge;
+};
+
 function fmtCurrency(val: number | null | undefined, prefix = '$ ', decimals = 2): string {
   if (val === null || val === undefined || !Number.isFinite(val)) return '—';
   return `${prefix}${fmtNum(val, decimals)}`;
@@ -175,6 +220,8 @@ export const GgalSpecialistModule: React.FC<{
   const liveClock = getMarketLiveClock(liveStream);
   const arFlash = useLivePriceFlash(liveArGgal?.price ?? null);
   const usFlash = useLivePriceFlash(liveUsGgal?.price ?? null);
+  // Pieza 32: origen del feed de opciones US/OPRA (Tradier Live o Massive) + ORATS.
+  const usOptionsFeedBadge = useUsOptionsFeedBadge();
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -1295,9 +1342,9 @@ export const GgalSpecialistModule: React.FC<{
             <KPICard
               title="IV ATM ADR OPRA (USD)"
               heroValue={fmtPct(volData.result?.opraAdrAtmIvPct, 2, false)}
-              badge="OPRA"
+              badge={usOptionsFeedBadge ?? 'OPRA'}
               subtitle={`25D Skew OPRA (P−C): ${fmtPct(volData.result?.skewMetrics.opra25dPutMinusCallPct, 2, true)}`}
-              helpText="Volatilidad implícita del ADR GGAL en OPRA interpolada por varianza total al plazo BYMA."
+              helpText="Volatilidad implícita del ADR GGAL en OPRA interpolada por varianza total al plazo BYMA. Origen del feed US: Tradier Live + ORATS o Massive + ORATS."
             />
             <KPICard
               title="IV Implícita del CCL (Modo A)"

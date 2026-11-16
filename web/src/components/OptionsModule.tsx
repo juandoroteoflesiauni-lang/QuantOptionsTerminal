@@ -77,6 +77,51 @@ export type OptionsSubView =
   | 'volatilidad'
   | 'armado';
 
+/* Pieza 32: badge de origen del feed de opciones US (Tradier Live + ORATS o
+   Massive + ORATS) expuesto por /api/us/providers-status. */
+type UsProvidersStatusDto = {
+  readonly status?: string;
+  readonly usOptionsFeedBadge?: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
+};
+
+const useUsOptionsFeedBadge = (pollMs = 30_000): 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null => {
+  const [badge, setBadge] = useState<'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    let active = true;
+    const load = async () => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 5_000);
+      try {
+        const res = await fetch('/api/us/providers-status', {
+          signal: controller.signal,
+          headers: { accept: 'application/json' },
+        });
+        if (!res.ok) {
+          if (active) setBadge(null);
+          return;
+        }
+        const json = (await res.json()) as UsProvidersStatusDto;
+        if (active) setBadge(json.usOptionsFeedBadge ?? null);
+      } catch {
+        // Endpoint ausente: badge explícito '—', sin origen falso.
+        if (active) setBadge(null);
+      } finally {
+        window.clearTimeout(timer);
+      }
+    };
+    void load();
+    const intervalId = window.setInterval(() => {
+      void load();
+    }, pollMs);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [pollMs]);
+  return badge;
+};
+
 interface StrategyFamilyItem {
   id: StrategyFamilyId;
   label: string;
@@ -533,6 +578,8 @@ export const OptionsModule: React.FC<{
   const liveMarket = useLiveMarketState();
   const liveStream = useMarketLiveStream();
   const upperUnderlying = selectedUnderlying.toUpperCase();
+  // Pieza 32: origen del feed de opciones US (Tradier Live + ORATS / Massive + ORATS).
+  const usOptionsFeedBadge = useUsOptionsFeedBadge();
 
   useEffect(() => {
     void requestOptionsChain(upperUnderlying);
@@ -1036,6 +1083,18 @@ export const OptionsModule: React.FC<{
                       ● Tiempo real {liveClock}
                     </span>
                   )}
+                  <span
+                    className={`rounded-full border px-2 py-0.5 font-mono-num text-[10px] font-semibold ${
+                      usOptionsFeedBadge === 'TRADIER LIVE + ORATS'
+                        ? 'border-[#22C55E]/40 bg-[#22C55E]/10 text-[#22C55E]'
+                        : usOptionsFeedBadge === 'MASSIVE + ORATS'
+                          ? 'border-[#38BDF8]/40 bg-[#38BDF8]/10 text-[#38BDF8]'
+                          : 'border-[#232733] bg-[#0B0E14] text-[#787B86]'
+                    }`}
+                    title="Origen del feed de opciones US: puntas bid/ask/size y griegas (Tradier Live o Massive) + superficie ORATS (smvVol, IV Rank, impliedMove)"
+                  >
+                    {usOptionsFeedBadge ?? 'ORIGEN —'}
+                  </span>
                 </div>
               </div>
             </div>
