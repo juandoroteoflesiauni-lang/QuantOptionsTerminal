@@ -204,7 +204,7 @@ import type {
   OptionSnapshotContract,
   OptionUnderlyingSnapshot,
 } from '../data/optionsTypes.js';
-import type { FetchFn, Timeframe } from '../data/types.js';
+import type { FetchFn, FetchResponse, Timeframe } from '../data/types.js';
 import {
   loadUnusualTrades,
   type LoadUnusualTradesOptions,
@@ -232,6 +232,10 @@ import {
   MassiveStocksStream,
   type MarketTickQuote,
 } from './massiveStocksStream.js';
+import {
+  RollingFeedTelemetry,
+  emptyFeedTelemetrySnapshot,
+} from './feedsHealthMonitor.js';
 import {
   getMassiveKeyPoolStatus,
   getMassiveRestKey,
@@ -3102,6 +3106,9 @@ export class MarketRuntime {
   private readonly secrets: readonly string[];
   private readonly baseUrl: string | undefined;
   private readonly fetchFn: FetchFn;
+  private readonly restTelemetry = new RollingFeedTelemetry({
+    latencyKind: 'HTTP_ROUND_TRIP',
+  });
   private readonly loadBarsFn: typeof loadBars;
   private readonly loadOptionChainFn: typeof loadOptionChain;
   private readonly loadOptionContractsFn: typeof loadOptionContracts;
@@ -3636,7 +3643,42 @@ export class MarketRuntime {
     this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
     this.secrets = [...secretSet];
     this.baseUrl = deps.baseUrl;
-    this.fetchFn = deps.fetchFn ?? createRedactingFetch(this.secrets);
+    const baseFetch = deps.fetchFn ?? createRedactingFetch(this.secrets);
+    const massiveRestBase = (this.baseUrl ?? 'https://api.massive.com').replace(/\/+$/, '');
+    const isMassiveRestUrl = (url: string): boolean => {
+      if (url.startsWith(massiveRestBase)) return true;
+      try {
+        const parsed = new URL(url);
+        return (
+          (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+          (parsed.hostname === 'api.massive.com' || parsed.hostname.endsWith('.massive.com'))
+        );
+      } catch {
+        return false;
+      }
+    };
+    this.fetchFn = async (url: string): Promise<FetchResponse> => {
+      const startedAtMs = this.nowMsFn();
+      try {
+        const response = await baseFetch(url);
+        if (isMassiveRestUrl(url)) {
+          this.restTelemetry.record({
+            atMs: this.nowMsFn(),
+            latencyMs: this.nowMsFn() - startedAtMs,
+            httpStatus: response.status,
+          });
+        }
+        return response;
+      } catch (err: unknown) {
+        if (isMassiveRestUrl(url)) {
+          this.restTelemetry.record({
+            atMs: this.nowMsFn(),
+            latencyMs: this.nowMsFn() - startedAtMs,
+          });
+        }
+        throw err;
+      }
+    };
     this.loadBarsFn = deps.loadBarsFn ?? loadBars;
     this.loadOptionChainFn = deps.loadOptionChainFn ?? loadOptionChain;
     this.loadOptionContractsFn = deps.loadOptionContractsFn ?? loadOptionContracts;
@@ -4381,7 +4423,7 @@ export class MarketRuntime {
     const nowUtcSec = Math.floor(this.nowMsFn() / 1_000);
     const wsSlot = this.wsStocksKeySlot();
     const wsSnapshot = this.massiveStocksStream?.getWsSnapshot() ?? null;
-    const wsConfigured = wsSlot.key.trim() !== '' && this.apiKey.trim() !== '';
+    const wsConfigured = wsSlot.key.trim() !== '';
     const poolStatus = this.depsApiKey !== null ? null : getMassiveKeyPoolStatus();
     const restSlots: readonly { readonly envName: string; readonly slotIndex: number }[] =
       poolStatus?.rest.slots ??
@@ -4406,7 +4448,7 @@ export class MarketRuntime {
         subscribedOptionQuotes: this.subscribedOptionContracts.size,
       },
       MASSIVE_REST_POOL: {
-        configured: this.restKeySlot().key.trim() !== '',
+        configured: this.depsApiKey !== null ? true : poolStatus?.rest.configured === true,
         poolSize: poolStatus?.rest.poolSize ?? (this.depsApiKey !== null ? 1 : 0),
         slots: restSlots,
         lastSlotIndex: poolStatus?.rest.lastSlotIndex ?? (this.depsApiKey !== null ? 0 : null),
@@ -4415,6 +4457,109 @@ export class MarketRuntime {
       },
       TRADIER_LIVE: this.getTradierLiveStatus(),
     };
+  }
+
+  /** Pieza 33: telemetría real del socket Massive de acciones. */
+  public getMassiveWsFeedHealth() {
+    const nowMs = this.nowMsFn();
+    const stream = this.massiveStocksStream;
+    const wsSlot = this.wsStocksKeySlot();
+    const diagnostics = stream?.getDiagnostics() ?? null;
+    const wsSnapshot = stream?.getWsSnapshot() ?? null;
+    return {
+      configured: wsSlot.key.trim() !== '',
+      connected: wsSnapshot?.state === 'ready',
+      keySlot:
+        wsSlot.envName === ''
+          ? null
+          : {
+              envName: wsSlot.envName,
+              slotIndex: wsSlot.slotIndex,
+              poolSize: wsSlot.poolSize,
+            },
+      lastError: wsSnapshot?.lastError?.message ?? null,
+      telemetry: stream?.getFeedTelemetrySnapshot() ?? emptyFeedTelemetrySnapshot(),
+      subscribedSymbols: stream?.getSubscribedSymbols() ?? [],
+      activeSymbolCount: diagnostics?.quoteCount ?? 0,
+      subscribedOptionQuotes: this.subscribedOptionContracts.size,
+      lastWsMessageAgeMs:
+        diagnostics?.lastWsMessageMs !== null &&
+        diagnostics?.lastWsMessageMs !== undefined &&
+        nowMs >= diagnostics.lastWsMessageMs
+          ? nowMs - diagnostics.lastWsMessageMs
+          : null,
+    };
+  }
+
+  /** Pieza 33: telemetría HTTP del pool REST (sin avanzar round-robin). */
+  public getMassiveRestFeedHealth() {
+    const poolStatus = this.depsApiKey !== null ? null : getMassiveKeyPoolStatus();
+    return {
+      configured: this.depsApiKey !== null ? true : poolStatus?.rest.configured === true,
+      poolSize: poolStatus?.rest.poolSize ?? (this.depsApiKey !== null ? 1 : 0),
+      slots:
+        poolStatus?.rest.slots ??
+        (this.depsApiKey !== null ? [{ envName: 'deps.apiKey', slotIndex: 0 }] : []),
+      lastSlotIndex: poolStatus?.rest.lastSlotIndex ?? (this.depsApiKey !== null ? 0 : null),
+      roundRobinRequests: poolStatus?.rest.roundRobinRequests ?? 0,
+      telemetry: this.restTelemetry.snapshot(this.nowMsFn()),
+    };
+  }
+
+  /** Pieza 33: telemetría Tradier live. */
+  public getTradierFeedHealth() {
+    const status = this.tradierManager?.getStatus() ?? null;
+    return {
+      configured: this.tradierConfig.configured,
+      connected: status?.connected ?? false,
+      sessionCreated: status?.sessionCreated ?? false,
+      reconnectAttempts: status?.reconnectAttempts ?? 0,
+      subscribedSymbols: status?.subscribedSymbols ?? [],
+      lastError: status?.lastError ?? null,
+      telemetry:
+        this.tradierManager?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
+        emptyFeedTelemetrySnapshot(),
+    };
+  }
+
+  /** Pieza 33: reinicio exclusivo del stream de acciones, sin tumbar Tradier/opciones. */
+  public async reconnectMassiveStocksWs(): Promise<string> {
+    if (!this.enableWs) {
+      throw new Error('Massive WS is disabled by runtime configuration');
+    }
+    const wsKey = this.wsStocksKeySlot().key;
+    if (wsKey.trim() === '') {
+      throw new Error('MASSIVE_WS_STOCKS_KEY / MASSIVE_API_KEY not configured');
+    }
+    this.massiveStocksStream?.stop();
+    this.massiveStocksStream = null;
+    await this.startWs();
+    return 'MASSIVE_WS_STOCKS_RECONNECT_ACCEPTED';
+  }
+
+  /** Pieza 33: sonda real del pool REST mediante refresco forzado de snapshot. */
+  public async resyncMassiveRestPool(): Promise<string> {
+    await this.getSnapshot('SPY', { forceRefresh: true });
+    return 'MASSIVE_REST_POOL_RESYNC_COMPLETED';
+  }
+
+  /** Pieza 33: resincronización exclusiva del stream Tradier. */
+  public async reconnectTradierLive(): Promise<string> {
+    if (!this.tradierConfig.configured) {
+      throw new Error('Tradier access token not configured');
+    }
+    if (this.tradierManager !== null) {
+      await this.tradierManager.reconnect();
+      return 'TRADIER_LIVE_WS_RECONNECT_ACCEPTED';
+    }
+    const symbols = [...new Set([...US_STREAM_SYMBOLS, ...this.watchedSymbols])]
+      .map((symbol) => symbol.trim().toUpperCase())
+      .filter((symbol) => symbol !== '' && !symbol.startsWith('I:'));
+    if (symbols.length === 0) {
+      throw new Error('Tradier live has no configured equity symbols');
+    }
+    this.ensureTradierLiveStream(symbols);
+    return 'TRADIER_LIVE_WS_START_ACCEPTED';
   }
 
   /**

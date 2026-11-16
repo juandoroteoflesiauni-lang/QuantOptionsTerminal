@@ -1,0 +1,691 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { X, RefreshCw, Activity } from 'lucide-react';
+
+/* ============================================================================
+   1. CONTRATO WIRE (ESPEJO DEL ENDPOINT SIN SECRETOS)
+   ============================================================================ */
+export type FeedProviderId =
+  | 'MASSIVE_WS_STOCKS'
+  | 'MASSIVE_REST_POOL'
+  | 'TRADIER_LIVE_WS'
+  | 'ORATS_API'
+  | 'PRIMARY_REMARKETS_DLR'
+  | 'BMB_HOMEBROKER_L2'
+  | 'IOL_REST_V2';
+
+export type FeedProviderState =
+  | 'CONNECTED'
+  | 'ARMED_OUT_OF_SESSION'
+  | 'DEGRADED'
+  | 'NOT_CONFIGURED';
+
+export type FeedSessionMode = 'IN_SESSION' | 'OUT_OF_SESSION';
+
+export type FeedLatencyKind = 'PROVIDER_EVENT_AGE' | 'HTTP_ROUND_TRIP';
+
+interface MassiveKeySlotSafeStatus {
+  readonly envName: string;
+  readonly slotIndex: number;
+  readonly poolSize: number;
+}
+
+interface MassiveWsFeedDetails {
+  readonly keySlot: MassiveKeySlotSafeStatus | null;
+  readonly subscribedOptionQuotes: number;
+  readonly lastWsMessageAgeMs: number | null;
+}
+
+interface MassiveRestFeedDetails {
+  readonly poolSize: number;
+  readonly slots: readonly { readonly envName: string; readonly slotIndex: number }[];
+  readonly lastSlotIndex: number | null;
+  readonly roundRobinRequests: number;
+  readonly http429PerMinute: number | null;
+  readonly lastHttp429AgeMs: number | null;
+}
+
+interface TradierFeedDetails {
+  readonly sessionCreated: boolean;
+  readonly reconnectAttempts: number;
+}
+
+interface OratsCircuitBreakerDetails {
+  readonly state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  readonly consecutiveFailures: number;
+  readonly openedAtMs: number | null;
+}
+
+interface OratsFeedDetails {
+  readonly planTier: string | null;
+  readonly quotaRemaining: number | null;
+  readonly quotaLimit: number | null;
+  readonly quotaResetAtUtcSec: number | null;
+  readonly circuitBreaker: OratsCircuitBreakerDetails;
+  readonly lastFetchAgeMs: number | null;
+  readonly lastStatus: string | null;
+}
+
+interface PrimaryFeedDetails {
+  readonly authenticated: boolean;
+  readonly tokenValidUntilUtcSec: number | null;
+  readonly tokenRenewCount: number;
+  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  readonly dlrSubscribedCount: number;
+  readonly liveDlrCount: number;
+  readonly liveDlrLastUpdateAgeMs: number | null;
+}
+
+interface BmbFeedDetails {
+  readonly status: string;
+  readonly orderBookCount: number;
+  readonly caucionCount: number;
+  readonly optionCount: number;
+  readonly lastUpdateAgeMs: number | null;
+}
+
+interface IolFeedDetails {
+  readonly authMethod: 'PASSWORD' | 'REFRESH_TOKEN' | null;
+  readonly passwordAuthCount: number;
+  readonly refreshAuthCount: number;
+  readonly tokenExpiresAtUtcSec: number | null;
+  readonly lastAuthAtUtcSec: number | null;
+  readonly quoteCount: number;
+}
+
+export interface FeedProviderHealth {
+  readonly id: FeedProviderId;
+  readonly region: 'US' | 'AR';
+  readonly role: string;
+  readonly state: FeedProviderState;
+  readonly sessionMode: FeedSessionMode;
+  readonly configured: boolean;
+  readonly connected: boolean | null;
+  readonly latencyMs: number | null;
+  readonly latencyKind: FeedLatencyKind | null;
+  readonly lastTickAgeMs: number | null;
+  readonly messagesPerMinute: number | null;
+  readonly lastError: string | null;
+  readonly activeSymbolCount: number | null;
+  readonly subscribedSymbols: readonly string[];
+  readonly reconnectAction: 'RECONNECT' | 'RESYNC';
+  readonly reconnectable: boolean;
+  readonly massiveWs?: MassiveWsFeedDetails;
+  readonly massiveRest?: MassiveRestFeedDetails;
+  readonly tradier?: TradierFeedDetails;
+  readonly orats?: OratsFeedDetails;
+  readonly primary?: PrimaryFeedDetails;
+  readonly bmb?: BmbFeedDetails;
+  readonly iol?: IolFeedDetails;
+}
+
+export interface FeedsHealthSummary {
+  readonly totalProviders: 7;
+  readonly configuredCount: number;
+  readonly activeCount: number;
+  readonly degradedCount: number;
+  readonly notConfiguredCount: number;
+  readonly armedOutOfSessionCount: number;
+}
+
+export interface FeedsHealthSnapshot {
+  readonly status: 'OK';
+  readonly asOfUtcSec: number;
+  readonly summary: FeedsHealthSummary;
+  readonly providers: readonly FeedProviderHealth[];
+}
+
+interface FeedsHealthPulseProvider {
+  readonly id: FeedProviderId;
+  readonly state: FeedProviderState;
+  readonly sessionMode: FeedSessionMode;
+  readonly latencyMs: number | null;
+  readonly lastTickAgeMs: number | null;
+  readonly messagesPerMinute: number | null;
+}
+
+interface FeedsHealthPulse {
+  readonly type: 'FEEDS_HEALTH_PULSE';
+  readonly asOfUtcSec: number;
+  readonly summary: FeedsHealthSummary;
+  readonly providers: readonly FeedsHealthPulseProvider[];
+}
+
+interface FeedReconnectResult {
+  readonly provider: FeedProviderId;
+  readonly action: 'RECONNECT' | 'RESYNC';
+  readonly ok: boolean;
+  readonly detail: string;
+  readonly providerAfter: FeedProviderHealth | null;
+}
+
+export type FeedsHealthSocketStatus = 'CONNECTING' | 'LIVE' | 'RECONNECTING' | 'ERROR';
+
+/* ============================================================================
+   2. NORMALIZACIÓN ESTRICTA DE PULSOS
+   ============================================================================ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFeedProviderId(value: unknown): value is FeedProviderId {
+  return (
+    value === 'MASSIVE_WS_STOCKS' ||
+    value === 'MASSIVE_REST_POOL' ||
+    value === 'TRADIER_LIVE_WS' ||
+    value === 'ORATS_API' ||
+    value === 'PRIMARY_REMARKETS_DLR' ||
+    value === 'BMB_HOMEBROKER_L2' ||
+    value === 'IOL_REST_V2'
+  );
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function nonNegativeInt(value: unknown): number | null {
+  const parsed = nullableNumber(value);
+  return parsed !== null && Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function parsePulse(raw: unknown): FeedsHealthPulse | null {
+  if (!isRecord(raw) || raw['type'] !== 'FEEDS_HEALTH_PULSE' || !Array.isArray(raw['providers'])) {
+    return null;
+  }
+  const summaryRaw = isRecord(raw['summary']) ? raw['summary'] : null;
+  if (summaryRaw === null) return null;
+  const providers: FeedsHealthPulseProvider[] = [];
+  for (const rawProvider of raw['providers']) {
+    if (!isRecord(rawProvider) || !isFeedProviderId(rawProvider['id'])) continue;
+    providers.push({
+      id: rawProvider['id'],
+      state: rawProvider['state'] === 'CONNECTED'
+        ? 'CONNECTED'
+        : rawProvider['state'] === 'ARMED_OUT_OF_SESSION'
+          ? 'ARMED_OUT_OF_SESSION'
+          : rawProvider['state'] === 'NOT_CONFIGURED'
+            ? 'NOT_CONFIGURED'
+            : 'DEGRADED',
+      sessionMode: rawProvider['sessionMode'] === 'IN_SESSION' ? 'IN_SESSION' : 'OUT_OF_SESSION',
+      latencyMs: nullableNumber(rawProvider['latencyMs']),
+      lastTickAgeMs: nullableNumber(rawProvider['lastTickAgeMs']),
+      messagesPerMinute: nullableNumber(rawProvider['messagesPerMinute']),
+    });
+  }
+  const asOfUtcSec = nonNegativeInt(raw['asOfUtcSec']);
+  if (asOfUtcSec === null) return null;
+  return {
+    type: 'FEEDS_HEALTH_PULSE',
+    asOfUtcSec,
+    summary: {
+      totalProviders: 7,
+      configuredCount: nonNegativeInt(summaryRaw['configuredCount']) ?? 0,
+      activeCount: nonNegativeInt(summaryRaw['activeCount']) ?? 0,
+      degradedCount: nonNegativeInt(summaryRaw['degradedCount']) ?? 0,
+      notConfiguredCount: nonNegativeInt(summaryRaw['notConfiguredCount']) ?? 0,
+      armedOutOfSessionCount: nonNegativeInt(summaryRaw['armedOutOfSessionCount']) ?? 0,
+    },
+    providers,
+  };
+}
+
+function mergePulse(previous: FeedsHealthSnapshot, pulse: FeedsHealthPulse): FeedsHealthSnapshot {
+  const byId = new Map(pulse.providers.map((provider) => [provider.id, provider]));
+  return {
+    status: 'OK',
+    asOfUtcSec: pulse.asOfUtcSec,
+    summary: pulse.summary,
+    providers: previous.providers.map((provider) => {
+      const next = byId.get(provider.id);
+      if (next === undefined) return provider;
+      return {
+        ...provider,
+        state: next.state,
+        sessionMode: next.sessionMode,
+        latencyMs: next.latencyMs,
+        lastTickAgeMs: next.lastTickAgeMs,
+        messagesPerMinute: next.messagesPerMinute,
+      };
+    }),
+  };
+}
+
+/* ============================================================================
+   3. STORE / HOOK: GET INICIAL + CANAL WS DEDICADO (SIN POLLING HTTP)
+   ============================================================================ */
+export interface FeedsHealthState {
+  readonly snapshot: FeedsHealthSnapshot | null;
+  readonly socketStatus: FeedsHealthSocketStatus;
+  readonly lastPulseAtMs: number | null;
+  readonly reconnectingProvider: FeedProviderId | null;
+  readonly lastReconnectDetail: string | null;
+  readonly lastReconnectOk: boolean | null;
+}
+
+export interface FeedsHealthController extends FeedsHealthState {
+  readonly refresh: () => Promise<void>;
+  readonly reconnectProvider: (provider: FeedProviderId) => Promise<void>;
+}
+
+function feedsHealthSocketUrl(): string {
+  if (import.meta.env.DEV) return 'ws://127.0.0.1:8787/ws?channel=feeds-health';
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws?channel=feeds-health`;
+}
+
+export function useFeedsHealthPulse(): FeedsHealthController {
+  const [snapshot, setSnapshot] = useState<FeedsHealthSnapshot | null>(null);
+  const [socketStatus, setSocketStatus] = useState<FeedsHealthSocketStatus>('CONNECTING');
+  const [lastPulseAtMs, setLastPulseAtMs] = useState<number | null>(null);
+  const [reconnectingProvider, setReconnectingProvider] = useState<FeedProviderId | null>(null);
+  const [lastReconnectDetail, setLastReconnectDetail] = useState<string | null>(null);
+  const [lastReconnectOk, setLastReconnectOk] = useState<boolean | null>(null);
+  const generationRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const generation = generationRef.current;
+    const response = await fetch('/api/system/feeds-health', {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`feeds-health HTTP ${String(response.status)}`);
+    const raw: unknown = await response.json();
+    if (generation !== generationRef.current) return;
+    if (!isRecord(raw) || !Array.isArray(raw['providers'])) {
+      throw new Error('Invalid feeds-health payload');
+    }
+    setSnapshot(raw as unknown as FeedsHealthSnapshot);
+  }, []);
+
+  useEffect(() => {
+    const generation = ++generationRef.current;
+    let socket: WebSocket | null = null;
+    let disposed = false;
+
+    const connect = (): void => {
+      if (disposed || generation !== generationRef.current) return;
+      setSocketStatus((previous) => (previous === 'LIVE' ? 'RECONNECTING' : 'CONNECTING'));
+      try {
+        socket = new WebSocket(feedsHealthSocketUrl());
+      } catch {
+        setSocketStatus('ERROR');
+        return;
+      }
+      socket.addEventListener('open', () => {
+        if (disposed || generation !== generationRef.current) return;
+        setSocketStatus('LIVE');
+      });
+      socket.addEventListener('message', (event: MessageEvent) => {
+        if (disposed || generation !== generationRef.current || typeof event.data !== 'string') return;
+        try {
+          const pulse = parsePulse(JSON.parse(event.data) as unknown);
+          if (pulse === null) return;
+          setLastPulseAtMs(Date.now());
+          setSnapshot((previous) => (previous === null ? null : mergePulse(previous, pulse)));
+        } catch {
+          return;
+        }
+      });
+      socket.addEventListener('close', () => {
+        if (disposed || generation !== generationRef.current) return;
+        setSocketStatus('RECONNECTING');
+        reconnectTimerRef.current = setTimeout(connect, 2_000);
+      });
+      socket.addEventListener('error', () => {
+        try {
+          socket?.close();
+        } catch {
+          return;
+        }
+      });
+    };
+
+    void refresh().catch(() => {
+      if (!disposed && generation === generationRef.current) setSocketStatus('ERROR');
+    });
+    connect();
+
+    return () => {
+      disposed = true;
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      try {
+        socket?.close();
+      } catch {
+        return;
+      }
+    };
+  }, [refresh]);
+
+  const reconnectProvider = useCallback(async (provider: FeedProviderId): Promise<void> => {
+    setReconnectingProvider(provider);
+    try {
+      const response = await fetch('/api/system/feeds-reconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ provider }),
+      });
+      const raw: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const detail = isRecord(raw) && typeof raw['detail'] === 'string' ? raw['detail'] : `HTTP ${String(response.status)}`;
+        setLastReconnectOk(false);
+        setLastReconnectDetail(detail);
+        return;
+      }
+      const result = raw as FeedReconnectResult;
+      setLastReconnectOk(Boolean(result.ok));
+      setLastReconnectDetail(result.detail);
+      await refresh();
+    } catch (err: unknown) {
+      setLastReconnectOk(false);
+      setLastReconnectDetail(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReconnectingProvider(null);
+    }
+  }, [refresh]);
+
+  return useMemo(
+    () => ({
+      snapshot,
+      socketStatus,
+      lastPulseAtMs,
+      reconnectingProvider,
+      lastReconnectDetail,
+      lastReconnectOk,
+      refresh,
+      reconnectProvider,
+    }),
+    [
+      snapshot,
+      socketStatus,
+      lastPulseAtMs,
+      reconnectingProvider,
+      lastReconnectDetail,
+      lastReconnectOk,
+      refresh,
+      reconnectProvider,
+    ],
+  );
+}
+
+/* ============================================================================
+   4. FORMATEADORES (NULL => "—", NUNCA 0 FALSO)
+   ============================================================================ */
+function formatMs(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value < 0) return '—';
+  return `${String(Math.round(value))} ms`;
+}
+
+function formatAgeMs(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value < 0) return '—';
+  if (value >= 60_000) return `${(value / 60_000).toFixed(1)} min`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)} s`;
+  return `${String(Math.round(value))} ms`;
+}
+
+function formatCount(value: number | null): string {
+  return value === null || !Number.isFinite(value) ? '—' : String(Math.round(value));
+}
+
+function formatUtcSec(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value <= 0) return '—';
+  return new Date(value * 1_000).toLocaleTimeString('es-AR', { hour12: false });
+}
+
+function stateStyles(state: FeedProviderState): { readonly bg: string; readonly text: string; readonly border: string } {
+  if (state === 'CONNECTED') {
+    return { bg: 'bg-[#0D221E]', text: 'text-[#22C55E]', border: 'border-[#164E3F]' };
+  }
+  if (state === 'ARMED_OUT_OF_SESSION') {
+    return { bg: 'bg-[#281E0E]', text: 'text-[#F5B544]', border: 'border-[#59411A]' };
+  }
+  if (state === 'NOT_CONFIGURED') {
+    return { bg: 'bg-[#131722]', text: 'text-[#787B86]', border: 'border-[#2A2E3D]' };
+  }
+  return { bg: 'bg-[#1A1318]', text: 'text-[#F23645]', border: 'border-[#4A2229]' };
+}
+
+/* ============================================================================
+   5. TARJETA POR PROVEEDOR
+   ============================================================================ */
+const DetailRow: React.FC<{ readonly label: string; readonly value: string }> = ({ label, value }) => (
+  <div className="flex items-baseline justify-between gap-3">
+    <span className="text-[10.5px] uppercase tracking-wide text-[#787B86]">{label}</span>
+    <span className="font-mono-num text-[11.5px] font-semibold text-[#D1D4DC]">{value}</span>
+  </div>
+);
+
+const ProviderCard: React.FC<{
+  readonly provider: FeedProviderHealth;
+  readonly reconnecting: boolean;
+  readonly onReconnect: (provider: FeedProviderId) => void;
+}> = ({ provider, reconnecting, onReconnect }) => {
+  const styles = stateStyles(provider.state);
+  const latencyLabel =
+    provider.latencyMs === null
+      ? '—'
+      : `${formatMs(provider.latencyMs)}${provider.latencyKind === null ? '' : provider.latencyKind === 'PROVIDER_EVENT_AGE' ? ' · evento' : ' · HTTP'}`;
+  const symbolsLabel =
+    provider.activeSymbolCount === null
+      ? `${String(provider.subscribedSymbols.length)} suscriptos`
+      : `${String(provider.activeSymbolCount)} activos · ${String(provider.subscribedSymbols.length)} suscriptos`;
+
+  return (
+    <section className="rounded-[10px] border border-[#1C1C24] bg-[#111116] p-3">
+      <header className="mb-2.5 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-[12.5px] font-bold text-[#ECEDF2]">{provider.id}</h3>
+          <p className="truncate text-[11px] text-[#8A8F9E]">{provider.role}</p>
+        </div>
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 font-mono-num text-[10px] font-bold ${styles.bg} ${styles.text} ${styles.border}`}
+        >
+          {provider.state}
+        </span>
+      </header>
+
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+        <DetailRow label="Región / Sesión" value={`${provider.region} · ${provider.sessionMode}`} />
+        <DetailRow label="Conectado" value={provider.connected === null ? '—' : provider.connected ? 'SÍ' : 'NO'} />
+        <DetailRow label="Latencia" value={latencyLabel} />
+        <DetailRow label="Último tick" value={formatAgeMs(provider.lastTickAgeMs)} />
+        <DetailRow label="Mensajes/min" value={formatCount(provider.messagesPerMinute)} />
+        <DetailRow label="Símbolos" value={symbolsLabel} />
+      </div>
+
+      {provider.massiveWs !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Key slot" value={provider.massiveWs.keySlot === null ? '—' : `${provider.massiveWs.keySlot.envName}[${String(provider.massiveWs.keySlot.slotIndex)}]`} />
+          <DetailRow label="Opciones suscriptas" value={formatCount(provider.massiveWs.subscribedOptionQuotes)} />
+          <DetailRow label="WS sin datos" value={formatAgeMs(provider.massiveWs.lastWsMessageAgeMs)} />
+        </div>
+      )}
+
+      {provider.massiveRest !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Pool / Último slot" value={`${String(provider.massiveRest.poolSize)} / ${provider.massiveRest.lastSlotIndex === null ? '—' : String(provider.massiveRest.lastSlotIndex)}`} />
+          <DetailRow label="Round-robin" value={formatCount(provider.massiveRest.roundRobinRequests)} />
+          <DetailRow label="429/min" value={formatCount(provider.massiveRest.http429PerMinute)} />
+          <DetailRow label="Último 429" value={formatAgeMs(provider.massiveRest.lastHttp429AgeMs)} />
+        </div>
+      )}
+
+      {provider.tradier !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Sesión creada" value={provider.tradier.sessionCreated ? 'SÍ' : 'NO'} />
+          <DetailRow label="Reconnects" value={formatCount(provider.tradier.reconnectAttempts)} />
+        </div>
+      )}
+
+      {provider.orats !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Tier / Cuota" value={`${provider.orats.planTier ?? '—'} · ${provider.orats.quotaRemaining === null || provider.orats.quotaLimit === null ? '—' : `${String(provider.orats.quotaRemaining)}/${String(provider.orats.quotaLimit)}`}`} />
+          <DetailRow label="Circuit breaker" value={`${provider.orats.circuitBreaker.state} · ${String(provider.orats.circuitBreaker.consecutiveFailures)} fallos`} />
+          <DetailRow label="Último fetch" value={formatAgeMs(provider.orats.lastFetchAgeMs)} />
+        </div>
+      )}
+
+      {provider.primary !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Entorno / Token" value={`${provider.primary.wsEnvironment} · ${provider.primary.authenticated ? 'OK' : '—'}`} />
+          <DetailRow label="DLR suscriptos / vivos" value={`${String(provider.primary.dlrSubscribedCount)} / ${String(provider.primary.liveDlrCount)}`} />
+          <DetailRow label="Renovaciones token" value={formatCount(provider.primary.tokenRenewCount)} />
+          <DetailRow label="Último DLR" value={formatAgeMs(provider.primary.liveDlrLastUpdateAgeMs)} />
+        </div>
+      )}
+
+      {provider.bmb !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Estado bridge" value={provider.bmb.status} />
+          <DetailRow label="Libros / Opciones" value={`${String(provider.bmb.orderBookCount)} / ${String(provider.bmb.optionCount)}`} />
+          <DetailRow label="Cauciones" value={formatCount(provider.bmb.caucionCount)} />
+          <DetailRow label="Última actualización" value={formatAgeMs(provider.bmb.lastUpdateAgeMs)} />
+        </div>
+      )}
+
+      {provider.iol !== undefined && (
+        <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="Auth" value={provider.iol.authMethod ?? '—'} />
+          <DetailRow label="Password / Refresh" value={`${String(provider.iol.passwordAuthCount)} / ${String(provider.iol.refreshAuthCount)}`} />
+          <DetailRow label="Token expira" value={formatUtcSec(provider.iol.tokenExpiresAtUtcSec)} />
+          <DetailRow label="Quotes vivos" value={formatCount(provider.iol.quoteCount)} />
+        </div>
+      )}
+
+      {provider.lastError !== null && (
+        <p className="mt-2.5 rounded-[6px] border border-[#4A2229] bg-[#1A1318] px-2 py-1.5 text-[11px] text-[#F23645]">
+          {provider.lastError}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={() => onReconnect(provider.id)}
+        disabled={reconnecting || !provider.reconnectable}
+        title={provider.reconnectAction === 'RESYNC' ? 'Forzar resincronización real' : 'Forzar reconexión real'}
+        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[8px] border border-[#2A2E3D] bg-[#131722] px-3 py-2 text-[11.5px] font-semibold text-[#D1D4DC] transition-colors hover:border-[#3D4358] hover:bg-[#1A1F2C] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <RefreshCw className={`h-3.5 w-3.5 ${reconnecting ? 'animate-spin' : ''}`} />
+        {reconnecting ? 'Sincronizando…' : 'Forzar Re-sincronización'}
+      </button>
+    </section>
+  );
+};
+
+/* ============================================================================
+   6. DRAWER
+   ============================================================================ */
+export interface FeedsHealthDrawerProps {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly health: FeedsHealthState;
+  readonly onReconnect: (provider: FeedProviderId) => void;
+}
+
+export const FeedsHealthDrawer: React.FC<FeedsHealthDrawerProps> = ({
+  open,
+  onClose,
+  health,
+  onReconnect,
+}) => {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousActive = document.activeElement;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (previousActive instanceof HTMLElement) previousActive.focus();
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const summary = health.snapshot?.summary ?? null;
+  const providers = health.snapshot?.providers ?? [];
+
+  return (
+    <div className="fixed inset-0 z-[60]">
+      <button
+        type="button"
+        aria-label="Cerrar telemetría de feeds"
+        onClick={onClose}
+        className="absolute inset-0 h-full w-full cursor-default bg-black/70"
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="Monitor unificado de salud, latencia y ticks de proveedores"
+        className="absolute right-0 top-0 flex h-full w-[480px] max-w-full flex-col border-l border-[#1C1C24] bg-[#0A0A0D] shadow-2xl"
+      >
+        <header className="flex h-[54px] shrink-0 items-center justify-between border-b border-[#1C1C24] bg-[#111116] px-4">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-[#8B7CF6]" />
+            <div>
+              <h2 className="text-[13px] font-bold text-[#ECEDF2]">Feeds en vivo</h2>
+              <p className="text-[10.5px] text-[#787B86]">
+                {summary === null
+                  ? 'Sin snapshot válido'
+                  : `${String(summary.activeCount)}/${String(summary.totalProviders)} activos · ${String(summary.configuredCount)} armados`}
+              </p>
+            </div>
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+            title="Cerrar (Escape)"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent text-[#8A8F9E] transition-colors hover:border-[#2A2E3D] hover:bg-[#131722] hover:text-[#D1D4DC]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="flex items-center justify-between border-b border-[#1C1C24] bg-[#0A0A0D] px-4 py-2 text-[10.5px] text-[#787B86]">
+          <span>Canal WS dedicado: {health.socketStatus}</span>
+          <span>Pulso: {health.lastPulseAtMs === null ? '—' : formatAgeMs(Date.now() - health.lastPulseAtMs)}</span>
+        </div>
+
+        <div className="flex-1 space-y-2.5 overflow-y-auto px-3 py-3">
+          {health.snapshot === null ? (
+            <div className="rounded-[10px] border border-[#1C1C24] bg-[#111116] p-4 text-center text-[12px] text-[#8A8F9E]">
+              Consultando telemetría real…
+            </div>
+          ) : (
+            providers.map((provider) => (
+              <ProviderCard
+                key={provider.id}
+                provider={provider}
+                reconnecting={health.reconnectingProvider === provider.id}
+                onReconnect={onReconnect}
+              />
+            ))
+          )}
+        </div>
+
+        {health.lastReconnectDetail !== null && (
+          <footer
+            className={`shrink-0 border-t px-4 py-2 text-[11px] ${
+              health.lastReconnectOk === true
+                ? 'border-[#164E3F] bg-[#0D221E] text-[#22C55E]'
+                : 'border-[#4A2229] bg-[#1A1318] text-[#F23645]'
+            }`}
+          >
+            {health.lastReconnectDetail}
+          </footer>
+        )}
+      </aside>
+    </div>
+  );
+};
+
+export default FeedsHealthDrawer;

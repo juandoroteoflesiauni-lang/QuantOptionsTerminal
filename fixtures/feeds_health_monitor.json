@@ -1,0 +1,202 @@
+{
+  "age": [
+    {
+      "atMs": 1000,
+      "expected": 500,
+      "name": "valid",
+      "nowMs": 1500
+    },
+    {
+      "atMs": 2000,
+      "expected": null,
+      "name": "future_is_null",
+      "nowMs": 1500
+    },
+    {
+      "atMs": null,
+      "expected": null,
+      "name": "missing_is_null",
+      "nowMs": 1500
+    }
+  ],
+  "sessions": [
+    {
+      "expected": "IN_SESSION",
+      "market": "US",
+      "name": "us_rth",
+      "utcSec": 1700000000
+    },
+    {
+      "expected": "IN_SESSION",
+      "market": "US",
+      "name": "us_sunday",
+      "utcSec": 1699570200
+    },
+    {
+      "expected": "OUT_OF_SESSION",
+      "market": "AR",
+      "name": "ar_session",
+      "utcSec": 1700000000
+    },
+    {
+      "expected": "OUT_OF_SESSION",
+      "market": "AR",
+      "name": "ar_pre_session",
+      "utcSec": 1699995000
+    }
+  ],
+  "state": [
+    {
+      "configured": false,
+      "connected": null,
+      "expected": "NOT_CONFIGURED",
+      "name": "not_configured",
+      "sessionMode": "IN_SESSION"
+    },
+    {
+      "configured": true,
+      "connected": true,
+      "expected": "CONNECTED",
+      "name": "connected_even_out_of_session",
+      "sessionMode": "OUT_OF_SESSION"
+    },
+    {
+      "configured": true,
+      "connected": false,
+      "expected": "ARMED_OUT_OF_SESSION",
+      "name": "armed_out_of_session",
+      "sessionMode": "OUT_OF_SESSION"
+    },
+    {
+      "configured": true,
+      "connected": false,
+      "expected": "DEGRADED",
+      "name": "degraded_in_session",
+      "sessionMode": "IN_SESSION"
+    }
+  ],
+  "telemetry": [
+    {
+      "events": [
+        {
+          "atMs": 1700000000100,
+          "isValidTick": true,
+          "latencyMs": 12.0
+        },
+        {
+          "atMs": 1700000000250,
+          "isValidTick": true,
+          "latencyMs": 18.0
+        },
+        {
+          "atMs": 1700000001010,
+          "isValidTick": true,
+          "latencyMs": -3.0
+        },
+        {
+          "atMs": 1700000059500,
+          "isValidTick": true,
+          "latencyMs": 30.0
+        }
+      ],
+      "expected": {
+        "averageLatencyMs": 20.0,
+        "http429PerMinute": 0,
+        "lastHttp429AtMs": null,
+        "lastHttpFailureAtMs": null,
+        "lastHttpSuccessAtMs": null,
+        "lastMessageAtMs": 1700000059500,
+        "lastTickAtMs": 1700000059500,
+        "latencySamples": 3,
+        "messagesPerMinute": 4,
+        "startedAtMs": 1700000000100,
+        "totalMessages": 4
+      },
+      "name": "ws_window_boundaries_and_clock_skew",
+      "nowMs": 1700000059600
+    },
+    {
+      "events": [
+        {
+          "atMs": 1700000000100,
+          "isValidTick": true,
+          "latencyMs": 12.0
+        },
+        {
+          "atMs": 1700000000250,
+          "isValidTick": true,
+          "latencyMs": 18.0
+        },
+        {
+          "atMs": 1700000001010,
+          "isValidTick": true,
+          "latencyMs": -3.0
+        },
+        {
+          "atMs": 1700000059500,
+          "isValidTick": true,
+          "latencyMs": 30.0
+        },
+        {
+          "atMs": 1700000060020,
+          "isValidTick": true,
+          "latencyMs": 44.0
+        },
+        {
+          "atMs": 1700000060030,
+          "isValidTick": true,
+          "latencyMs": 46.0
+        }
+      ],
+      "expected": {
+        "averageLatencyMs": 40.0,
+        "http429PerMinute": 0,
+        "lastHttp429AtMs": null,
+        "lastHttpFailureAtMs": null,
+        "lastHttpSuccessAtMs": null,
+        "lastMessageAtMs": 1700000060030,
+        "lastTickAtMs": 1700000060030,
+        "latencySamples": 3,
+        "messagesPerMinute": 4,
+        "startedAtMs": 1700000000100,
+        "totalMessages": 6
+      },
+      "name": "old_bucket_pruned",
+      "nowMs": 1700000060040
+    },
+    {
+      "events": [
+        {
+          "atMs": 1700000000020,
+          "httpStatus": 200,
+          "latencyMs": 80.0
+        },
+        {
+          "atMs": 1700000000040,
+          "httpStatus": 429,
+          "latencyMs": 120.0
+        },
+        {
+          "atMs": 1700000000060,
+          "httpStatus": 500,
+          "latencyMs": null
+        }
+      ],
+      "expected": {
+        "averageLatencyMs": 100.0,
+        "http429PerMinute": 1,
+        "lastHttp429AtMs": 1700000000040,
+        "lastHttpFailureAtMs": 1700000000060,
+        "lastHttpSuccessAtMs": 1700000000020,
+        "lastMessageAtMs": 1700000000060,
+        "lastTickAtMs": 1700000000020,
+        "latencySamples": 2,
+        "messagesPerMinute": 3,
+        "startedAtMs": 1700000000020,
+        "totalMessages": 3
+      },
+      "name": "http_success_429_and_failure",
+      "nowMs": 1700000000070
+    }
+  ]
+}

@@ -1292,6 +1292,39 @@ export class GgalSpecialistRuntime {
     };
   }
 
+  /** Pieza 33: estado real del cliente ORATS para el monitor unificado. */
+  public getOratsFeedHealth() {
+    const configured = this.oratsClient.isConfigured();
+    const last = this.oratsLastCall;
+    const nowMs = this.nowMsFn();
+    return {
+      configured,
+      connected: !configured ? false : last === null ? null : last.ok,
+      lastFetchAtUtcSec: last?.atUtcSec ?? null,
+      lastStatus: last?.status ?? null,
+      // ORATS datav2 no expone tier/cuota en la superficie normalizada actual:
+      // se publican null explícitos, nunca valores inventados.
+      planTier: null,
+      quotaRemaining: null,
+      quotaLimit: null,
+      quotaResetAtUtcSec: null,
+      circuitBreaker: this.oratsClient.getCircuitBreaker(nowMs),
+      telemetry: this.oratsClient.getFeedTelemetrySnapshot(nowMs),
+    };
+  }
+
+  /** Pieza 33: resincronización real de cores + strikes (bypass de cache ORATS). */
+  public async resyncOrats(): Promise<string> {
+    if (!this.oratsClient.isConfigured()) {
+      throw new Error('ORATS_API_KEY not configured');
+    }
+    const surface = await this.getOptionsSurface(true);
+    if (surface.surface.status !== 'OPERATIONAL') {
+      throw new Error(`ORATS resync returned ${surface.surface.status}`);
+    }
+    return 'ORATS_API_RESYNC_COMPLETED';
+  }
+
   public getAnexoBState(): AnexoBStoredRecord | null {
     return this.anexoBStore;
   }

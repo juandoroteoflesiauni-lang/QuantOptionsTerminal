@@ -16,6 +16,11 @@ import type {
   OratsHybridSurfacePayload,
   OratsSurfaceStrikeRow,
 } from '../core/ggal/institutionalContracts.js';
+import {
+  RollingFeedTelemetry,
+  type FeedTelemetrySnapshot,
+  type OratsCircuitBreakerDetails,
+} from './feedsHealthMonitor.js';
 import { redactSecrets } from './runtimeCache.js';
 
 export type OratsHttpFn = (
@@ -51,6 +56,8 @@ export interface FetchOratsHybridInput {
 
 const DEFAULT_ORATS_BASE_URL = 'https://api.orats.io/datav2';
 const DEFAULT_ORATS_CACHE_TTL_MS = 30_000;
+const ORATS_CIRCUIT_FAILURE_THRESHOLD = 3;
+const ORATS_CIRCUIT_COOLDOWN_MS = 30_000;
 
 async function defaultOratsFetch(
   url: string,
@@ -175,6 +182,12 @@ export class OratsHybridClient {
     string,
     { readonly fetchedAtMs: number; readonly payload: OratsHybridSurfaceOperational }
   >();
+  private readonly telemetry = new RollingFeedTelemetry({
+    latencyKind: 'HTTP_ROUND_TRIP',
+  });
+  private circuitState: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
+  private consecutiveFailures = 0;
+  private circuitOpenedAtMs: number | null = null;
 
   public constructor(opts?: {
     readonly env?: NodeJS.ProcessEnv;
@@ -201,6 +214,67 @@ export class OratsHybridClient {
 
   public isConfigured(): boolean {
     return this.deps.apiKey !== null;
+  }
+
+  public getFeedTelemetrySnapshot(nowMs: number): FeedTelemetrySnapshot {
+    return this.telemetry.snapshot(nowMs);
+  }
+
+  public getCircuitBreaker(nowMs: number): OratsCircuitBreakerDetails {
+    if (
+      this.circuitState === 'OPEN' &&
+      this.circuitOpenedAtMs !== null &&
+      Number.isFinite(nowMs) &&
+      nowMs - this.circuitOpenedAtMs >= ORATS_CIRCUIT_COOLDOWN_MS
+    ) {
+      this.circuitState = 'HALF_OPEN';
+    }
+    return {
+      state: this.circuitState,
+      consecutiveFailures: this.consecutiveFailures,
+      openedAtMs: this.circuitOpenedAtMs,
+    };
+  }
+
+  private recordHttpFailure(): void {
+    this.consecutiveFailures += 1;
+    if (this.consecutiveFailures >= ORATS_CIRCUIT_FAILURE_THRESHOLD) {
+      this.circuitState = 'OPEN';
+      this.circuitOpenedAtMs = this.deps.nowMsFn();
+    }
+  }
+
+  private recordHttpSuccess(): void {
+    this.consecutiveFailures = 0;
+    this.circuitState = 'CLOSED';
+    this.circuitOpenedAtMs = null;
+  }
+
+  private async timedFetch(
+    url: string,
+    timeoutMs: number,
+  ): Promise<{
+    readonly ok: boolean;
+    readonly status: number;
+    readonly json: () => Promise<unknown>;
+    readonly text: () => Promise<string>;
+  }> {
+    const startedAtMs = this.deps.nowMsFn();
+    try {
+      const response = await this.deps.fetchFn(url, { timeoutMs });
+      this.telemetry.record({
+        atMs: this.deps.nowMsFn(),
+        latencyMs: this.deps.nowMsFn() - startedAtMs,
+        httpStatus: response.status,
+      });
+      return response;
+    } catch (err: unknown) {
+      this.telemetry.record({
+        atMs: this.deps.nowMsFn(),
+        latencyMs: this.deps.nowMsFn() - startedAtMs,
+      });
+      throw err;
+    }
   }
 
   public async fetchHybridSurface(
@@ -238,13 +312,28 @@ export class OratsHybridClient {
     const coresUrl = `${this.deps.baseUrl}/cores?token=${token}&ticker=${symbolEnc}`;
     const strikesUrl = `${this.deps.baseUrl}/strikes?token=${token}&ticker=${symbolEnc}`;
 
+    const circuit = this.getCircuitBreaker(nowMs);
+    if (circuit.state === 'OPEN') {
+      return {
+        status: 'UNAVAILABLE',
+        source: 'ORATS_DELAYED_CORE',
+        ticker,
+        asOfUtcSec,
+        reason: 'ORATS_CIRCUIT_OPEN',
+        massiveSpotPrice: input.massiveSpotPrice,
+        massiveSpotSourceMode: input.massiveSpotSourceMode,
+        yangZhangAdrVol: input.yangZhangAdrVol,
+      };
+    }
+
     try {
       const [coresResp, strikesResp] = await Promise.all([
-        this.deps.fetchFn(coresUrl, { timeoutMs: 10_000 }),
-        this.deps.fetchFn(strikesUrl, { timeoutMs: 10_000 }),
+        this.timedFetch(coresUrl, 10_000),
+        this.timedFetch(strikesUrl, 10_000),
       ]);
 
       if (!coresResp.ok) {
+        this.recordHttpFailure();
         return {
           status: 'UNAVAILABLE',
           source: 'ORATS_DELAYED_CORE',
@@ -261,6 +350,7 @@ export class OratsHybridClient {
       const coreRows = extractDataRows(coresJson);
       const coreRow = coreRows[0];
       if (coreRow === undefined) {
+        this.recordHttpFailure();
         return {
           status: 'UNAVAILABLE',
           source: 'ORATS_DELAYED_CORE',
@@ -318,8 +408,10 @@ export class OratsHybridClient {
       };
 
       this.surfaceCache.set(ticker, { fetchedAtMs: nowMs, payload: operational });
+      this.recordHttpSuccess();
       return operational;
     } catch (err) {
+      this.recordHttpFailure();
       const msg = err instanceof Error ? err.message : String(err);
       return {
         status: 'UNAVAILABLE',

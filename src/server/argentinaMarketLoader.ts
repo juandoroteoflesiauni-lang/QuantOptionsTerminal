@@ -159,6 +159,7 @@ import {
   type TerminalSnapshotResponse,
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
+import { emptyFeedTelemetrySnapshot } from './feedsHealthMonitor.js';
 import { BmbFeedAdapter, isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
 import { IolFeedAdapter } from './iolFeedAdapter.js';
 import { ArRealtimeBus } from './arRealtimeBus.js';
@@ -3297,6 +3298,75 @@ export class ArgentinaMarketRuntime {
       bullMarket: this.bmbClient.getSafeHealthStatus(),
       iol: this.iolClient.getHealth(),
     };
+  }
+
+  /** Pieza 33: telemetría real del stream Primary DLR. */
+  public getPrimaryFeedHealth() {
+    const health = this.primaryClient.getSafeHealthStatus();
+    const nowMs = this.nowMsFn();
+    return {
+      configured: health.configured,
+      authenticated: health.authenticated,
+      wsConnected: health.wsConnected,
+      tokenValidUntilUtcSec: health.tokenValidUntilUtcSec,
+      tokenRenewCount: health.tokenRenewCount,
+      wsEnvironment: health.wsEnvironment,
+      dlrSubscribedCount: health.dlrSubscribedCount,
+      dlrSubscribedSymbols: this.primaryClient.getDlrSubscribedSymbols(),
+      liveDlrCount: health.liveDlrCount,
+      liveDlrLastUpdateUtcSec: health.liveDlrLastUpdateUtcSec,
+      lastError: health.lastError,
+      telemetry: this.primaryClient.getFeedTelemetrySnapshot(nowMs),
+    };
+  }
+
+  /** Pieza 33: telemetría del bridge BMB y estado real de libros. */
+  public getBmbFeedHealth() {
+    const adapter = this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient : null;
+    if (adapter !== null) {
+      return adapter.getFeedHealth();
+    }
+    const health = this.bmbClient.getSafeHealthStatus();
+    return {
+      configured: health.passwordConfigured,
+      healthStatus: health.status,
+      connected: health.connected,
+      lastUpdateUtcSec: health.lastUpdateUtcSec,
+      orderBookCount: health.counts.orderBooks,
+      caucionCount: health.counts.cauciones,
+      optionCount: health.counts.options,
+      lastError: health.error,
+      telemetry: emptyFeedTelemetrySnapshot(),
+    };
+  }
+
+  /** Pieza 33: telemetría OAuth/HTTP de IOL REST v2. */
+  public getIolFeedHealth() {
+    return this.iolClient.getFeedHealth();
+  }
+
+  /** Pieza 33: reconexión individual de Primary DLR con token nuevo. */
+  public async reconnectPrimaryDlr(): Promise<string> {
+    await this.primaryClient.reconnectDlrLiveStream();
+    return 'PRIMARY_REMARKETS_DLR_RECONNECT_ACCEPTED';
+  }
+
+  /** Pieza 33: reconexión individual del bridge BMB. */
+  public async reconnectBmb(): Promise<string> {
+    const adapter = this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient : null;
+    if (adapter !== null) {
+      return adapter.reconnect();
+    }
+    if (this.bmbClient instanceof BmbBridgeClient) {
+      await this.bmbClient.requestReconnect();
+      return 'BMB_HOMEBROKER_L2_RECONNECT_REQUESTED';
+    }
+    throw new Error('BMB reconnect is unavailable for injected bridge stubs without reconnect support');
+  }
+
+  /** Pieza 33: reconexión individual de IOL con OAuth limpio en memoria. */
+  public async reconnectIol(): Promise<string> {
+    return this.iolClient.reconnect();
   }
 
   public close(): void {

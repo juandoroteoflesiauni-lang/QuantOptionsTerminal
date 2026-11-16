@@ -14,6 +14,10 @@
 
 import { WebSocket } from 'ws';
 import type { FetchResponse } from '../data/types.js';
+import {
+  RollingFeedTelemetry,
+  type FeedTelemetrySnapshot,
+} from './feedsHealthMonitor.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 
 export type PrimaryHttpFn = (
@@ -301,6 +305,12 @@ export interface BmbBridgeSnapshotDto {
   readonly orderBooksBySymbol: Readonly<Record<string, BmbBridgeBookEntry>>;
   readonly options: readonly BmbOptionRowDto[];
   readonly tradesBySymbol?: Readonly<Record<string, readonly BmbTradeRowDto[]>>;
+  readonly telemetry?: BmbBridgeTelemetryDto;
+}
+
+export interface BmbBridgeTelemetryDto {
+  readonly totalMessagesReceived: number;
+  readonly lastMessageAtMs: number | null;
 }
 
 export interface PrimaryConnectorHealthDto {
@@ -1029,6 +1039,9 @@ export class PrimaryRofexClient {
   private readonly timeoutMs: number;
   private readonly minRequestIntervalMs: number;
   private readonly retry429DelayMs: number;
+  private readonly wsTelemetry = new RollingFeedTelemetry({
+    latencyKind: 'PROVIDER_EVENT_AGE',
+  });
 
   private authToken: string | null = null;
   private tokenIssuedAtMs = 0;
@@ -1581,7 +1594,8 @@ export class PrimaryRofexClient {
 
         sock.on('message', (raw) => {
           if (this.ws !== sock) return;
-          this.wsLastMessageAtMs = this.nowMsFn();
+          const receivedAtMs = this.nowMsFn();
+          this.wsLastMessageAtMs = receivedAtMs;
           try {
             const text =
               typeof raw === 'string'
@@ -1602,6 +1616,14 @@ export class PrimaryRofexClient {
               const snap = parsePrimaryMarketDataNode(sym, mkt, parsed['marketData']);
               this.wsSnapshots.set(`${mkt}:${sym}`, snap);
               if (sym.startsWith('DLR/')) {
+                this.wsTelemetry.record({
+                  atMs: receivedAtMs,
+                  latencyMs:
+                    snap.updatedAtUtcSec !== null && snap.updatedAtUtcSec > 0
+                      ? receivedAtMs - snap.updatedAtUtcSec * 1_000
+                      : null,
+                  isValidTick: true,
+                });
                 this.recomputeLiveDlrDerived();
               }
             }
@@ -2206,6 +2228,47 @@ export class PrimaryRofexClient {
       lastError: this.lastError !== null ? this.redact(this.lastError) : null,
     };
   }
+
+  public getDlrSubscribedSymbols(): readonly string[] {
+    return this.wsSubscriptions
+      .filter((item) => item.symbol.startsWith('DLR/'))
+      .map((item) => item.symbol);
+  }
+
+  public getFeedTelemetrySnapshot(nowMs: number): FeedTelemetrySnapshot {
+    return this.wsTelemetry.snapshot(nowMs);
+  }
+
+  /** Pieza 33: fuerza token nuevo + reapertura del stream `smd` DLR. */
+  public async reconnectDlrLiveStream(): Promise<void> {
+    if (!this.config.configured) {
+      throw new Error('PRIMARY_USERNAME / PRIMARY_PASSWORD not configured');
+    }
+    const products = [...this.wsSubscriptions];
+    this.wsIntentionalClose = true;
+    this.clearWsSessionTimers();
+    if (this.wsReconnectTimer !== null) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    const sock = this.ws;
+    this.ws = null;
+    this.wsConnected = false;
+    if (sock !== null) {
+      try {
+        sock.close(1000, 'feeds_health_reconnect');
+      } catch {
+        // The explicit reconnect below owns recovery.
+      }
+    }
+    await this.getAuthToken(true);
+    this.wsIntentionalClose = false;
+    if (products.length > 0) {
+      await this.connectAndSubscribeWs(products, this.wsDepth);
+      return;
+    }
+    await this.startDlrLiveStream();
+  }
 }
 
 export interface BmbBridgeClientDeps {
@@ -2474,6 +2537,24 @@ export class BmbBridgeClient {
             orderBooksBySymbol: booksOut,
             options,
             tradesBySymbol,
+            ...(isPlainRecord(raw['telemetry'])
+              ? {
+                  telemetry: {
+                    totalMessagesReceived:
+                      typeof raw['telemetry']['totalMessagesReceived'] === 'number' &&
+                      Number.isFinite(raw['telemetry']['totalMessagesReceived']) &&
+                      raw['telemetry']['totalMessagesReceived'] >= 0
+                        ? Math.floor(raw['telemetry']['totalMessagesReceived'])
+                        : 0,
+                    lastMessageAtMs:
+                      typeof raw['telemetry']['lastMessageAtMs'] === 'number' &&
+                      Number.isFinite(raw['telemetry']['lastMessageAtMs']) &&
+                      raw['telemetry']['lastMessageAtMs'] > 0
+                        ? raw['telemetry']['lastMessageAtMs']
+                        : null,
+                  },
+                }
+              : {}),
           };
         } catch (err: unknown) {
           const safeMsg = redactSecrets(
@@ -2498,5 +2579,20 @@ export class BmbBridgeClient {
     );
 
     return res.value;
+  }
+
+  /** Pieza 33: pide reconexión al bridge local (loopback), sin exponer credenciales. */
+  public async requestReconnect(): Promise<void> {
+    if (!this.config.passwordConfigured) {
+      throw new Error('BMB password not configured');
+    }
+    const response = await this.fetchFn(`${this.config.bridgeUrl}/reconnect`, {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      timeoutMs: this.timeoutMs,
+    });
+    if (response.status !== 202) {
+      throw new Error(`BMB bridge reconnect HTTP ${String(response.status)}`);
+    }
   }
 }

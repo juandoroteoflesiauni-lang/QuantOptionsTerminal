@@ -16,6 +16,10 @@ import type {
   WsConnectionState,
   WsNormalizedEvent,
 } from '../data/wsTypes.js';
+import {
+  RollingFeedTelemetry,
+  type FeedTelemetrySnapshot,
+} from './feedsHealthMonitor.js';
 
 export const MASSIVE_RTH_BATCH_INTERVAL_MS = 2_500;
 export const MASSIVE_EXTENDED_BATCH_INTERVAL_MS = 5_000;
@@ -175,6 +179,9 @@ export class MassiveStocksStream {
   private readonly nowMsFn: () => number;
   private readonly baseUrl: string;
   private readonly onEventsCb: MassiveStocksStreamDeps['onEvents'];
+  private readonly telemetry = new RollingFeedTelemetry({
+    latencyKind: 'PROVIDER_EVENT_AGE',
+  });
   private readonly onStateChangeCb: MassiveStocksStreamDeps['onStateChange'];
   private readonly onErrorCb: MassiveStocksStreamDeps['onError'];
   private readonly quotes = new Map<string, MutableQuote>();
@@ -222,6 +229,22 @@ export class MassiveStocksStream {
           );
           if (configuredEvents.length === 0) return;
           this.lastWsMessageMs = this.nowMsFn();
+          for (const event of configuredEvents) {
+            const providerAtMs =
+              event.ev === 'T' || event.ev === 'Q'
+                ? event.timeSec * 1_000
+                : event.ev === 'A' || event.ev === 'AM'
+                  ? event.endMs
+                  : Number.NaN;
+            this.telemetry.record({
+              atMs: this.lastWsMessageMs,
+              latencyMs:
+                Number.isFinite(providerAtMs) && providerAtMs > 0
+                  ? this.lastWsMessageMs - providerAtMs
+                  : null,
+              isValidTick: true,
+            });
+          }
           this.ingestWsEvents(configuredEvents);
           this.onEventsCb?.(configuredEvents);
         },
@@ -266,6 +289,14 @@ export class MassiveStocksStream {
 
   public getWsSnapshot(): WsClientSnapshot | null {
     return this.client?.getSnapshot() ?? null;
+  }
+
+  public getSubscribedSymbols(): readonly string[] {
+    return [...this.stockSymbols];
+  }
+
+  public getFeedTelemetrySnapshot(): FeedTelemetrySnapshot {
+    return this.telemetry.snapshot(this.nowMsFn());
   }
 
   public getDiagnostics(): {

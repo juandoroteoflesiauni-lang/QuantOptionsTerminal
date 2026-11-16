@@ -27,6 +27,10 @@ import {
   type BmbTradeRowDto,
 } from './primaryRofexLoader.js';
 import { redactSecrets } from './runtimeCache.js';
+import {
+  RollingFeedTelemetry,
+  type FeedTelemetrySnapshot,
+} from './feedsHealthMonitor.js';
 
 export const BMB_MIN_POLL_INTERVAL_MS = 1_500;
 export const BMB_LIVE_LOOP_INTERVAL_MS = 2_500;
@@ -224,6 +228,9 @@ export class BmbFeedAdapter {
   private liveLoopRunning = false;
   private liveLoopSymbols: readonly string[] = [];
   private nextPrimeIndex = 0;
+  private readonly httpTelemetry = new RollingFeedTelemetry({
+    latencyKind: 'HTTP_ROUND_TRIP',
+  });
 
   public constructor(deps: BmbFeedAdapterDeps = {}) {
     this.env = deps.env ?? process.env;
@@ -495,7 +502,24 @@ export class BmbFeedAdapter {
 
     const work = (async (): Promise<BmbBridgeSnapshotDto> => {
       this.lastPollStartedMs = this.nowMsFn();
-      const raw = await this.delegate.getSnapshot(undefined, badlarTna, true);
+      const requestStartedAtMs = this.nowMsFn();
+      let raw: BmbBridgeSnapshotDto;
+      try {
+        raw = await this.delegate.getSnapshot(undefined, badlarTna, true);
+        const completedAtMs = this.nowMsFn();
+        this.httpTelemetry.record({
+          atMs: completedAtMs,
+          latencyMs: completedAtMs - requestStartedAtMs,
+          httpStatus: 200,
+        });
+      } catch (err: unknown) {
+        const completedAtMs = this.nowMsFn();
+        this.httpTelemetry.record({
+          atMs: completedAtMs,
+          latencyMs: completedAtMs - requestStartedAtMs,
+        });
+        throw err;
+      }
       const normalized = this.normalizeSnapshot(raw);
       this.lastSnapshot = normalized;
       return normalized;
@@ -555,6 +579,37 @@ export class BmbFeedAdapter {
   public getCachedSnapshot(): BmbBridgeSnapshotDto | null {
     if (!isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000))) return null;
     return this.lastSnapshot;
+  }
+
+  public getFeedTelemetrySnapshot(nowMs: number): FeedTelemetrySnapshot {
+    return this.httpTelemetry.snapshot(nowMs);
+  }
+
+  public getFeedHealth() {
+    const health = this.getSafeHealthStatus();
+    const telemetry = this.getFeedTelemetrySnapshot(this.nowMsFn());
+    return {
+      configured: this.configured,
+      healthStatus: health.status,
+      connected: health.connected,
+      lastUpdateUtcSec: health.lastUpdateUtcSec,
+      orderBookCount: health.counts.orderBooks,
+      caucionCount: health.counts.cauciones,
+      optionCount: health.counts.options,
+      lastError: health.error,
+      telemetry,
+    };
+  }
+
+  /** Pieza 33: reconexión real del bridge local por señal loopback. */
+  public async reconnect(): Promise<string> {
+    if (!this.configured) {
+      throw new Error('BMB bridge configuration incomplete');
+    }
+    await this.ensureProcess();
+    await this.delegate.requestReconnect();
+    const snapshot = await this.getSnapshot(undefined, null, true);
+    return `BMB_HOMEBROKER_L2_RECONNECT_${snapshot.health.status}`;
   }
 
   public getCachedOrderBook(symbol = 'GGAL'): BmbBridgeBookEntry | null {

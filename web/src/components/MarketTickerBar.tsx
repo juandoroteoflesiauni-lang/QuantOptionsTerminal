@@ -12,6 +12,11 @@ import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveR
 import { getMarketLiveQuote, isMarketLiveStreamFresh, useMarketLiveStream } from '../api/useMarketLiveStream';
 import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
+import {
+  FeedsHealthDrawer,
+  useFeedsHealthPulse,
+  type FeedProviderId,
+} from './FeedsHealthDrawer';
 
 /* ============================================================================
    1. INTERFACES Y TIPOS ESTRICTOS
@@ -310,6 +315,8 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   liveFeedEnabled = true,
 }) => {
   const liveStream = useMarketLiveStream({ manageConnection: liveFeedEnabled });
+  const feedsHealth = useFeedsHealthPulse();
+  const [feedsDrawerOpen, setFeedsDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (!liveFeedEnabled) return;
@@ -381,8 +388,27 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
     feedStatus === 'DIFERIDO_20M' ||
     feedStatus === 'PARTIAL';
 
+  const feedsPulseFresh =
+    feedsHealth.lastPulseAtMs !== null && Date.now() - feedsHealth.lastPulseAtMs <= 15_000;
+  const feedsSummary = feedsPulseFresh ? feedsHealth.snapshot?.summary ?? null : null;
+  const feedsLabel =
+    feedsSummary === null
+      ? 'Feeds: —'
+      : feedsSummary.activeCount > 0
+        ? `Feeds: ${String(feedsSummary.activeCount)}/${String(feedsSummary.totalProviders)} Activos`
+        : `Feeds: ${String(feedsSummary.configuredCount)}/${String(feedsSummary.totalProviders)} Armados`;
+  const feedsBadgeTone =
+    feedsSummary === null
+      ? { bg: 'bg-[#131722]', text: 'text-[#787B86]', border: 'border-[#2A2E3D]' }
+      : feedsSummary.activeCount > 0
+        ? { bg: 'bg-[#0D221E]', text: 'text-[#22C55E]', border: 'border-[#164E3F]' }
+        : feedsSummary.configuredCount > 0
+          ? { bg: 'bg-[#281E0E]', text: 'text-[#F5B544]', border: 'border-[#59411A]' }
+          : { bg: 'bg-[#1A1318]', text: 'text-[#F23645]', border: 'border-[#4A2229]' };
+
   return (
-    <header className="sticky top-0 z-40 h-[50px] w-full bg-[#0B0E14] border-b border-[#1E222D] px-3 flex items-center justify-between gap-3 select-none">
+    <>
+      <header className="sticky top-0 z-40 h-[50px] w-full bg-[#0B0E14] border-b border-[#1E222D] px-3 flex items-center justify-between gap-3 select-none">
       {/* =====================================================================
           A) EXTREMO IZQUIERDO FIJO: Colapsar Sidebar + Badge Estado de Mercado
           ===================================================================== */}
@@ -436,6 +462,22 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
             ● Tiempo real {liveClock}
           </span>
         )}
+
+        <button
+          type="button"
+          onClick={() => setFeedsDrawerOpen(true)}
+          aria-expanded={feedsDrawerOpen}
+          aria-haspopup="dialog"
+          title="Monitor unificado de salud, latencia y ticks de proveedores"
+          className={`hidden md:inline-flex h-[26px] items-center gap-1.5 rounded-full border px-2.5 font-mono-num text-[10.5px] font-semibold transition-colors cursor-pointer ${feedsBadgeTone.bg} ${feedsBadgeTone.text} ${feedsBadgeTone.border} hover:brightness-110`}
+        >
+          <span
+            className={`inline-flex h-1.5 w-1.5 rounded-full ${
+              feedsHealth.socketStatus === 'LIVE' ? 'bg-current' : 'bg-[#787B86]'
+            }`}
+          />
+          {feedsLabel}
+        </button>
 
         {/* Separador vertical sutil */}
         <div className="h-5 w-[1px] bg-[#1E222D] ml-0.5 hidden sm:block" />
@@ -517,6 +559,15 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
         </button>
       </div>
     </header>
+    <FeedsHealthDrawer
+      open={feedsDrawerOpen}
+      onClose={() => setFeedsDrawerOpen(false)}
+      health={feedsHealth}
+      onReconnect={(provider: FeedProviderId) => {
+        void feedsHealth.reconnectProvider(provider);
+      }}
+    />
+    </>
   );
 };
 

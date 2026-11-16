@@ -34,6 +34,10 @@ import type {
 import type { WsSocketLike } from '../data/wsTypes.js';
 import { parseExpirationDate } from '../data/normalizeOptions.js';
 import {
+  RollingFeedTelemetry,
+  type FeedTelemetrySnapshot,
+} from './feedsHealthMonitor.js';
+import {
   readMassiveEnvSource,
   resolveMassiveEnvValue,
   type MassiveEnvSource,
@@ -934,6 +938,9 @@ export class TradierLiveManager {
   private readonly onTickCb: TradierLiveManagerDeps['onTick'];
   private readonly onErrorCb: TradierLiveManagerDeps['onError'];
   private readonly onStateChangeCb: TradierLiveManagerDeps['onStateChange'];
+  private readonly telemetry = new RollingFeedTelemetry({
+    latencyKind: 'PROVIDER_EVENT_AGE',
+  });
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
 
@@ -977,6 +984,24 @@ export class TradierLiveManager {
       activeRole:
         this.config.configured && this.state === 'CONNECTED' ? 'LIVE_STREAM' : 'STANDBY',
     };
+  }
+
+  public getFeedTelemetrySnapshot(nowMs: number): FeedTelemetrySnapshot {
+    return this.telemetry.snapshot(nowMs);
+  }
+
+  /** Pieza 33: recrea sesión + socket con la lista real de símbolos actual. */
+  public async reconnect(): Promise<void> {
+    if (!this.config.configured || this.config.accessToken === null) {
+      throw new TradierNotConfiguredError();
+    }
+    const symbols = [...this.subscribedSymbols];
+    if (symbols.length === 0) {
+      throw new Error('TradierLiveManager.reconnect: no active symbol subscriptions');
+    }
+    this.stop();
+    this.stopped = false;
+    await this.start(symbols);
   }
 
   public getLatestQuotes(): readonly TradierLiveQuoteState[] {
@@ -1197,6 +1222,15 @@ export class TradierLiveManager {
           : nowSec;
     this.latest.set(symbol, next);
     this.lastTickAtUtcSec = nowSec;
+    const receivedAtMs = this.nowMsFn();
+    this.telemetry.record({
+      atMs: receivedAtMs,
+      latencyMs:
+        Number.isFinite(eventAsOfSec) && eventAsOfSec > 0
+          ? receivedAtMs - eventAsOfSec * 1_000
+          : null,
+      isValidTick: true,
+    });
 
     const tick: TradierStreamTick = {
       symbol,

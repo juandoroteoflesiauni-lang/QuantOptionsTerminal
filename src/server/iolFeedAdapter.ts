@@ -2,6 +2,10 @@
 
 import type { MarketTickQuote } from './massiveStocksStream.js';
 import { isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
+import {
+  RollingFeedTelemetry,
+  type FeedTelemetrySnapshot,
+} from './feedsHealthMonitor.js';
 import { redactSecrets } from './runtimeCache.js';
 
 export const IOL_L1_POLL_INTERVAL_MS = 2_500;
@@ -116,6 +120,7 @@ export class IolFeedAdapter {
   private refreshToken: string | null = null;
   private accessTokenExpiresAtMs = 0;
   private authInFlight: Promise<void> | null = null;
+  private authInFlightGeneration = -1;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private polling = false;
@@ -126,6 +131,14 @@ export class IolFeedAdapter {
   private lastError: string | null = null;
   private readonly panelErrors = new Map<PanelId, string>();
   private generation = 0;
+  private readonly httpTelemetry = new RollingFeedTelemetry({
+    latencyKind: 'HTTP_ROUND_TRIP',
+  });
+  private authMethod: 'PASSWORD' | 'REFRESH_TOKEN' | null = null;
+  private passwordAuthCount = 0;
+  private refreshAuthCount = 0;
+  private lastAuthAtMs: number | null = null;
+  private authGeneration = 0;
 
   public constructor(deps: IolFeedAdapterDeps = {}) {
     this.env = deps.env ?? process.env;
@@ -199,8 +212,52 @@ export class IolFeedAdapter {
   public stop(): void {
     this.running = false;
     this.generation += 1;
+    this.authGeneration += 1;
     if (this.pollTimer !== null) clearTimeout(this.pollTimer);
     this.pollTimer = null;
+  }
+
+  public getFeedTelemetrySnapshot(nowMs: number): FeedTelemetrySnapshot {
+    return this.httpTelemetry.snapshot(nowMs);
+  }
+
+  public getFeedHealth() {
+    const health = this.getHealth();
+    const nowMs = this.nowMsFn();
+    return {
+      configured: health.configured,
+      connected: health.connected,
+      authMethod: this.authMethod,
+      passwordAuthCount: this.passwordAuthCount,
+      refreshAuthCount: this.refreshAuthCount,
+      tokenExpiresAtUtcSec:
+        this.accessTokenExpiresAtMs > 0 && nowMs < this.accessTokenExpiresAtMs
+          ? Math.floor(this.accessTokenExpiresAtMs / 1_000)
+          : null,
+      lastAuthAtUtcSec:
+        this.lastAuthAtMs !== null && nowMs >= this.lastAuthAtMs
+          ? Math.floor(this.lastAuthAtMs / 1_000)
+          : null,
+      quoteCount: health.quoteCount,
+      lastError: health.error,
+      telemetry: this.httpTelemetry.snapshot(nowMs),
+    };
+  }
+
+  /** Pieza 33: invalida tokens en memoria, reautentica y reanuda polling. */
+  public async reconnect(): Promise<string> {
+    if (!this.configured) {
+      throw new Error('IOL_USERNAME / IOL_PASSWORD not configured');
+    }
+    this.stop();
+    this.accessToken = null;
+    this.refreshToken = null;
+    this.accessTokenExpiresAtMs = 0;
+    this.authMethod = null;
+    this.start();
+    this.authGeneration += 1;
+    await this.authenticate();
+    return 'IOL_REST_V2_RECONNECT_AUTHENTICATED';
   }
 
   public getQuotes(): readonly MarketTickQuote[] {
@@ -226,9 +283,12 @@ export class IolFeedAdapter {
   }
 
   private async authenticate(): Promise<void> {
-    if (this.authInFlight !== null) return this.authInFlight;
+    if (this.authInFlight !== null && this.authInFlightGeneration === this.authGeneration) {
+      return this.authInFlight;
+    }
+    const generationAtStart = this.authGeneration;
+    const useRefresh = this.refreshToken !== null;
     const work = (async (): Promise<void> => {
-      const useRefresh = this.refreshToken !== null;
       const params = new URLSearchParams();
       if (useRefresh) {
         params.set('grant_type', 'refresh_token');
@@ -238,12 +298,32 @@ export class IolFeedAdapter {
         params.set('username', this.env['IOL_USERNAME']?.trim() ?? '');
         params.set('password', this.env['IOL_PASSWORD']?.trim() ?? '');
       }
-      const response = await this.fetchFn(`${this.baseUrl}/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-        body: params.toString(),
-        timeoutMs: IOL_REQUEST_TIMEOUT_MS,
-      });
+      const startedAtMs = this.nowMsFn();
+      let response: IolHttpResponse;
+      try {
+        response = await this.fetchFn(`${this.baseUrl}/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+          body: params.toString(),
+          timeoutMs: IOL_REQUEST_TIMEOUT_MS,
+        });
+        const completedAtMs = this.nowMsFn();
+        this.httpTelemetry.record({
+          atMs: completedAtMs,
+          latencyMs: completedAtMs - startedAtMs,
+          httpStatus: response.status,
+        });
+      } catch (err: unknown) {
+        const completedAtMs = this.nowMsFn();
+        this.httpTelemetry.record({
+          atMs: completedAtMs,
+          latencyMs: completedAtMs - startedAtMs,
+        });
+        throw err;
+      }
+      if (generationAtStart !== this.authGeneration) {
+        throw new Error('IOL authentication superseded');
+      }
       if (!response.ok) {
         if (useRefresh) this.refreshToken = null;
         throw new Error(`IOL authentication HTTP ${String(response.status)}`);
@@ -257,9 +337,14 @@ export class IolFeedAdapter {
       this.accessToken = access;
       if (refresh !== null) this.refreshToken = refresh;
       this.accessTokenExpiresAtMs = this.nowMsFn() + Math.max(30, expiresIn - 60) * 1_000;
+      this.authMethod = useRefresh ? 'REFRESH_TOKEN' : 'PASSWORD';
+      if (useRefresh) this.refreshAuthCount += 1;
+      else this.passwordAuthCount += 1;
+      this.lastAuthAtMs = this.nowMsFn();
       this.lastError = null;
     })();
     this.authInFlight = work;
+    this.authInFlightGeneration = generationAtStart;
     try {
       await work;
     } finally {
@@ -276,10 +361,27 @@ export class IolFeedAdapter {
 
   private async getPanel(path: string, retry = true): Promise<unknown> {
     const token = await this.ensureToken();
-    const response = await this.fetchFn(`${this.baseUrl}${path}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      timeoutMs: IOL_REQUEST_TIMEOUT_MS,
-    });
+    const startedAtMs = this.nowMsFn();
+    let response: IolHttpResponse;
+    try {
+      response = await this.fetchFn(`${this.baseUrl}${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        timeoutMs: IOL_REQUEST_TIMEOUT_MS,
+      });
+      const completedAtMs = this.nowMsFn();
+      this.httpTelemetry.record({
+        atMs: completedAtMs,
+        latencyMs: completedAtMs - startedAtMs,
+        httpStatus: response.status,
+      });
+    } catch (err: unknown) {
+      const completedAtMs = this.nowMsFn();
+      this.httpTelemetry.record({
+        atMs: completedAtMs,
+        latencyMs: completedAtMs - startedAtMs,
+      });
+      throw err;
+    }
     if (response.status === 401 && retry) {
       this.accessToken = null;
       this.accessTokenExpiresAtMs = 0;

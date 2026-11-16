@@ -15,6 +15,7 @@ import json
 import os
 import signal
 import threading
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -115,6 +116,32 @@ class BmbBridgeState(BaseBmbBridgeState):
         self._options_by_symbol: dict[str, dict[str, Any]] = {}
         self._security_state: dict[str, dict[str, Any]] = {}
         self._stop_event = threading.Event()
+        self._total_messages_received = 0
+        self._last_message_at_ms: int | None = None
+        self._reconnect_requested = False
+
+    def _record_bridge_message(self) -> None:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            self._total_messages_received += 1
+            self._last_message_at_ms = now_ms
+
+    def request_reconnect(self) -> None:
+        """Force the reconnect loop to close and re-authenticate the HomeBroker session."""
+        with self._lock:
+            self._reconnect_requested = True
+            self._connected = False
+            self._status = "DISCONNECTED"
+            hb = self._hb
+            self._hb = None
+        if hb is not None:
+            online = getattr(hb, "online", None)
+            try:
+                if online is not None and hasattr(online, "disconnect"):
+                    online.disconnect()
+            except Exception as exc:
+                with self._lock:
+                    self._error = redact_secrets(f"BMB reconnect close error: {exc}", self._cfg["secrets"])
 
     def _set_callback_status(self) -> None:
         book = self._order_books.get("GGAL")
@@ -211,6 +238,8 @@ class BmbBridgeState(BaseBmbBridgeState):
                 self._last_update_sec = now_sec
                 self._error = None
                 self._set_callback_status()
+        if rows:
+            self._record_bridge_message()
 
     def _on_options(self, _online: Any, quotes: Any) -> None:
         rows = extract_records(quotes)
@@ -245,6 +274,8 @@ class BmbBridgeState(BaseBmbBridgeState):
                 self._last_update_sec = now_sec
                 self._error = None
                 self._set_callback_status()
+        if parsed:
+            self._record_bridge_message()
 
     def _on_securities(self, _online: Any, quotes: Any) -> None:
         """Convert real GGAL cumulative-volume deltas to ordered aggregate trades.
@@ -313,6 +344,8 @@ class BmbBridgeState(BaseBmbBridgeState):
                 if len(series) > MAX_TRADES_PER_SYMBOL:
                     del series[: len(series) - MAX_TRADES_PER_SYMBOL]
                 self._last_update_sec = received_sec
+        if rows:
+            self._record_bridge_message()
 
     def _on_error(self, _online: Any, error: Any, connection_lost: bool = False) -> None:
         message = redact_secrets(str(error), self._cfg["secrets"])
@@ -331,6 +364,7 @@ class BmbBridgeState(BaseBmbBridgeState):
     def _connect_once(self) -> None:
         with self._lock:
             self._status = "CONNECTING"
+            self._reconnect_requested = False
         try:
             hb = HomeBroker(
                 int(self._cfg["broker_id"]),
@@ -389,7 +423,17 @@ class BmbBridgeState(BaseBmbBridgeState):
             if self._stop_event.is_set():
                 break
             delay = min(60, 5 * (2 ** min(max(0, failed_attempts - 1), 4)))
-            self._stop_event.wait(delay)
+            waited_ms = 0
+            while waited_ms < delay * 1000 and not self._stop_event.is_set():
+                if self._stop_event.wait(0.25):
+                    break
+                waited_ms += 250
+                with self._lock:
+                    reconnect_requested = self._reconnect_requested
+                    if reconnect_requested:
+                        self._reconnect_requested = False
+                if reconnect_requested:
+                    break
 
     def get_health(self) -> dict[str, Any]:
         health = super().get_health()
@@ -408,6 +452,10 @@ class BmbBridgeState(BaseBmbBridgeState):
             health["connected"] = bool(self._connected)
             health["accountLabel"] = None
             health["counts"]["trades"] = sum(len(rows) for rows in self._trades_by_symbol.values())
+            health["telemetry"] = {
+                "totalMessagesReceived": self._total_messages_received,
+                "lastMessageAtMs": self._last_message_at_ms,
+            }
             return health
 
     def get_snapshot(self, symbol: str | None = None) -> dict[str, Any]:
@@ -438,6 +486,7 @@ class BmbBridgeState(BaseBmbBridgeState):
                 "orderBooksBySymbol": books,
                 "options": list(self._options),
                 "tradesBySymbol": trades,
+                "telemetry": health["telemetry"],
             }
 
 
@@ -469,6 +518,14 @@ def create_handler(state: BmbBridgeState) -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/options":
                 snapshot = state.get_snapshot()
                 self.send_json(200, {"status": snapshot["status"], "asOfUtcSec": snapshot["asOfUtcSec"], "options": snapshot["options"], "error": snapshot["error"]})
+                return
+            self.send_json(404, {"status": "NOT_FOUND", "error": "Unknown route"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path == "/reconnect":
+                state.request_reconnect()
+                self.send_json(202, {"status": "RECONNECT_REQUESTED"})
                 return
             self.send_json(404, {"status": "NOT_FOUND", "error": "Unknown route"})
 

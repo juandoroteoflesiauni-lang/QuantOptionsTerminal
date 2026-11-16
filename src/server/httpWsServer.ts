@@ -23,9 +23,12 @@
  *  - `GET /api/ar/ggal-specialist/margin-risk`
  *  - `GET /api/us/providers-status` (Pieza 32: MASSIVE_WS, MASSIVE_REST_POOL,
  *    TRADIER_LIVE y ORATS con keySlot/activeRole, sin material secreto)
+ *  - `GET /api/system/feeds-health` (Pieza 33: telemetría unificada de 7 feeds)
+ *  - `POST /api/system/feeds-reconnect` (Pieza 33: reconnect/resync individual)
  *
  * WebSocket:
  *  - `ws://host:port/ws`
+ *  - `ws://host:port/ws?channel=feeds-health` (solo `FEEDS_HEALTH_PULSE`)
  */
 
 import {
@@ -48,6 +51,11 @@ import {
 } from './argentinaMarketLoader.js';
 import { collectArFeedSecrets } from './arFeedRouter.js';
 import { GgalSpecialistRuntime } from './ggalSpecialistRuntime.js';
+import {
+  FeedsHealthMonitor,
+  type FeedProviderId,
+  type FeedsHealthPulse,
+} from './feedsHealthMonitor.js';
 import {
   MarketRuntime,
   RuntimeNoDataError,
@@ -78,6 +86,7 @@ export interface HttpWsServerHandle {
   readonly runtime: MarketRuntime;
   readonly arRuntime: ArgentinaMarketRuntime;
   readonly ggalRuntime: GgalSpecialistRuntime;
+  readonly feedsHealthMonitor: FeedsHealthMonitor;
   start(): Promise<{ readonly host: string; readonly port: number }>;
   stop(): Promise<void>;
 }
@@ -85,6 +94,7 @@ export interface HttpWsServerHandle {
 interface ClientSubscriptionState {
   symbols: Set<string> | null;
   needsSnapshot: boolean;
+  healthOnly: boolean;
 }
 
 function isBenignSocketError(err: unknown): boolean {
@@ -274,6 +284,23 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       secrets: getAllSecrets(),
       env: effectiveEnv,
     });
+  const feedsHealthMonitor = new FeedsHealthMonitor({
+    getMassiveWs: () => runtime.getMassiveWsFeedHealth(),
+    getMassiveRest: () => runtime.getMassiveRestFeedHealth(),
+    getTradier: () => runtime.getTradierFeedHealth(),
+    getOrats: () => ggalRuntime.getOratsFeedHealth(),
+    getPrimary: () => arRuntime.getPrimaryFeedHealth(),
+    getBmb: () => arRuntime.getBmbFeedHealth(),
+    getIol: () => arRuntime.getIolFeedHealth(),
+    reconnectMassiveWs: () => runtime.reconnectMassiveStocksWs(),
+    resyncMassiveRest: () => runtime.resyncMassiveRestPool(),
+    reconnectTradier: () => runtime.reconnectTradierLive(),
+    resyncOrats: () => ggalRuntime.resyncOrats(),
+    reconnectPrimary: () => arRuntime.reconnectPrimaryDlr(),
+    reconnectBmb: () => arRuntime.reconnectBmb(),
+    reconnectIol: () => arRuntime.reconnectIol(),
+    secrets: getAllSecrets(),
+  });
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
   const startRuntimeWs = options.startRuntimeWs ?? false;
@@ -284,6 +311,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   let marketTickSequence = 0;
   let deltaRevision = 0;
   let marketTickTimer: ReturnType<typeof setInterval> | null = null;
+  let feedsHealthTimer: ReturnType<typeof setInterval> | null = null;
   let previousDeltaQuotes = new Map<string, (ReturnType<MarketRuntime['getLiveUsQuotes']>)[number]>();
   let previousDeltaCauciones = '';
   let previousDeltaFutures = '';
@@ -382,11 +410,17 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     client.send(JSON.stringify(buildMarketTickBatch()));
   };
 
+  const sendFeedsHealthPulse = (client: WebSocket, pulse: FeedsHealthPulse): void => {
+    if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) return;
+    client.send(JSON.stringify(pulse));
+  };
+
   const broadcastTickDelta = (): void => {
     const payload = JSON.stringify(buildTickDelta());
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       const state = clientStates.get(client);
+      if (state?.healthOnly === true) continue;
       if (client.bufferedAmount > 1_048_576) {
         if (state !== undefined) state.needsSnapshot = true;
         continue;
@@ -424,7 +458,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
     const isPostOnlyRoute =
       pathname === '/api/ar/ggal-specialist/strategy-selector' ||
-      pathname === '/api/ar/ggal-specialist/anexo-b/ingest';
+      pathname === '/api/ar/ggal-specialist/anexo-b/ingest' ||
+      pathname === '/api/system/feeds-reconnect';
     if ((req.method === 'POST' && !isPostOnlyRoute) || (req.method !== 'POST' && isPostOnlyRoute)) {
       sendJson(res, 405, {
         status: 'NO_DATA',
@@ -526,6 +561,44 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           },
           usOptionsFeedBadge,
         });
+        return;
+      }
+
+      if (pathname === '/api/system/feeds-health') {
+        sendJson(res, 200, feedsHealthMonitor.getSnapshot());
+        return;
+      }
+
+      if (pathname === '/api/system/feeds-reconnect') {
+        const body = await readJsonBody(req, secrets);
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            'Expected JSON object body with provider',
+            secrets,
+            400,
+          );
+        }
+        const rawProvider = (body as { readonly provider?: unknown }).provider;
+        if (typeof rawProvider !== 'string' || !feedsHealthMonitor.isKnownProvider(rawProvider)) {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            `Unsupported feed provider "${typeof rawProvider === 'string' ? rawProvider : 'UNKNOWN'}"`,
+            secrets,
+            400,
+          );
+        }
+        const provider: FeedProviderId = rawProvider;
+        const result = await feedsHealthMonitor.reconnect(provider);
+        if (!result.ok) {
+          sendJson(res, 503, {
+            status: 'NO_DATA',
+            reason: 'PROVIDER_ERROR',
+            detail: result.detail,
+          });
+          return;
+        }
+        sendJson(res, 200, result);
         return;
       }
 
@@ -972,8 +1045,15 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const clientAlive = new WeakMap<WebSocket, boolean>();
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-  wss.on('connection', (ws) => {
-    const state: ClientSubscriptionState = { symbols: null, needsSnapshot: false };
+  wss.on('connection', (ws, request) => {
+    let healthOnly = false;
+    try {
+      const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? `${host}:${String(port)}`}`);
+      healthOnly = requestUrl.searchParams.get('channel') === 'feeds-health';
+    } catch {
+      healthOnly = false;
+    }
+    const state: ClientSubscriptionState = { symbols: null, needsSnapshot: false, healthOnly };
     clientStates.set(ws, state);
     clientAlive.set(ws, true);
     ws.on('pong', () => {
@@ -992,8 +1072,12 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       time: Math.floor(Date.now() / 1_000),
     };
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(connectedEvent));
-      sendMarketTickBatch(ws);
+      if (state.healthOnly) {
+        sendFeedsHealthPulse(ws, feedsHealthMonitor.getPulse());
+      } else {
+        ws.send(JSON.stringify(connectedEvent));
+        sendMarketTickBatch(ws);
+      }
     }
 
     ws.on('message', (raw) => {
@@ -1021,7 +1105,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) {
         continue;
       }
-      const state = clientStates.get(client) ?? { symbols: null, needsSnapshot: false };
+      const state = clientStates.get(client) ?? { symbols: null, needsSnapshot: false, healthOnly: false };
+      if (state.healthOnly) continue;
       if (shouldSendBroadcast(state, event)) {
         client.send(serialized);
       }
@@ -1034,6 +1119,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     runtime,
     arRuntime,
     ggalRuntime,
+    feedsHealthMonitor,
     async start(): Promise<{ readonly host: string; readonly port: number }> {
       await new Promise<void>((resolveListen, rejectListen) => {
         const onError = (err: Error): void => {
@@ -1050,6 +1136,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         broadcastTickDelta();
       }, 1_500);
       marketTickTimer.unref();
+
+      feedsHealthTimer = setInterval(() => {
+        const pulse = feedsHealthMonitor.getPulse();
+        for (const client of wss.clients) {
+          sendFeedsHealthPulse(client, pulse);
+        }
+      }, 5_000);
+      feedsHealthTimer.unref();
 
       heartbeatTimer = setInterval(() => {
         for (const client of wss.clients) {
@@ -1097,6 +1191,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     async stop(): Promise<void> {
       if (marketTickTimer !== null) clearInterval(marketTickTimer);
       marketTickTimer = null;
+      if (feedsHealthTimer !== null) clearInterval(feedsHealthTimer);
+      feedsHealthTimer = null;
       if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
       heartbeatTimer = null;
       ggalRuntime.stop();
