@@ -201,12 +201,12 @@ export class MassiveStocksStream {
       this.client = this.createWsClientFn({
         apiKey: this.apiKey,
         cluster: 'stocks',
-        initialSubscriptions: ['T.*', 'AM.*'],
+        initialSubscriptions: ['T.*', 'Q.*', 'AM.*'],
         autoReconnect: true,
         onEvents: (events) => {
           const configuredEvents = events.filter(
             (event) =>
-              (event.ev === 'T' || event.ev === 'A' || event.ev === 'AM') &&
+              (event.ev === 'T' || event.ev === 'Q' || event.ev === 'A' || event.ev === 'AM') &&
               this.symbols.has(event.sym.toUpperCase()),
           );
           if (configuredEvents.length === 0) return;
@@ -292,18 +292,29 @@ export class MassiveStocksStream {
 
   private ingestWsEvents(events: readonly WsNormalizedEvent[]): void {
     for (const event of events) {
-      if (event.ev !== 'T' && event.ev !== 'A' && event.ev !== 'AM') continue;
+      if (event.ev !== 'T' && event.ev !== 'Q' && event.ev !== 'A' && event.ev !== 'AM') continue;
       const symbol = event.sym.toUpperCase();
       if (!this.symbols.has(symbol)) continue;
       const existing = this.quotes.get(symbol);
-      const price = event.ev === 'T' ? event.price : event.bar.close;
-      const asOfUtcSec = event.ev === 'T' ? event.timeSec : Math.floor(event.endMs / 1_000);
+      const wsTickAt = this.wsTickAtMs.get(symbol);
+      const hasRecentTrade =
+        event.ev === 'Q' &&
+        existing?.source === 'MASSIVE_WS' &&
+        wsTickAt !== undefined &&
+        this.nowMsFn() >= wsTickAt &&
+        this.nowMsFn() - wsTickAt < 2_000;
+      if (hasRecentTrade) continue;
+      const quoteMid = event.ev === 'Q' && event.askPrice >= event.bidPrice && event.bidPrice > 0
+        ? 0.5 * (event.bidPrice + event.askPrice)
+        : Number.NaN;
+      const price = event.ev === 'T' ? event.price : event.ev === 'Q' ? quoteMid : event.bar.close;
+      const asOfUtcSec = event.ev === 'T' || event.ev === 'Q' ? event.timeSec : Math.floor(event.endMs / 1_000);
       if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(asOfUtcSec)) continue;
       if (existing !== undefined && existing.asOfUtcSec !== null && asOfUtcSec < existing.asOfUtcSec) continue;
       const previousClose = existing?.previousClose ?? null;
-      const nextLow = event.ev === 'T' ? price : event.bar.low;
-      const nextHigh = event.ev === 'T' ? price : event.bar.high;
-      const volume = event.ev === 'T' ? existing?.volume ?? null : event.accumulatedVolume ?? event.bar.volume;
+      const nextLow = event.ev === 'T' || event.ev === 'Q' ? price : event.bar.low;
+      const nextHigh = event.ev === 'T' || event.ev === 'Q' ? price : event.bar.high;
+      const volume = event.ev === 'T' || event.ev === 'Q' ? existing?.volume ?? null : event.accumulatedVolume ?? event.bar.volume;
       this.quotes.set(symbol, {
         market: 'US',
         symbol,
@@ -323,7 +334,7 @@ export class MassiveStocksStream {
         volume: volume !== null && Number.isFinite(volume) ? volume : null,
         turnover: existing?.turnover ?? null,
         asOfUtcSec,
-        source: 'MASSIVE_WS',
+        source: event.ev === 'Q' ? 'MASSIVE_WS_QUOTE' : 'MASSIVE_WS',
       });
       this.wsTickAtMs.set(symbol, this.nowMsFn());
     }

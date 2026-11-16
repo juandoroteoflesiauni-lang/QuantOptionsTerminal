@@ -82,6 +82,7 @@ export interface HttpWsServerHandle {
 
 interface ClientSubscriptionState {
   symbols: Set<string> | null;
+  needsSnapshot: boolean;
 }
 
 function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
@@ -273,7 +274,10 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
   const clientStates = new WeakMap<WebSocket, ClientSubscriptionState>();
   let marketTickSequence = 0;
+  let deltaRevision = 0;
   let marketTickTimer: ReturnType<typeof setInterval> | null = null;
+  let previousDeltaQuotes = new Map<string, (ReturnType<MarketRuntime['getLiveUsQuotes']>)[number]>();
+  let previousDeltaCauciones = '';
 
   const buildMarketTickBatch = () => {
     marketTickSequence += 1;
@@ -281,6 +285,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     return {
       type: 'MARKET_TICK_BATCH' as const,
       sequence: marketTickSequence,
+      deltaRevision,
       serverTimeSec: Math.floor(Date.now() / 1_000),
       quotes: [...runtime.getLiveUsQuotes(), ...ar.quotes],
       cclMedian: ar.overview?.cclMedian ?? ar.monitoring?.cclMedian ?? null,
@@ -298,9 +303,34 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         turnoverArs: row.volumeArs,
         spreadVsBadlarBps: row.spreadVsBadlarBps,
         asOfUtcSec: row.asOfUtcSec,
-        source: row.source === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : 'BCRA_LECAP_REF',
+        source: row.source === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : row.source === 'IOL_REST' ? 'IOL_REST' : 'BCRA_LECAP_REF',
         referenceInstrument: row.referenceInstrument,
       })),
+    };
+  };
+
+  const buildTickDelta = () => {
+    deltaRevision += 1;
+    const snapshot = buildMarketTickBatch();
+    const nextQuotes = new Map<string, (typeof snapshot.quotes)[number]>(
+      snapshot.quotes.map((quote) => [`${quote.market}:${quote.symbol}`, quote] as const),
+    );
+    const changed: typeof snapshot.quotes[number][] = [];
+    for (const [key, quote] of nextQuotes) {
+      const previous = previousDeltaQuotes.get(key);
+      if (previous === undefined || JSON.stringify(previous) !== JSON.stringify(quote)) changed.push(quote);
+    }
+    const removed = [...previousDeltaQuotes.keys()].filter((key) => !nextQuotes.has(key));
+    const caucionesJson = JSON.stringify(snapshot.cauciones);
+    const caucionesChanged = caucionesJson !== previousDeltaCauciones;
+    previousDeltaQuotes = nextQuotes;
+    previousDeltaCauciones = caucionesJson;
+    return {
+      ...snapshot,
+      type: 'TICK_DELTA' as const,
+      quotes: changed,
+      removed,
+      ...(caucionesChanged ? { cauciones: snapshot.cauciones } : {}),
     };
   };
 
@@ -309,12 +339,21 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     client.send(JSON.stringify(buildMarketTickBatch()));
   };
 
-  const broadcastMarketTickBatch = (): void => {
-    const payload = JSON.stringify(buildMarketTickBatch());
+  const broadcastTickDelta = (): void => {
+    const payload = JSON.stringify(buildTickDelta());
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN && client.bufferedAmount <= 1_048_576) {
-        client.send(payload);
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const state = clientStates.get(client);
+      if (client.bufferedAmount > 1_048_576) {
+        if (state !== undefined) state.needsSnapshot = true;
+        continue;
       }
+      if (state?.needsSnapshot === true) {
+        sendMarketTickBatch(client);
+        state.needsSnapshot = false;
+        continue;
+      }
+      client.send(payload);
     }
   };
 
@@ -375,12 +414,17 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
               ? redactSecrets(rawConnectors.bullMarket.error, activeSecrets)
               : null,
         };
+        const safeIol = {
+          ...rawConnectors.iol,
+          error: rawConnectors.iol.error !== null ? redactSecrets(rawConnectors.iol.error, activeSecrets) : null,
+        };
         sendJson(res, 200, {
           ...runtime.getHealth(),
           warmupStatus,
           connectors: {
             primaryRofex: safePrimary,
             bullMarket: safeBmb,
+            iol: safeIol,
           },
         });
         return;
@@ -815,13 +859,49 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   });
 
   const wss = new WebSocketServer({
-    server: httpServer,
+    noServer: true,
     path: '/ws',
+    clientTracking: true,
+    perMessageDeflate: false,
   });
 
+  httpServer.on('upgrade', (request, socket, head) => {
+    let pathname: string;
+    try {
+      pathname = new URL(request.url ?? '/', `http://${request.headers.host ?? `${host}:${String(port)}`}`).pathname;
+    } catch {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    if (pathname !== '/ws') {
+      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    socket.on('error', () => {
+      // Transport resets are terminal for this upgrade only; no server-wide throw.
+    });
+    try {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } catch {
+      if (socket.writable) socket.end('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n');
+    }
+  });
+
+  const clientAlive = new WeakMap<WebSocket, boolean>();
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
   wss.on('connection', (ws) => {
-    const state: ClientSubscriptionState = { symbols: null };
+    const state: ClientSubscriptionState = { symbols: null, needsSnapshot: false };
     clientStates.set(ws, state);
+    clientAlive.set(ws, true);
+    ws.on('pong', () => {
+      clientAlive.set(ws, true);
+    });
+    ws.on('error', () => {
+      // The close event performs cleanup; resets never escape as uncaught errors.
+    });
 
     const connectedEvent: RuntimeWsBroadcast = {
       type: 'status',
@@ -860,7 +940,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) {
         continue;
       }
-      const state = clientStates.get(client) ?? { symbols: null };
+      const state = clientStates.get(client) ?? { symbols: null, needsSnapshot: false };
       if (shouldSendBroadcast(state, event)) {
         client.send(serialized);
       }
@@ -886,9 +966,26 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       });
 
       marketTickTimer = setInterval(() => {
-        broadcastMarketTickBatch();
+        broadcastTickDelta();
       }, 1_500);
       marketTickTimer.unref();
+
+      heartbeatTimer = setInterval(() => {
+        for (const client of wss.clients) {
+          if (client.readyState !== WebSocket.OPEN) continue;
+          if (clientAlive.get(client) === false) {
+            client.terminate();
+            continue;
+          }
+          clientAlive.set(client, false);
+          try {
+            client.ping();
+          } catch {
+            client.terminate();
+          }
+        }
+      }, 25_000);
+      heartbeatTimer.unref();
 
       if (startRuntimeWs) {
         await runtime.startWs();
@@ -919,6 +1016,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     async stop(): Promise<void> {
       if (marketTickTimer !== null) clearInterval(marketTickTimer);
       marketTickTimer = null;
+      if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
       ggalRuntime.stop();
       arRuntime.close();
       removeListener();

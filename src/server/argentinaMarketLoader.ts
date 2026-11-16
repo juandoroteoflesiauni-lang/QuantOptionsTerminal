@@ -160,6 +160,8 @@ import {
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 import { BmbFeedAdapter, isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
+import { IolFeedAdapter } from './iolFeedAdapter.js';
+import { ArRealtimeBus } from './arRealtimeBus.js';
 import type { MarketTickQuote } from './massiveStocksStream.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
@@ -195,6 +197,8 @@ export interface ArgentinaRuntimeDeps {
   readonly env?: NodeJS.ProcessEnv;
   readonly primaryClient?: PrimaryRofexClient;
   readonly bmbClient?: BmbBridgeClient | BmbFeedAdapter;
+  readonly iolClient?: IolFeedAdapter;
+  readonly realtimeBus?: ArRealtimeBus;
   readonly data912BaseUrl?: string;
   readonly openBymaBaseUrl?: string;
   readonly bcraBaseUrl?: string;
@@ -325,7 +329,7 @@ export interface ArMacroCardDto {
 export interface ArOverviewResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
-  readonly sourceMode?: 'LIVE_BMB' | 'DATA912';
+  readonly sourceMode?: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912';
   readonly data912Status: 'OK' | 'ERROR';
   readonly openBymaStatus: 'OK' | 'DEGRADED';
   readonly marketState: 'ABIERTO' | 'SUBASTA' | 'CERRADO' | 'PREMARKET';
@@ -416,14 +420,14 @@ export interface ArCaucionCurveRowDto {
   readonly spreadVsBadlarBps: number | null;
   readonly referenceInstrument: string;
   readonly originLabel: string;
-  readonly source: 'BMB_HOMEBROKER' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
+  readonly source: 'BMB_HOMEBROKER' | 'IOL_REST' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
   readonly asOfUtcSec: number | null;
 }
 
 export interface ArMonitoringResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
-  readonly sourceMode?: 'LIVE_BMB' | 'DATA912';
+  readonly sourceMode?: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912';
   readonly panel: 'acciones' | 'bonos' | 'cedears' | 'cauciones';
   readonly providerErrors: readonly string[];
   readonly stocks: readonly ArStockDto[];
@@ -447,7 +451,7 @@ export interface ArLiveMarketSnapshot {
   readonly monitoring: ArMonitoringResponse | null;
   readonly quotes: readonly MarketTickQuote[];
   readonly cauciones: readonly ArCaucionCurveRowDto[];
-  readonly sourceMode: 'LIVE_BMB' | 'DATA912' | 'NO_DATA';
+  readonly sourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
   readonly bmbHealth: BmbConnectorHealthDto | null;
 }
 
@@ -3149,6 +3153,8 @@ export class ArgentinaMarketRuntime {
   private readonly nyfedBaseUrl: string;
   private readonly primaryClient: PrimaryRofexClient;
   private readonly bmbClient: BmbBridgeClient | BmbFeedAdapter;
+  private readonly iolClient: IolFeedAdapter;
+  private readonly realtimeBus: ArRealtimeBus;
   private readonly usRuntime: UsRuntimeAdapter | null;
   private readonly usDailyBarsFn:
     | ((symbol: string, lookbackBars?: number, forceRefresh?: boolean) => Promise<CachedDailyBarsResult>)
@@ -3219,6 +3225,17 @@ export class ArgentinaMarketRuntime {
         nowMsFn: this.nowMsFn,
         secrets: this.secrets,
       });
+    this.iolClient = deps.iolClient ?? new IolFeedAdapter({
+      env: effectiveEnv,
+      fetchFn: this.fetchFn,
+      nowMsFn: this.nowMsFn,
+      secrets: this.secrets,
+    });
+    this.realtimeBus = deps.realtimeBus ?? new ArRealtimeBus({
+      bmbClient: this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient : null,
+      iolClient: this.iolClient,
+      nowMsFn: this.nowMsFn,
+    });
     this.usRuntime = deps.usRuntime ?? null;
     this.usDailyBarsFn = deps.usDailyBarsFn ?? null;
     this.allowSharedUsRuntime = deps.fetchFn === undefined || deps.env !== undefined;
@@ -3244,16 +3261,21 @@ export class ArgentinaMarketRuntime {
     for (const s of this.primaryClient.getSecrets()) {
       out.add(s);
     }
+    for (const s of this.iolClient.getSecrets()) {
+      out.add(s);
+    }
     return [...out];
   }
 
   public getConnectorHealth(): {
     readonly primaryRofex: PrimaryConnectorHealthDto;
     readonly bullMarket: BmbConnectorHealthDto;
+    readonly iol: ReturnType<IolFeedAdapter['getHealth']>;
   } {
     return {
       primaryRofex: this.primaryClient.getSafeHealthStatus(),
       bullMarket: this.bmbClient.getSafeHealthStatus(),
+      iol: this.iolClient.getHealth(),
     };
   }
 
@@ -3262,9 +3284,7 @@ export class ArgentinaMarketRuntime {
     if (this.liveRefreshTimer !== null) clearTimeout(this.liveRefreshTimer);
     this.liveRefreshTimer = null;
     this.primaryClient.closeWebSocket();
-    if (this.bmbClient instanceof BmbFeedAdapter) {
-      this.bmbClient.stop();
-    }
+    this.realtimeBus.stop();
   }
 
   public async getBmbSnapshot(symbol?: string, forceRefresh = false): Promise<BmbBridgeSnapshotDto> {
@@ -3281,14 +3301,12 @@ export class ArgentinaMarketRuntime {
   public startLiveStreaming(): void {
     if (this.liveStreaming) return;
     this.liveStreaming = true;
-    if (this.bmbClient instanceof BmbFeedAdapter) {
-      const symbols = [
-        ...AR_STOCK_META.map((meta) => meta.ticker),
-        ...Object.keys(CEDEAR_RATIOS),
-        ...SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
-      ];
-      this.bmbClient.startLiveLoop(symbols);
-    }
+    const symbols = [
+      ...AR_STOCK_META.map((meta) => meta.ticker),
+      ...Object.keys(CEDEAR_RATIOS),
+      ...SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
+    ];
+    this.realtimeBus.start(symbols);
     const run = async (): Promise<void> => {
       if (!this.liveStreaming || this.liveRefreshInFlight) return;
       const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));
@@ -3467,6 +3485,8 @@ export class ArgentinaMarketRuntime {
   }
 
   public getLiveArMarketSnapshot(): ArLiveMarketSnapshot {
+    const realtimeQuotes = this.realtimeBus.getQuotes();
+    const realtimeSourceMode = this.realtimeBus.getSourceMode();
     const cachedBmb = this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient.getCachedSnapshot() : null;
     const bmbSnapshot = cachedBmb ?? this.lastBmbSnapshot;
     const overviewBase = this.lastOverview;
@@ -3550,16 +3570,57 @@ export class ArgentinaMarketRuntime {
       notes: monitoring?.notes ?? [],
       nowSec: Math.floor(this.nowMsFn() / 1_000),
     });
-    const sourceMode = overview?.sourceMode === 'LIVE_BMB' || caucionesCurve.status === 'LIVE_BMB'
-      ? 'LIVE_BMB'
+    const busCauciones = this.realtimeBus.getCauciones();
+    const iolCauciones: readonly ArCaucionCurveRowDto[] = busCauciones.map((row) => ({
+      termDays: row.termDays,
+      label: `${String(row.termDays)} días`,
+      currency: row.currency,
+      tnaWeighted: row.tnaWeighted,
+      teaEffective: row.tnaWeighted !== null ? sanitizeFinite(computeCaucionTeaEffectivePct(row.tnaWeighted, row.termDays)) : null,
+      bidTna: row.bidTna,
+      askTna: row.askTna,
+      volumeArs: row.turnoverArs,
+      spreadVsBadlarBps: null,
+      referenceInstrument: row.symbol,
+      originLabel: 'IOL REST v2 L1',
+      source: 'IOL_REST',
+      asOfUtcSec: row.asOfUtcSec,
+    }));
+    const bmbTenors = new Set(caucionesCurve.status === 'LIVE_BMB' ? caucionesCurve.rows.map((row) => `${row.currency}:${String(row.termDays)}`) : []);
+    const cauciones: readonly ArCaucionCurveRowDto[] = caucionesCurve.status === 'LIVE_BMB'
+      ? [...caucionesCurve.rows, ...iolCauciones.filter((row) => !bmbTenors.has(`${row.currency}:${String(row.termDays)}`))]
+      : iolCauciones.length > 0
+        ? iolCauciones
+        : caucionesCurve.rows;
+    const mergedQuotes = new Map(quotes.map((quote) => [quote.symbol, quote]));
+    for (const quote of realtimeQuotes) {
+      const base = mergedQuotes.get(quote.symbol);
+      mergedQuotes.set(quote.symbol, {
+        ...quote,
+        previousClose: quote.previousClose ?? base?.previousClose ?? null,
+        changePct: quote.changePct ?? base?.changePct ?? null,
+        dayLow: quote.dayLow ?? base?.dayLow ?? null,
+        dayHigh: quote.dayHigh ?? base?.dayHigh ?? null,
+        volume: quote.volume ?? base?.volume ?? null,
+        turnover: quote.turnover ?? base?.turnover ?? null,
+        asOfUtcSec: quote.asOfUtcSec ?? base?.asOfUtcSec ?? null,
+      });
+    }
+    const fallbackSourceMode = overview?.sourceMode === 'LIVE_BMB' || overview?.sourceMode === 'LIVE_IOL' || caucionesCurve.status === 'LIVE_BMB'
+      ? overview?.sourceMode === 'LIVE_IOL' ? 'LIVE_IOL' : 'LIVE_BMB'
       : overview !== null
         ? 'DATA912'
         : 'NO_DATA';
+    const sourceMode = realtimeSourceMode !== 'NO_DATA'
+      ? realtimeSourceMode
+      : busCauciones.length > 0
+        ? 'LIVE_IOL'
+        : fallbackSourceMode;
     return {
       overview,
       monitoring,
-      quotes,
-      cauciones: caucionesCurve.rows,
+      quotes: [...mergedQuotes.values()],
+      cauciones,
       sourceMode,
       bmbHealth: bmbSnapshot?.health ?? this.bmbClient.getSafeHealthStatus(),
     };

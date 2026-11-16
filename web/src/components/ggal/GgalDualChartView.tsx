@@ -35,6 +35,12 @@ import {
   US_MARKET_TZ,
   computeSessionVwapSeries,
 } from '../../../../src/core/ggal/technicalIndicators';
+import {
+  getMarketLiveClock,
+  getMarketLiveQuote,
+  useLivePriceFlash,
+  useMarketLiveStream,
+} from '../../api/useMarketLiveStream';
 
 export interface GgalDualChartViewProps {
   readonly payload: GgalDualChartPayloadDto | null;
@@ -1014,6 +1020,18 @@ export function GgalDualChartView({
   onChangeAvwapAnchor,
   onRefresh,
 }: GgalDualChartViewProps) {
+  const liveStream = useMarketLiveStream();
+  const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
+  const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
+  const liveDisplaySpot = coordMode === 'ARS_BYMA'
+    ? liveArGgal?.price ?? null
+    : coordMode === 'USD_ADR_NASDAQ'
+      ? liveUsGgal?.price ?? null
+      : liveArGgal !== null && liveUsGgal !== null && liveUsGgal.price > 0
+        ? (liveArGgal.price * 10) / liveUsGgal.price
+        : null;
+  const liveClock = getMarketLiveClock(liveStream);
+  const liveSpotFlash = useLivePriceFlash(liveDisplaySpot);
   const [subPaneMode, setSubPaneMode] = useState<GgalSubPaneIndicatorMode>('CVD_LEE_READY');
   const [greekMode, setGreekMode] = useState<GgalGreekProfileMode>('SIGNED_GEX');
   const [toggles, setToggles] = useState<OverlayToggleState>({
@@ -1537,10 +1555,18 @@ export function GgalDualChartView({
           </span>
           <span>
             Spot:{' '}
-            <strong className="text-[#E5E7EB]">
-              {formatCoordPrice(payload?.spotPrice, coordMode)}
+            <strong
+              className="rounded px-1 text-[#E5E7EB] transition-colors duration-[400ms]"
+              style={{ backgroundColor: liveSpotFlash === null ? 'transparent' : liveSpotFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }}
+            >
+              {formatCoordPrice(liveDisplaySpot ?? payload?.spotPrice, coordMode)}
             </strong>
           </span>
+          {liveDisplaySpot !== null && liveClock !== null && (
+            <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-1.5 py-0.5 text-[#22C55E]">
+              ● Tiempo real {liveClock}
+            </span>
+          )}
           <span
             className={`rounded border px-1.5 py-0.5 ${
               hasCone

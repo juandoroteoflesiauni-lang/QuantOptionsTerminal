@@ -55,6 +55,7 @@ import {
 import { CompanyLogo } from './common/CompanyLogo';
 import {
   getMarketLiveQuote,
+  getMarketLiveClock,
   isMarketLiveStreamFresh,
   useMarketLiveStream,
 } from '../api/useMarketLiveStream';
@@ -76,7 +77,7 @@ function useTickFlash(value: number | null): 'up' | 'down' | null {
       return;
     }
     setFlash({ dir: value > previous ? 'up' : 'down', id: Date.now() });
-    const timer = setTimeout(() => setFlash(null), 500);
+    const timer = setTimeout(() => setFlash(null), 400);
     return () => clearTimeout(timer);
   }, [value]);
   return flash?.dir ?? null;
@@ -92,12 +93,21 @@ const TickFlash: React.FC<{
     <span
       className={`inline-flex items-center justify-end rounded-[4px] px-1 py-0.5 ${className}`}
       style={{
-        transition: 'background-color 500ms ease, color 500ms ease',
+        transition: 'background-color 400ms ease, color 400ms ease',
         backgroundColor:
           direction === null ? 'transparent' : direction === 'up' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
       }}
     >
       {children}
+    </span>
+  );
+};
+
+const RealTimeBadge: React.FC<{ readonly clock: string | null }> = ({ clock }) => {
+  if (clock === null) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
+      ● Tiempo real {clock}
     </span>
   );
 };
@@ -140,7 +150,7 @@ const LogoHeatTile: React.FC<{
       onClick={onClick}
       className={`group relative px-3.5 py-2.5 rounded-[8px] text-left cursor-pointer flex flex-col justify-between min-h-[64px] border hover:border-[#3B82F6]/80 hover:brightness-110 ${bgStyle}`}
       style={{
-        transition: 'background-color 500ms ease, border-color 500ms ease',
+        transition: 'background-color 400ms ease, border-color 400ms ease',
         backgroundColor:
           flashDirection === null
             ? undefined
@@ -1054,6 +1064,7 @@ export const HomeDashboard: React.FC<{
   return (
     <div className="space-y-4 animate-module">
       <InsightBanner variant={Number.isFinite(avgDelta) && avgDelta < 0 ? 'neg' : 'pos'} tag="Resumen de Rueda">
+        <RealTimeBadge clock={getMarketLiveClock(liveStream)} />{' '}
         Panel Líder BYMA promedio{' '}
         <strong className="text-[var(--text-primary)] font-mono-num">{fmtPct(avgDelta, 2)}</strong> ({advCount} en alza ·{' '}
         {decCount} en baja) · Dólar CCL implícito:{' '}
@@ -1203,7 +1214,7 @@ export const MonitoringModule: React.FC<{
     readonly spreadVsBadlarBps: number | null;
     readonly referenceInstrument: string;
     readonly originLabel: string;
-    readonly source: 'BMB_HOMEBROKER' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
+    readonly source: 'BMB_HOMEBROKER' | 'IOL_REST' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
   }
 
   interface BmbHealthExt {
@@ -1231,7 +1242,7 @@ export const MonitoringModule: React.FC<{
     volumeArs: row.turnoverArs,
     spreadVsBadlarBps: row.spreadVsBadlarBps,
     referenceInstrument: row.referenceInstrument,
-    originLabel: row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : 'Referencia BCRA / LECAP',
+    originLabel: row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : row.source === 'IOL_REST' ? 'IOL REST v2 en vivo' : 'Referencia BCRA / LECAP',
     source: row.source,
   })) : [];
   const liveCauciones: readonly ArCaucionRowExt[] =
@@ -1243,8 +1254,8 @@ export const MonitoringModule: React.FC<{
   const caucionesStatus =
     liveStreamFresh && liveStream.arSourceMode === 'NO_DATA'
       ? 'NO_DATA'
-      : liveStreamFresh && liveStream.arSourceMode === 'LIVE_BMB' && streamedCauciones.length > 0
-        ? 'LIVE_BMB'
+      : liveStreamFresh && (liveStream.arSourceMode === 'LIVE_BMB' || liveStream.arSourceMode === 'LIVE_IOL') && streamedCauciones.length > 0
+        ? liveStream.arSourceMode
         : monitoringExt?.caucionesStatus ?? 'NO_DATA';
   const bmbHealth = monitoringExt?.bmbHealth;
   const totalCaucionVol = liveCauciones.reduce(
@@ -1667,6 +1678,7 @@ export const MonitoringModule: React.FC<{
 
   return (
     <div className="space-y-4 animate-module">
+      <RealTimeBadge clock={getMarketLiveClock(liveStream)} />
       {/* Sub-navegación de Monitoreo */}
       <div className="qc-card p-4 flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1718,10 +1730,14 @@ export const MonitoringModule: React.FC<{
           </InsightBanner>
         )}
         {subPanel === 'cauciones' && (
-          <InsightBanner variant={caucionesStatus === 'LIVE_BMB' ? 'pos' : 'warn'} tag="Liquidez / Cauciones">
+          <InsightBanner variant={caucionesStatus === 'LIVE_BMB' || caucionesStatus === 'LIVE_IOL' ? 'pos' : 'warn'} tag="Liquidez / Cauciones">
             {caucionesStatus === 'LIVE_BMB' ? (
               <>
                 Puntas vivas Tomadora/Colocadora vía <strong className="text-[#2EDC7E]">Bull Market HomeBroker</strong> ({liveCauciones.length} plazos activos).
+              </>
+            ) : caucionesStatus === 'LIVE_IOL' ? (
+              <>
+                Cotizaciones L1 vía <strong className="text-[#38BDF8]">IOL REST v2</strong> ({liveCauciones.length} plazos activos; BMB conserva prioridad cuando está fresco).
               </>
             ) : liveCauciones.length > 0 ? (
               <>
@@ -2332,10 +2348,12 @@ export const MonitoringModule: React.FC<{
                               className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider ${
                                 c.source === 'BMB_HOMEBROKER'
                                   ? 'bg-[#0D221E] text-[#2EDC7E] border border-[#164E3F]'
-                                  : 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
+                                  : c.source === 'IOL_REST'
+                                    ? 'bg-[#0B1F33] text-[#38BDF8] border border-[#38BDF8]/35'
+                                    : 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
                               }`}
                             >
-                              {c.source === 'BMB_HOMEBROKER' ? 'BMB VIVO' : 'REF. BCRA/LECAP'}
+                              {c.source === 'BMB_HOMEBROKER' ? 'BMB VIVO' : c.source === 'IOL_REST' ? 'IOL VIVO' : 'REF. BCRA/LECAP'}
                             </span>
                             <span className="text-[var(--text-secondary)] truncate max-w-[200px]" title={c.originLabel}>
                               {c.referenceInstrument}
@@ -2684,6 +2702,7 @@ export const USMarketModule: React.FC<{
   return (
     <div className="space-y-4 animate-module">
       <InsightBanner variant="default" tag="Wall Street en Vivo">
+        <RealTimeBadge clock={getMarketLiveClock(liveStream)} />{' '}
         SPY:{' '}
         <strong className="text-[var(--text-primary)] font-mono-num">
           {spy && Number.isFinite(spy.price) ? `US$ ${fmtNum(spy.price, 2)}` : '—'}

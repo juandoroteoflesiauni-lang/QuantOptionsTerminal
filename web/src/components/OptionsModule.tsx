@@ -28,6 +28,12 @@ import {
 } from '../data/marketData';
 import { requestOptionsChain, useLiveMarketState } from '../data/liveRuntimeBridge';
 import {
+  getMarketLiveClock,
+  getMarketLiveQuote,
+  useLivePriceFlash,
+  useMarketLiveStream,
+} from '../api/useMarketLiveStream';
+import {
   HelpTooltip,
   InsightBanner,
 } from './DesignSystem';
@@ -525,6 +531,7 @@ export const OptionsModule: React.FC<{
   onOpenOrderTicket,
 }) => {
   const liveMarket = useLiveMarketState();
+  const liveStream = useMarketLiveStream();
   const upperUnderlying = selectedUnderlying.toUpperCase();
 
   useEffect(() => {
@@ -613,6 +620,12 @@ export const OptionsModule: React.FC<{
   const stockName = overviewStock?.name ?? catalogStock?.name ?? upperUnderlying;
   const displaySpot = liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
   const displayDeltaPct = overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
+  const usUnderlying = ['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT'].includes(upperUnderlying);
+  const liveUnderlyingQuote = getMarketLiveQuote(liveStream, usUnderlying ? 'US' : 'AR', upperUnderlying);
+  const headerSpot = liveUnderlyingQuote?.price ?? displaySpot;
+  const headerDeltaPct = liveUnderlyingQuote?.changePct ?? displayDeltaPct;
+  const headerFlash = useLivePriceFlash(liveUnderlyingQuote?.price ?? null);
+  const liveClock = getMarketLiveClock(liveStream);
 
   const activeExpiry = useMemo(() => {
     if (GGAL_OPTION_EXPIRIES.length === 0) return null;
@@ -963,15 +976,18 @@ export const OptionsModule: React.FC<{
               </span>
               <div className="flex flex-wrap items-baseline gap-2.5">
                 <span
-                  className={`font-mono-num text-[22px] font-extrabold tracking-tight ${
-                    !Number.isFinite(displayDeltaPct)
+                  className={`rounded px-1 font-mono-num text-[22px] font-extrabold tracking-tight transition-colors duration-[400ms] ${
+                    !Number.isFinite(headerDeltaPct)
                       ? 'text-[#FFFFFF]'
-                      : displayDeltaPct < 0
+                      : headerDeltaPct < 0
                         ? 'text-[#F23645]'
                         : 'text-[#22C55E]'
                   }`}
+                  style={{
+                    backgroundColor: headerFlash === null ? 'transparent' : headerFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                  }}
                 >
-                  {fmtNum(displaySpot, 2)}
+                  {fmtNum(headerSpot, 2)}
                 </span>
                 <span className="text-[12px] font-mono-num text-[#787B86]">
                   {upperUnderlying === 'SPY' ||
@@ -985,15 +1001,15 @@ export const OptionsModule: React.FC<{
                 </span>
                 <span
                   className={`font-mono-num text-[13px] font-semibold ${
-                    !Number.isFinite(displayDeltaPct)
+                    !Number.isFinite(headerDeltaPct)
                       ? 'text-[#787B86]'
-                      : displayDeltaPct < 0
+                      : headerDeltaPct < 0
                         ? 'text-[#F23645]'
                         : 'text-[#22C55E]'
                   }`}
                 >
-                  {Number.isFinite(displayDeltaPct)
-                    ? `${displayDeltaPct > 0 ? '+' : ''}${fmtNum(displayDeltaPct, 2)} %`
+                  {Number.isFinite(headerDeltaPct)
+                    ? `${headerDeltaPct > 0 ? '+' : ''}${fmtNum(headerDeltaPct, 2)} %`
                     : '—'}
                 </span>
 
@@ -1015,6 +1031,11 @@ export const OptionsModule: React.FC<{
                     {liveMarket.marketStateLabel} ({liveOptions?.feedStatus ?? liveMarket.feedStatus})
                   </span>
                   <span className="font-mono-num text-[#6D7282]">{syncTimeLabel}</span>
+                  {liveUnderlyingQuote !== null && liveClock !== null && (
+                    <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
+                      ● Tiempo real {liveClock}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

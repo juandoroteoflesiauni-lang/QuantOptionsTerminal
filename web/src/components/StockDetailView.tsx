@@ -51,6 +51,12 @@ import {
   type TickerQuickOption,
 } from './stock-detail/StockDetailHeader';
 import { SyncedLowerPaneChart } from './stock-detail/SyncedLowerPaneChart';
+import {
+  getMarketLiveClock,
+  getMarketLiveQuote,
+  useLivePriceFlash,
+  useMarketLiveStream,
+} from '../api/useMarketLiveStream';
 
 const TIMEFRAMES: readonly { readonly id: TerminalTimeframe; readonly label: string }[] = [
   { id: '1m', label: '1m' },
@@ -128,6 +134,7 @@ export const StockDetailView: React.FC<{
   onOpenOrderTicket,
 }) => {
   const runtime = useLiveMarketState();
+  const liveStream = useMarketLiveStream();
   const cleanTicker = ticker.trim().toUpperCase() || 'GGAL';
 
   const [timeframe, setTimeframe] = useState<TerminalTimeframe>('1D');
@@ -170,6 +177,10 @@ export const StockDetailView: React.FC<{
       runtime.overview?.generalPanelStocks.some((s) => s.ticker === cleanTicker);
     return Boolean(arStock);
   }, [cleanTicker, runtime.overview]);
+
+  const liveQuote = getMarketLiveQuote(liveStream, isArMarket ? 'AR' : 'US', cleanTicker);
+  const liveClock = getMarketLiveClock(liveStream);
+  const liveHeaderFlash = useLivePriceFlash(liveQuote?.price ?? null);
 
   // Carga de datos con cancelación AbortController al cambiar ticker o temporalidad
   useEffect(() => {
@@ -817,6 +828,12 @@ export const StockDetailView: React.FC<{
           </div>
         </div>
 
+        {liveQuote !== null && liveClock !== null && (
+          <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
+            ● Tiempo real {liveClock}
+          </span>
+        )}
+
         <div className="flex flex-wrap items-center gap-1.5">
           {quickTickers.slice(0, 6).map((qt) => {
             const isActive = qt.ticker === cleanTicker;
@@ -840,16 +857,23 @@ export const StockDetailView: React.FC<{
       </div>
 
       {/* 1. Cabecera Ejecutiva + Bloque Contextual Dual + Tira de Niveles */}
-      <StockDetailHeader
-        info={contextInfo}
-        keyLevels={keyLevels}
-        highlightedLevel={highlightedLevel}
-        onToggleHighlight={handleToggleHighlight}
-        quickTickers={quickTickers}
-        onSelectTicker={onSelectTicker}
-        onBackToMonitor={onBackToMonitor}
-        onGoToOptions={onGoToOptions}
-      />
+      <div
+        className="rounded-[12px] transition-colors duration-[400ms]"
+        style={{
+          backgroundColor: liveHeaderFlash === null ? 'transparent' : liveHeaderFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+        }}
+      >
+        <StockDetailHeader
+          info={liveQuote !== null ? { ...contextInfo, spot: liveQuote.price } : contextInfo}
+          keyLevels={keyLevels}
+          highlightedLevel={highlightedLevel}
+          onToggleHighlight={handleToggleHighlight}
+          quickTickers={quickTickers}
+          onSelectTicker={onSelectTicker}
+          onBackToMonitor={onBackToMonitor}
+          onGoToOptions={onGoToOptions}
+        />
+      </div>
 
       {/* 2. Bloque Superior Dual Sincronizado: Chart 1 (~65%) + Chart 2 (~35%) */}
       <section className="rounded-[12px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden">

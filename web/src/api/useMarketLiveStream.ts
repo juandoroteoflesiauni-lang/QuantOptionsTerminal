@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { refreshBackendHealth } from '../data/liveRuntimeBridge';
 
 export type LiveStreamMarket = 'AR' | 'US';
@@ -33,7 +33,7 @@ export interface MarketLiveCaucion {
   readonly turnoverArs: number | null;
   readonly spreadVsBadlarBps: number | null;
   readonly asOfUtcSec: number | null;
-  readonly source: 'BMB_HOMEBROKER' | 'BCRA_LECAP_REF';
+  readonly source: 'BMB_HOMEBROKER' | 'IOL_REST' | 'BCRA_LECAP_REF';
   readonly referenceInstrument: string;
 }
 
@@ -45,7 +45,7 @@ export interface MarketLiveStreamState {
   readonly quotes: Readonly<Record<string, MarketLiveQuote>>;
   readonly cclMedian: number | null;
   readonly mepMedian: number | null;
-  readonly arSourceMode: 'LIVE_BMB' | 'DATA912' | 'NO_DATA';
+  readonly arSourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
   readonly usSourceMode: 'MASSIVE_WS' | 'MASSIVE_BATCH' | 'NO_DATA';
   readonly cauciones: readonly MarketLiveCaucion[];
   readonly lastServerTimeSec: number | null;
@@ -57,8 +57,10 @@ export interface MarketLiveStreamState {
 interface MarketTickBatchWire {
   readonly type?: unknown;
   readonly sequence?: unknown;
+  readonly deltaRevision?: unknown;
   readonly serverTimeSec?: unknown;
   readonly quotes?: unknown;
+  readonly removed?: unknown;
   readonly cclMedian?: unknown;
   readonly mepMedian?: unknown;
   readonly arSourceMode?: unknown;
@@ -100,6 +102,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollInFlight = false;
 let pollGeneration = 0;
 let lastBatchReceivedAtMs: number | null = null;
+let lastDeltaRevision = 0;
 const pendingLegacyQuotes = new Map<string, MarketLiveQuote>();
 let legacyFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -134,6 +137,31 @@ export function isMarketLiveStreamFresh(snapshot: MarketLiveStreamState): boolea
     snapshot.lastReceivedAtMs !== null &&
     Date.now() - snapshot.lastReceivedAtMs <= QUOTE_RECEIVE_FRESHNESS_MS
   );
+}
+
+export function getMarketLiveClock(snapshot: MarketLiveStreamState): string | null {
+  if (!isMarketLiveStreamFresh(snapshot) || snapshot.lastReceivedAtMs === null) return null;
+  return new Date(snapshot.lastReceivedAtMs).toLocaleTimeString('es-AR', { hour12: false });
+}
+
+export function useLivePriceFlash(value: number | null): 'up' | 'down' | null {
+  const previousRef = useRef<number | null>(value);
+  const [flash, setFlash] = useState<{ readonly direction: 'up' | 'down'; readonly id: number } | null>(null);
+  useEffect(() => {
+    const previous = previousRef.current;
+    previousRef.current = value;
+    if (
+      previous === null || value === null || !Number.isFinite(previous) || !Number.isFinite(value) ||
+      Math.abs(previous - value) <= 1e-9
+    ) {
+      setFlash(null);
+      return;
+    }
+    setFlash({ direction: value > previous ? 'up' : 'down', id: Date.now() });
+    const timer = setTimeout(() => setFlash(null), 400);
+    return () => clearTimeout(timer);
+  }, [value]);
+  return flash?.direction ?? null;
 }
 
 export function getMarketLiveQuote(
@@ -214,7 +242,7 @@ function parseCaucion(raw: unknown): MarketLiveCaucion | null {
     turnoverArs: nullableNumber(raw['turnoverArs']),
     spreadVsBadlarBps: nullableNumber(raw['spreadVsBadlarBps']),
     asOfUtcSec: finitePositive(raw['asOfUtcSec']),
-    source: raw['source'] === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : 'BCRA_LECAP_REF',
+    source: raw['source'] === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : raw['source'] === 'IOL_REST' ? 'IOL_REST' : 'BCRA_LECAP_REF',
     referenceInstrument:
       typeof raw['referenceInstrument'] === 'string' && raw['referenceInstrument'] !== ''
         ? raw['referenceInstrument']
@@ -225,13 +253,17 @@ function parseCaucion(raw: unknown): MarketLiveCaucion | null {
 function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport): boolean {
   if (batch.type !== 'MARKET_TICK_BATCH' || !Array.isArray(batch.quotes)) return false;
   clearPendingLegacy();
+  const snapshotRevision = finiteNumber(batch.deltaRevision);
+  if (snapshotRevision !== null && Number.isInteger(snapshotRevision) && snapshotRevision >= 0) {
+    lastDeltaRevision = snapshotRevision;
+  }
   const receivedAtMs = Date.now();
   const elapsedSec =
     lastBatchReceivedAtMs === null ? null : Math.max(0.001, (receivedAtMs - lastBatchReceivedAtMs) / 1_000);
   lastBatchReceivedAtMs = receivedAtMs;
 
   const arSourceMode =
-    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
+    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'LIVE_IOL' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
       ? batch.arSourceMode
       : state.arSourceMode;
   const usSourceMode =
@@ -259,6 +291,75 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
       ? batch.cauciones.map(parseCaucion).filter((row): row is MarketLiveCaucion => row !== null)
       : state.cauciones;
 
+  notify({
+    ...state,
+    version: state.version + 1,
+    status: 'LIVE',
+    transport,
+    isLive: true,
+    quotes: nextQuotes,
+    cclMedian: arSourceMode === 'NO_DATA' ? null : batch.cclMedian === null ? null : finitePositive(batch.cclMedian) ?? state.cclMedian,
+    mepMedian: arSourceMode === 'NO_DATA' ? null : batch.mepMedian === null ? null : finitePositive(batch.mepMedian) ?? state.mepMedian,
+    arSourceMode,
+    usSourceMode,
+    cauciones,
+    lastServerTimeSec: finitePositive(batch.serverTimeSec) ?? state.lastServerTimeSec,
+    lastReceivedAtMs: receivedAtMs,
+    ticksPerSecond: elapsedSec === null ? 0 : Math.round(changedTicks / elapsedSec),
+    totalBatches: state.totalBatches + 1,
+  });
+  return true;
+}
+
+function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTransport): boolean {
+  if (batch.type !== 'TICK_DELTA' || !Array.isArray(batch.quotes)) return false;
+  const revision = finiteNumber(batch.deltaRevision);
+  if (revision === null || !Number.isInteger(revision) || revision < 0) return false;
+  if (revision <= lastDeltaRevision) return true;
+  if (revision > lastDeltaRevision + 1) return false;
+  clearPendingLegacy();
+  const receivedAtMs = Date.now();
+  const elapsedSec = lastBatchReceivedAtMs === null ? null : Math.max(0.001, (receivedAtMs - lastBatchReceivedAtMs) / 1_000);
+  lastBatchReceivedAtMs = receivedAtMs;
+  const arSourceMode =
+    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'LIVE_IOL' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
+      ? batch.arSourceMode
+      : state.arSourceMode;
+  const usSourceMode =
+    batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
+      ? batch.usSourceMode
+      : state.usSourceMode;
+  const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotes };
+  if (arSourceMode === 'NO_DATA' || usSourceMode === 'NO_DATA') {
+    for (const [key, quote] of Object.entries(nextQuotes)) {
+      if ((quote.market === 'AR' && arSourceMode === 'NO_DATA') || (quote.market === 'US' && usSourceMode === 'NO_DATA')) {
+        delete nextQuotes[key];
+      }
+    }
+  }
+  if (Array.isArray(batch.removed)) {
+    for (const key of batch.removed) {
+      if (typeof key === 'string') delete nextQuotes[key];
+    }
+  }
+  let changedTicks = 0;
+  for (const raw of batch.quotes) {
+    if (!isRecord(raw) || typeof raw['symbol'] !== 'string') continue;
+    const market = raw['market'];
+    if (market !== 'AR' && market !== 'US') continue;
+    if ((market === 'AR' && arSourceMode === 'NO_DATA') || (market === 'US' && usSourceMode === 'NO_DATA')) continue;
+    const key = liveQuoteKey(market, raw['symbol']);
+    const parsed = parseQuote(raw, nextQuotes[key] ?? null);
+    if (parsed === null) continue;
+    if (parsed.direction !== null) changedTicks += 1;
+    nextQuotes[key] = parsed;
+  }
+  const cauciones = arSourceMode === 'NO_DATA'
+    ? []
+    : Array.isArray(batch.cauciones)
+      ? batch.cauciones.map(parseCaucion).filter((row): row is MarketLiveCaucion => row !== null)
+      : state.cauciones;
+  lastDeltaRevision = revision;
   notify({
     ...state,
     version: state.version + 1,
@@ -370,9 +471,14 @@ function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return;
-    if (parsed['type'] === 'MARKET_TICK_BATCH') {
-      const accepted = applyBatch(parsed as MarketTickBatchWire, transport);
+    if (parsed['type'] === 'MARKET_TICK_BATCH' || parsed['type'] === 'TICK_DELTA') {
+      const accepted = parsed['type'] === 'TICK_DELTA'
+        ? applyTickDelta(parsed as MarketTickBatchWire, transport)
+        : applyBatch(parsed as MarketTickBatchWire, transport);
       if (accepted && transport === 'WS') stopPolling();
+      if (!accepted && transport === 'WS' && parsed['type'] === 'TICK_DELTA') {
+        socket?.close(4000, 'delta_resync_required');
+      }
     } else {
       applyLegacyStockEvent(parsed);
     }

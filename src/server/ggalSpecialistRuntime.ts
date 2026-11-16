@@ -4302,7 +4302,7 @@ export class GgalSpecialistRuntime {
     const primaryConfigured = endpoints.matrizWsConfigured;
     const ppiConfigured =
       endpoints.ppiBaseUrl !== null && endpoints.ppiApiKey !== null && endpoints.ppiApiSecret !== null;
-    const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
+    const iolConfigured = connHealth?.iol.configured ?? false;
     const maeConfigured = endpoints.maeBaseUrl !== null && endpoints.maeApiKey !== null;
     const bymaClearingConfigured = endpoints.bymaClearingUrl !== null;
 
@@ -4324,9 +4324,9 @@ export class GgalSpecialistRuntime {
       ppiLastMsgUtcSec: ppiConfigured ? bundle.asOfUtcSec : null,
       ppiError: null,
       iolConfigured,
-      iolHealthy: iolConfigured && bundle.ggalDetail.stock !== null,
-      iolLastMsgUtcSec: iolConfigured ? bundle.asOfUtcSec : null,
-      iolError: null,
+      iolHealthy: connHealth?.iol.connected ?? false,
+      iolLastMsgUtcSec: connHealth?.iol.lastMessageUtcSec ?? null,
+      iolError: connHealth?.iol.error ?? null,
       maeConfigured,
       maeHealthy: maeConfigured && bundle.macro.variables.a3500 !== null,
       maeLastMsgUtcSec: maeConfigured ? bundle.asOfUtcSec : null,
@@ -4873,13 +4873,16 @@ export class GgalSpecialistRuntime {
     const endpoints = this.arFeedRouter.getEndpointsConfig();
     const ppiConfigured =
       endpoints.ppiBaseUrl !== null && endpoints.ppiApiKey !== null && endpoints.ppiApiSecret !== null;
-    const iolConfigured = endpoints.iolBaseUrl !== null && endpoints.iolToken !== null;
+    const iolConfigured = typeof this.arRuntime.getConnectorHealth === 'function'
+      ? this.arRuntime.getConnectorHealth().iol.configured
+      : false;
     const maeConfigured = endpoints.maeBaseUrl !== null && endpoints.maeApiKey !== null;
     const bymaClearingConfigured = endpoints.bymaClearingUrl !== null;
     const bmbOutOfSession = endpoints.bmbConfigured && !isBymaL2SessionUtcSec(asOfUtcSec);
-    const bmbHealth = typeof this.arRuntime.getConnectorHealth === 'function'
-      ? this.arRuntime.getConnectorHealth().bullMarket
+    const connectorHealth = typeof this.arRuntime.getConnectorHealth === 'function'
+      ? this.arRuntime.getConnectorHealth()
       : null;
+    const bmbHealth = connectorHealth?.bullMarket ?? null;
 
     this.arFeedRouter.updateFromRuntimeTelemetry({
       asOfUtcSec,
@@ -4897,9 +4900,9 @@ export class GgalSpecialistRuntime {
       ppiLastMsgUtcSec: null,
       ppiError: null,
       iolConfigured,
-      iolHealthy: false,
-      iolLastMsgUtcSec: null,
-      iolError: null,
+      iolHealthy: connectorHealth?.iol.connected ?? false,
+      iolLastMsgUtcSec: connectorHealth?.iol.lastMessageUtcSec ?? null,
+      iolError: connectorHealth?.iol.error ?? null,
       maeConfigured,
       maeHealthy: false,
       maeLastMsgUtcSec: null,

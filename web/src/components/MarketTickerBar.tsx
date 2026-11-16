@@ -192,7 +192,7 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
     setFlash({ dir: item.lastTickDir, id: item.lastTickTs });
     const timer = setTimeout(() => {
       setFlash(null);
-    }, 500);
+    }, 400);
     return () => clearTimeout(timer);
   }, [item?.lastTickTs, item?.lastTickDir]);
 
@@ -212,7 +212,7 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       title={`${item.symbol} (${item.displayName}) — Click para inspeccionar`}
       className="group inline-flex items-center gap-2 px-2.5 h-[30px] rounded-[8px] bg-[#131722] hover:bg-[#1A1F2C] border border-[#2A2E3D] hover:border-[#3D4358] shrink-0 cursor-pointer select-none"
       style={{
-        transition: 'background-color 500ms ease, border-color 500ms ease',
+        transition: 'background-color 400ms ease, border-color 400ms ease',
         backgroundColor:
           flash === null ? undefined : flash.dir === 'up' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
         borderColor:
@@ -358,7 +358,9 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   const feedTag = streamIsFresh
     ? liveStream.arSourceMode === 'LIVE_BMB'
       ? 'EN VIVO · BMB'
-      : `EN VIVO · ${liveStream.transport ?? 'WS'}`
+      : liveStream.arSourceMode === 'LIVE_IOL'
+        ? 'EN VIVO · IOL'
+        : `EN VIVO · ${liveStream.transport ?? 'WS'}`
     : feedStatus === 'LIVE'
       ? 'EN VIVO'
       : feedStatus === 'EOD_CIERRE'
@@ -428,6 +430,12 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
             {streamIsFresh ? ` · ${liveClock} · ${String(liveStream.ticksPerSecond)} ticks/s` : ''}
           </span>
         </button>
+
+        {streamIsFresh && (
+          <span className="hidden lg:inline-flex items-center gap-1 rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
+            ● Tiempo real {liveClock}
+          </span>
+        )}
 
         {/* Separador vertical sutil */}
         <div className="h-5 w-[1px] bg-[#1E222D] ml-0.5 hidden sm:block" />

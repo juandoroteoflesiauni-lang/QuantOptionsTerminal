@@ -55,6 +55,12 @@ import { HelpTooltip, InsightBanner, KPICard } from '../DesignSystem';
 import { CompanyLogo } from '../common/CompanyLogo';
 import type { OrderTicketPreset } from '../Overlays';
 import { GgalDualChartView } from './GgalDualChartView';
+import {
+  getMarketLiveClock,
+  getMarketLiveQuote,
+  useLivePriceFlash,
+  useMarketLiveStream,
+} from '../../api/useMarketLiveStream';
 
 export type GgalTabId =
   | 'parity-gap'
@@ -163,6 +169,12 @@ export const GgalSpecialistModule: React.FC<{
   onOpenOrderTicket: (preset: OrderTicketPreset) => void;
 }> = ({ onOpenOrderTicket }) => {
   const [activeTab, setActiveTab] = useState<GgalTabId>('parity-gap');
+  const liveStream = useMarketLiveStream();
+  const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
+  const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
+  const liveClock = getMarketLiveClock(liveStream);
+  const arFlash = useLivePriceFlash(liveArGgal?.price ?? null);
+  const usFlash = useLivePriceFlash(liveUsGgal?.price ?? null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -869,6 +881,12 @@ export const GgalSpecialistModule: React.FC<{
             </span>
           ))}
 
+          {(liveArGgal !== null || liveUsGgal !== null) && liveClock !== null && (
+            <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
+              ● Tiempo real {liveClock}
+            </span>
+          )}
+
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] bg-[#171722] border border-[#1E1E2B] text-[10.5px] font-mono-num text-[#D1D5DB]">
             <Clock className="w-3 h-3 text-[#8B7CF6]" />
             {t?.dstMode ?? '—'} · {sessionRegimeLabel(t?.sessionRegime)}
@@ -1088,8 +1106,11 @@ export const GgalSpecialistModule: React.FC<{
                 </span>
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
-                <div className="font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight">
-                  {fmtCurrency(parityData.result.spot.byma24hArs, '$ ', 2)}
+                <div
+                  className="rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight transition-colors duration-[400ms]"
+                  style={{ backgroundColor: arFlash === null ? 'transparent' : arFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }}
+                >
+                  {fmtCurrency(liveArGgal?.price ?? parityData.result.spot.byma24hArs, '$ ', 2)}
                 </div>
               </div>
               <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
@@ -1113,8 +1134,11 @@ export const GgalSpecialistModule: React.FC<{
                 </span>
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
-                <div className="font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight">
-                  {fmtCurrency(parityData.result.spot.adrMidUsd, 'US$ ', 2)}
+                <div
+                  className="rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight transition-colors duration-[400ms]"
+                  style={{ backgroundColor: usFlash === null ? 'transparent' : usFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }}
+                >
+                  {fmtCurrency(liveUsGgal?.price ?? parityData.result.spot.adrMidUsd, 'US$ ', 2)}
                 </div>
               </div>
               <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
