@@ -124,6 +124,10 @@ export interface ArFeedRuntimeTelemetryInput {
   readonly primaryConfigured: boolean;
   readonly primaryLastMsgUtcSec: number | null;
   readonly primaryError: string | null;
+  readonly primaryFuturesLive?: boolean;
+  readonly primaryFuturesLastMsgUtcSec?: number | null;
+  readonly primaryFuturesCount?: number;
+  readonly primaryEnvironment?: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
   readonly bmbConfigured?: boolean;
   readonly bmbConnected?: boolean;
   readonly bmbLastMsgUtcSec?: number | null;
@@ -249,12 +253,23 @@ function defaultHealthEntry(
   };
 }
 
+export interface ArFeedRouterStatusSnapshotExt extends ArFeedRouterStatusSnapshot {
+  readonly futuresDlrLive: 'CONNECTED' | 'DISCONNECTED';
+  readonly futuresDlrProvider: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
+  readonly futuresDlrLastMsgUtcSec: number | null;
+  readonly futuresDlrCount: number;
+}
+
 export class ArFeedRouter {
   private readonly config: ArMarketFeedRouterConfig;
   private readonly secrets: readonly string[];
   private readonly endpoints: ArProviderEndpointsConfig;
   private readonly nowMsFn: () => number;
   private readonly providerHealth = new Map<ArFeedProviderId, ArProviderHealthEntry>();
+  private futuresDlrLive = false;
+  private futuresDlrLastMsgUtcSec: number | null = null;
+  private futuresDlrCount = 0;
+  private futuresDlrProvider: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null = null;
 
   public constructor(opts?: {
     readonly config?: ArMarketFeedRouterConfig;
@@ -301,6 +316,10 @@ export class ArFeedRouter {
 
   public updateFromRuntimeTelemetry(input: ArFeedRuntimeTelemetryInput): void {
     const asOf = input.asOfUtcSec;
+    this.futuresDlrLive = input.primaryFuturesLive === true;
+    this.futuresDlrLastMsgUtcSec = input.primaryFuturesLastMsgUtcSec ?? null;
+    this.futuresDlrCount = input.primaryFuturesCount ?? 0;
+    this.futuresDlrProvider = input.primaryEnvironment ?? null;
     const priorityMap = new Map(this.config.providerOrder.map((p) => [p.provider, p]));
 
     const buildEntry = (
@@ -440,7 +459,7 @@ export class ArFeedRouter {
     );
   }
 
-  public getStatusSnapshot(asOfUtcSecOverride?: number): ArFeedRouterStatusSnapshot {
+  public getStatusSnapshot(asOfUtcSecOverride?: number): ArFeedRouterStatusSnapshotExt {
     const asOfUtcSec = asOfUtcSecOverride ?? Math.floor(this.nowMsFn() / 1000);
     const providers = this.config.providerOrder
       .map((cfg) => this.providerHealth.get(cfg.provider) ?? defaultHealthEntry(cfg.provider, cfg.priority, false))
@@ -500,7 +519,7 @@ export class ArFeedRouter {
     }
 
     const activeFxFuturesProvider: ArFeedProviderId | null =
-      primary !== undefined && primary.connected
+      (primary !== undefined && primary.connected) || this.futuresDlrLive
         ? 'PRIMARY_MATRIZ_WS'
         : mae !== undefined && mae.connected
           ? 'MAE_MARKETDATA_V1'
@@ -527,6 +546,10 @@ export class ArFeedRouter {
       isContingencyEod,
       degradationReason,
       providers,
+      futuresDlrLive: this.futuresDlrLive ? 'CONNECTED' : 'DISCONNECTED',
+      futuresDlrProvider: this.futuresDlrProvider,
+      futuresDlrLastMsgUtcSec: this.futuresDlrLastMsgUtcSec,
+      futuresDlrCount: this.futuresDlrCount,
     };
   }
 

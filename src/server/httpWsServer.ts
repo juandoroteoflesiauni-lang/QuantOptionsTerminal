@@ -32,7 +32,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import type {
   GgalAvwapAnchorMode,
@@ -83,6 +83,12 @@ export interface HttpWsServerHandle {
 interface ClientSubscriptionState {
   symbols: Set<string> | null;
   needsSnapshot: boolean;
+}
+
+function isBenignSocketError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false;
+  const code = (err as { readonly code?: unknown }).code;
+  return code === 'ECONNRESET' || code === 'ECONNABORTED';
 }
 
 function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
@@ -278,6 +284,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   let marketTickTimer: ReturnType<typeof setInterval> | null = null;
   let previousDeltaQuotes = new Map<string, (ReturnType<MarketRuntime['getLiveUsQuotes']>)[number]>();
   let previousDeltaCauciones = '';
+  let previousDeltaFutures = '';
 
   const buildMarketTickBatch = () => {
     marketTickSequence += 1;
@@ -306,6 +313,35 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         source: row.source === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : row.source === 'IOL_REST' ? 'IOL_REST' : 'BCRA_LECAP_REF',
         referenceInstrument: row.referenceInstrument,
       })),
+      futures: ar.futures.map((contract) => ({
+        contract: contract.contract,
+        category: contract.category,
+        maturity: contract.maturity,
+        days: contract.days,
+        price: contract.price,
+        priceBasis: contract.priceBasis,
+        last: contract.last,
+        settlement: contract.settlement,
+        close: contract.close,
+        bid: contract.bid,
+        bidPrice: contract.bidPrice,
+        bidSize: contract.bidSize,
+        ask: contract.ask,
+        askPrice: contract.askPrice,
+        askSize: contract.askSize,
+        openInterest: contract.openInterest,
+        nominalVolume: contract.nominalVolume,
+        spotUsed: contract.spotUsed,
+        spotSource: contract.spotSource,
+        devalDirectaPct: contract.devalDirectaPct,
+        tnaImplicitaPct: contract.tnaImplicitaPct,
+        teaImplicitaPct: contract.teaImplicitaPct,
+        temImplicitaPct: contract.temImplicitaPct,
+        forwardToForwardPct: contract.forwardToForwardPct,
+        updatedAtUtcSec: contract.updatedAtUtcSec,
+        source: contract.source,
+      })),
+      futuresSource: ar.futuresSource,
     };
   };
 
@@ -323,14 +359,19 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     const removed = [...previousDeltaQuotes.keys()].filter((key) => !nextQuotes.has(key));
     const caucionesJson = JSON.stringify(snapshot.cauciones);
     const caucionesChanged = caucionesJson !== previousDeltaCauciones;
+    const futuresJson = JSON.stringify(snapshot.futures);
+    const futuresChanged = futuresJson !== previousDeltaFutures;
     previousDeltaQuotes = nextQuotes;
     previousDeltaCauciones = caucionesJson;
+    previousDeltaFutures = futuresJson;
+    const { cauciones: allCauciones, futures: allFutures, ...snapshotRest } = snapshot;
     return {
-      ...snapshot,
+      ...snapshotRest,
       type: 'TICK_DELTA' as const,
       quotes: changed,
       removed,
-      ...(caucionesChanged ? { cauciones: snapshot.cauciones } : {}),
+      ...(caucionesChanged ? { cauciones: allCauciones } : {}),
+      ...(futuresChanged ? { futures: allFutures } : {}),
     };
   };
 
@@ -865,6 +906,11 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     perMessageDeflate: false,
   });
 
+  wss.on('error', (err) => {
+    if (isBenignSocketError(err)) return;
+    console.warn(`[ws] server error: ${err.message}`);
+  });
+
   httpServer.on('upgrade', (request, socket, head) => {
     let pathname: string;
     try {
@@ -877,8 +923,10 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       return;
     }
-    socket.on('error', () => {
-      // Transport resets are terminal for this upgrade only; no server-wide throw.
+    (socket as Socket).setNoDelay(true);
+    socket.on('error', (err) => {
+      if (isBenignSocketError(err)) return;
+      console.warn(`[ws] upgrade socket error: ${err.message}`);
     });
     try {
       wss.handleUpgrade(request, socket, head, (ws) => {
@@ -899,8 +947,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     ws.on('pong', () => {
       clientAlive.set(ws, true);
     });
-    ws.on('error', () => {
-      // The close event performs cleanup; resets never escape as uncaught errors.
+    ws.on('error', (err) => {
+      if (isBenignSocketError(err)) return;
+      console.warn(`[ws] client error: ${err.message}`);
     });
 
     const connectedEvent: RuntimeWsBroadcast = {
@@ -984,7 +1033,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
             client.terminate();
           }
         }
-      }, 25_000);
+      }, 20_000);
       heartbeatTimer.unref();
 
       if (startRuntimeWs) {

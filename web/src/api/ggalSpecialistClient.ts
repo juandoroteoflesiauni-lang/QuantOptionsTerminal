@@ -613,6 +613,10 @@ export interface ArFeedRouterStatusSnapshotDto {
   readonly isContingencyEod: boolean;
   readonly degradationReason: string | null;
   readonly providers: readonly ArProviderHealthEntryDto[];
+  readonly futuresDlrLive?: 'CONNECTED' | 'DISCONNECTED';
+  readonly futuresDlrProvider?: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
+  readonly futuresDlrLastMsgUtcSec?: number | null;
+  readonly futuresDlrCount?: number;
 }
 
 export interface GgalL2OrderLevelDto {

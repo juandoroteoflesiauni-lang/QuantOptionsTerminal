@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "forwardToForwardCases": [
+    {
+      "id": "nov26_to_dic26_contango",
+      "input": {
+        "nearDays": 16,
+        "nearPrice": 1562.5,
+        "farDays": 46,
+        "farPrice": 1595.5
+      },
+      "expected": 25.428411331085695
+    },
+    {
+      "id": "dic26_to_ene27_contango",
+      "input": {
+        "nearDays": 46,
+        "nearPrice": 1595.5,
+        "farDays": 76,
+        "farPrice": 1624.0
+      },
+      "expected": 21.54117458737879
+    },
+    {
+      "id": "ene27_to_feb27_flat_curve",
+      "input": {
+        "nearDays": 76,
+        "nearPrice": 1624.0,
+        "farDays": 106,
+        "farPrice": 1624.0
+      },
+      "expected": 0.0
+    },
+    {
+      "id": "inverted_curve_backwardation",
+      "input": {
+        "nearDays": 16,
+        "nearPrice": 1600.0,
+        "farDays": 46,
+        "farPrice": 1560.0
+      },
+      "expected": -30.803333047552712
+    },
+    {
+      "id": "non_integer_days",
+      "input": {
+        "nearDays": 15.5,
+        "nearPrice": 1558.25,
+        "farDays": 45.75,
+        "farPrice": 1601.75
+      },
+      "expected": 33.22210070417333
+    },
+    {
+      "id": "near_price_zero_returns_null",
+      "input": {
+        "nearDays": 16,
+        "nearPrice": 0.0,
+        "farDays": 46,
+        "farPrice": 1595.5
+      },
+      "expected": null
+    },
+    {
+      "id": "far_price_negative_returns_null",
+      "input": {
+        "nearDays": 16,
+        "nearPrice": 1562.5,
+        "farDays": 46,
+        "farPrice": -1595.5
+      },
+      "expected": null
+    },
+    {
+      "id": "same_maturity_returns_null",
+      "input": {
+        "nearDays": 46,
+        "nearPrice": 1595.5,
+        "farDays": 46,
+        "farPrice": 1624.0
+      },
+      "expected": null
+    },
+    {
+      "id": "far_before_near_returns_null",
+      "input": {
+        "nearDays": 46,
+        "nearPrice": 1595.5,
+        "farDays": 16,
+        "farPrice": 1562.5
+      },
+      "expected": null
+    },
+    {
+      "id": "missing_far_price_returns_null",
+      "input": {
+        "nearDays": 16,
+        "nearPrice": 1562.5,
+        "farDays": 46,
+        "farPrice": null
+      },
+      "expected": null
+    }
+  ]
+}

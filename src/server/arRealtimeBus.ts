@@ -3,6 +3,7 @@
 import type { BmbFeedAdapter } from './bmbFeedAdapter.js';
 import type { IolCaucionQuote, IolFeedAdapter } from './iolFeedAdapter.js';
 import type { MarketTickQuote } from './massiveStocksStream.js';
+import type { PrimaryDlrContractDto, PrimaryRofexClient } from './primaryRofexLoader.js';
 
 export type ArRealtimeSourceMode = 'LIVE_BMB' | 'LIVE_IOL' | 'NO_DATA';
 
@@ -13,17 +14,20 @@ export interface ArRealtimeBusCaucion extends IolCaucionQuote {
 export interface ArRealtimeBusDeps {
   readonly bmbClient: BmbFeedAdapter | null;
   readonly iolClient: IolFeedAdapter;
+  readonly primaryClient?: PrimaryRofexClient | null;
   readonly nowMsFn?: () => number;
 }
 
 export class ArRealtimeBus {
   private readonly bmbClient: BmbFeedAdapter | null;
   private readonly iolClient: IolFeedAdapter;
+  private readonly primaryClient: PrimaryRofexClient | null;
   private readonly nowMsFn: () => number;
 
   public constructor(deps: ArRealtimeBusDeps) {
     this.bmbClient = deps.bmbClient;
     this.iolClient = deps.iolClient;
+    this.primaryClient = deps.primaryClient ?? null;
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
   }
 
@@ -90,6 +94,11 @@ export class ArRealtimeBus {
 
   public getCauciones(): readonly ArRealtimeBusCaucion[] {
     return this.iolClient.getCauciones().map((row) => ({ ...row, source: 'IOL_REST' }));
+  }
+
+  /** DLR/* futures derived from the last Primary WS `Md` ticks (empty until first tick). */
+  public getFutures(): readonly PrimaryDlrContractDto[] {
+    return this.primaryClient?.getLiveDlrFutures() ?? [];
   }
 
   public getBmbSnapshot(): ReturnType<BmbFeedAdapter['getCachedSnapshot']> {

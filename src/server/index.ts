@@ -9,6 +9,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHttpWsServer } from './httpWsServer.js';
@@ -17,6 +18,15 @@ import {
   MarketRuntime,
   loadRuntimeAuth,
 } from './marketRuntime.js';
+
+function resolveViteBin(): string | null {
+  const repoRoot = resolve(import.meta.dirname, '..', '..');
+  const candidates = [
+    resolve(repoRoot, 'web', 'node_modules', 'vite', 'bin', 'vite.js'),
+    resolve(repoRoot, 'node_modules', 'vite', 'bin', 'vite.js'),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
 
 export function parseWatchedSymbols(raw: string | undefined): readonly string[] {
   if (raw === undefined || raw.trim() === '') {
@@ -86,11 +96,19 @@ if (isEntrypoint) {
     .then((serverHandle) => {
       let webProc: ChildProcess | null = null;
       if (withWeb) {
-        console.info('[QuantOptionsTerminal] starting Vite UI on http://localhost:5173 ...');
-        webProc = spawn('npm', ['--prefix', 'web', 'run', 'dev'], {
-          stdio: 'inherit',
-          shell: process.platform === 'win32',
-        });
+        const viteBin = resolveViteBin();
+        if (viteBin === null) {
+          console.warn(
+            '[QuantOptionsTerminal] Vite no está instalado; ejecutá "npm --prefix web install" para habilitar la UI.',
+          );
+        } else {
+          console.info('[QuantOptionsTerminal] starting Vite UI on http://localhost:5173 ...');
+          webProc = spawn(process.execPath, [viteBin], {
+            stdio: 'inherit',
+            cwd: resolve(import.meta.dirname, '..', '..', 'web'),
+            shell: false,
+          });
+        }
       }
 
       const shutdown = (): void => {

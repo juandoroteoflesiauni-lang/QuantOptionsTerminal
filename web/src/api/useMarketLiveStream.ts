@@ -37,6 +37,35 @@ export interface MarketLiveCaucion {
   readonly referenceInstrument: string;
 }
 
+export interface MarketLiveFuture {
+  readonly contract: string;
+  readonly category: 'OUTRIGHT' | 'MINI' | 'SPREAD' | 'OPTION' | 'SPOT' | 'OTHER';
+  readonly maturity: string | null;
+  readonly days: number | null;
+  readonly price: number | null;
+  readonly priceBasis: 'LAST' | 'MID' | 'SETTLEMENT_EOD' | 'NONE';
+  readonly last: number | null;
+  readonly settlement: number | null;
+  readonly close: number | null;
+  readonly bid: number | null;
+  readonly bidPrice: number | null;
+  readonly bidSize: number | null;
+  readonly ask: number | null;
+  readonly askPrice: number | null;
+  readonly askSize: number | null;
+  readonly openInterest: number | null;
+  readonly nominalVolume: number | null;
+  readonly spotUsed: number | null;
+  readonly spotSource: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE';
+  readonly devalDirectaPct: number | null;
+  readonly tnaImplicitaPct: number | null;
+  readonly teaImplicitaPct: number | null;
+  readonly temImplicitaPct: number | null;
+  readonly forwardToForwardPct: number | null;
+  readonly updatedAtUtcSec: number | null;
+  readonly source: 'PRIMARY_ROFEX';
+}
+
 export interface MarketLiveStreamState {
   readonly version: number;
   readonly status: 'CONNECTING' | 'LIVE' | 'RECONNECTING';
@@ -48,6 +77,8 @@ export interface MarketLiveStreamState {
   readonly arSourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
   readonly usSourceMode: 'MASSIVE_WS' | 'MASSIVE_BATCH' | 'NO_DATA';
   readonly cauciones: readonly MarketLiveCaucion[];
+  readonly futures: readonly MarketLiveFuture[];
+  readonly futuresSource: 'PRIMARY_WS' | 'PRIMARY_REST' | 'NONE';
   readonly lastServerTimeSec: number | null;
   readonly lastReceivedAtMs: number | null;
   readonly ticksPerSecond: number;
@@ -66,6 +97,8 @@ interface MarketTickBatchWire {
   readonly arSourceMode?: unknown;
   readonly usSourceMode?: unknown;
   readonly cauciones?: unknown;
+  readonly futures?: unknown;
+  readonly futuresSource?: unknown;
 }
 
 const WS_OPEN_TIMEOUT_MS = 2_000;
@@ -74,6 +107,7 @@ const POLL_REQUEST_TIMEOUT_MS = 2_500;
 const QUOTE_RECEIVE_FRESHNESS_MS = 40_000;
 const LEGACY_FLUSH_INTERVAL_MS = 16;
 const RECONNECT_INTERVAL_MS = 1_500;
+const RELEASE_DEBOUNCE_MS = 150;
 
 let state: MarketLiveStreamState = {
   version: 0,
@@ -86,6 +120,8 @@ let state: MarketLiveStreamState = {
   arSourceMode: 'NO_DATA',
   usSourceMode: 'NO_DATA',
   cauciones: [],
+  futures: [],
+  futuresSource: 'NONE',
   lastServerTimeSec: null,
   lastReceivedAtMs: null,
   ticksPerSecond: 0,
@@ -98,6 +134,7 @@ let socket: WebSocket | null = null;
 let socketGeneration = 0;
 let openTimeout: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let releaseTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollInFlight = false;
 let pollGeneration = 0;
@@ -250,6 +287,68 @@ function parseCaucion(raw: unknown): MarketLiveCaucion | null {
   };
 }
 
+function parseFuture(raw: unknown): MarketLiveFuture | null {
+  if (!isRecord(raw) || typeof raw['contract'] !== 'string' || raw['contract'].trim() === '') {
+    return null;
+  }
+  const categoryRaw = raw['category'];
+  const category =
+    categoryRaw === 'OUTRIGHT' ||
+    categoryRaw === 'MINI' ||
+    categoryRaw === 'SPREAD' ||
+    categoryRaw === 'OPTION' ||
+    categoryRaw === 'SPOT' ||
+    categoryRaw === 'OTHER'
+      ? categoryRaw
+      : 'OTHER';
+  const priceBasisRaw = raw['priceBasis'];
+  const priceBasis =
+    priceBasisRaw === 'LAST' ||
+    priceBasisRaw === 'MID' ||
+    priceBasisRaw === 'SETTLEMENT_EOD' ||
+    priceBasisRaw === 'NONE'
+      ? priceBasisRaw
+      : 'NONE';
+  const spotSourceRaw = raw['spotSource'];
+  const spotSource =
+    spotSourceRaw === 'A3500_BCRA' || spotSourceRaw === 'DLR_SPOT' || spotSourceRaw === 'NONE'
+      ? spotSourceRaw
+      : 'NONE';
+  return {
+    contract: raw['contract'].trim().toUpperCase(),
+    category,
+    maturity: typeof raw['maturity'] === 'string' && raw['maturity'] !== '' ? raw['maturity'] : null,
+    days: nullableNumber(raw['days']),
+    price: nullableNumber(raw['price']),
+    priceBasis,
+    last: nullableNumber(raw['last']),
+    settlement: nullableNumber(raw['settlement']),
+    close: nullableNumber(raw['close']),
+    bid: nullableNumber(raw['bid']),
+    bidPrice: nullableNumber(raw['bidPrice']),
+    bidSize: nullableNumber(raw['bidSize']),
+    ask: nullableNumber(raw['ask']),
+    askPrice: nullableNumber(raw['askPrice']),
+    askSize: nullableNumber(raw['askSize']),
+    openInterest: nullableNumber(raw['openInterest']),
+    nominalVolume: nullableNumber(raw['nominalVolume']),
+    spotUsed: nullableNumber(raw['spotUsed']),
+    spotSource,
+    devalDirectaPct: nullableNumber(raw['devalDirectaPct']),
+    tnaImplicitaPct: nullableNumber(raw['tnaImplicitaPct']),
+    teaImplicitaPct: nullableNumber(raw['teaImplicitaPct']),
+    temImplicitaPct: nullableNumber(raw['temImplicitaPct']),
+    forwardToForwardPct: nullableNumber(raw['forwardToForwardPct']),
+    updatedAtUtcSec: finitePositive(raw['updatedAtUtcSec']),
+    source: 'PRIMARY_ROFEX',
+  };
+}
+
+function parseFutures(raw: unknown): readonly MarketLiveFuture[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw.map(parseFuture).filter((row): row is MarketLiveFuture => row !== null);
+}
+
 function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport): boolean {
   if (batch.type !== 'MARKET_TICK_BATCH' || !Array.isArray(batch.quotes)) return false;
   clearPendingLegacy();
@@ -290,6 +389,14 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     : Array.isArray(batch.cauciones)
       ? batch.cauciones.map(parseCaucion).filter((row): row is MarketLiveCaucion => row !== null)
       : state.cauciones;
+  const parsedFutures = parseFutures(batch.futures);
+  const futures = arSourceMode === 'NO_DATA' ? [] : (parsedFutures ?? state.futures);
+  const futuresSource =
+    arSourceMode === 'NO_DATA'
+      ? 'NONE'
+      : batch.futuresSource === 'PRIMARY_WS' || batch.futuresSource === 'PRIMARY_REST'
+        ? batch.futuresSource
+        : state.futuresSource;
 
   notify({
     ...state,
@@ -303,6 +410,8 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     arSourceMode,
     usSourceMode,
     cauciones,
+    futures,
+    futuresSource,
     lastServerTimeSec: finitePositive(batch.serverTimeSec) ?? state.lastServerTimeSec,
     lastReceivedAtMs: receivedAtMs,
     ticksPerSecond: elapsedSec === null ? 0 : Math.round(changedTicks / elapsedSec),
@@ -359,6 +468,14 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     : Array.isArray(batch.cauciones)
       ? batch.cauciones.map(parseCaucion).filter((row): row is MarketLiveCaucion => row !== null)
       : state.cauciones;
+  const parsedFutures = parseFutures(batch.futures);
+  const futures = arSourceMode === 'NO_DATA' ? [] : (parsedFutures ?? state.futures);
+  const futuresSource =
+    arSourceMode === 'NO_DATA'
+      ? 'NONE'
+      : batch.futuresSource === 'PRIMARY_WS' || batch.futuresSource === 'PRIMARY_REST'
+        ? batch.futuresSource
+        : state.futuresSource;
   lastDeltaRevision = revision;
   notify({
     ...state,
@@ -372,6 +489,8 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     arSourceMode,
     usSourceMode,
     cauciones,
+    futures,
+    futuresSource,
     lastServerTimeSec: finitePositive(batch.serverTimeSec) ?? state.lastServerTimeSec,
     lastReceivedAtMs: receivedAtMs,
     ticksPerSecond: elapsedSec === null ? 0 : Math.round(changedTicks / elapsedSec),
@@ -532,6 +651,9 @@ function stopPolling(): void {
 }
 
 function socketUrl(): string {
+  if (import.meta.env.DEV) {
+    return 'ws://127.0.0.1:8787/ws';
+  }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws`;
 }
@@ -595,14 +717,23 @@ function connectSocket(): void {
 
 function acquireConnection(): void {
   managerCount += 1;
+  if (releaseTimer !== null) {
+    clearTimeout(releaseTimer);
+    releaseTimer = null;
+  }
   if (managerCount > 1) return;
   void refreshBackendHealth();
+  if (
+    typeof WebSocket !== 'undefined' &&
+    socket !== null &&
+    (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
+  ) {
+    return;
+  }
   connectSocket();
 }
 
-function releaseConnection(): void {
-  managerCount = Math.max(0, managerCount - 1);
-  if (managerCount > 0) return;
+function teardownConnection(): void {
   socketGeneration += 1;
   if (openTimeout !== null) clearTimeout(openTimeout);
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
@@ -620,6 +751,19 @@ function releaseConnection(): void {
     }
   }
   notify({ ...state, version: state.version + 1, status: 'CONNECTING', transport: null, isLive: false });
+}
+
+function releaseConnection(): void {
+  managerCount = Math.max(0, managerCount - 1);
+  if (managerCount > 0) return;
+  if (releaseTimer !== null) return;
+  // React StrictMode mounts, unmounts and remounts in the same tick. Debouncing
+  // the teardown keeps the same socket alive across that artificial cycle.
+  releaseTimer = setTimeout(() => {
+    releaseTimer = null;
+    if (managerCount > 0) return;
+    teardownConnection();
+  }, RELEASE_DEBOUNCE_MS);
 }
 
 /**

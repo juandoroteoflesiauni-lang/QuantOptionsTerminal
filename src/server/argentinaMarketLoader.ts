@@ -451,6 +451,8 @@ export interface ArLiveMarketSnapshot {
   readonly monitoring: ArMonitoringResponse | null;
   readonly quotes: readonly MarketTickQuote[];
   readonly cauciones: readonly ArCaucionCurveRowDto[];
+  readonly futures: readonly PrimaryDlrContractDto[];
+  readonly futuresSource: 'PRIMARY_WS' | 'PRIMARY_REST' | 'NONE';
   readonly sourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
   readonly bmbHealth: BmbConnectorHealthDto | null;
 }
@@ -3140,6 +3142,23 @@ export function buildCaucionesLiquidityCurve(params: {
   };
 }
 
+function mergeDlrContracts(
+  base: readonly PrimaryDlrContractDto[],
+  live: readonly PrimaryDlrContractDto[],
+): readonly PrimaryDlrContractDto[] {
+  if (live.length === 0) return base;
+  const byContract = new Map(base.map((contract) => [contract.contract, contract]));
+  for (const contract of live) {
+    byContract.set(contract.contract, contract);
+  }
+  return [...byContract.values()].sort((a, b) => {
+    const ta = a.expiryUtcSec ?? Number.MAX_SAFE_INTEGER;
+    const tb = b.expiryUtcSec ?? Number.MAX_SAFE_INTEGER;
+    if (ta !== tb) return ta - tb;
+    return a.contract.localeCompare(b.contract);
+  });
+}
+
 export class ArgentinaMarketRuntime {
   private readonly fetchFn: ArHttpFn;
   private readonly nowMsFn: () => number;
@@ -3234,6 +3253,7 @@ export class ArgentinaMarketRuntime {
     this.realtimeBus = deps.realtimeBus ?? new ArRealtimeBus({
       bmbClient: this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient : null,
       iolClient: this.iolClient,
+      primaryClient: this.primaryClient,
       nowMsFn: this.nowMsFn,
     });
     this.usRuntime = deps.usRuntime ?? null;
@@ -3297,6 +3317,11 @@ export class ArgentinaMarketRuntime {
     return this.liveStreaming;
   }
 
+  private currentLiveDlrFutures(): readonly PrimaryDlrContractDto[] {
+    const busFutures = this.realtimeBus.getFutures();
+    return busFutures.length > 0 ? busFutures : this.primaryClient.getLiveDlrFutures();
+  }
+
   /** Starts AR refresh only from the explicit HTTP server lifecycle, never in offline constructors. */
   public startLiveStreaming(): void {
     if (this.liveStreaming) return;
@@ -3307,6 +3332,7 @@ export class ArgentinaMarketRuntime {
       ...SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
     ];
     this.realtimeBus.start(symbols);
+    void this.primaryClient.startDlrLiveStream().catch(() => undefined);
     const run = async (): Promise<void> => {
       if (!this.liveStreaming || this.liveRefreshInFlight) return;
       const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));
@@ -3616,11 +3642,17 @@ export class ArgentinaMarketRuntime {
       : busCauciones.length > 0
         ? 'LIVE_IOL'
         : fallbackSourceMode;
+    const liveFutures = this.currentLiveDlrFutures();
+    const futures = mergeDlrContracts(this.lastMacro?.rofxFutures ?? [], liveFutures);
+    const futuresSource: 'PRIMARY_WS' | 'PRIMARY_REST' | 'NONE' =
+      liveFutures.length > 0 ? 'PRIMARY_WS' : futures.length > 0 ? 'PRIMARY_REST' : 'NONE';
     return {
       overview,
       monitoring,
       quotes: [...mergedQuotes.values()],
       cauciones,
+      futures,
+      futuresSource,
       sourceMode,
       bmbHealth: bmbSnapshot?.health ?? this.bmbClient.getSafeHealthStatus(),
     };
@@ -5307,8 +5339,17 @@ export class ArgentinaMarketRuntime {
     );
 
     const macro = cached.value as ArMacroResponse;
-    this.lastMacro = macro;
-    return macro;
+    this.primaryClient.setReferenceSpotA3500(macro.rofxSpotA3500 ?? null);
+    const liveFutures = this.currentLiveDlrFutures();
+    const mergedMacro =
+      liveFutures.length > 0
+        ? {
+            ...macro,
+            rofxFutures: mergeDlrContracts(macro.rofxFutures ?? [], liveFutures),
+          }
+        : macro;
+    this.lastMacro = mergedMacro;
+    return mergedMacro;
   }
 
   public async getMonitoring(

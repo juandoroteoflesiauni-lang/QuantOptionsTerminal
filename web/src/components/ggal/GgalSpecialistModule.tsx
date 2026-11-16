@@ -996,6 +996,14 @@ export const GgalSpecialistModule: React.FC<{
                   {routerStatus.activeQualityTier}
                 </span>
               )}
+              {routerStatus.futuresDlrLive === 'CONNECTED' && (
+                <span className="rounded px-2 py-0.5 font-mono bg-[#22C55E]/10 text-[#22C55E] border border-[#22C55E]/35">
+                  {routerStatus.futuresDlrProvider === 'PRIMARY_REMARKETS_SANDBOX'
+                    ? 'DLR WS SANDBOX'
+                    : 'DLR WS LIVE'}{' '}
+                  ({routerStatus.futuresDlrCount ?? 0})
+                </span>
+              )}
               {hasBrokerConfigured && routerStatus.degradationReason !== null && (
                 <span className="rounded px-2 py-0.5 font-mono bg-[#EF4444]/10 text-[#EF4444] border border-[#EF4444]/35">
                   {routerStatus.degradationReason}

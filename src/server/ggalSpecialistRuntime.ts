@@ -4280,6 +4280,8 @@ export class GgalSpecialistRuntime {
         ? this.arRuntime.getConnectorHealth()
         : null;
     const primaryWsConnected = connHealth?.primaryRofex.wsConnected ?? false;
+    const primaryFuturesLive =
+      connHealth?.primaryRofex.wsConnected === true && connHealth.primaryRofex.liveDlrCount > 0;
     const rawBook = bundle.ggalDetail.orderBook5Levels ?? null;
     const evaluationUtcSec = Math.floor(this.nowMsFn() / 1_000);
     const endpoints = this.arFeedRouter.getEndpointsConfig();
@@ -4313,6 +4315,10 @@ export class GgalSpecialistRuntime {
       primaryLastMsgUtcSec:
         rawBook?.source === 'PRIMARY_MERV' ? rawBook.asOfUtcSec : null,
       primaryError: primaryConfigured ? (connHealth?.primaryRofex.lastError ?? null) : null,
+      primaryFuturesLive,
+      primaryFuturesLastMsgUtcSec: connHealth?.primaryRofex.liveDlrLastUpdateUtcSec ?? null,
+      primaryFuturesCount: connHealth?.primaryRofex.liveDlrCount ?? 0,
+      primaryEnvironment: connHealth?.primaryRofex.wsEnvironment ?? null,
       bmbConfigured: endpoints.bmbConfigured,
       bmbConnected: bmbHasL2Levels,
       bmbLastMsgUtcSec:
@@ -4883,6 +4889,8 @@ export class GgalSpecialistRuntime {
       ? this.arRuntime.getConnectorHealth()
       : null;
     const bmbHealth = connectorHealth?.bullMarket ?? null;
+    const primaryFuturesLive =
+      connectorHealth?.primaryRofex.wsConnected === true && connectorHealth.primaryRofex.liveDlrCount > 0;
 
     this.arFeedRouter.updateFromRuntimeTelemetry({
       asOfUtcSec,
@@ -4890,6 +4898,10 @@ export class GgalSpecialistRuntime {
       primaryConnected: false,
       primaryLastMsgUtcSec: null,
       primaryError: null,
+      primaryFuturesLive,
+      primaryFuturesLastMsgUtcSec: connectorHealth?.primaryRofex.liveDlrLastUpdateUtcSec ?? null,
+      primaryFuturesCount: connectorHealth?.primaryRofex.liveDlrCount ?? 0,
+      primaryEnvironment: connectorHealth?.primaryRofex.wsEnvironment ?? null,
       bmbConfigured: endpoints.bmbConfigured,
       bmbConnected: false,
       bmbLastMsgUtcSec: null,

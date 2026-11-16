@@ -3271,6 +3271,8 @@ interface PrimaryDlrContractExt {
   readonly devalDirectaPct: number | null;
   readonly tnaImplicitaPct: number | null;
   readonly teaImplicitaPct: number | null;
+  readonly forwardToForwardPct?: number | null;
+  readonly updatedAtUtcSec?: number | null;
   readonly source: 'PRIMARY_ROFEX';
 }
 
@@ -3278,6 +3280,7 @@ type FuturesTab = 'OUTRIGHT' | 'MINI' | 'DDF' | 'SINTETICO';
 
 export const FuturesModule: React.FC = () => {
   const liveMarket = useLiveMarketState();
+  const liveStream = useMarketLiveStream();
   const [futuresTab, setFuturesTab] = useState<FuturesTab>('OUTRIGHT');
 
   useEffect(() => {
@@ -3297,7 +3300,20 @@ export const FuturesModule: React.FC = () => {
       })
     | null;
 
-  const rofxContracts = macroExt?.rofxFutures ?? [];
+  const rofxContracts: readonly PrimaryDlrContractExt[] = (() => {
+    const macroContracts = macroExt?.rofxFutures ?? [];
+    const liveByContract = new Map(liveStream.futures.map((contract) => [contract.contract, contract]));
+    const merged = macroContracts.map((contract) => {
+      const live = liveByContract.get(contract.contract);
+      return live === undefined ? contract : { ...contract, ...live };
+    });
+    const known = new Set(merged.map((contract) => contract.contract));
+    for (const live of liveStream.futures) {
+      if (known.has(live.contract) || live.category === 'SPOT') continue;
+      merged.push({ ...live, marketId: 'ROFX' });
+    }
+    return merged;
+  })();
   const outrightRofx = rofxContracts.filter((c) => c.category === 'OUTRIGHT');
   const miniRofx = rofxContracts.filter((c) => c.category === 'MINI');
   const ddfDerivatives = rofxContracts.filter(
@@ -3369,7 +3385,12 @@ export const FuturesModule: React.FC = () => {
             <strong className="font-mono-num text-[var(--text-primary)]">
               {macroExt?.rofxSpotA3500 != null ? `$ ${fmtNum(macroExt.rofxSpotA3500, 2)}` : '—'}
             </strong>
-            .
+            .{' '}
+            {liveStream.futuresSource === 'PRIMARY_WS' && (
+              <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-sans font-bold bg-[#22C55E]/10 text-[#22C55E] border border-[#22C55E]/35">
+                ● DLR WS LIVE ({liveStream.futures.length})
+              </span>
+            )}
           </>
         ) : ROFEX_FUTURES.length > 0 ? (
           `Contratos activos de dólar futuro (${ROFEX_FUTURES.length} vencimientos).`
@@ -3434,7 +3455,8 @@ export const FuturesModule: React.FC = () => {
                   <th className="py-2.5 px-2.5">Vol. Nom</th>
                   <th className="py-2.5 px-2.5">Deval. Directa</th>
                   <th className="py-2.5 px-2.5">TNA Implícita</th>
-                  <th className="py-2.5 px-3">TEA Implícita</th>
+                  <th className="py-2.5 px-2.5">TEA Implícita</th>
+                  <th className="py-2.5 px-3">Fwd i→i+1</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-subtle)]">
@@ -3512,11 +3534,14 @@ export const FuturesModule: React.FC = () => {
                       <td className="px-3 text-[#2EDC7E] font-semibold">
                         {c.teaImplicitaPct !== null ? `${fmtNum(c.teaImplicitaPct, 2)} %` : '—'}
                       </td>
+                      <td className="px-3 text-[#E5C76B] font-semibold">
+                        {c.forwardToForwardPct != null ? `${fmtNum(c.forwardToForwardPct, 2)} %` : '—'}
+                      </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                    <td colSpan={11} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
                       No hay contratos cargados en la categoría seleccionada.
                     </td>
                   </tr>

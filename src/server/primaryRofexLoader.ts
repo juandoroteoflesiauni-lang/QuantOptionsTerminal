@@ -141,6 +141,7 @@ export interface PrimaryDlrContractDto {
   readonly tnaImplicitaPct: number | null;
   readonly teaImplicitaPct: number | null;
   readonly temImplicitaPct: number | null;
+  readonly forwardToForwardPct: number | null;
   readonly contractMultiplier: number | null;
   readonly minPriceIncrement: number | null;
   readonly updatedAtUtcSec: number | null;
@@ -310,7 +311,12 @@ export interface PrimaryConnectorHealthDto {
   readonly tokenValidUntilUtcSec: number | null;
   readonly tokenRenewCount: number;
   readonly wsConnected: boolean;
+  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  readonly wsLastMessageUtcSec: number | null;
   readonly dlrCount: number;
+  readonly liveDlrCount: number;
+  readonly liveDlrLastUpdateUtcSec: number | null;
+  readonly dlrSubscribedCount: number;
   readonly ddfCount: number;
   readonly mervCount: number;
   readonly lastError: string | null;
@@ -349,6 +355,10 @@ const DEFAULT_BMB_BRIDGE_URL = 'http://127.0.0.1:8788';
 const DEFAULT_PRIMARY_TIMEOUT_MS = 8_000;
 const DEFAULT_BMB_TIMEOUT_MS = 1_200;
 const PRIMARY_TOKEN_MAX_AGE_MS = 23 * 60 * 60 * 1_000; // Renovar < 24h por especificación Primary v1.21
+const PRIMARY_TOKEN_PROACTIVE_RENEW_MS = 12 * 60 * 60 * 1_000; // Renovación proactiva cada 12 h
+const PRIMARY_WS_HEARTBEAT_MS = 20_000;
+const PRIMARY_WS_RECONNECT_BASE_MS = 1_000;
+const PRIMARY_WS_RECONNECT_MAX_MS = 30_000;
 const DETAIL_CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
 const MD_CACHE_TTL_MS = 10_000;
 const BMB_CACHE_TTL_MS = 8_000;
@@ -663,6 +673,66 @@ export function computeDlrContractMetrics(input: DlrContractMetricsInput): DlrCo
 }
 
 /**
+ * Forward-to-forward continuo anualizado entre dos vencimientos consecutivos de la curva DLR:
+ * `f = ln(P_far / P_near) / (Δdías / 365)`, expresado en porcentaje.
+ * Devuelve `NaN` si falta un precio positivo o el tramo no avanza en el tiempo.
+ */
+export function computeForwardToForwardPct(input: {
+  readonly nearDays: number;
+  readonly nearPrice: number;
+  readonly farDays: number;
+  readonly farPrice: number;
+}): number {
+  const dtDays = input.farDays - input.nearDays;
+  if (
+    !Number.isFinite(input.nearDays) ||
+    !Number.isFinite(input.farDays) ||
+    !Number.isFinite(input.nearPrice) ||
+    !Number.isFinite(input.farPrice) ||
+    input.nearPrice <= 0 ||
+    input.farPrice <= 0 ||
+    dtDays <= 0
+  ) {
+    return Number.NaN;
+  }
+  return (Math.log(input.farPrice / input.nearPrice) / (dtDays / 365)) * 100;
+}
+
+/**
+ * Encadena `f_{i,i+1}` por categoría (OUTRIGHT y MINI por separado) sobre una
+ * curva ya ordenada por vencimiento. No mezcla mini-contratos con outrigths del
+ * mismo mes, que producirían un tramo de ancho cero.
+ */
+function withForwardToForward(
+  contracts: readonly PrimaryDlrContractDto[],
+): readonly PrimaryDlrContractDto[] {
+  const forwards = new Map<string, number | null>();
+  for (const category of ['OUTRIGHT', 'MINI'] as const) {
+    const series = contracts.filter((contract) => contract.category === category);
+    for (let i = 0; i < series.length - 1; i += 1) {
+      const near = series[i];
+      const far = series[i + 1];
+      if (near === undefined || far === undefined) continue;
+      forwards.set(
+        near.contract,
+        sanitizeNum(
+          computeForwardToForwardPct({
+            nearDays: near.days ?? Number.NaN,
+            nearPrice: near.price ?? Number.NaN,
+            farDays: far.days ?? Number.NaN,
+            farPrice: far.price ?? Number.NaN,
+          }),
+        ),
+      );
+    }
+  }
+  return contracts.map((contract) => ({
+    ...contract,
+    forwardToForwardPct: forwards.get(contract.contract) ?? null,
+  }));
+}
+
+/**
  * Normaliza hasta 5 puntas L2 (Bid desc, Ask asc) y calcula métricas puras de microestructura.
  */
 export function computeOrderBookL2Metrics(
@@ -951,6 +1021,24 @@ export class PrimaryRofexClient {
   private readonly wsSnapshots = new Map<string, ParsedPrimaryMarketData>();
   private lastError: string | null = null;
 
+  private readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  private wsSubscriptions: readonly { readonly marketId: string; readonly symbol: string }[] = [];
+  private wsDepth = 5;
+  private wsLastMessageAtMs = 0;
+  private wsReconnectAttempts = 0;
+  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private tokenRenewTimer: ReturnType<typeof setInterval> | null = null;
+  private wsIntentionalClose = false;
+  private dlrStreamInFlight: Promise<void> | null = null;
+  private liveDlrContracts: readonly PrimaryDlrContractDto[] = [];
+  private liveDlrLastUpdateUtcSec: number | null = null;
+  private referenceSpotA3500: number | null = null;
+  private readonly dlrDetailBySymbol = new Map<
+    string,
+    { readonly maturityDate: string | null; readonly contractMultiplier: number | null; readonly minPriceIncrement: number | null }
+  >();
+
   private readonly instrumentListCache: SingleFlightRuntimeCache<readonly { readonly marketId: string; readonly symbol: string }[]>;
   private readonly detailCache: SingleFlightRuntimeCache<InstrumentDetailMetadata | null>;
   private readonly marketDataCache: SingleFlightRuntimeCache<ParsedPrimaryMarketData | null>;
@@ -971,6 +1059,9 @@ export class PrimaryRofexClient {
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_PRIMARY_TIMEOUT_MS;
     this.minRequestIntervalMs = deps.minRequestIntervalMs ?? (deps.fetchFn !== undefined ? 0 : 180);
     this.retry429DelayMs = deps.retry429DelayMs ?? (deps.fetchFn !== undefined ? 0 : 1_500);
+    this.wsEnvironment = /sandbox/i.test(this.config.wsUrl)
+      ? 'PRIMARY_REMARKETS_SANDBOX'
+      : 'PRIMARY_MATRIZ_WS';
 
     const secretSet = new Set<string>(deps.secrets ?? []);
     for (const s of collectBrokerSecretsFromEnv(env)) {
@@ -1053,6 +1144,7 @@ export class PrimaryRofexClient {
         this.tokenIssuedAtMs = this.nowMsFn();
         this.tokenRenewCount += 1;
         this.lastError = null;
+        this.ensureTokenRenewalTimer();
         return token;
       } catch (err: unknown) {
         const msg = this.redact(err instanceof Error ? err.message : String(err));
@@ -1139,11 +1231,16 @@ export class PrimaryRofexClient {
   }
 
   private parseInstrumentList(raw: unknown): readonly { readonly marketId: string; readonly symbol: string }[] {
-    if (!isPlainRecord(raw) || !Array.isArray(raw['instruments'])) {
+    const listRaw = Array.isArray(raw)
+      ? raw
+      : isPlainRecord(raw) && Array.isArray(raw['instruments'])
+        ? raw['instruments']
+        : null;
+    if (listRaw === null) {
       return [];
     }
     const out: { readonly marketId: string; readonly symbol: string }[] = [];
-    for (const item of raw['instruments']) {
+    for (const item of listRaw) {
       if (!isPlainRecord(item)) {
         continue;
       }
@@ -1202,6 +1299,55 @@ export class PrimaryRofexClient {
       { forceRefresh },
     );
     return res.value;
+  }
+
+  /**
+   * Catálogo completo de instrumentos vigentes (`GET /rest/instruments/all`).
+   * Se usa para descubrir contratos `DLR/*` que no aparecen en los segmentos CFI/DDF.
+   */
+  public async getAllInstruments(
+    forceRefresh = false,
+  ): Promise<readonly { readonly marketId: string; readonly symbol: string }[]> {
+    const res = await this.instrumentListCache.getOrCompute(
+      'all',
+      async () => {
+        const raw = await this.requestJson('/rest/instruments/all');
+        return this.parseInstrumentList(raw);
+      },
+      { forceRefresh },
+    );
+    return res.value;
+  }
+
+  private async discoverDlrInstruments(
+    forceRefresh: boolean,
+  ): Promise<{
+    readonly instruments: readonly { readonly marketId: string; readonly symbol: string }[];
+    readonly firstError: string | null;
+  }> {
+    const results = await Promise.allSettled([
+      this.getInstrumentsByCFICode('FXXXSX', forceRefresh),
+      this.getInstrumentsBySegment('DDF', 'ROFX', forceRefresh),
+      this.getAllInstruments(forceRefresh),
+    ]);
+    const lists = results.map((result) => (result.status === 'fulfilled' ? result.value : []));
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (rejected.length === results.length && rejected[0] !== undefined) {
+      const reason: unknown = rejected[0].reason;
+      return {
+        instruments: [],
+        firstError: this.redact(reason instanceof Error ? reason.message : String(reason)),
+      };
+    }
+    const merged = new Map<string, { readonly marketId: string; readonly symbol: string }>();
+    for (const item of lists.flat()) {
+      if (item.symbol.startsWith('DLR/') && !merged.has(item.symbol)) {
+        merged.set(item.symbol, item);
+      }
+    }
+    return { instruments: [...merged.values()], firstError: null };
   }
 
   public async getInstrumentDetail(
@@ -1270,8 +1416,74 @@ export class PrimaryRofexClient {
     return restSnap ?? wsSnap ?? null;
   }
 
+  private clearWsSessionTimers(): void {
+    if (this.wsHeartbeatTimer !== null) clearInterval(this.wsHeartbeatTimer);
+    this.wsHeartbeatTimer = null;
+  }
+
+  private ensureTokenRenewalTimer(): void {
+    if (this.tokenRenewTimer !== null) return;
+    this.tokenRenewTimer = setInterval(() => {
+      // Force a fresh X-Auth-Token on the next REST call and re-handshake the WS.
+      this.authToken = null;
+      if (this.ws !== null) {
+        this.forceWsReconnect('token_renewal');
+      }
+    }, PRIMARY_TOKEN_PROACTIVE_RENEW_MS);
+    this.tokenRenewTimer.unref();
+  }
+
+  private forceWsReconnect(reason: string): void {
+    const sock = this.ws;
+    this.wsIntentionalClose = true;
+    this.ws = null;
+    this.wsConnected = false;
+    this.clearWsSessionTimers();
+    if (sock !== null) {
+      try {
+        sock.close(1000, reason);
+      } catch {
+        // The reconnect path below owns recovery.
+      }
+    }
+    if (this.wsSubscriptions.length > 0) {
+      void this.connectAndSubscribeWs(this.wsSubscriptions, this.wsDepth).catch(() => undefined);
+    }
+  }
+
+  private scheduleWsReconnect(): void {
+    if (this.wsIntentionalClose || this.wsReconnectTimer !== null || this.wsSubscriptions.length === 0) {
+      return;
+    }
+    const delayMs = Math.min(
+      PRIMARY_WS_RECONNECT_MAX_MS,
+      PRIMARY_WS_RECONNECT_BASE_MS * Math.pow(2, this.wsReconnectAttempts),
+    );
+    this.wsReconnectAttempts += 1;
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      if (this.wsIntentionalClose || this.wsSubscriptions.length === 0) return;
+      void this.connectAndSubscribeWs(this.wsSubscriptions, this.wsDepth).catch(() => undefined);
+    }, delayMs);
+    this.wsReconnectTimer.unref();
+  }
+
+  private startWsHeartbeat(sock: PrimaryWsLike): void {
+    if (this.wsHeartbeatTimer !== null) clearInterval(this.wsHeartbeatTimer);
+    this.wsHeartbeatTimer = setInterval(() => {
+      if (this.ws !== sock || !this.wsConnected || sock.readyState !== 1) return;
+      try {
+        sock.send(JSON.stringify({ type: 'ping' }));
+      } catch {
+        // The close handler owns reconnection; heartbeat failures are transport-level.
+      }
+    }, PRIMARY_WS_HEARTBEAT_MS);
+    this.wsHeartbeatTimer.unref();
+  }
+
   /**
-   * Suscripción WebSocket `type: "smd"` con `depth: 5` hacia Primary.
+   * Suscripción WebSocket `type: "smd"` con `level: 5` y `depth: 5` hacia Primary,
+   * heartbeat cada 20 s y reconexión exponencial con el mismo token renovado.
    */
   public async connectAndSubscribeWs(
     products: readonly { readonly marketId: string; readonly symbol: string }[],
@@ -1280,11 +1492,21 @@ export class PrimaryRofexClient {
     if (!this.config.configured || products.length === 0) {
       return;
     }
-    const token = await this.getAuthToken(false);
+    this.wsSubscriptions = [...products];
+    this.wsDepth = depth;
+    this.wsIntentionalClose = false;
+    let token: string;
+    try {
+      token = await this.getAuthToken(false);
+    } catch (err: unknown) {
+      this.lastError = this.redact(err instanceof Error ? err.message : String(err));
+      this.scheduleWsReconnect();
+      throw err;
+    }
     const subscribePayload = JSON.stringify({
       type: 'smd',
-      level: 1,
-      entries: ['BI', 'OF', 'LA', 'OP', 'CL', 'SE', 'OI', 'HI', 'LO', 'TV', 'EV', 'NV', 'IV'],
+      level: 5,
+      entries: ['BI', 'OF', 'LA', 'OI', 'IV', 'SE'],
       products,
       depth,
     });
@@ -1310,8 +1532,14 @@ export class PrimaryRofexClient {
         this.ws = sock;
 
         sock.on('open', () => {
+          if (this.ws !== sock) {
+            done();
+            return;
+          }
           this.wsConnected = true;
+          this.wsReconnectAttempts = 0;
           this.lastError = null;
+          this.startWsHeartbeat(sock);
           try {
             sock.send(subscribePayload);
           } catch (err: unknown) {
@@ -1321,6 +1549,8 @@ export class PrimaryRofexClient {
         });
 
         sock.on('message', (raw) => {
+          if (this.ws !== sock) return;
+          this.wsLastMessageAtMs = this.nowMsFn();
           try {
             const text =
               typeof raw === 'string'
@@ -1340,6 +1570,9 @@ export class PrimaryRofexClient {
             if (sym !== null) {
               const snap = parsePrimaryMarketDataNode(sym, mkt, parsed['marketData']);
               this.wsSnapshots.set(`${mkt}:${sym}`, snap);
+              if (sym.startsWith('DLR/')) {
+                this.recomputeLiveDlrDerived();
+              }
             }
           } catch {
             // Mensajes heartbeat o no JSON se ignoran de forma segura.
@@ -1347,33 +1580,197 @@ export class PrimaryRofexClient {
         });
 
         sock.on('error', (err) => {
+          if (this.ws !== sock) {
+            done();
+            return;
+          }
           this.wsConnected = false;
-          this.lastError = this.redact(err.message);
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== 'ECONNRESET' && code !== 'ECONNABORTED') {
+            this.lastError = this.redact(err.message);
+          }
           done();
+          this.scheduleWsReconnect();
         });
 
         sock.on('close', () => {
+          if (this.ws !== sock) {
+            done();
+            return;
+          }
+          this.ws = null;
           this.wsConnected = false;
+          this.clearWsSessionTimers();
           done();
+          this.scheduleWsReconnect();
         });
       } catch (err: unknown) {
         this.wsConnected = false;
         this.lastError = this.redact(err instanceof Error ? err.message : String(err));
         done();
+        this.scheduleWsReconnect();
       }
     });
   }
 
   public closeWebSocket(): void {
-    if (this.ws !== null) {
+    this.wsIntentionalClose = true;
+    this.wsSubscriptions = [];
+    this.clearWsSessionTimers();
+    if (this.tokenRenewTimer !== null) clearInterval(this.tokenRenewTimer);
+    this.tokenRenewTimer = null;
+    if (this.wsReconnectTimer !== null) clearTimeout(this.wsReconnectTimer);
+    this.wsReconnectTimer = null;
+    const sock = this.ws;
+    this.ws = null;
+    this.wsConnected = false;
+    this.wsSnapshots.clear();
+    this.liveDlrContracts = [];
+    this.liveDlrLastUpdateUtcSec = null;
+    if (sock !== null) {
       try {
-        this.ws.close(1000, 'Client shutdown');
+        sock.close(1000, 'Client shutdown');
       } catch {
         // Ignore close errors during shutdown
       }
-      this.ws = null;
     }
-    this.wsConnected = false;
+  }
+
+  private recomputeLiveDlrDerived(): void {
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const spotSnap = this.wsSnapshots.get('ROFX:DLR/SPOT') ?? null;
+    const dlrSpot =
+      spotSnap?.last ??
+      (spotSnap !== null && spotSnap.bids[0] !== undefined && spotSnap.asks[0] !== undefined
+        ? 0.5 * (spotSnap.bids[0].price + spotSnap.asks[0].price)
+        : null) ??
+      spotSnap?.settlement ??
+      spotSnap?.close ??
+      null;
+
+    const contracts: PrimaryDlrContractDto[] = [];
+    for (const [key, snap] of this.wsSnapshots) {
+      const separator = key.indexOf(':');
+      if (separator < 0) continue;
+      const marketId = key.slice(0, separator);
+      const symbol = key.slice(separator + 1);
+      const category = classifyDlrSymbol(symbol);
+      if (category !== 'OUTRIGHT' && category !== 'MINI' && category !== 'SPOT') continue;
+      const detail = this.dlrDetailBySymbol.get(symbol) ?? null;
+      const metrics = computeDlrContractMetrics({
+        asOfUtcSec: nowSec,
+        maturityDate: detail?.maturityDate ?? inferDlrMaturityDateStr(symbol),
+        last: snap.last,
+        bestBid: snap.bids[0]?.price,
+        bestAsk: snap.asks[0]?.price,
+        settlement: snap.settlement,
+        close: snap.close,
+        a3500: this.referenceSpotA3500,
+        dlrSpot,
+      });
+      const expiryUtcSec = sanitizeNum(metrics.maturityUtcSec);
+      contracts.push({
+        contract: symbol,
+        category,
+        marketId,
+        maturity:
+          expiryUtcSec !== null ? new Date(expiryUtcSec * 1_000).toISOString().slice(0, 10) : null,
+        expiryUtcSec,
+        days: sanitizeNum(metrics.days),
+        price: sanitizeNum(metrics.referencePrice),
+        priceBasis: metrics.priceBasis,
+        last: snap.last,
+        settlement: snap.settlement,
+        close: snap.close,
+        bid: snap.bids[0]?.price ?? null,
+        bidPrice: snap.bids[0]?.price ?? null,
+        bidSize: snap.bids[0]?.size ?? null,
+        ask: snap.asks[0]?.price ?? null,
+        askPrice: snap.asks[0]?.price ?? null,
+        askSize: snap.asks[0]?.size ?? null,
+        bids: snap.bids,
+        asks: snap.asks,
+        openInterest: snap.openInterest,
+        nominalVolume: snap.nominalVolume,
+        open: snap.open,
+        high: snap.high,
+        low: snap.low,
+        spotUsed: sanitizeNum(metrics.spotUsed),
+        spotSource: metrics.spotSource,
+        devalDirectaPct: sanitizeNum(metrics.devalDirectaPct),
+        tnaImplicitaPct: sanitizeNum(metrics.tnaImplicitaPct),
+        teaImplicitaPct: sanitizeNum(metrics.teaImplicitaPct),
+        temImplicitaPct: sanitizeNum(metrics.temImplicitaPct),
+        forwardToForwardPct: null,
+        contractMultiplier: detail?.contractMultiplier ?? null,
+        minPriceIncrement: detail?.minPriceIncrement ?? null,
+        updatedAtUtcSec: snap.updatedAtUtcSec,
+        source: 'PRIMARY_ROFEX',
+      });
+    }
+
+    contracts.sort((a, b) => {
+      const ta = a.expiryUtcSec ?? Number.MAX_SAFE_INTEGER;
+      const tb = b.expiryUtcSec ?? Number.MAX_SAFE_INTEGER;
+      if (ta !== tb) return ta - tb;
+      return a.contract.localeCompare(b.contract);
+    });
+
+    this.liveDlrContracts = withForwardToForward(contracts);
+    this.liveDlrLastUpdateUtcSec = nowSec;
+  }
+
+  /** Snapshot DLR/* derivado de los últimos ticks `Md` (sin red; actualizado en el handler WS). */
+  public getLiveDlrFutures(): readonly PrimaryDlrContractDto[] {
+    return this.liveDlrContracts;
+  }
+
+  /** Spot A3500 BCRA vigente; permite calcular TNA/TEA en vivo sin depender de `DLR/SPOT`. */
+  public setReferenceSpotA3500(value: number | null): void {
+    this.referenceSpotA3500 =
+      value !== null && Number.isFinite(value) && value > 0 ? value : null;
+    if (this.wsSnapshots.size > 0) {
+      this.recomputeLiveDlrDerived();
+    }
+  }
+
+  public getLiveDlrLastUpdateUtcSec(): number | null {
+    return this.liveDlrLastUpdateUtcSec;
+  }
+
+  public getWsEnvironment(): 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' {
+    return this.wsEnvironment;
+  }
+
+  /**
+   * Descubre contratos DLR/* vigentes y abre el stream `smd` autenticado.
+   * Idempotente: no duplica sockets ni suscripciones mientras el WS esté vivo.
+   */
+  public async startDlrLiveStream(): Promise<void> {
+    if (!this.config.configured || this.wsConnected) return;
+    if (this.dlrStreamInFlight !== null) return this.dlrStreamInFlight;
+    const run = async (): Promise<void> => {
+      const discovered = await this.discoverDlrInstruments(false);
+      if (discovered.firstError !== null) {
+        this.lastError = discovered.firstError;
+      }
+      const todayUtc = new Date(this.nowMsFn()).toISOString().slice(0, 10).replace(/-/g, '');
+      const products = discovered.instruments
+        .filter((item) => {
+          const category = classifyDlrSymbol(item.symbol);
+          if (category === 'SPOT') return true;
+          if (category !== 'OUTRIGHT' && category !== 'MINI') return false;
+          const maturity = this.dlrDetailBySymbol.get(item.symbol)?.maturityDate ?? inferDlrMaturityDateStr(item.symbol);
+          return maturity === null || maturity >= todayUtc;
+        })
+        .map((item) => ({ marketId: item.marketId, symbol: item.symbol }));
+      if (products.length === 0) return;
+      await this.connectAndSubscribeWs(products, 5);
+    };
+    this.dlrStreamInFlight = run().finally(() => {
+      this.dlrStreamInFlight = null;
+    });
+    return this.dlrStreamInFlight;
   }
 
   /**
@@ -1393,23 +1790,15 @@ export class PrimaryRofexClient {
       return { spotUsed: null, spotSource: 'NONE', contracts: [], error: null };
     }
     try {
-      const [cfiList, ddfList] = await Promise.all([
-        this.getInstrumentsByCFICode('FXXXSX', false),
-        this.getInstrumentsBySegment('DDF', 'ROFX', false),
-      ]);
-
-      const mergedMap = new Map<string, { readonly marketId: string; readonly symbol: string }>();
-      for (const item of [...cfiList, ...ddfList]) {
-        if (!item.symbol.startsWith('DLR/')) {
-          continue;
-        }
-        if (!mergedMap.has(item.symbol)) {
-          mergedMap.set(item.symbol, item);
-        }
-      }
-      const dlrInstruments = [...mergedMap.values()];
+      const discovered = await this.discoverDlrInstruments(Boolean(params.forceRefresh));
+      const dlrInstruments = discovered.instruments;
       if (dlrInstruments.length === 0) {
-        return { spotUsed: null, spotSource: 'NONE', contracts: [], error: null };
+        return {
+          spotUsed: null,
+          spotSource: 'NONE',
+          contracts: [],
+          error: discovered.firstError,
+        };
       }
 
       const mdResults = await runWithConcurrency(dlrInstruments, 2, async (inst) => {
@@ -1425,6 +1814,13 @@ export class PrimaryRofexClient {
           category === 'OUTRIGHT' || category === 'MINI'
             ? await this.getInstrumentDetail(inst.symbol, inst.marketId, false).catch(() => null)
             : null;
+        if (det !== null) {
+          this.dlrDetailBySymbol.set(inst.symbol, {
+            maturityDate: det.maturityDate,
+            contractMultiplier: det.contractMultiplier,
+            minPriceIncrement: det.minPriceIncrement,
+          });
+        }
         return { inst, category, md, det, itemErr };
       });
       const firstErrMsg = mdResults.find((r) => r.itemErr !== null)?.itemErr ?? null;
@@ -1503,6 +1899,7 @@ export class PrimaryRofexClient {
           tnaImplicitaPct: sanitizeNum(metrics.tnaImplicitaPct),
           teaImplicitaPct: sanitizeNum(metrics.teaImplicitaPct),
           temImplicitaPct: sanitizeNum(metrics.temImplicitaPct),
+          forwardToForwardPct: null,
           contractMultiplier: det?.contractMultiplier ?? null,
           minPriceIncrement: det?.minPriceIncrement ?? null,
           updatedAtUtcSec: md?.updatedAtUtcSec ?? null,
@@ -1522,7 +1919,7 @@ export class PrimaryRofexClient {
       return {
         spotUsed: resolvedSpotUsed,
         spotSource: resolvedSpotSource,
-        contracts,
+        contracts: withForwardToForward(contracts),
         error: null,
       };
     } catch (err: unknown) {
@@ -1790,7 +2187,13 @@ export class PrimaryRofexClient {
       tokenValidUntilUtcSec,
       tokenRenewCount: this.tokenRenewCount,
       wsConnected: this.wsConnected,
+      wsEnvironment: this.wsEnvironment,
+      wsLastMessageUtcSec:
+        this.wsLastMessageAtMs > 0 ? Math.floor(this.wsLastMessageAtMs / 1_000) : null,
       dlrCount: this.cachedCounts.dlr,
+      liveDlrCount: this.liveDlrContracts.filter((contract) => contract.category !== 'SPOT').length,
+      liveDlrLastUpdateUtcSec: this.liveDlrLastUpdateUtcSec,
+      dlrSubscribedCount: this.wsSubscriptions.filter((item) => item.symbol.startsWith('DLR/')).length,
       ddfCount: this.cachedCounts.ddf,
       mervCount: this.cachedCounts.merv,
       lastError: this.lastError !== null ? this.redact(this.lastError) : null,
