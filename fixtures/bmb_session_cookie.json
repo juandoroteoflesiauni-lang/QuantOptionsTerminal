@@ -24,6 +24,18 @@
           "k1v2",
           ".bullmarketbrokers.com",
           "/"
+        ],
+        [
+          "ASP.NET_SessionId",
+          "k1v2",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          "ASP.NET_SessionId",
+          "k1v2",
+          ".bullmarket.com.ar",
+          "/"
         ]
       ],
       "expectedPairs": [
@@ -50,6 +62,18 @@
           "/"
         ],
         [
+          ".ASPXAUTH",
+          "AbCd/EfG==",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          ".ASPXAUTH",
+          "AbCd/EfG==",
+          ".bullmarket.com.ar",
+          "/"
+        ],
+        [
           "ASP.NET_SessionId",
           "xyz123",
           "hb.bullmarketbrokers.com",
@@ -62,6 +86,18 @@
           "/"
         ],
         [
+          "ASP.NET_SessionId",
+          "xyz123",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          "ASP.NET_SessionId",
+          "xyz123",
+          ".bullmarket.com.ar",
+          "/"
+        ],
+        [
           ".AspNet.Cookies",
           "A1B2C3=",
           "hb.bullmarketbrokers.com",
@@ -71,6 +107,18 @@
           ".AspNet.Cookies",
           "A1B2C3=",
           ".bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          ".AspNet.Cookies",
+          "A1B2C3=",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          ".AspNet.Cookies",
+          "A1B2C3=",
+          ".bullmarket.com.ar",
           "/"
         ]
       ],
@@ -106,6 +154,18 @@
           "/"
         ],
         [
+          ".ASPXAUTH",
+          "token",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          ".ASPXAUTH",
+          "token",
+          ".bullmarket.com.ar",
+          "/"
+        ],
+        [
           "k",
           "v",
           "hb.bullmarketbrokers.com",
@@ -115,6 +175,18 @@
           "k",
           "v",
           ".bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "k",
+          "v",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          "k",
+          "v",
+          ".bullmarket.com.ar",
           "/"
         ]
       ],
@@ -144,6 +216,18 @@
           "v2",
           ".bullmarketbrokers.com",
           "/"
+        ],
+        [
+          "k2",
+          "v2",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          "k2",
+          "v2",
+          ".bullmarket.com.ar",
+          "/"
         ]
       ],
       "expectedPairs": [
@@ -167,6 +251,18 @@
           "k2",
           "v2",
           ".bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "k2",
+          "v2",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          "k2",
+          "v2",
+          ".bullmarket.com.ar",
           "/"
         ]
       ],
@@ -192,6 +288,18 @@
           "abc==def",
           ".bullmarketbrokers.com",
           "/"
+        ],
+        [
+          "token",
+          "abc==def",
+          "inversiones.bullmarket.com.ar",
+          "/"
+        ],
+        [
+          "token",
+          "abc==def",
+          ".bullmarket.com.ar",
+          "/"
         ]
       ],
       "expectedPairs": [
@@ -211,6 +319,8 @@
   ],
   "trustedDeviceDomains": [
     "hb.bullmarketbrokers.com",
-    ".bullmarketbrokers.com"
+    ".bullmarketbrokers.com",
+    "inversiones.bullmarket.com.ar",
+    ".bullmarket.com.ar"
   ]
 }

@@ -11,10 +11,11 @@ Contract under test:
   fragments without `=` or with empty name/value are ignored, whitespace around
   names/values is trimmed, and values may contain `=` (base64 padding).
 - Pairs are injected into the exposed requests session cookie jars for BOTH
-  trusted-device domains (`hb.bullmarketbrokers.com` and
-  `.bullmarketbrokers.com`) with path `/`.
-- A modern browser User-Agent (`BMB_BROWSER_USER_AGENT`) is configured on the
-  exposed sessions and on the library's `user_agent` module globals.
+  trusted-device domain families, host and parent domain each:
+  `hb.bullmarketbrokers.com`, `.bullmarketbrokers.com`,
+  `inversiones.bullmarket.com.ar` and `.bullmarket.com.ar`, with path `/`.
+- A modern Chrome browser User-Agent (`BMB_BROWSER_USER_AGENT`) is configured
+  on the exposed sessions and on the library's `user_agent` module globals.
 - Cookie values are never logged or exposed (only counts/labels).
 """
 
@@ -24,7 +25,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-TRUSTED_DEVICE_DOMAINS = ["hb.bullmarketbrokers.com", ".bullmarketbrokers.com"]
+TRUSTED_DEVICE_DOMAINS = [
+    "hb.bullmarketbrokers.com",
+    ".bullmarketbrokers.com",
+    "inversiones.bullmarket.com.ar",
+    ".bullmarket.com.ar",
+]
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

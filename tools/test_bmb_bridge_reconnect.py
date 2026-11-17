@@ -354,6 +354,44 @@ def test_session_cookie_injection_sets_domains_and_user_agent() -> None:
         assert session.headers["User-Agent"] == fixture["browserUserAgent"]
 
 
+def test_trusted_device_domains_cover_both_bull_market_families() -> None:
+    fixture = load_session_cookie_fixture()
+    domains = list(fixture["trustedDeviceDomains"])
+    # Ambas familias de dominio: plataforma homebroker y portal de inversiones.
+    assert any(d.endswith("bullmarketbrokers.com") for d in domains)
+    assert any(d.endswith("bullmarket.com.ar") for d in domains)
+    # Host específico y dominio padre (con punto) para cada familia.
+    assert "hb.bullmarketbrokers.com" in domains
+    assert ".bullmarketbrokers.com" in domains
+    assert "inversiones.bullmarket.com.ar" in domains
+    assert ".bullmarket.com.ar" in domains
+
+
+def test_implementation_domains_match_reference_fixture() -> None:
+    fixture = load_session_cookie_fixture()
+    assert tuple(base.BMB_TRUSTED_DEVICE_DOMAINS) == tuple(fixture["trustedDeviceDomains"])
+
+
+def test_injection_applies_cookie_to_every_trusted_domain() -> None:
+    fixture = load_session_cookie_fixture()
+    assert _requests_module is not None
+    jar = _requests_module.cookies.RequestsCookieJar()
+    session = SimpleNamespace(cookies=jar, headers={})
+    raw = "fake_session_cookie=a1b2c3d4"
+    entries = base.inject_bmb_session_cookies(session, raw)
+    # Un par → una entrada por cada dominio de confianza (host + padre, x2 familias).
+    assert entries == len(fixture["trustedDeviceDomains"])
+    for domain in fixture["trustedDeviceDomains"]:
+        match = any(
+            cookie.name == "fake_session_cookie"
+            and cookie.value == "a1b2c3d4"
+            and cookie.domain == domain
+            and cookie.path == "/"
+            for cookie in jar
+        )
+        assert match, f"cookie ausente para el dominio {domain}"
+
+
 def test_read_bmb_env_loads_session_cookie_and_redacts_it() -> None:
     env = {
         "BMB_BROKER_ID": "153",

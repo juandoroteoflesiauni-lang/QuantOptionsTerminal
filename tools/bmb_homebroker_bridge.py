@@ -22,13 +22,15 @@ Zero Silent Fallbacks & Security Rules:
   response URL/status are inspected; credentials and response bodies are never
   read, logged or returned.
 - `BMB_SESSION_COOKIE` (trusted device / session reuse, optional): parsed as
-  `k=v; k2=v2` pairs, injected into the exposed requests sessions for the
-  `hb.bullmarketbrokers.com` / `.bullmarketbrokers.com` domains, loaded into
-  `auth.cookies` (the dict the online clients send with every request), and a
-  modern browser User-Agent is configured. The online stream is attempted FIRST
-  with the authenticated cookie; only when the server requires login does the
-  bridge fall back to `hb.auth.login(...)` keeping the trusted-device cookies
-  loaded. Cookie values are never logged.
+  `k=v; k2=v2` pairs, injected into the exposed requests sessions for BOTH
+  Bull Market domain families (`hb.bullmarketbrokers.com` /
+  `.bullmarketbrokers.com` and `inversiones.bullmarket.com.ar` /
+  `.bullmarket.com.ar`), loaded into `auth.cookies` (the dict the online
+  clients send with every request), and a modern Chrome browser User-Agent is
+  configured. The online stream is attempted FIRST with the authenticated
+  cookie; only when the server requires login does the bridge fall back to
+  `hb.auth.login(...)` keeping the trusted-device cookies loaded. Cookie
+  values are never logged.
 """
 
 from __future__ import annotations
@@ -123,8 +125,14 @@ def classify_bmb_login_failure(
 # ---------------------------------------------------------------------------
 
 BMB_SESSION_COOKIE_ENV = "BMB_SESSION_COOKIE"
-# Dominios donde aplica la cookie de dispositivo de confianza antes de autenticar.
-BMB_TRUSTED_DEVICE_DOMAINS = ("hb.bullmarketbrokers.com", ".bullmarketbrokers.com")
+# Dominios donde aplica la cookie de dispositivo de confianza antes de conectar:
+# la plataforma homebroker y el portal de inversiones de Bull Market.
+BMB_TRUSTED_DEVICE_DOMAINS = (
+    "hb.bullmarketbrokers.com",
+    ".bullmarketbrokers.com",
+    "inversiones.bullmarket.com.ar",
+    ".bullmarket.com.ar",
+)
 # User-Agent de navegador moderno (el default de la librería es Chrome/85 de 2020).
 BMB_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

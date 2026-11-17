@@ -2,8 +2,9 @@
 """Local-only Bull Market Brokers HomeBroker JSON bridge for GGAL L2/options.
 
 Credentials arrive exclusively through BMB_* environment variables (including
-the optional `BMB_SESSION_COOKIE` trusted-device cookie).  The process never
-prints or logs them.  HTTP is bound to loopback and returns normalized UTC
+the optional `BMB_SESSION_COOKIE` trusted-device cookie, applied across both
+Bull Market domain families: bullmarketbrokers.com and bullmarket.com.ar).
+The process never prints or logs them.  HTTP is bound to loopback and returns normalized UTC
 seconds, five order-book levels, GFGC/GFGV BBO sizes and classified real trades.
 The online stream is attempted first reusing the session cookie; only when the
 server requires login does the bridge fall back to `hb.auth.login(...)` with
