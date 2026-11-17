@@ -772,11 +772,14 @@ export class BmbFeedAdapter {
       caucionCount: health.counts.cauciones,
       optionCount: health.counts.options,
       lastError: health.error,
+      signalRMode: this.signalRMode,
       telemetry,
     };
   }
 
-  /** Pieza 33: reconexión real del bridge local por señal loopback. */
+  /** Pieza 33/38.1: reconexión real del bridge local por señal loopback.
+   * En modo SignalR Core el bridge local soporta `POST /reconnect` (202) y
+   * reinicia limpiamente el conector Python; nunca responde 501. */
   public async reconnect(): Promise<string> {
     if (!this.configured) {
       throw new Error('BMB bridge configuration incomplete');

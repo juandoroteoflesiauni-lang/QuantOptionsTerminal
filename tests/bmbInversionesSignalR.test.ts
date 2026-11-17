@@ -13,9 +13,11 @@ import {
   resolveBmbBridgeScriptPath,
 } from '../src/server/bmbFeedAdapter.js';
 import {
+  BmbBridgeClient,
   isBmbInversionesSignalRConfigured,
   redactHubQueryCredentials,
   type BmbBridgeSnapshotDto,
+  type PrimaryHttpFn,
 } from '../src/server/primaryRofexLoader.js';
 
 interface FixtureHubTokenSection {
@@ -185,6 +187,108 @@ describe('Pieza 38 — ingesta JSONL L2_UPDATE (mapeo de 5 puntas al DTO L2)', (
       },
     } as BmbBridgeSnapshotDto;
     expect(mergeLiveL2IntoSnapshot(newerHttp, liveBook).orderBooksBySymbol['GGAL']?.asOfUtcSec).toBe(1794925900);
+  });
+});
+
+describe('Pieza 38.1 — reconexión en modo SignalR Core (nunca 501)', () => {
+  const nowMs = Date.UTC(2026, 10, 17, 14, 0, 0); // martes 11:00 ART -> IN_SESSION
+
+  function disconnectSnapshotBody(): string {
+    return JSON.stringify({
+      status: 'DISCONNECTED',
+      brokerId: 153,
+      accountLabel: null,
+      pyhomebrokerInstalled: null,
+      passwordConfigured: false,
+      asOfUtcSec: null,
+      error: null,
+      cauciones: [],
+      orderBooksBySymbol: {},
+      options: [],
+    });
+  }
+
+  it('getFeedHealth expone signalRMode según el env', () => {
+    const signalRAdapter = new BmbFeedAdapter({
+      env: { BMB_HUB_TOKEN: SYNTH_HUB_TOKEN, BMB_SESSION_COOKIE: SYNTH_SESSION_COOKIE },
+      manageProcess: false,
+      nowMsFn: () => nowMs,
+    });
+    expect(signalRAdapter.getFeedHealth().signalRMode).toBe(true);
+    expect(signalRAdapter.getFeedHealth().configured).toBe(true);
+    signalRAdapter.stop();
+
+    const legacyAdapter = new BmbFeedAdapter({
+      env: {
+        BMB_DNI: '20123456789',
+        BMB_USER: 'fake_user',
+        BMB_PASSWORD: 'fake_password',
+        BMB_BROKER_ID: '153',
+      },
+      manageProcess: false,
+      nowMsFn: () => nowMs,
+    });
+    expect(legacyAdapter.getFeedHealth().signalRMode).toBe(false);
+    legacyAdapter.stop();
+  });
+
+  it('adapter.reconnect() en modo SignalR Core hace POST /reconnect y devuelve el estado del bridge', async () => {
+    const calls: { readonly url: string; readonly method: string }[] = [];
+    const fetchFn: PrimaryHttpFn = (url, init) => {
+      const method = init?.method ?? 'GET';
+      calls.push({ url, method });
+      if (method === 'POST' && url.endsWith('/reconnect')) {
+        return Promise.resolve({
+          ok: true,
+          status: 202,
+          text: '{"status":"RECONNECT_REQUESTED"}',
+          headers: {},
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: disconnectSnapshotBody(), headers: {} });
+    };
+    const adapter = new BmbFeedAdapter({
+      env: { BMB_HUB_TOKEN: SYNTH_HUB_TOKEN, BMB_SESSION_COOKIE: SYNTH_SESSION_COOKIE },
+      manageProcess: false,
+      nowMsFn: () => nowMs,
+      fetchFn,
+    });
+    const detail = await adapter.reconnect();
+    expect(detail).toBe('BMB_HOMEBROKER_L2_RECONNECT_DISCONNECTED');
+    expect(calls.some((call) => call.method === 'POST' && call.url.endsWith('/reconnect'))).toBe(true);
+    adapter.stop();
+  });
+
+  it('BmbBridgeClient.requestReconnect: sin password ni SignalR lanza; con SignalR acepta 202', async () => {
+    const legacyClient = new BmbBridgeClient({
+      env: {},
+      fetchFn: (): Promise<never> => {
+        throw new Error('no debe tocar la red sin configuración');
+      },
+    });
+    await expect(legacyClient.requestReconnect()).rejects.toThrow('BMB password not configured');
+
+    const posts: string[] = [];
+    const fetchFn: PrimaryHttpFn = (url, init) => {
+      posts.push(`${init?.method ?? 'GET'} ${url}`);
+      if (init?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          status: 202,
+          text: '{"status":"RECONNECT_REQUESTED"}',
+          headers: {},
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: '{}', headers: {} });
+    };
+    const signalRClient = new BmbBridgeClient({
+      env: { BMB_HUB_TOKEN: SYNTH_HUB_TOKEN },
+      fetchFn,
+    });
+    await expect(signalRClient.requestReconnect()).resolves.toBeUndefined();
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain('POST ');
+    expect(posts[0]?.endsWith('/reconnect')).toBe(true);
   });
 });
 

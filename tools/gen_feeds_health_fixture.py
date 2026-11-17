@@ -334,7 +334,13 @@ def main() -> None:
             return "ARMED_OUT_OF_SESSION"
         return "DEGRADED"
 
-    def bmb_provider_reconnectable_reference(health_status: str) -> bool:
+    def bmb_provider_reconnectable_reference(health_status: str, signal_r_mode: bool) -> bool:
+        # Pieza 38.1: en modo SignalR Core el bridge local soporta
+        # `POST /reconnect` (202) con reinicio limpio -> siempre reconectable
+        # (incluidos CONNECTING, ERROR y STANDBY_2FA). En modo legacy, el 2FA
+        # interactivo no se reconecta automáticamente (evitar bucles de login).
+        if signal_r_mode:
+            return True
         return health_status != BMB_STANDBY_2FA_STATUS
 
     bmb_specs = [
@@ -354,12 +360,36 @@ def main() -> None:
                 "connected": connected,
                 "sessionMode": session_mode,
                 "healthStatus": health_status,
+                "signalRMode": False,
                 "expectedState": bmb_provider_state_reference(configured, connected, session_mode, health_status),
-                "expectedReconnectable": bmb_provider_reconnectable_reference(health_status),
+                "expectedReconnectable": bmb_provider_reconnectable_reference(health_status, False),
             }
             for name, configured, connected, session_mode, health_status in bmb_specs
         ]
     }
+
+    # Pieza 38.1: en modo SignalR Core el proveedor BMB es siempre reconectable
+    # (el bridge local responde 202 en POST /reconnect), sin importar el estado.
+    signalr_specs = [
+        ("signalr_connecting", True, False, "IN_SESSION", "CONNECTING"),
+        ("signalr_error", True, False, "IN_SESSION", "ERROR"),
+        ("signalr_standby_2fa", True, False, "IN_SESSION", BMB_STANDBY_2FA_STATUS),
+        ("signalr_connected_l2", True, True, "IN_SESSION", "CONNECTED_L2"),
+        ("signalr_out_of_session", True, False, "OUT_OF_SESSION", "DISCONNECTED"),
+    ]
+    fixture["bmbStandby2fa"]["signalRModeCases"] = [
+        {
+            "name": name,
+            "configured": configured,
+            "connected": connected,
+            "sessionMode": session_mode,
+            "healthStatus": health_status,
+            "signalRMode": True,
+            "expectedState": bmb_provider_state_reference(configured, connected, session_mode, health_status),
+            "expectedReconnectable": bmb_provider_reconnectable_reference(health_status, True),
+        }
+        for name, configured, connected, session_mode, health_status in signalr_specs
+    ]
 
     # Liveness MASSIVE_WS_STOCKS (hotfix producción): el flujo real de mensajes
     # manda sobre la transición momentánea del estado del cliente; el proveedor

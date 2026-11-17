@@ -144,6 +144,7 @@ import {
   computeCaucionTeaEffectivePct,
   computeOrderBookL2Metrics,
   computeSpreadVsBadlarBps,
+  isBmbInversionesSignalRConfigured,
   PrimaryRofexClient,
   type ArBrokerPositionsResponse,
   type BmbBridgeSnapshotDto,
@@ -3451,6 +3452,7 @@ export class ArgentinaMarketRuntime {
 
   private data912Queue: Promise<void> = Promise.resolve();
   private lastData912ReqMs = 0;
+  private readonly effectiveEnv: NodeJS.ProcessEnv;
 
   public constructor(deps: ArgentinaRuntimeDeps = {}) {
     this.fetchFn = deps.fetchFn ?? defaultArHttpFn;
@@ -3462,6 +3464,7 @@ export class ArgentinaMarketRuntime {
     // evitamos leer process.env para no disparar peticiones reales no mockeadas.
     const effectiveEnv: NodeJS.ProcessEnv =
       deps.env !== undefined ? deps.env : deps.fetchFn !== undefined ? {} : process.env;
+    this.effectiveEnv = effectiveEnv;
 
     const secretSet = new Set<string>(deps.secrets ?? []);
     for (const s of collectBrokerSecretsFromEnv(effectiveEnv)) {
@@ -3583,6 +3586,7 @@ export class ArgentinaMarketRuntime {
       caucionCount: health.counts.cauciones,
       optionCount: health.counts.options,
       lastError: health.error,
+      signalRMode: isBmbInversionesSignalRConfigured(this.effectiveEnv),
       telemetry: emptyFeedTelemetrySnapshot(),
     };
   }

@@ -26,6 +26,7 @@ RECORD_SEPARATOR = "\x1e"
 # Synthetic credentials (never real secrets).
 HUB_TOKEN = "11111111-2222-3333-4444-555555555555"
 OTHER_HUB_TOKEN = "99999999-8888-7777-6666-555555555555"
+INLINE_JS_TOKEN = "88888888-7777-6666-5555-444444444444"
 CONNECTION_TOKEN = "22222222-3333-4444-5555-666666666666"
 SESSION_COOKIE = "fake_session_cookie=44444444-5555-6666-7777-888888888888"
 
@@ -49,8 +50,22 @@ LOGIN_MARKERS = ("login", "ingresar", "acceso", "twofactor", "verifycode")
 # ---------------------------------------------------------------------------
 
 def ref_extract_hub_token(html: str) -> str:
-    match = HUB_TOKEN_RE.search(html or "")
-    return match.group(1) if match else ""
+    """Cascada: 1) `stock-prices-hub?token=<uuid>`; 2) cualquier query
+    `?token=<uuid>`/`&token=<uuid>` (UUID canónico); 3) token SignalR inline
+    en HTML/JS (`"token": "<uuid>"` / token=<uuid>)."""
+    haystack = html or ""
+    for pattern in (
+        re.compile(r"stock-prices-hub\?token=([0-9a-fA-F-]+)"),
+        re.compile(r"[?&]token=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"),
+        re.compile(
+            r"[\"']?token[\"']?\s*[:=]\s*[\"']([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})[\"']",
+            re.IGNORECASE,
+        ),
+    ):
+        match = pattern.search(haystack)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def ref_classify_portal(status: int | None, final_url: str) -> str:
@@ -81,6 +96,7 @@ def ref_negotiate_headers() -> dict[str, str]:
         "Origin": PORTAL_ORIGIN,
         "User-Agent": BROWSER_USER_AGENT,
         "Content-Type": "application/json",
+        "Content-Length": "0",
         "Accept": "application/json",
     }
 
@@ -399,6 +415,24 @@ def main() -> None:
     )
     hub_token_cases = [
         {"name": "html_with_token", "html": html_with_token, "expectedToken": HUB_TOKEN},
+        {
+            "name": "generic_query_token",
+            "html": f'<script>signalr("negotiate?token={OTHER_HUB_TOKEN}&negotiateVersion=1")</script>',
+            "expectedToken": OTHER_HUB_TOKEN,
+        },
+        {
+            "name": "inline_js_token",
+            "html": f'<script>var hubConfig = {{ token: "{INLINE_JS_TOKEN}", hub: "stock-prices-hub" }};</script>',
+            "expectedToken": INLINE_JS_TOKEN,
+        },
+        {
+            "name": "specific_pattern_wins_over_generic",
+            "html": (
+                f'<a href="/hub/stock-prices-hub?token={HUB_TOKEN}">hub</a>'
+                f'<script>fetch("negotiate?token={OTHER_HUB_TOKEN}")</script>'
+            ),
+            "expectedToken": HUB_TOKEN,
+        },
         {"name": "html_other_page_without_token", "html": "<html><body>Sin hub</body></html>", "expectedToken": ""},
         {"name": "empty_html", "html": "", "expectedToken": ""},
     ]

@@ -554,6 +554,21 @@
         "name": "html_with_token"
       },
       {
+        "expectedToken": "99999999-8888-7777-6666-555555555555",
+        "html": "<script>signalr(\"negotiate?token=99999999-8888-7777-6666-555555555555&negotiateVersion=1\")</script>",
+        "name": "generic_query_token"
+      },
+      {
+        "expectedToken": "88888888-7777-6666-5555-444444444444",
+        "html": "<script>var hubConfig = { token: \"88888888-7777-6666-5555-444444444444\", hub: \"stock-prices-hub\" };</script>",
+        "name": "inline_js_token"
+      },
+      {
+        "expectedToken": "11111111-2222-3333-4444-555555555555",
+        "html": "<a href=\"/hub/stock-prices-hub?token=11111111-2222-3333-4444-555555555555\">hub</a><script>fetch(\"negotiate?token=99999999-8888-7777-6666-555555555555\")</script>",
+        "name": "specific_pattern_wins_over_generic"
+      },
+      {
         "expectedToken": "",
         "html": "<html><body>Sin hub</body></html>",
         "name": "html_other_page_without_token"
@@ -653,6 +668,7 @@
         "connectionToken": "22222222-3333-4444-5555-666666666666",
         "expectedNegotiateHeaders": {
           "Accept": "application/json",
+          "Content-Length": "0",
           "Content-Type": "application/json",
           "Origin": "https://inversiones.bullmarket.com.ar",
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

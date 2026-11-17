@@ -78,6 +78,7 @@ interface FixtureBmbStandbyCase {
   readonly connected: boolean;
   readonly sessionMode: 'IN_SESSION' | 'OUT_OF_SESSION';
   readonly healthStatus: string;
+  readonly signalRMode: boolean;
   readonly expectedState: 'CONNECTED' | 'ARMED_OUT_OF_SESSION' | 'DEGRADED' | 'NOT_CONFIGURED';
   readonly expectedReconnectable: boolean;
 }
@@ -90,6 +91,7 @@ interface FixtureRoot {
   readonly massiveWsLiveness: readonly FixtureMassiveWsLivenessCase[];
   readonly bmbStandby2fa: {
     readonly cases: readonly FixtureBmbStandbyCase[];
+    readonly signalRModeCases?: readonly FixtureBmbStandbyCase[];
   };
 }
 
@@ -301,7 +303,19 @@ describe('Pieza 33 hotfix — BMB STANDBY_2FA (referencia Python independiente)'
           healthStatus: caseItem.healthStatus,
         }),
       ).toBe(caseItem.expectedState);
-      expect(isBmbProviderReconnectable(caseItem.healthStatus)).toBe(caseItem.expectedReconnectable);
+      expect(isBmbProviderReconnectable(caseItem.healthStatus, caseItem.signalRMode)).toBe(
+        caseItem.expectedReconnectable,
+      );
+    });
+  }
+
+  for (const caseItem of fixture.bmbStandby2fa.signalRModeCases ?? []) {
+    it(`isBmbProviderReconnectable (SignalR Core) ${caseItem.name}`, () => {
+      // Pieza 38.1: con SignalR Core el bridge local responde 202 en
+      // POST /reconnect -> siempre reconectable (CONNECTING/ERROR/STANDBY_2FA).
+      expect(isBmbProviderReconnectable(caseItem.healthStatus, caseItem.signalRMode)).toBe(
+        caseItem.expectedReconnectable,
+      );
     });
   }
 
@@ -520,6 +534,7 @@ function createMonitor(overrides: MonitorOverrides = {}): FeedsHealthMonitor {
       caucionCount: 0,
       optionCount: 0,
       lastError: null,
+      signalRMode: overrides.bmb?.signalRMode ?? false,
       telemetry: emptyFeedTelemetrySnapshot(),
       ...overrides.bmb,
     }),

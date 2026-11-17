@@ -2615,9 +2615,11 @@ export class BmbBridgeClient {
     return res.value;
   }
 
-  /** Pieza 33: pide reconexión al bridge local (loopback), sin exponer credenciales. */
+  /** Pieza 33: pide reconexión al bridge local (loopback), sin exponer credenciales.
+   * Pieza 38.1: el modo SignalR Core (BMB_HUB_TOKEN/BMB_SESSION_COOKIE) no
+   * requiere BMB_PASSWORD y el bridge local responde 202 en `POST /reconnect`. */
   public async requestReconnect(): Promise<void> {
-    if (!this.config.passwordConfigured) {
+    if (!this.config.passwordConfigured && !this.signalRConfigured) {
       throw new Error('BMB password not configured');
     }
     const response = await this.fetchFn(`${this.config.bridgeUrl}/reconnect`, {

@@ -70,11 +70,22 @@ try:
     import websocket
     from websocket import WebSocketTimeoutException
 
-    WEBSOCKET_AVAILABLE = True
-except ImportError:  # pragma: no cover - optional dependency
+    WEBSOCKET_CLIENT_AVAILABLE = True
+except ImportError:  # pragma: no cover - opcional
     websocket = None  # type: ignore[assignment]
     WebSocketTimeoutException = Exception  # type: ignore[assignment,misc]
-    WEBSOCKET_AVAILABLE = False
+    WEBSOCKET_CLIENT_AVAILABLE = False
+
+try:
+    # Fallback: cliente síncrono de `websockets` (v11+), ya instalado en producción.
+    from websockets.sync.client import connect as websockets_sync_connect
+    from websockets.exceptions import ConnectionClosed as WebsocketsConnectionClosed
+
+    WEBSOCKETS_SYNC_AVAILABLE = True
+except ImportError:  # pragma: no cover - opcional
+    websockets_sync_connect = None  # type: ignore[assignment]
+    WebsocketsConnectionClosed = Exception  # type: ignore[assignment,misc]
+    WEBSOCKETS_SYNC_AVAILABLE = False
 
 HUB_BASE = "https://hub.bullmarketbrokers.com"
 HUB_NAME = "stock-prices-hub"
@@ -82,9 +93,21 @@ PORTAL_ORIGIN = "https://inversiones.bullmarket.com.ar"
 PORTAL_COTIZACIONES_URL = f"{PORTAL_ORIGIN}/Cotizaciones"
 RECORD_SEPARATOR = "\x1e"
 HUB_TOKEN_PATTERN = re.compile(r"stock-prices-hub\?token=([0-9a-fA-F-]+)")
+HUB_TOKEN_GENERIC_QUERY_RE = re.compile(
+    r"[?&]token=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+)
+HUB_TOKEN_INLINE_JS_RE = re.compile(
+    r"[\"']?token[\"']?\s*[:=]\s*[\"']([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})[\"']",
+    re.IGNORECASE,
+)
+UUID_TOKEN_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
 HUB_QUERY_SECRET_RE = re.compile(r"([?&])(token|id)=[^&\s\"']+")
 WS_STATUS_RE = re.compile(r"status[:\s]*(\d{3})", re.IGNORECASE)
 LOGIN_REDIRECT_MARKERS = ("login", "ingresar", "acceso", "twofactor", "verifycode")
+PORTAL_TIMEOUT_SEC = 10.0
+NEGOTIATE_TIMEOUT_SEC = 10.0
 STREAM_RECV_TIMEOUT_SEC = 10.0
 NO_CREDENTIALS_ERROR = (
     "BMB_HUB_TOKEN o BMB_SESSION_COOKIE ausentes: el conector SignalR Core no puede autenticar"
@@ -96,9 +119,19 @@ NO_CREDENTIALS_ERROR = (
 # ---------------------------------------------------------------------------
 
 def extract_hub_token_from_html(html: str) -> str:
-    """Extrae el UUID del hub_token desde el HTML/scripts de `/Cotizaciones`."""
-    match = HUB_TOKEN_PATTERN.search(html or "")
-    return match.group(1) if match else ""
+    """Extrae el UUID del hub_token desde el HTML/scripts de `/Cotizaciones`.
+
+    Cascada explícita:
+    1. `stock-prices-hub?token=<uuid>` (patrón canónico del hub);
+    2. cualquier query string `?token=<uuid>`/`&token=<uuid>` (UUID canónico);
+    3. token SignalR inline en HTML/JS (`"token": "<uuid>"` / `token=<uuid>`).
+    """
+    haystack = html or ""
+    for pattern in (HUB_TOKEN_PATTERN, HUB_TOKEN_GENERIC_QUERY_RE, HUB_TOKEN_INLINE_JS_RE):
+        match = pattern.search(haystack)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def classify_portal_response(status_code: int | None, final_url: str) -> str:
@@ -140,6 +173,7 @@ def build_negotiate_headers() -> dict[str, str]:
         "Origin": PORTAL_ORIGIN,
         "User-Agent": BMB_BROWSER_USER_AGENT,
         "Content-Type": "application/json",
+        "Content-Length": "0",
         "Accept": "application/json",
     }
 
@@ -349,22 +383,51 @@ def default_fetch_html(url: str, cookie_header: str) -> tuple[int | None, str, s
             "User-Agent": BMB_BROWSER_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml",
         },
-        timeout=15.0,
+        timeout=PORTAL_TIMEOUT_SEC,
         allow_redirects=True,
     )
     return response.status_code, response.url, response.text
 
 
 def default_post_negotiate(url: str, headers: dict[str, str]) -> tuple[int | None, str]:
-    response = rq.post(url, headers=headers, timeout=10.0)  # type: ignore[union-attr]
+    response = rq.post(  # type: ignore[union-attr]
+        url, headers={**headers, "Content-Length": "0"}, timeout=NEGOTIATE_TIMEOUT_SEC
+    )
     return response.status_code, response.text
 
 
+class _WebsocketsSyncAdapter:
+    """Adaptador síncrono mínimo sobre `websockets.sync.client` con la misma
+    superficie que `websocket-client` (`send`, `recv`, `close`)."""
+
+    def __init__(self, url: str, headers: dict[str, str]) -> None:
+        self._connection = websockets_sync_connect(  # type: ignore[union-attr]
+            url,
+            additional_headers=headers,
+            open_timeout=STREAM_RECV_TIMEOUT_SEC,
+        )
+
+    def send(self, message: str) -> None:
+        self._connection.send(message)
+
+    def recv(self) -> str:
+        return str(self._connection.recv(timeout=STREAM_RECV_TIMEOUT_SEC))
+
+    def close(self) -> None:
+        self._connection.close()
+
+
 def default_ws_factory(url: str, headers: dict[str, str]) -> Any:
-    header_list = [f"{key}: {value}" for key, value in headers.items()]
-    return websocket.create_connection(  # type: ignore[union-attr]
-        url, header=header_list, timeout=STREAM_RECV_TIMEOUT_SEC
-    )
+    """websocket-client es el transporte primario (instalado junto a
+    pyhomebroker); `websockets.sync` es el fallback explícito."""
+    if WEBSOCKET_CLIENT_AVAILABLE:
+        header_list = [f"{key}: {value}" for key, value in headers.items()]
+        return websocket.create_connection(  # type: ignore[union-attr]
+            url, header=header_list, timeout=STREAM_RECV_TIMEOUT_SEC
+        )
+    if WEBSOCKETS_SYNC_AVAILABLE:
+        return _WebsocketsSyncAdapter(url, headers)
+    raise RuntimeError("Sin transporte WebSocket disponible (websocket-client/websockets)")
 
 
 # ---------------------------------------------------------------------------
@@ -385,19 +448,50 @@ class InversionesSignalRState(BmbBridgeState):
         self._reconnect_lock = threading.Lock()
         self._connector_thread: threading.Thread | None = None
         self._connector_deps = dict(connector_deps or {})
+        # El emitter inyectado aplica desde el estado (incluye rutas tempranas
+        # como `set_connector_error` sin conector construido).
+        if "emitter" in self._connector_deps:
+            self._emitter = self._connector_deps["emitter"]
+        self._last_emitted_status: str | None = None
 
     def _initial_status(self) -> str:
-        if not REQUESTS_AVAILABLE or not WEBSOCKET_AVAILABLE:
+        if not REQUESTS_AVAILABLE or not (WEBSOCKET_CLIENT_AVAILABLE or WEBSOCKETS_SYNC_AVAILABLE):
             return "MISSING_DEPENDENCY"
         if not self._cfg["hub_token"] and not self._cfg["session_cookie"]:
             return "ERROR"
         return "DISCONNECTED"
+
+    def _emit_status_change(self) -> None:
+        """Publica por stdout JSONL cada cambio de estado, al instante. Nunca
+        deja al bridge colgado en CONNECTING sin reporte."""
+        with self._lock:
+            status = self._status
+            if status == self._last_emitted_status:
+                return
+            self._last_emitted_status = status
+        self._emit_jsonl({"event": "STATUS", "status": status})
+
+    def mark_connecting(self) -> None:
+        with self._lock:
+            self._connected = False
+            self._status = "CONNECTING"
+        self._emit_status_change()
+
+    def mark_stream_open(self) -> None:
+        """Handshake WS completo: el stream está abierto aunque aún no lleguen
+        frames. Nunca permanecer en CONNECTING esperando datos."""
+        with self._lock:
+            self._connected = True
+            self._status = "READY"
+            self._error = None
+        self._emit_status_change()
 
     def set_connector_standby_2fa(self) -> None:
         with self._lock:
             self._connected = False
             self._status = BMB_STANDBY_2FA_STATUS
             self._error = BMB_STANDBY_2FA_MESSAGE
+        self._emit_status_change()
 
     def set_connector_error(self, message: str) -> None:
         safe = redact_secrets(redact_hub_query_credentials(str(message)), self._cfg["secrets"])
@@ -405,6 +499,7 @@ class InversionesSignalRState(BmbBridgeState):
             self._connected = False
             self._status = "ERROR"
             self._error = safe
+        self._emit_status_change()
 
     def count_target(self, target: str) -> None:
         with self._lock:
@@ -443,6 +538,7 @@ class InversionesSignalRState(BmbBridgeState):
         for record in records:
             if record.get("settlement") == "24hs":
                 self._emit_jsonl({"event": "L2_UPDATE", "record": record})
+        self._emit_status_change()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -455,17 +551,22 @@ class InversionesSignalRState(BmbBridgeState):
             self.set_connector_error(NO_CREDENTIALS_ERROR)
             return
         self._connector_thread = threading.current_thread()
-        with self._lock:
-            self._status = "CONNECTING"
+        # El conector se construye ANTES de marcar CONNECTING para que la
+        # emisión JSONL del cambio de estado use el emitter inyectado.
+        connector = InversionesSignalRConnector(self, self._cfg, **self._connector_deps)
+        self.mark_connecting()
         try:
-            InversionesSignalRConnector(self, self._cfg, **self._connector_deps).run()
+            connector.run()
         except Exception as exc:
-            self.set_connector_error(f"SignalR connector error: {exc}")
+            self.set_connector_error(
+                f"SignalR connector error: {redact_hub_query_credentials(str(exc))}"
+            )
         finally:
             with self._lock:
                 if self._status in {"CONNECTING", "READY", "CONNECTED_L2"}:
                     self._status = "DISCONNECTED"
                     self._connected = False
+            self._emit_status_change()
 
     def request_reconnect(self) -> None:
         """Reinicio único iniciado por el usuario (POST /reconnect); sin bucles."""
@@ -591,6 +692,9 @@ class InversionesSignalRConnector:
             self._state.set_connector_error("SignalR handshake inválido")
             self._close_quietly(ws)
             return None
+        # Handshake completo: el stream está abierto. Transición inmediata a
+        # READY (aún sin datos) para no quedar colgado en CONNECTING.
+        self._state.mark_stream_open()
         return ws
 
     def _classify_ws_error(self, exc: Exception) -> None:
@@ -644,7 +748,10 @@ class InversionesSignalRConnector:
             except Exception as exc:
                 if stop_event.is_set():
                     return
-                if WEBSOCKET_AVAILABLE and isinstance(exc, WebSocketTimeoutException):
+                if WEBSOCKET_CLIENT_AVAILABLE and isinstance(exc, WebSocketTimeoutException):
+                    continue
+                if WEBSOCKETS_SYNC_AVAILABLE and isinstance(exc, TimeoutError):
+                    # `websockets.sync` señala recv-timeout con TimeoutError.
                     continue
                 self._classify_ws_error(exc)
                 return

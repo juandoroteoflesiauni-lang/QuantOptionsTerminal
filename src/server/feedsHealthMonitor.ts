@@ -472,8 +472,17 @@ export function resolveBmbProviderState(input: {
   return 'DEGRADED';
 }
 
-/** El 2FA interactivo no se reconecta automáticamente: evitar bucles de login. */
-export function isBmbProviderReconnectable(healthStatus: string): boolean {
+/**
+ * El 2FA interactivo en modo legacy no se reconecta automáticamente: evitar
+ * bucles de login que podrían bloquear la cuenta. En modo SignalR Core
+ * (BMB_HUB_TOKEN/BMB_SESSION_COOKIE) el bridge local soporta `POST /reconnect`
+ * (202) con reinicio limpio del conector Python, por lo que SIEMPRE es
+ * reconectable (incluidos CONNECTING, ERROR y STANDBY_2FA).
+ */
+export function isBmbProviderReconnectable(healthStatus: string, signalRMode: boolean): boolean {
+  if (signalRMode) {
+    return true;
+  }
   return !isBmbStandby2faStatus(healthStatus);
 }
 
@@ -635,6 +644,9 @@ export interface BmbFeedHealthSource {
   readonly caucionCount: number;
   readonly optionCount: number;
   readonly lastError: string | null;
+  /** Modo conector SignalR Core (`BMB_HUB_TOKEN`/`BMB_SESSION_COOKIE`): el
+   * bridge local soporta `POST /reconnect` (202), nunca 501. */
+  readonly signalRMode: boolean;
   readonly telemetry: FeedTelemetrySnapshot;
 }
 
@@ -849,7 +861,7 @@ export class FeedsHealthMonitor {
         lastError: bmb.lastError,
         activeSymbolCount: bmb.orderBookCount,
         subscribedSymbols: [],
-        reconnectable: isBmbProviderReconnectable(bmb.healthStatus),
+        reconnectable: isBmbProviderReconnectable(bmb.healthStatus, bmb.signalRMode),
         nowMs,
         secrets: this.secrets,
       }),

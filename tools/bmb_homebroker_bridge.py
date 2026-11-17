@@ -834,6 +834,21 @@ def create_handler(state: BmbBridgeState) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json(404, {"status": "NOT_FOUND", "error": f"Unknown route {parsed.path}"})
 
+        def do_POST(self) -> None:  # noqa: N802
+            """Pieza 38.1: `POST /reconnect` -> 202 cuando el estado soporta
+            reconexión (p. ej. el conector SignalR Core); 501 explícito si el
+            estado no la implementa (nunca un 501 silencioso del stdlib)."""
+            parsed = urlparse(self.path)
+            if parsed.path == "/reconnect":
+                reconnect = getattr(state, "request_reconnect", None)
+                if callable(reconnect):
+                    reconnect()
+                    self._send_json(202, {"status": "RECONNECT_REQUESTED"})
+                    return
+                self._send_json(501, {"status": "RECONNECT_UNSUPPORTED", "error": "Este bridge no soporta /reconnect"})
+                return
+            self._send_json(404, {"status": "NOT_FOUND", "error": f"Unknown route {parsed.path}"})
+
         def log_message(self, format: str, *args: Any) -> None:
             # Suppress noisy request logs containing URL params; only emit redacted critical errors.
             return

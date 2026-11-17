@@ -28,7 +28,8 @@
         "expectedState": "DEGRADED",
         "healthStatus": "STANDBY_2FA",
         "name": "standby_2fa_in_session",
-        "sessionMode": "IN_SESSION"
+        "sessionMode": "IN_SESSION",
+        "signalRMode": false
       },
       {
         "configured": true,
@@ -37,7 +38,8 @@
         "expectedState": "DEGRADED",
         "healthStatus": "STANDBY_2FA",
         "name": "standby_2fa_out_of_session",
-        "sessionMode": "OUT_OF_SESSION"
+        "sessionMode": "OUT_OF_SESSION",
+        "signalRMode": false
       },
       {
         "configured": false,
@@ -46,7 +48,8 @@
         "expectedState": "NOT_CONFIGURED",
         "healthStatus": "STANDBY_2FA",
         "name": "standby_2fa_not_configured",
-        "sessionMode": "IN_SESSION"
+        "sessionMode": "IN_SESSION",
+        "signalRMode": false
       },
       {
         "configured": true,
@@ -55,7 +58,8 @@
         "expectedState": "CONNECTED",
         "healthStatus": "STANDBY_2FA",
         "name": "standby_2fa_connected_wins",
-        "sessionMode": "IN_SESSION"
+        "sessionMode": "IN_SESSION",
+        "signalRMode": false
       },
       {
         "configured": true,
@@ -64,7 +68,8 @@
         "expectedState": "DEGRADED",
         "healthStatus": "ERROR",
         "name": "error_status_in_session",
-        "sessionMode": "IN_SESSION"
+        "sessionMode": "IN_SESSION",
+        "signalRMode": false
       },
       {
         "configured": true,
@@ -73,7 +78,8 @@
         "expectedState": "ARMED_OUT_OF_SESSION",
         "healthStatus": "ERROR",
         "name": "error_status_out_of_session",
-        "sessionMode": "OUT_OF_SESSION"
+        "sessionMode": "OUT_OF_SESSION",
+        "signalRMode": false
       },
       {
         "configured": true,
@@ -82,7 +88,60 @@
         "expectedState": "DEGRADED",
         "healthStatus": "DISABLED_NO_PASSWORD",
         "name": "disabled_no_password_in_session",
-        "sessionMode": "IN_SESSION"
+        "sessionMode": "IN_SESSION",
+        "signalRMode": false
+      }
+    ],
+    "signalRModeCases": [
+      {
+        "configured": true,
+        "connected": false,
+        "expectedReconnectable": true,
+        "expectedState": "DEGRADED",
+        "healthStatus": "CONNECTING",
+        "name": "signalr_connecting",
+        "sessionMode": "IN_SESSION",
+        "signalRMode": true
+      },
+      {
+        "configured": true,
+        "connected": false,
+        "expectedReconnectable": true,
+        "expectedState": "DEGRADED",
+        "healthStatus": "ERROR",
+        "name": "signalr_error",
+        "sessionMode": "IN_SESSION",
+        "signalRMode": true
+      },
+      {
+        "configured": true,
+        "connected": false,
+        "expectedReconnectable": true,
+        "expectedState": "DEGRADED",
+        "healthStatus": "STANDBY_2FA",
+        "name": "signalr_standby_2fa",
+        "sessionMode": "IN_SESSION",
+        "signalRMode": true
+      },
+      {
+        "configured": true,
+        "connected": true,
+        "expectedReconnectable": true,
+        "expectedState": "CONNECTED",
+        "healthStatus": "CONNECTED_L2",
+        "name": "signalr_connected_l2",
+        "sessionMode": "IN_SESSION",
+        "signalRMode": true
+      },
+      {
+        "configured": true,
+        "connected": false,
+        "expectedReconnectable": true,
+        "expectedState": "ARMED_OUT_OF_SESSION",
+        "healthStatus": "DISCONNECTED",
+        "name": "signalr_out_of_session",
+        "sessionMode": "OUT_OF_SESSION",
+        "signalRMode": true
       }
     ]
   },

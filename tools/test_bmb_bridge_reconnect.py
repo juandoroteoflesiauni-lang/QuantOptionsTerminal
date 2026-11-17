@@ -627,16 +627,19 @@ def test_hub_token_resolution_matches_reference_fixture() -> None:
 def test_connector_run_login_redirect_sets_standby_2fa() -> None:
     fixture = load_signalr_fixture()
     portal = next(c for c in fixture["hubToken"]["resolveCases"] if c["name"] == "login_redirect_is_standby")
+    events: list[dict[str, Any]] = []
 
     def fake_fetch(_url: str, _cookie: str) -> tuple[int | None, str, str]:
         return portal["portalStatus"], portal["portalFinalUrl"], portal["portalHtml"]
 
     state = make_signalr_state(make_signalr_env(BMB_HUB_TOKEN=""))
-    connector = make_connector(state, fetch_html=fake_fetch)
+    connector = make_connector(state, fetch_html=fake_fetch, emitter=lambda payload: events.append(payload))
     connector.run()
     assert state._status == "STANDBY_2FA"
     assert state._error == signalr.BMB_STANDBY_2FA_MESSAGE
     assert state._connected is False
+    # Transición publicada por stdout JSONL al instante (nunca CONNECTING colgado).
+    assert {"event": "STATUS", "status": "STANDBY_2FA"} in events
 
 
 def test_negotiate_urls_headers_and_response_parsing_match_reference() -> None:
@@ -782,8 +785,13 @@ def test_connector_stream_flow_ingests_frames_and_replies_pings() -> None:
     assert fake_ws_sent[0] == signalr.build_handshake_frame()
     assert signalr.ping_reply_frame() in fake_ws_sent
 
-    # JSONL: un L2_UPDATE por registro 24hs, en orden de llegada.
-    assert [event["record"]["symbol"] for event in emitted] == ["GGAL", "PAMP", "SUPV"]
+    # JSONL: un L2_UPDATE por registro 24hs, en orden de llegada; los eventos
+    # STATUS acompañan cada transición (READY tras handshake, CONNECTED_L2 tras
+    # la primera ingesta).
+    l2_symbols = [event["record"]["symbol"] for event in emitted if event["event"] == "L2_UPDATE"]
+    assert l2_symbols == ["GGAL", "PAMP", "SUPV"]
+    status_events = [event["status"] for event in emitted if event["event"] == "STATUS"]
+    assert status_events == ["READY", "CONNECTED_L2"]
 
 
 def test_connector_negotiate_401_sets_standby_without_retry() -> None:
@@ -794,7 +802,9 @@ def test_connector_negotiate_401_sets_standby_without_retry() -> None:
         calls.append(url)
         return 401, ""
 
-    connector = make_connector(state, post_negotiate=post_negotiate)
+    connector = make_connector(
+        state, post_negotiate=post_negotiate, emitter=lambda _payload: None
+    )
     connector.run()
     assert len(calls) == 1, "sin bucle de reintento ante 401"
     assert state._status == "STANDBY_2FA"
@@ -810,7 +820,12 @@ def test_connector_ws_403_sets_standby() -> None:
     def ws_factory(_url: str, _headers: dict[str, str]) -> Any:
         raise RuntimeError("Handshake status 403 Forbidden")
 
-    connector = make_connector(state, post_negotiate=post_negotiate, ws_factory=ws_factory)
+    connector = make_connector(
+        state,
+        post_negotiate=post_negotiate,
+        ws_factory=ws_factory,
+        emitter=lambda _payload: None,
+    )
     connector.run()
     assert state._status == "STANDBY_2FA"
     assert state._error == signalr.BMB_STANDBY_2FA_MESSAGE
@@ -825,7 +840,9 @@ def test_connector_errors_redact_token_id_and_cookie() -> None:
     def post_negotiate(_url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
         raise RuntimeError(f"negotiate failed for {leaked_url} with cookie {env['BMB_SESSION_COOKIE']}")
 
-    connector = make_connector(state, post_negotiate=post_negotiate)
+    connector = make_connector(
+        state, post_negotiate=post_negotiate, emitter=lambda _payload: None
+    )
     connector.run()
 
     error = str(state._error)
@@ -852,7 +869,10 @@ def test_state_ingest_l2_records_24hs_only() -> None:
 
 
 def test_signalr_state_start_without_credentials_sets_explicit_error() -> None:
-    state = make_signalr_state(make_signalr_env(BMB_HUB_TOKEN="", BMB_SESSION_COOKIE=""))
+    state = make_signalr_state(
+        make_signalr_env(BMB_HUB_TOKEN="", BMB_SESSION_COOKIE=""),
+        {"emitter": lambda _payload: None},
+    )
     state.start()
     assert state._status == "ERROR"
     assert "BMB_HUB_TOKEN o BMB_SESSION_COOKIE" in str(state._error)
@@ -884,14 +904,136 @@ def test_signalr_state_start_end_to_end_with_injected_deps() -> None:
     telemetry = state.get_health()["telemetry"]
     assert telemetry["sendPricesUpdates"] >= 1
     assert telemetry["pingsReplied"] == 1
-    # JSONL en stdout del bridge: un L2_UPDATE por registro 24hs.
-    assert [event["event"] for event in emitted] == ["L2_UPDATE"] * len(emitted)
-    assert {event["record"]["symbol"] for event in emitted} == {"GGAL", "PAMP", "SUPV"}
+    # JSONL en stdout del bridge: un L2_UPDATE por registro 24hs y una
+    # transición de estado por cambio (CONNECTING -> READY -> CONNECTED_L2 ->
+    # DISCONNECTED al cerrar limpio). Nunca queda colgado en CONNECTING.
+    l2_events = [event for event in emitted if event["event"] == "L2_UPDATE"]
+    assert {event["record"]["symbol"] for event in l2_events} == {"GGAL", "PAMP", "SUPV"}
+    status_events = [event["status"] for event in emitted if event["event"] == "STATUS"]
+    assert status_events == ["CONNECTING", "READY", "CONNECTED_L2", "DISCONNECTED"]
+    assert "CONNECTING" not in status_events[1:], "CONNECTING solo como estado inicial"
     for event in emitted:
         assert json.dumps(event).count("11111111") == 0, "sin hub_token en stdout"
     # El stream terminó limpio (stop event) -> DISCONNECTED sin ERROR.
     assert state._status in {"DISCONNECTED", "CONNECTED_L2"}
     assert state._error is None
+
+
+def test_stream_open_without_data_is_ready_never_connecting() -> None:
+    """Regresión del cuelgue en CONNECTING: tras el handshake el stream está
+    abierto (READY) aunque el servidor todavía no envíe frames."""
+    state = make_signalr_state()
+    emitted: list[dict[str, Any]] = []
+
+    def post_negotiate(_url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        return 200, json.dumps({"connectionToken": "22222222-3333-4444-5555-666666666666"})
+
+    def ws_factory(_url: str, _headers: dict[str, str]) -> Any:
+        def silent_recv() -> None:
+            state._stop_event.set()
+
+        return FakeWebSocket(['{}\x1e', silent_recv])
+
+    connector = make_connector(
+        state,
+        post_negotiate=post_negotiate,
+        ws_factory=ws_factory,
+        emitter=lambda payload: emitted.append(payload),
+    )
+    connector.run()
+
+    # Tras el handshake, sin frames: READY (nunca CONNECTING).
+    assert state._status == "READY"
+    assert state._connected is True
+    statuses = [event["status"] for event in emitted if event["event"] == "STATUS"]
+    assert statuses == ["READY"]
+    assert state.get_health()["ok"] is True
+
+
+def test_status_transitions_on_failure_never_hang_connecting() -> None:
+    """Ante fallo de negotiate / hub_token ausente / timeout, el bridge termina
+    en STANDBY_2FA o ERROR redactado, jamás en CONNECTING."""
+    # 1) negotiate 401 -> STANDBY_2FA
+    state_401 = make_signalr_state()
+    connector_401 = make_connector(
+        state_401,
+        post_negotiate=lambda _url, _headers: (401, ""),
+        emitter=lambda _payload: None,
+    )
+    connector_401.run()
+    assert state_401._status == "STANDBY_2FA"
+
+    # 2) negotiate timeout (excepción de red) -> ERROR redactado
+    def negotiate_timeout(_url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        raise RuntimeError("HTTPConnectionPool host: Read timed out. (read timeout=10)")
+
+    state_timeout = make_signalr_state()
+    connector_timeout = make_connector(
+        state_timeout,
+        post_negotiate=negotiate_timeout,
+        emitter=lambda _payload: None,
+    )
+    connector_timeout.run()
+    assert state_timeout._status == "ERROR"
+    assert "timeout=10" in str(state_timeout._error)
+
+    # 3) sin hub_token ni cookie -> ERROR explícito (no hay material de auth)
+    state_no_token = make_signalr_state(
+        make_signalr_env(BMB_HUB_TOKEN="", BMB_SESSION_COOKIE=""),
+        {"emitter": lambda _payload: None},
+    )
+    state_no_token.start()
+    assert state_no_token._status == "ERROR"
+
+    # 4) scrape falla (portal 401) -> STANDBY_2FA
+    state_scrape = make_signalr_state(make_signalr_env(BMB_HUB_TOKEN=""))
+    connector_scrape = make_connector(
+        state_scrape,
+        fetch_html=lambda _url, _cookie: (401, "https://inversiones.bullmarket.com.ar/Cotizaciones", ""),
+        emitter=lambda _payload: None,
+    )
+    connector_scrape.run()
+    assert state_scrape._status == "STANDBY_2FA"
+
+
+def test_request_reconnect_restarts_connector_once() -> None:
+    """POST /reconnect (Pieza 38.1): reinicio único del conector Python, 202
+    limpio en modo SignalR Core (nunca 501)."""
+    state = make_signalr_state()
+    negotiate_calls: list[str] = []
+
+    def post_negotiate(url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        negotiate_calls.append(url)
+        return 200, json.dumps({"connectionToken": "22222222-3333-4444-5555-666666666666"})
+
+    def ws_factory(_url: str, _headers: dict[str, str]) -> Any:
+        def stop_recv() -> None:
+            state._stop_event.set()
+
+        return FakeWebSocket(['{}\x1e', stop_recv])
+
+    state._connector_deps = {
+        "post_negotiate": post_negotiate,
+        "ws_factory": ws_factory,
+        "emitter": lambda _payload: None,
+    }
+
+    state.request_reconnect()
+    thread = state._connector_thread
+    assert thread is not None
+    thread.join(timeout=10.0)
+    assert not thread.is_alive(), "el reinicio único no debe colgarse"
+    assert len(negotiate_calls) == 1
+    assert state.get_health()["telemetry"]["negotiateCount"] == 1
+
+
+def test_base_http_handler_supports_post_reconnect() -> None:
+    """El handler HTTP del bridge base expone do_POST /reconnect -> 202; sin
+    do_POST el stdlib respondería 501 automático (bug diagnosticado)."""
+    state = make_signalr_state()
+    handler_cls = base.create_handler(state)
+    assert hasattr(handler_cls, "do_POST")
+    assert hasattr(handler_cls, "do_GET")
 
 
 if __name__ == "__main__":
