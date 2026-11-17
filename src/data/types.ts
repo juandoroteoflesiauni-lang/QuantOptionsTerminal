@@ -327,4 +327,27 @@ export interface LoadBarsOptions {
    * RTH).
    */
   readonly rthOnly?: boolean;
+  /**
+   * Solo Massive (Pieza 39). Ventana explícita `[from, to]` en segundos UTC
+   * que reemplaza el lookback implícito derivado de `requestedBars`. La usan
+   * las cargas de historial profundo (p. ej. GGAL ADR cubriendo el gap
+   * electoral): la paginación `next_url` sigue hasta `noMorePages`,
+   * `requestedBars` o `maxPages` igual que siempre, pero el intervalo ya no
+   * depende de `requestedBars`. Debe cumplir `0 < from < to`; si falta o es
+   * inválida se conserva el comportamiento por defecto.
+   */
+  readonly window?: { readonly from: number; readonly to: number };
+  /**
+   * Solo Massive (Pieza 39). Orden del proveedor para la paginación. Por
+   * defecto `desc` (comportamiento histórico); el historial profundo usa
+   * `asc` para empezar por el borde más antiguo de la ventana y que un corte
+   * por `maxPages` nunca deje fuera la región electoral.
+   */
+  readonly sort?: 'asc' | 'desc';
+  /**
+   * Solo Massive (Pieza 39). `limit` por página del proveedor. Por defecto
+   * `MASSIVE_PAGE_LIMIT` (50.000); el historial profundo usa 5.000 según el
+   * contrato de `next_url` del proveedor.
+   */
+  readonly pageLimit?: number;
 }

@@ -1,0 +1,356 @@
+{
+  "avwapCase": {
+    "anchorSec": 1763251200,
+    "bars": [
+      {
+        "close": 64.5,
+        "high": 64.9,
+        "low": 64.1,
+        "timeSec": 1763251200,
+        "volume": 1200.0
+      },
+      {
+        "close": 65.2,
+        "high": 65.4,
+        "low": 64.4,
+        "timeSec": 1763251500,
+        "volume": 800.0
+      },
+      {
+        "close": 64.8,
+        "high": 65.0,
+        "low": 64.6,
+        "timeSec": 1763251800,
+        "volume": 0.0
+      },
+      {
+        "close": 65.05,
+        "high": 65.2,
+        "low": 64.9,
+        "timeSec": 1763252100,
+        "volume": 600.0
+      }
+    ],
+    "expectedPoints": [
+      {
+        "avwap": 64.5,
+        "minus1Sigma": 64.5,
+        "plus1Sigma": 64.5,
+        "timeSec": 1763251200
+      },
+      {
+        "avwap": 64.7,
+        "minus1Sigma": 64.45505102572169,
+        "plus1Sigma": 64.94494897427832,
+        "timeSec": 1763251500
+      },
+      {
+        "avwap": 64.7,
+        "minus1Sigma": 64.45505102572169,
+        "plus1Sigma": 64.94494897427832,
+        "timeSec": 1763251800
+      },
+      {
+        "avwap": 64.78076923076924,
+        "minus1Sigma": 64.52019408175455,
+        "plus1Sigma": 65.04134437978392,
+        "timeSec": 1763252100
+      }
+    ]
+  },
+  "bucketCases": [
+    {
+      "expected": 1763304600,
+      "name": "1m",
+      "timeSec": 1763304605,
+      "timeframe": "1m"
+    },
+    {
+      "expected": 1763304600,
+      "name": "5m",
+      "timeSec": 1763304605,
+      "timeframe": "5m"
+    },
+    {
+      "expected": 1763304300,
+      "name": "15m",
+      "timeSec": 1763304605,
+      "timeframe": "15m"
+    },
+    {
+      "expected": 1763301600,
+      "name": "1h",
+      "timeSec": 1763304605,
+      "timeframe": "1h"
+    },
+    {
+      "expected": 1763294400,
+      "name": "4h",
+      "timeSec": 1763304605,
+      "timeframe": "4h"
+    },
+    {
+      "expected": 1763251200,
+      "name": "1d_utc_midnight",
+      "timeSec": 1763304605,
+      "timeframe": "1D"
+    },
+    {
+      "expected": null,
+      "name": "invalid_zero",
+      "timeSec": 0,
+      "timeframe": "1m"
+    }
+  ],
+  "cclCases": [
+    {
+      "adrPrice": 64.52,
+      "arsPrice": 6450.5,
+      "expected": 999.7675139491631,
+      "name": "nominal"
+    },
+    {
+      "adrPrice": 64.505,
+      "arsPrice": 645.05,
+      "expected": 100.0,
+      "name": "ratio_10"
+    },
+    {
+      "adrPrice": 0.0,
+      "arsPrice": 6450.5,
+      "expected": null,
+      "name": "invalid_adr_zero"
+    },
+    {
+      "adrPrice": 64.52,
+      "arsPrice": -1.0,
+      "expected": null,
+      "name": "invalid_ars_negative"
+    }
+  ],
+  "deepHistoryCapCase": {
+    "expectedCount": 3,
+    "expectedFirstTime": 1760392500,
+    "maxBars": 3
+  },
+  "deepHistoryCase": {
+    "coversElectoralGap": true,
+    "duplicateLastWins": true,
+    "expectedBars": [
+      {
+        "close": 42.4,
+        "high": 42.6,
+        "low": 41.9,
+        "open": 42.1,
+        "time": 1760391600,
+        "volume": 5000.0
+      },
+      {
+        "close": 42.9,
+        "high": 43.0,
+        "low": 42.3,
+        "open": 42.4,
+        "time": 1760392500,
+        "volume": 4200.0
+      },
+      {
+        "close": 64.5,
+        "high": 64.7,
+        "low": 64.2,
+        "open": 64.4,
+        "time": 1763303705,
+        "volume": 3100.0
+      },
+      {
+        "close": 64.9,
+        "high": 65.0,
+        "low": 64.3,
+        "open": 64.5,
+        "time": 1763304605,
+        "volume": 2950.0
+      }
+    ],
+    "expectedCount": 4,
+    "maxBars": 15000,
+    "pages": [
+      [
+        {
+          "close": 42.4,
+          "high": 42.6,
+          "low": 41.9,
+          "open": 42.1,
+          "time": 1760391600,
+          "volume": 5000.0
+        },
+        {
+          "close": 42.9,
+          "high": 43.0,
+          "low": 42.3,
+          "open": 42.4,
+          "time": 1760392500,
+          "volume": 4200.0
+        }
+      ],
+      [
+        {
+          "close": 64.5,
+          "high": 64.7,
+          "low": 64.2,
+          "open": 64.4,
+          "time": 1763303705,
+          "volume": 3100.0
+        },
+        {
+          "close": 64.78,
+          "high": 64.9,
+          "low": 64.3,
+          "open": 64.5,
+          "time": 1763304605,
+          "volume": 2800.0
+        }
+      ],
+      [
+        {
+          "close": 64.9,
+          "high": 65.0,
+          "low": 64.3,
+          "open": 64.5,
+          "time": 1763304605,
+          "volume": 2950.0
+        }
+      ]
+    ]
+  },
+  "deepWindowCase": {
+    "expectedFromUtcSec": 1758119405,
+    "months": 14,
+    "nowSec": 1794925805
+  },
+  "tickBarCases": [
+    {
+      "bucketSec": 1763304600,
+      "expected": {
+        "close": 64.52,
+        "high": 64.52,
+        "low": 64.52,
+        "open": 64.52,
+        "timeSec": 1763304600,
+        "volume": 300.0
+      },
+      "name": "new_bucket",
+      "price": 64.52,
+      "priorBar": null,
+      "size": 300.0
+    },
+    {
+      "bucketSec": 1763304600,
+      "expected": {
+        "close": 64.78,
+        "high": 64.78,
+        "low": 64.52,
+        "open": 64.52,
+        "timeSec": 1763304600,
+        "volume": 450.0
+      },
+      "name": "high_and_volume",
+      "price": 64.78,
+      "priorBar": {
+        "close": 64.52,
+        "high": 64.52,
+        "low": 64.52,
+        "open": 64.52,
+        "timeSec": 1763304600,
+        "volume": 300.0
+      },
+      "size": 150.0
+    },
+    {
+      "bucketSec": 1763304600,
+      "expected": {
+        "close": 64.1,
+        "high": 64.78,
+        "low": 64.1,
+        "open": 64.52,
+        "timeSec": 1763304600,
+        "volume": 650.0
+      },
+      "name": "low_updates",
+      "price": 64.1,
+      "priorBar": {
+        "close": 64.78,
+        "high": 64.78,
+        "low": 64.52,
+        "open": 64.52,
+        "timeSec": 1763304600,
+        "volume": 450.0
+      },
+      "size": 200.0
+    },
+    {
+      "bucketSec": 1763304900,
+      "expected": {
+        "close": 64.3,
+        "high": 64.3,
+        "low": 64.3,
+        "open": 64.3,
+        "timeSec": 1763304900,
+        "volume": 100.0
+      },
+      "name": "bucket_roll_creates_new",
+      "price": 64.3,
+      "priorBar": {
+        "close": 64.1,
+        "high": 64.78,
+        "low": 64.1,
+        "open": 64.52,
+        "timeSec": 1763304600,
+        "volume": 650.0
+      },
+      "size": 100.0
+    },
+    {
+      "bucketSec": 1763304900,
+      "expected": {
+        "close": 64.35,
+        "high": 64.35,
+        "low": 64.3,
+        "open": 64.3,
+        "timeSec": 1763304900,
+        "volume": 100.0
+      },
+      "name": "zero_size_keeps_volume",
+      "price": 64.35,
+      "priorBar": {
+        "close": 64.3,
+        "high": 64.3,
+        "low": 64.3,
+        "open": 64.3,
+        "timeSec": 1763304900,
+        "volume": 100.0
+      },
+      "size": 0.0
+    },
+    {
+      "bucketSec": 1763304900,
+      "expected": {
+        "close": 64.3,
+        "high": 64.3,
+        "low": 64.3,
+        "open": 64.3,
+        "timeSec": 1763304900,
+        "volume": 100.0
+      },
+      "name": "invalid_price_ignored",
+      "price": 0.0,
+      "priorBar": {
+        "close": 64.3,
+        "high": 64.3,
+        "low": 64.3,
+        "open": 64.3,
+        "timeSec": 1763304900,
+        "volume": 100.0
+      },
+      "size": 100.0
+    }
+  ]
+}

@@ -217,17 +217,22 @@ export class MassiveStocksStream {
       // Suscripciones explícitas por trade channel `T.<símbolo>` para todo el
       // universo configurado (acciones/ETFs/ADRs); los wildcards Q.*/AM.* se
       // conservan para puntas y agregados. Los índices `I:*` no tienen canal T.
+      // Pieza 39: GGAL ADR se suscribe explícitamente (T/A/AM) para el
+      // streaming tick-by-tick del GGAL Specialist (dedupe con el universo).
       const tradeChannels = this.stockSymbols.map((symbol) => `T.${symbol}`);
+      const ggalExplicitChannels = ['T.GGAL', 'A.GGAL', 'AM.GGAL'] as const;
       this.client = this.createWsClientFn({
         apiKey: this.apiKey,
         cluster: 'stocks',
-        initialSubscriptions: [...tradeChannels, 'Q.*', 'AM.*'],
+        initialSubscriptions: [
+          ...new Set([...tradeChannels, ...ggalExplicitChannels, 'Q.*', 'AM.*']),
+        ],
         autoReconnect: true,
         onEvents: (events) => {
           const configuredEvents = events.filter(
             (event) =>
               (event.ev === 'T' || event.ev === 'Q' || event.ev === 'A' || event.ev === 'AM') &&
-              this.symbols.has(event.sym.toUpperCase()),
+              (this.symbols.has(event.sym.toUpperCase()) || event.sym.toUpperCase() === 'GGAL'),
           );
           if (configuredEvents.length === 0) return;
           this.lastWsMessageMs = this.nowMsFn();

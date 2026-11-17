@@ -360,6 +360,9 @@ export class BmbFeedAdapter {
   private nextPrimeIndex = 0;
   private readonly signalRMode: boolean;
   private liveL2Books: Readonly<Record<string, BmbBridgeBookEntry>> = {};
+  /** Pieza 39: fuente de ticks ARS para el GGAL Specialist (trades GGAL). */
+  private ggalArsTickListener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null = null;
+  private lastArsTickSequence = 0;
   private readonly httpTelemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
   });
@@ -572,6 +575,47 @@ export class BmbFeedAdapter {
     }
   }
 
+  /** Pieza 39: registra la fuente de ticks ARS (GGAL Specialist runtime). */
+  public setGgalArsTickListener(
+    listener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null,
+  ): void {
+    this.ggalArsTickListener = listener;
+    if (listener === null) {
+      this.lastArsTickSequence = 0;
+    }
+  }
+
+  private emitGgalArsTicks(snapshot: BmbBridgeSnapshotDto): void {
+    const listener = this.ggalArsTickListener;
+    if (listener === null) {
+      return;
+    }
+    const trades = snapshot.tradesBySymbol?.['GGAL'];
+    if (trades === undefined || trades.length === 0) {
+      return;
+    }
+    for (const trade of trades) {
+      if (
+        !Number.isInteger(trade.sequence) ||
+        trade.sequence <= this.lastArsTickSequence ||
+        !Number.isFinite(trade.price) ||
+        trade.price <= 0 ||
+        !Number.isInteger(trade.timeSec) ||
+        trade.timeSec <= 0
+      ) {
+        continue;
+      }
+      if (trade.sequence > this.lastArsTickSequence) {
+        this.lastArsTickSequence = trade.sequence;
+      }
+      listener({
+        price: trade.price,
+        size: Number.isFinite(trade.size) && trade.size > 0 ? trade.size : 0,
+        timeSec: trade.timeSec,
+      });
+    }
+  }
+
   private normalizeSnapshot(snapshot: BmbBridgeSnapshotDto): BmbBridgeSnapshotDto {
     const ggal = snapshot.orderBooksBySymbol['GGAL'];
     const liveGgal = this.liveL2Books['GGAL'];
@@ -604,6 +648,7 @@ export class BmbFeedAdapter {
     // Los libros L2 vivos (stdout JSONL del conector SignalR) se fusionan por
     // asOfUtcSec antes de exponerlos a ggalSpecialistRuntime y StockDetailView.
     const merged = mergeLiveL2IntoSnapshot(normalized, this.liveL2Books);
+    this.emitGgalArsTicks(merged);
     this.lastSnapshot = merged;
     return merged;
   }

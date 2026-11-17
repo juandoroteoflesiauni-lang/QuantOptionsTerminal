@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CandlestickSeries,
   ColorType,
+  HistogramSeries,
   LineSeries,
   LineStyle,
   createChart,
@@ -13,6 +14,7 @@ import {
   type ISeriesPrimitive,
   type LineWidth,
   type LogicalRange,
+  type MouseEventParams,
   type SeriesAttachedParameter,
   type SeriesType,
   type Time,
@@ -20,6 +22,7 @@ import {
 } from 'lightweight-charts';
 import { AlertTriangle, Layers, RefreshCw } from 'lucide-react';
 import { projectLiveEma } from '../../../../src/core/ema';
+import { subscribeGgalBarTick } from '../../api/useMarketLiveStream';
 import {
   appendLiveTapeTick,
   projectLiveCandle,
@@ -1068,6 +1071,15 @@ export function GgalDualChartView({
   const emaSeriesRefs = useRef<Partial<Record<9 | 21 | 50 | 200, ISeriesApi<'Line'>>>>({});
   const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const cvdSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  // Pieza 39: volumen + AVWAP con refs nombradas para updates tick-a-tick.
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const avwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const avwapPlus1SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const avwapMinus1SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const avwapPlus2SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const avwapMinus2SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  // Leyenda OHLCV: DOM directo (sin setState por pixel de mouse).
+  const crosshairLegendRef = useRef<HTMLDivElement | null>(null);
   const lastCvdRef = useRef<number | null>(null);
   const tapeRef = useRef<readonly LiveTapeTick[]>([]);
   const previousArQuoteRef = useRef<MarketLiveQuote | null>(null);
@@ -1190,6 +1202,17 @@ export function GgalDualChartView({
       },
     });
 
+    // Pieza 39: volumen OHLCV como overlay inferior (leyenda + update por tick).
+    const volumeSeries = mainChart.addSeries(HistogramSeries, {
+      priceScaleId: 'ggal-volume-scale',
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    mainChart.priceScale('ggal-volume-scale').applyOptions({
+      scaleMargins: { top: 0.86, bottom: 0 },
+    });
+    volumeSeriesRef.current = volumeSeries;
+
     const primitive = new GgalChartOverlayPrimitive({
       payload: latestPayloadRef.current,
       toggles: togglesRef.current,
@@ -1264,6 +1287,11 @@ export function GgalDualChartView({
     emaSeriesRefs.current = {};
     vwapSeriesRef.current = null;
     cvdSeriesRef.current = null;
+    avwapSeriesRef.current = null;
+    avwapPlus1SeriesRef.current = null;
+    avwapMinus1SeriesRef.current = null;
+    avwapPlus2SeriesRef.current = null;
+    avwapMinus2SeriesRef.current = null;
 
     for (const priceLine of priceLinesRef.current) {
       candleSeries.removePriceLine(priceLine);
@@ -1275,6 +1303,7 @@ export function GgalDualChartView({
     const bars = payload?.status === 'OPERATIONAL' ? (payload.bars ?? []) : [];
     if (payload === null || payload.status !== 'OPERATIONAL' || bars.length === 0) {
       candleSeries.setData([]);
+      volumeSeriesRef.current?.setData([]);
       lastFitKeyRef.current = null;
       lastBarRef.current = null;
       closedBarsRef.current = [];
@@ -1289,6 +1318,13 @@ export function GgalDualChartView({
         high: bar.high,
         low: bar.low,
         close: bar.close,
+      })),
+    );
+    volumeSeriesRef.current?.setData(
+      bars.map((bar) => ({
+        time: bar.timeSec as UTCTimestamp,
+        value: bar.volume,
+        color: bar.close >= bar.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
       })),
     );
     const lastBar = bars[bars.length - 1];
@@ -1339,30 +1375,30 @@ export function GgalDualChartView({
       payload.avwapBands !== undefined &&
       payload.avwapBands.length > 0
     ) {
-      addLineOverlay(
+      avwapSeriesRef.current = addLineOverlay(
         payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.avwap })),
         INDICATOR_COLORS.avwap,
         1.75,
       );
-      addLineOverlay(
+      avwapPlus1SeriesRef.current = addLineOverlay(
         payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus1Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dashed,
       );
-      addLineOverlay(
+      avwapMinus1SeriesRef.current = addLineOverlay(
         payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus1Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dashed,
       );
-      addLineOverlay(
+      avwapPlus2SeriesRef.current = addLineOverlay(
         payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus2Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dotted,
       );
-      addLineOverlay(
+      avwapMinus2SeriesRef.current = addLineOverlay(
         payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus2Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
@@ -1576,6 +1612,88 @@ export function GgalDualChartView({
     previousArQuoteRef.current = liveArGgal;
     previousUsQuoteRef.current = liveUsGgal;
   }, [liveArGgal?.revision, liveUsGgal?.revision, coordMode, timeframe, subPaneMode]);
+
+  // Pieza 39: tick-by-tick real del backend (`ggal_bar_tick`) -> series.update()
+  // directo por refs; sin re-render de React ni .setData() completo.
+  useEffect(() => {
+    const mode = coordMode === 'USD_ADR_NASDAQ' ? 'ADR' : coordMode === 'ARS_BYMA' ? 'ARS' : 'CCL';
+    const updateLine = (series: ISeriesApi<'Line'> | null | undefined, value: number | null, timeSec: number): void => {
+      if (series === null || series === undefined || value === null || !Number.isFinite(value)) return;
+      series.update({ time: timeSec as UTCTimestamp, value });
+    };
+    return subscribeGgalBarTick((event) => {
+      if (event.mode !== mode || event.timeframe !== timeframe) return;
+      const bar = event.bar;
+      if (!Number.isFinite(bar.close) || !Number.isFinite(bar.timeSec) || bar.timeSec <= 0) return;
+      candleSeriesRef.current?.update({
+        time: bar.timeSec as UTCTimestamp,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      });
+      volumeSeriesRef.current?.update({
+        time: bar.timeSec as UTCTimestamp,
+        value: bar.volume,
+        color: bar.close >= bar.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
+      });
+      const point = event.indicatorsPoint;
+      updateLine(emaSeriesRefs.current[9], point.ema9, point.timeSec);
+      updateLine(emaSeriesRefs.current[21], point.ema21, point.timeSec);
+      updateLine(emaSeriesRefs.current[50], point.ema50, point.timeSec);
+      updateLine(emaSeriesRefs.current[200], point.ema200, point.timeSec);
+      updateLine(vwapSeriesRef.current, point.sessionVwap, point.timeSec);
+      updateLine(avwapSeriesRef.current, point.avwap, point.timeSec);
+      updateLine(avwapPlus1SeriesRef.current, point.avwapPlus1Sigma, point.timeSec);
+      updateLine(avwapMinus1SeriesRef.current, point.avwapMinus1Sigma, point.timeSec);
+    });
+  }, [coordMode, timeframe]);
+
+  // Pieza 39: crosshair desacoplado de React — la leyenda OHLCV se actualiza
+  // escribiendo textContent directo del DOM (prohibido setState por pixel).
+  useEffect(() => {
+    const mainChart = mainChartRef.current;
+    const legend = crosshairLegendRef.current;
+    if (mainChart === null || legend === null) return;
+    const formatNumber = (value: number): string =>
+      Number.isFinite(value) ? value.toLocaleString('es-AR', { maximumFractionDigits: 2 }) : '—';
+    const renderLegend = (bar: { open: number; high: number; low: number; close: number; volume: number } | null): void => {
+      if (bar === null) {
+        legend.textContent = '';
+        return;
+      }
+      legend.textContent =
+        `O ${formatNumber(bar.open)} · H ${formatNumber(bar.high)} · L ${formatNumber(bar.low)} · ` +
+        `C ${formatNumber(bar.close)} · V ${bar.volume > 0 ? formatNumber(bar.volume) : '—'}`;
+    };
+    const handler = (param: MouseEventParams): void => {
+      const data = param.seriesData.get(candleSeriesRef.current as ISeriesApi<'Candlestick'>);
+      if (data === undefined || data === null) {
+        return;
+      }
+      const candidate = data as { open?: number; high?: number; low?: number; close?: number };
+      if (
+        typeof candidate.open !== 'number' ||
+        typeof candidate.high !== 'number' ||
+        typeof candidate.low !== 'number' ||
+        typeof candidate.close !== 'number'
+      ) {
+        return;
+      }
+      const volumePoint =
+        volumeSeriesRef.current === null ? undefined : param.seriesData.get(volumeSeriesRef.current);
+      const volumeValue =
+        volumePoint !== undefined
+          ? (volumePoint as unknown as { value?: number }).value
+          : undefined;
+      const volume = typeof volumeValue === 'number' && Number.isFinite(volumeValue) ? volumeValue : 0;
+      renderLegend({ open: candidate.open, high: candidate.high, low: candidate.low, close: candidate.close, volume });
+    };
+    mainChart.subscribeCrosshairMove(handler);
+    return () => {
+      mainChart.unsubscribeCrosshairMove(handler);
+    };
+  }, []);
 
   const confluenceAlerts = useMemo(
     () => (payload?.status === 'OPERATIONAL' ? (payload.confluenceAlerts ?? []) : []),
@@ -1809,7 +1927,11 @@ export function GgalDualChartView({
       )}
 
       {/* Full-width main chart */}
-      <div className="w-full overflow-hidden rounded-lg border border-[#1C1C24] bg-[#0A0A0D]">
+      <div className="relative w-full overflow-hidden rounded-lg border border-[#1C1C24] bg-[#0A0A0D]">
+        <div
+          ref={crosshairLegendRef}
+          className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-[#0A0A0D]/85 px-2 py-1 font-mono text-[10px] text-[#E5E7EB]"
+        />
         <div ref={mainContainerRef} className="h-[640px] w-full" />
       </div>
 

@@ -200,6 +200,9 @@ interface ResolvedLoadOptions {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly rthOnly: boolean;
+  readonly window: { readonly from: number; readonly to: number } | null;
+  readonly sort: 'asc' | 'desc';
+  readonly pageLimit: number;
 }
 
 interface MassiveRequestWindow {
@@ -300,6 +303,50 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
     throw new Error('rthOnly does not support the 1D timeframe');
   }
 
+  let window: { readonly from: number; readonly to: number } | null = null;
+  if (options.window !== undefined) {
+    const candidate = options.window;
+    const valid =
+      typeof candidate.from === 'number' &&
+      Number.isInteger(candidate.from) &&
+      typeof candidate.to === 'number' &&
+      Number.isInteger(candidate.to) &&
+      candidate.from > 0 &&
+      candidate.to > candidate.from;
+    if (!valid) {
+      throw new Error(
+        `window must be integer seconds with 0 < from < to (got ` +
+          `${String(candidate.from)}..${String(candidate.to)})`,
+      );
+    }
+    if (provider !== 'massive') {
+      throw new Error('window override is only supported for massive');
+    }
+    window = { from: candidate.from, to: candidate.to };
+  }
+
+  let sort: 'asc' | 'desc' = 'desc';
+  if (options.sort !== undefined) {
+    const sortRaw: string = options.sort;
+    if (sortRaw !== 'asc' && sortRaw !== 'desc') {
+      throw new Error(`sort must be 'asc' or 'desc' (got ${sortRaw})`);
+    }
+    if (provider !== 'massive') {
+      throw new Error('sort override is only supported for massive');
+    }
+    sort = sortRaw === 'asc' ? 'asc' : 'desc';
+  }
+
+  const pageLimit = options.pageLimit ?? MASSIVE_PAGE_LIMIT;
+  if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MASSIVE_PAGE_LIMIT) {
+    throw new Error(
+      `pageLimit must be an integer in [1, ${String(MASSIVE_PAGE_LIMIT)}] (got ${String(pageLimit)})`,
+    );
+  }
+  if (options.pageLimit !== undefined && provider !== 'massive') {
+    throw new Error('pageLimit override is only supported for massive');
+  }
+
   const minRequestIntervalMs = options.minRequestIntervalMs ?? 0;
   if (!Number.isInteger(minRequestIntervalMs) || minRequestIntervalMs < 0) {
     throw new Error(
@@ -359,6 +406,9 @@ function resolveOptions(options: LoadBarsOptions): ResolvedLoadOptions {
     warmupBars,
     requestedBars,
     fetchFn: options.fetchFn,
+    window,
+    sort,
+    pageLimit,
     explicitNow: options.now,
     requestNow: options.now ?? Math.floor(Date.now() / 1_000),
     maxPages,
@@ -448,13 +498,16 @@ async function loadMassive(
     ? RTH_1H_FETCH.barSeconds
     : barSeconds;
   const now = options.explicitNow ?? options.requestNow;
-  const window = massiveWindow(
-    now,
-    options.timeframe,
-    options.requestedBars,
-    options.rthOnly,
-    rth1hAggregated ? RTH_1H_FETCH.barSeconds : undefined,
-  );
+  const window =
+    options.window !== null
+      ? { from: options.window.from, to: options.window.to }
+      : massiveWindow(
+          now,
+          options.timeframe,
+          options.requestedBars,
+          options.rthOnly,
+          rth1hAggregated ? RTH_1H_FETCH.barSeconds : undefined,
+        );
   let url = withApiKey(
     massiveUrl(
       options.baseUrl,
@@ -462,6 +515,8 @@ async function loadMassive(
       options.timeframe,
       window,
       rth1hAggregated ? RTH_1H_FETCH : undefined,
+      options.sort,
+      options.pageLimit,
     ),
     options.apiKey,
     options.baseUrl,
@@ -1159,6 +1214,8 @@ function massiveUrl(
     multiplier: number;
     timespan: string;
   }>,
+  sort: 'asc' | 'desc' = 'desc',
+  pageLimit: number = MASSIVE_PAGE_LIMIT,
 ): string {
   const path = pathOverride ?? MASSIVE_TIMEFRAME_PATH[timeframe];
   const urlPath =
@@ -1167,8 +1224,8 @@ function massiveUrl(
     `${String(window.from)}/${String(window.to)}`;
   const params = new URLSearchParams({
     adjusted: 'true',
-    sort: 'desc',
-    limit: String(MASSIVE_PAGE_LIMIT),
+    sort,
+    limit: String(pageLimit),
   });
   return `${baseUrl}${urlPath}?${params.toString()}`;
 }

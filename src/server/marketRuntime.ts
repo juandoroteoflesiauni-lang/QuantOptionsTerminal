@@ -187,6 +187,16 @@ import {
   ingestWsEvents,
   projectLiveIndicators,
 } from '../data/liveBarConsolidator.js';
+import {
+  GgalTickStreamEngine,
+} from './ggalTickStream.js';
+import {
+  deepHistoryFromUtcSec,
+  GGAL_DEEP_HISTORY_MAX_BARS,
+  GgalAdrDeepHistoryStore,
+  isGgalDeepHistoryTimeframe,
+  type GgalDeepHistoryTimeframe,
+} from './ggalDeepHistory.js';
 import { loadBars } from '../data/loader.js';
 import {
   loadDividends,
@@ -956,6 +966,34 @@ export type RuntimeWsBroadcast =
       readonly state: string;
       readonly message: string;
       readonly time: number;
+    }
+  | {
+      /** Pieza 39: tick-by-tick GGAL (ADR/ARS/CCL) con vela abierta mutada e
+       * indicadores proyectados (EMA 9/21/50/200, VWAP sesión, AVWAP anclado). */
+      readonly type: 'ggal_bar_tick';
+      readonly symbol: 'GGAL';
+      readonly mode: 'ADR' | 'ARS' | 'CCL';
+      readonly timeframe: '1m' | '5m' | '15m' | '1h' | '4h' | '1D';
+      readonly bar: {
+        readonly timeSec: number;
+        readonly open: number;
+        readonly high: number;
+        readonly low: number;
+        readonly close: number;
+        readonly volume: number;
+      };
+      readonly indicatorsPoint: {
+        readonly timeSec: number;
+        readonly ema9: number | null;
+        readonly ema21: number | null;
+        readonly ema50: number | null;
+        readonly ema200: number | null;
+        readonly sessionVwap: number | null;
+        readonly avwap: number | null;
+        readonly avwapPlus1Sigma: number | null;
+        readonly avwapMinus1Sigma: number | null;
+      };
+      readonly serverTimeSec: number;
     };
 
 export interface MassiveWsClientLike {
@@ -3507,6 +3545,10 @@ export class MarketRuntime {
   private massiveStocksStream: MassiveStocksStream | null = null;
   private lastUsPanelBase: EquityPanelAnalyticsDto | null = null;
   private readonly liveStates1m = new Map<string, LiveBarState>();
+  /** Pieza 39: historial profundo ADR (gap electoral) con caché LRU + disco. */
+  private readonly ggalDeepHistory = new GgalAdrDeepHistoryStore();
+  /** Pieza 39: motor tick-by-tick GGAL (ADR/ARS/CCL) con broadcast WS. */
+  private readonly ggalTickEngine: GgalTickStreamEngine;
   private readonly closedInputs1m = new Map<
     string,
     {
@@ -4107,6 +4149,29 @@ export class MarketRuntime {
     ) {
       registerSharedMarketRuntime(this);
     }
+    this.ggalTickEngine = new GgalTickStreamEngine({
+      nowMsFn: this.nowMsFn,
+      emit: (event) => {
+        this.emitBroadcast(event);
+      },
+    });
+  }
+
+  /** Pieza 39: acceso de solo-lectura del motor tick para anclas AVWAP. */
+  public getGgalTickEngine(): GgalTickStreamEngine {
+    return this.ggalTickEngine;
+  }
+
+  /** Pieza 39: fuente de ticks ARS (BMB SignalR SendPrices / IOL REST). */
+  public attachGgalArsTickSource(
+    source: { readonly setGgalArsTickListener: (listener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null) => void } | null,
+  ): void {
+    if (source === null) {
+      return;
+    }
+    source.setGgalArsTickListener((tick) => {
+      this.ggalTickEngine.applyArsTick(tick);
+    });
   }
 
   public addWsListener(listener: (event: RuntimeWsBroadcast) => void): () => void {
@@ -4587,6 +4652,33 @@ export class MarketRuntime {
         maxClosedBars: 600,
       });
       this.liveStates1m.set(symbol, nextState);
+
+      // Pieza 39: tick-by-tick GGAL ADR desde el consolidador 1m (dedupe
+      // T/A/AM ya resuelto); alimenta velas multi-timeframe + indicadores.
+      if (symbol === 'GGAL') {
+        const forming = nextState.formingBar;
+        if (forming !== null) {
+          this.ggalTickEngine.applyAdrMinute({
+            timeSec: forming.time,
+            open: forming.open,
+            high: forming.high,
+            low: forming.low,
+            close: forming.close,
+            volume: forming.volume,
+          });
+        }
+        const lastClosed = nextState.closedBars[nextState.closedBars.length - 1];
+        if (lastClosed !== undefined && (forming === null || lastClosed.time > forming.time)) {
+          this.ggalTickEngine.applyAdrMinute({
+            timeSec: lastClosed.time,
+            open: lastClosed.open,
+            high: lastClosed.high,
+            low: lastClosed.low,
+            close: lastClosed.close,
+            volume: lastClosed.volume,
+          });
+        }
+      }
 
       const currLast = nextState.closedBars[nextState.closedBars.length - 1];
       const mutated =
@@ -7214,28 +7306,90 @@ export class MarketRuntime {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const barSeconds = TIMEFRAME_SECONDS[timeframe];
 
-    const res = await this.loadBarsFn({
-      provider: 'massive',
-      symbol: parsed.canonicalSymbol,
-      timeframe,
-      visibleBars,
-      warmupBars: 0,
-      rthOnly,
-      maxPages: timeframe === '1D' ? 12 : 8,
-      now: nowSec,
-      apiKey,
-      fetchFn: this.fetchFn,
-      ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
-    });
+    // Pieza 39: GGAL ADR intradía usa historial profundo (14 meses o 15.000
+    // barras, sort=asc&limit=5000 siguiendo next_url) para cubrir el gap
+    // electoral en el AVWAP Anclado. Caché LRU + snapshot en disco: las
+    // consultas posteriores responden desde la caché (<15 ms).
+    const useDeepHistory =
+      parsed.canonicalSymbol === 'GGAL' &&
+      isGgalDeepHistoryTimeframe(timeframe) &&
+      Number.isFinite(deepHistoryFromUtcSec(nowSec));
 
-    if (res.bars.length === 0) {
-      const msg =
-        res.report.providerError?.message ??
-        `No bars available from Massive for ${parsed.canonicalSymbol} (${timeframe})`;
-      throw new RuntimeNoDataError('NO_BARS_DATA', msg, this.secrets, 503);
+    let bars: readonly Bar[];
+    let barsStatusOk = true;
+    let visibleStart = 0;
+    if (useDeepHistory) {
+      bars = await this.ggalDeepHistory.ensure(timeframe as GgalDeepHistoryTimeframe, {
+        forceRefresh: false,
+        loadFn: async () => {
+          const res = await this.loadBarsFn({
+            provider: 'massive',
+            symbol: parsed.canonicalSymbol,
+            timeframe,
+            visibleBars: GGAL_DEEP_HISTORY_MAX_BARS,
+            warmupBars: 0,
+            rthOnly,
+            maxPages: 8,
+            now: nowSec,
+            apiKey,
+            fetchFn: this.fetchFn,
+            ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+            window: { from: deepHistoryFromUtcSec(nowSec), to: nowSec },
+            sort: 'asc',
+            pageLimit: 5_000,
+          });
+          if (res.report.providerError !== null) {
+            throw new Error(res.report.providerError.message);
+          }
+          return res.bars;
+        },
+      });
+      if (bars.length === 0) {
+        throw new RuntimeNoDataError(
+          'NO_BARS_DATA',
+          `No deep history available from Massive for ${parsed.canonicalSymbol} (${timeframe})`,
+          this.secrets,
+          503,
+        );
+      }
+      this.ggalTickEngine.seedHistory(
+        'ADR',
+        timeframe,
+        bars.map((bar) => ({
+          timeSec: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+          ...(Number.isFinite(bar.vw) ? { vw: bar.vw as number } : {}),
+        })),
+      );
+    } else {
+      const res = await this.loadBarsFn({
+        provider: 'massive',
+        symbol: parsed.canonicalSymbol,
+        timeframe,
+        visibleBars,
+        warmupBars: 0,
+        rthOnly,
+        maxPages: timeframe === '1D' ? 12 : 8,
+        now: nowSec,
+        apiKey,
+        fetchFn: this.fetchFn,
+        ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+      });
+      if (res.bars.length === 0) {
+        const msg =
+          res.report.providerError?.message ??
+          `No bars available from Massive for ${parsed.canonicalSymbol} (${timeframe})`;
+        throw new RuntimeNoDataError('NO_BARS_DATA', msg, this.secrets, 503);
+      }
+      bars = res.bars;
+      barsStatusOk = res.report.providerError === null;
+      visibleStart = res.visibleStart;
     }
 
-    const bars = res.bars;
     const closes = bars.map((b) => b.close);
     const ema9 = calculateEma(closes, 9);
     const ema21 = calculateEma(closes, 21);
@@ -7313,7 +7467,7 @@ export class MarketRuntime {
       })),
     ];
 
-    const startSlice = Math.max(0, res.visibleStart);
+    const startSlice = Math.max(0, visibleStart);
     const slicedBars = bars.slice(startSlice);
     const avwapByTime = new Map(avwap.points.map((point) => [point.time, point] as const));
     const avwapAligned = (selector: (point: typeof avwap.points[number]) => number): (number | null)[] =>
@@ -7324,13 +7478,13 @@ export class MarketRuntime {
     const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
 
     const payload: TerminalBarsResponse = {
-      status: res.report.providerError === null ? 'OK' : 'PARTIAL',
+      status: barsStatusOk ? 'OK' : 'PARTIAL',
       symbol: parsed.canonicalSymbol,
       timeframe,
       barSeconds,
       rthOnly,
       asOfUtcSec: nowSec,
-      visibleStartIndex: res.visibleStart - startSlice,
+      visibleStartIndex: visibleStart - startSlice,
       bars: slicedBars.map(serializeBar),
       formingBar:
         formingState?.formingBar !== undefined && formingState.formingBar !== null

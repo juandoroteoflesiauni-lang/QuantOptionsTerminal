@@ -5535,6 +5535,13 @@ export class GgalSpecialistRuntime {
     const avwapAnchorUtcSec =
       convertedBars[anchorIdx]?.timeSec ?? convertedBars[0]?.timeSec ?? asOfUtcSec;
     const avwapBands = computeAnchoredVwapSeries(convertedBars, avwapAnchorUtcSec);
+    // Pieza 39: el ancla resuelta alimenta el motor tick-by-tick del modo
+    // activo (AVWAP en vivo coherente con la serie histórica del gráfico).
+    const tickMode =
+      opts.coordMode === 'USD_ADR_NASDAQ' ? 'ADR' : opts.coordMode === 'ARS_BYMA' ? 'ARS' : 'CCL';
+    this.runtime
+      .getGgalTickEngine()
+      .setAvwapAnchor(tickMode, runtimeTf, avwapAnchorUtcSec);
 
     const marketTz = opts.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
     const volumeProfile = computeVolumeProfile(convertedBars, 32, marketTz);

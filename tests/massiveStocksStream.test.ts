@@ -173,7 +173,7 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
     expect(US_STREAM_SYMBOLS.filter((s) => s.startsWith('T.'))).toHaveLength(0);
   });
 
-  it('suscribe canales explícitos T.<símbolo> por cada acción/ETF (sin wildcard T.*) conservando Q.*/AM.*', () => {
+  it('suscribe canales explícitos T.<símbolo> por cada acción/ETF (sin wildcard T.*) conservando Q.*/AM.*, con GGAL explícito (Pieza 39)', () => {
     const h = makeHarness(['AAPL', 'MSFT', 'SPY', 'I:VIX']);
     void h.stream.start();
     expect(h.createdOptions.length).toBe(1);
@@ -184,7 +184,12 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
     expect(subs).toContain('Q.*');
     expect(subs).toContain('AM.*');
     expect(subs).not.toContain('T.*');
-    expect(subs.filter((s) => s.startsWith('T.')).sort()).toEqual(['T.AAPL', 'T.MSFT', 'T.SPY']);
+    // Pieza 39 (cambio intencional): GGAL ADR se suscribe explícitamente para
+    // el streaming tick-by-tick del GGAL Specialist -> T.GGAL se une al set
+    // (antes: ['T.AAPL','T.MSFT','T.SPY']) junto con A.GGAL y AM.GGAL.
+    expect(subs.filter((s) => s.startsWith('T.')).sort()).toEqual(['T.AAPL', 'T.GGAL', 'T.MSFT', 'T.SPY']);
+    expect(subs).toContain('A.GGAL');
+    expect(subs).toContain('AM.GGAL');
     h.stream.stop();
   });
 

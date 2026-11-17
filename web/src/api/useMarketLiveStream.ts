@@ -775,6 +775,101 @@ function applyLegacyStockEvent(raw: unknown): void {
   scheduleLegacyFlush();
 }
 
+export interface GgalBarTickEventDto {
+  readonly type: 'ggal_bar_tick';
+  readonly symbol: 'GGAL';
+  readonly mode: 'ADR' | 'ARS' | 'CCL';
+  readonly timeframe: '1m' | '5m' | '15m' | '1h' | '4h' | '1D';
+  readonly bar: {
+    readonly timeSec: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+    readonly volume: number;
+  };
+  readonly indicatorsPoint: {
+    readonly timeSec: number;
+    readonly ema9: number | null;
+    readonly ema21: number | null;
+    readonly ema50: number | null;
+    readonly ema200: number | null;
+    readonly sessionVwap: number | null;
+    readonly avwap: number | null;
+    readonly avwapPlus1Sigma: number | null;
+    readonly avwapMinus1Sigma: number | null;
+  };
+  readonly serverTimeSec: number;
+}
+
+type GgalBarTickListener = (event: GgalBarTickEventDto) => void;
+
+/**
+ * Registro singleton de ticks GGAL (Pieza 39). Los eventos `ggal_bar_tick` NO
+ * tocan el store de quotes: el gráfico se suscribe directo y llama a
+ * `series.update()` vía refs (cero re-renders de React por tick).
+ */
+const ggalBarTickListeners = new Set<GgalBarTickListener>();
+
+export function subscribeGgalBarTick(listener: GgalBarTickListener): () => void {
+  ggalBarTickListeners.add(listener);
+  return () => {
+    ggalBarTickListeners.delete(listener);
+  };
+}
+
+function dispatchGgalBarTick(parsed: Record<string, unknown>): void {
+  if (parsed['type'] !== 'ggal_bar_tick' || ggalBarTickListeners.size === 0) return;
+  const bar = isRecord(parsed['bar']) ? parsed['bar'] : null;
+  const indicators = isRecord(parsed['indicatorsPoint']) ? parsed['indicatorsPoint'] : null;
+  const mode = parsed['mode'];
+  const timeframe = parsed['timeframe'];
+  if (bar === null || indicators === null) return;
+  if (mode !== 'ADR' && mode !== 'ARS' && mode !== 'CCL') return;
+  if (
+    typeof timeframe !== 'string' ||
+    !['1m', '5m', '15m', '1h', '4h', '1D'].includes(timeframe)
+  ) {
+    return;
+  }
+  const event: GgalBarTickEventDto = {
+    type: 'ggal_bar_tick',
+    symbol: 'GGAL',
+    mode,
+    timeframe: timeframe as GgalBarTickEventDto['timeframe'],
+    bar: {
+      timeSec: typeof bar['timeSec'] === 'number' ? bar['timeSec'] : Number.NaN,
+      open: typeof bar['open'] === 'number' ? bar['open'] : Number.NaN,
+      high: typeof bar['high'] === 'number' ? bar['high'] : Number.NaN,
+      low: typeof bar['low'] === 'number' ? bar['low'] : Number.NaN,
+      close: typeof bar['close'] === 'number' ? bar['close'] : Number.NaN,
+      volume: typeof bar['volume'] === 'number' ? bar['volume'] : Number.NaN,
+    },
+    indicatorsPoint: {
+      timeSec: typeof indicators['timeSec'] === 'number' ? indicators['timeSec'] : Number.NaN,
+      ema9: typeof indicators['ema9'] === 'number' ? indicators['ema9'] : null,
+      ema21: typeof indicators['ema21'] === 'number' ? indicators['ema21'] : null,
+      ema50: typeof indicators['ema50'] === 'number' ? indicators['ema50'] : null,
+      ema200: typeof indicators['ema200'] === 'number' ? indicators['ema200'] : null,
+      sessionVwap: typeof indicators['sessionVwap'] === 'number' ? indicators['sessionVwap'] : null,
+      avwap: typeof indicators['avwap'] === 'number' ? indicators['avwap'] : null,
+      avwapPlus1Sigma:
+        typeof indicators['avwapPlus1Sigma'] === 'number' ? indicators['avwapPlus1Sigma'] : null,
+      avwapMinus1Sigma:
+        typeof indicators['avwapMinus1Sigma'] === 'number' ? indicators['avwapMinus1Sigma'] : null,
+    },
+    serverTimeSec: typeof parsed['serverTimeSec'] === 'number' ? parsed['serverTimeSec'] : 0,
+  };
+  if (!Number.isFinite(event.bar.close) || !Number.isFinite(event.bar.timeSec)) return;
+  for (const listener of ggalBarTickListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Un listener con error nunca tumba el socket compartido.
+    }
+  }
+}
+
 function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
   if (typeof raw !== 'string') return;
   try {
@@ -788,6 +883,8 @@ function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
       if (!accepted && transport === 'WS' && parsed['type'] === 'TICK_DELTA') {
         socket?.close(4000, 'delta_resync_required');
       }
+    } else if (parsed['type'] === 'ggal_bar_tick') {
+      dispatchGgalBarTick(parsed);
     } else {
       applyLegacyStockEvent(parsed);
     }

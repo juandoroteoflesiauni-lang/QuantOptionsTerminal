@@ -198,6 +198,8 @@ export type UsRuntimeAdapter = Pick<MarketRuntime, 'getCachedDailyBars1d'> &
       | 'getCachedIv30Map'
       | 'getCachedDailyBars1dBatch'
       | 'getBars'
+      | 'attachGgalArsTickSource'
+      | 'getGgalTickEngine'
     >
   >;
 
@@ -3510,6 +3512,12 @@ export class ArgentinaMarketRuntime {
     this.usRuntime = deps.usRuntime ?? null;
     this.usDailyBarsFn = deps.usDailyBarsFn ?? null;
     this.allowSharedUsRuntime = deps.fetchFn === undefined || deps.env !== undefined;
+
+    // Pieza 39: ticks ARS del GGAL Specialist desde los trades clasificados del
+    // bridge BMB (SignalR SendPrices) hacia el motor tick del runtime US.
+    if (this.bmbClient instanceof BmbFeedAdapter) {
+      this.usRuntime?.attachGgalArsTickSource?.(this.bmbClient);
+    }
 
     const ttlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     const quoteTtlResolver = (nowMs: number): number => {

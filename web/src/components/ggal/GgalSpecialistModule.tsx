@@ -249,6 +249,9 @@ export const GgalSpecialistModule: React.FC<{
   const [dualChartPayload, setDualChartPayload] = useState<GgalDualChartPayloadDto | null>(null);
   const [dualChartLoading, setDualChartLoading] = useState(false);
   const [dualChartError, setDualChartError] = useState<string | null>(null);
+  // Pieza 39: caché por vista (`mode:timeframe:anchor`) — pintado instantáneo
+  // al cambiar de modo/timeframe sin desmontar el chart.
+  const dualChartCacheRef = useRef(new Map<string, GgalDualChartPayloadDto>());
   const [dualMicroError, setDualMicroError] = useState<string | null>(null);
 
   // Filtros interactivos Motor 5 (0 lotes/nom por defecto cuando no hay Anexo B ingestado o en EOD)
@@ -312,8 +315,20 @@ export const GgalSpecialistModule: React.FC<{
       dualChartAbortRef.current?.abort();
       const ctrl = new AbortController();
       dualChartAbortRef.current = ctrl;
-      setDualChartLoading(true);
-      setDualChartError(null);
+      // Pieza 39: caché instantánea por vista (`mode:timeframe:anchor`). Al
+      // cambiar de modo/timeframe se pinta al instante desde caché (<16 ms)
+      // sin desmontar ni vaciar el chart; la sincronización sigue en segundo
+      // plano y reemplaza el payload cuando llega.
+      const cacheKey = `${coordMode}:${chartTimeframe}:${avwapAnchor}`;
+      const cached = dualChartCacheRef.current.get(cacheKey);
+      if (cached !== undefined) {
+        setDualChartPayload(cached);
+        setDualChartError(null);
+        setDualChartLoading(false);
+      } else {
+        setDualChartLoading(true);
+        setDualChartError(null);
+      }
       try {
         const res = await fetchGgalDualChart({
           coord: coordMode,
@@ -329,10 +344,18 @@ export const GgalSpecialistModule: React.FC<{
           scheduleDualChartRetry();
           return;
         }
-        setDualChartPayload(res.dualChart);
         if (res.dualChart.status === 'OPERATIONAL') {
           dualChartRetryAttemptsRef.current = 0;
+          dualChartCacheRef.current.delete(cacheKey);
+          dualChartCacheRef.current.set(cacheKey, res.dualChart);
+          // Tope LRU simple: la vista nunca acumula payloads sin límite.
+          while (dualChartCacheRef.current.size > 24) {
+            const oldestKey = dualChartCacheRef.current.keys().next().value;
+            if (oldestKey === undefined) break;
+            dualChartCacheRef.current.delete(oldestKey);
+          }
         }
+        setDualChartPayload(res.dualChart);
       } catch {
         if (!ctrl.signal.aborted) {
           scheduleDualChartRetry();
