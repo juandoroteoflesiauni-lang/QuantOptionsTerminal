@@ -5,9 +5,11 @@
  * referencia independiente en tools/gen_fmp_enterprise_and_argy_stream_fixture.py.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { bootstrapRootEnv, cleanEnvValue } from '../src/server/envBootstrap.js';
 import {
   FmpEnterpriseClient,
   loadFmpConfigFromEnv,
@@ -22,7 +24,16 @@ import {
   parseTradierTimesales,
   TRADIER_CORE_US_SYMBOLS,
 } from '../src/server/tradierStream.js';
-import { resolveTradierConfig } from '../src/server/tradierAdapter.js';
+import {
+  resolveTradierConfig,
+  switchTradierConfigToSandbox,
+  TRADIER_PROD_REST_BASE,
+  TRADIER_SANDBOX_REST_BASE,
+  TRADIER_SANDBOX_WS_BASE,
+  TRADIER_WS_BASE,
+  TradierLiveManager,
+} from '../src/server/tradierAdapter.js';
+import type { WsSocketLike } from '../src/data/wsTypes.js';
 import { resolveMassiveStocksMode } from '../src/server/massiveStocksStream.js';
 import {
   BYMA_L2_FIXED_INCOME_TICKERS,
@@ -131,6 +142,20 @@ interface ReferenceFixture {
     readonly restBaseUrl: string;
     readonly wsBaseUrl: string;
   }[];
+  readonly tradierSandboxFallback: {
+    readonly generic: {
+      readonly env: Readonly<Record<string, string>>;
+      readonly sessionStatuses: readonly number[];
+      readonly expectedRestBaseUrls: readonly string[];
+      readonly expectedEnvironment: 'SANDBOX';
+    };
+    readonly disabled: {
+      readonly env: Readonly<Record<string, string>>;
+      readonly sessionStatuses: readonly number[];
+      readonly expectedRestBaseUrls: readonly string[];
+      readonly expectedEnvironment: 'LIVE';
+    };
+  };
   readonly primarySelection: {
     readonly instruments: readonly { readonly marketId: string; readonly symbol: string }[];
     readonly expectedSymbols: readonly string[];
@@ -351,6 +376,63 @@ describe('Pieza 41 — FMP Enterprise intradiario/EOD y batch-quote', () => {
   });
 });
 
+describe('Pieza 41.2 — bootstrap explícito del .env raíz', () => {
+  const restoreEnvValue = (key: string, previous: string | undefined): void => {
+    if (previous === undefined) Reflect.deleteProperty(process.env, key);
+    else process.env[key] = previous;
+  };
+
+  it('aplica override:true aunque process.env tenga la variable vacía', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'qot-env-bootstrap-'));
+    const envPath = join(tempDir, '.env');
+    const key = 'QUANT_TEST_ENV_BOOTSTRAP_KEY';
+    const previous = process.env[key];
+    try {
+      writeFileSync(envPath, `${key}=loaded\n`, 'utf-8');
+      process.env[key] = '';
+      const applied = bootstrapRootEnv({
+        envFilePath: envPath,
+        localEnvFilePath: join(tempDir, '.env.local.missing'),
+      });
+      expect(applied).toEqual([envPath]);
+      expect(process.env[key]).toBe('loaded');
+    } finally {
+      restoreEnvValue(key, previous);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carga .env.local después de .env con override:true', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'qot-env-local-'));
+    const envPath = join(tempDir, '.env');
+    const localPath = join(tempDir, '.env.local');
+    const rootKey = 'QUANT_TEST_ENV_ROOT_KEY';
+    const localKey = 'QUANT_TEST_ENV_LOCAL_KEY';
+    const previousRoot = process.env[rootKey];
+    const previousLocal = process.env[localKey];
+    try {
+      writeFileSync(envPath, `${rootKey}=from-root\n${localKey}=from-root\n`, 'utf-8');
+      writeFileSync(localPath, `${localKey}=from-local\n`, 'utf-8');
+      process.env[rootKey] = '';
+      process.env[localKey] = '';
+      const applied = bootstrapRootEnv({ envFilePath: envPath, localEnvFilePath: localPath });
+      expect(applied).toEqual([envPath, localPath]);
+      expect(process.env[rootKey]).toBe('from-root');
+      expect(process.env[localKey]).toBe('from-local');
+    } finally {
+      restoreEnvValue(rootKey, previousRoot);
+      restoreEnvValue(localKey, previousLocal);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('normaliza espacios y comillas envolventes sin exponer valores', () => {
+    expect(cleanEnvValue('  value  ')).toBe('value');
+    expect(cleanEnvValue('"  value  "')).toBe('value');
+    expect(cleanEnvValue("'value'")).toBe('value');
+  });
+});
+
 describe('Pieza 41 — Tradier stream e histórico REST', () => {
   it('define el núcleo líquido exacto sin índices Massive', () => {
     const required = ['SPY', 'QQQ', 'IWM', 'DIA', 'VIXY', 'GGAL', 'YPF', 'BMA', 'PAM', 'BBAR', 'SUPV', 'TGS', 'CEPU', 'CRESY', 'EDN', 'LOMA', 'MELI', 'NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'TSLA', 'GOOGL', 'KO', 'EWZ', 'IBIT'];
@@ -385,6 +467,118 @@ describe('Pieza 41 — Tradier stream e histórico REST', () => {
     expect(health.environment).toBe('SANDBOX');
     expect(JSON.stringify(status)).not.toContain('tradier-test-token');
     expect(JSON.stringify(health)).not.toContain('tradier-test-token');
+  });
+
+  it('conmuta un token genérico Live a Sandbox ante 401 y levanta el WS CONNECTED', async () => {
+    const caseItem = fixture.tradierSandboxFallback.generic;
+    let sessionIndex = 0;
+    const sessionUrls: string[] = [];
+    const socketUrls: string[] = [];
+    const socket: WsSocketLike = {
+      send: () => undefined,
+      close: () => undefined,
+      onOpen: null,
+      onMessage: null,
+      onClose: null,
+      onError: null,
+    };
+    const manager = new TradierLiveManager({
+      config: resolveTradierConfig(caseItem.env, 'tests/.env-not-present'),
+      httpFn: async (url) => {
+        sessionUrls.push(url);
+        const status = caseItem.sessionStatuses[sessionIndex] ?? 401;
+        sessionIndex += 1;
+        await Promise.resolve();
+        if (status !== 200) return { ok: false, status, text: '' };
+        return {
+          ok: true,
+          status,
+          text: JSON.stringify({ stream: { sessionid: 'sandbox-session', url: TRADIER_SANDBOX_WS_BASE } }),
+        };
+      },
+      createSocketFn: (url) => {
+        socketUrls.push(url);
+        return socket;
+      },
+      nowMsFn: () => 1_700_000_000_000,
+      reconnectBaseDelayMs: 30_000,
+      reconnectMaxDelayMs: 30_000,
+    });
+    try {
+      await manager.start(['SPY']);
+      socket.onOpen?.();
+      const status = manager.getStatus();
+      expect(status.connected).toBe(true);
+      expect(status.state).toBe('CONNECTED');
+      expect(status.environment).toBe(caseItem.expectedEnvironment);
+      expect(status.apiEnv).toBe('sandbox');
+      expect(status.restBaseUrl).toBe(TRADIER_SANDBOX_REST_BASE);
+      expect(status.wsBaseUrl).toBe(TRADIER_SANDBOX_WS_BASE);
+      expect(sessionUrls.map((url) => (url.startsWith(TRADIER_SANDBOX_REST_BASE) ? TRADIER_SANDBOX_REST_BASE : TRADIER_PROD_REST_BASE)))
+        .toEqual(caseItem.expectedRestBaseUrls);
+      expect(socketUrls).toEqual([TRADIER_SANDBOX_WS_BASE]);
+      expect(status.lastError).toBeNull();
+      const runtime = new MarketRuntime({
+        apiKey: 'offline-harness-key',
+        nowMsFn: () => 1_700_000_000_000,
+        tradierConfig: resolveTradierConfig(caseItem.env, 'tests/.env-not-present'),
+        tradierManager: manager,
+      });
+      try {
+        const liveStatus = runtime.getTradierLiveStatus();
+        expect(liveStatus.connected).toBe(true);
+        expect(liveStatus.environment).toBe('SANDBOX');
+        const liveHealth = runtime.getTradierFeedHealth();
+        expect(liveHealth.connected).toBe(true);
+        expect(liveHealth.environment).toBe('SANDBOX');
+        expect(liveHealth.restBaseUrl).toBe(TRADIER_SANDBOX_REST_BASE);
+        expect(JSON.stringify(liveHealth)).not.toContain('generic-token');
+      } finally {
+        runtime.stopWs();
+      }
+    } finally {
+      manager.stop();
+    }
+  });
+
+  it('no conmuta a Sandbox cuando TRADIER_USE_SANDBOX=false', async () => {
+    const caseItem = fixture.tradierSandboxFallback.disabled;
+    let calls = 0;
+    const sessionUrls: string[] = [];
+    const manager = new TradierLiveManager({
+      config: resolveTradierConfig(caseItem.env, 'tests/.env-not-present'),
+      httpFn: async (url) => {
+        sessionUrls.push(url);
+        calls += 1;
+        await Promise.resolve();
+        return { ok: false, status: caseItem.sessionStatuses[0] ?? 401, text: '' };
+      },
+      nowMsFn: () => 1_700_000_000_000,
+      reconnectBaseDelayMs: 30_000,
+      reconnectMaxDelayMs: 30_000,
+    });
+    try {
+      await manager.start(['SPY']);
+      const status = manager.getStatus();
+      expect(status.environment).toBe(caseItem.expectedEnvironment);
+      expect(status.restBaseUrl).toBe(TRADIER_PROD_REST_BASE);
+      expect(status.wsBaseUrl).toBe(TRADIER_WS_BASE);
+      expect(calls).toBe(1);
+      expect(sessionUrls.map((url) => (url.startsWith(TRADIER_SANDBOX_REST_BASE) ? TRADIER_SANDBOX_REST_BASE : TRADIER_PROD_REST_BASE)))
+        .toEqual(caseItem.expectedRestBaseUrls);
+      expect(status.lastError).toContain('HTTP 401');
+    } finally {
+      manager.stop();
+    }
+  });
+
+  it('conmutación explícita mantiene el mismo token y expone Sandbox sin secretos', () => {
+    const config = resolveTradierConfig({ TRADIER_TOKEN: 'tradier-test-token' }, 'tests/.env-not-present');
+    const sandboxConfig = switchTradierConfigToSandbox(config);
+    expect(sandboxConfig.apiEnv).toBe('sandbox');
+    expect(sandboxConfig.restBaseUrl).toBe(TRADIER_SANDBOX_REST_BASE);
+    expect(sandboxConfig.wsBaseUrl).toBe(TRADIER_SANDBOX_WS_BASE);
+    expect(sandboxConfig.tokenEnvName).toBe('TRADIER_TOKEN');
   });
 
   it('agrega 15m a 1h/4h por muro ET y no inventa volumen/vw', () => {

@@ -671,6 +671,7 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'TRADIER_LIVE_TOKEN',
     'TRADIER_SANDBOX_TOKEN',
     'TRADIER_SANDBOX_API_TOKEN',
+    'TRADIER_SANDBOX_KEY',
     'ORATS_API_TOKEN',
     'ORATS_API_KEY',
     'IOL_USERNAME',

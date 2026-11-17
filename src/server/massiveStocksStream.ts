@@ -50,6 +50,7 @@ const MASSIVE_STOCKS_STANDBY_TRIGGER_ENV_NAMES = [
   'TRADIER_TOKEN',
   'TRADIER_SANDBOX_TOKEN',
   'TRADIER_SANDBOX_API_TOKEN',
+  'TRADIER_SANDBOX_KEY',
 ] as const;
 
 export function resolveMassiveStocksMode(env: NodeJS.ProcessEnv = process.env): MassiveStocksMode {

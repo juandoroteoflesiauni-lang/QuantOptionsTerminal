@@ -11,6 +11,8 @@
  * - Todos los errores se redactan con el token del caller.
  */
 
+import './envBootstrap.js';
+
 import { etWallTimeToUtc } from '../data/alignment.js';
 import type { Bar } from '../core/types.js';
 import type { Timeframe } from '../data/types.js';

@@ -3605,6 +3605,8 @@ export class MarketRuntime {
           restBaseUrl: TRADIER_PROD_REST_BASE,
           wsBaseUrl: TRADIER_WS_BASE,
           configured: false,
+          tokenIsGeneric: false,
+          sandboxFallbackAllowed: false,
         }
       : resolveTradierConfig();
   }
@@ -5352,10 +5354,13 @@ export class MarketRuntime {
       reconnectAttempts: status?.reconnectAttempts ?? 0,
       subscribedSymbols: status?.subscribedSymbols ?? [],
       lastError: status?.lastError ?? null,
-      apiEnv: this.tradierConfig.apiEnv,
-      environment: this.tradierConfig.apiEnv === 'sandbox' ? ('SANDBOX' as const) : ('LIVE' as const),
-      restBaseUrl: this.tradierConfig.restBaseUrl,
-      wsBaseUrl: this.tradierConfig.wsBaseUrl,
+      apiEnv: status?.apiEnv ?? this.tradierConfig.apiEnv,
+      environment:
+        (status?.apiEnv ?? this.tradierConfig.apiEnv) === 'sandbox'
+          ? ('SANDBOX' as const)
+          : ('LIVE' as const),
+      restBaseUrl: status?.restBaseUrl ?? this.tradierConfig.restBaseUrl,
+      wsBaseUrl: status?.wsBaseUrl ?? this.tradierConfig.wsBaseUrl,
       telemetry:
         this.tradierStocksStream?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
         this.tradierManager?.getFeedTelemetrySnapshot(this.nowMsFn()) ??

@@ -12,7 +12,7 @@
  *   válidas vacías como si fueran errores.
  */
 
-import 'dotenv/config';
+import './envBootstrap.js';
 
 import type { Bar } from '../core/types.js';
 import type { FetchFn, FetchResponse, Timeframe } from '../data/types.js';

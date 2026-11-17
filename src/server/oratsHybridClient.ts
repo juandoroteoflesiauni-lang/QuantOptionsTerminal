@@ -11,6 +11,8 @@
  * explicit `UNAVAILABLE` payload with secret redaction.
  */
 
+import './envBootstrap.js';
+
 import type {
   OratsHybridSurfaceOperational,
   OratsHybridSurfacePayload,

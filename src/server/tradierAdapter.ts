@@ -24,7 +24,7 @@
  * redactan con el conjunto de secretos del caller.
  */
 
-import 'dotenv/config';
+import './envBootstrap.js';
 
 import { WebSocket } from 'ws';
 import type {
@@ -71,12 +71,14 @@ export const TRADIER_LIVE_TOKEN_ENV_NAMES = [
 export const TRADIER_SANDBOX_TOKEN_ENV_NAMES = [
   'TRADIER_SANDBOX_TOKEN',
   'TRADIER_SANDBOX_API_TOKEN',
+  'TRADIER_SANDBOX_KEY',
 ] as const;
 export const TRADIER_TOKEN_ENV_NAMES = [
   ...TRADIER_LIVE_TOKEN_ENV_NAMES,
   ...TRADIER_SANDBOX_TOKEN_ENV_NAMES,
 ] as const;
 export const TRADIER_ENV_ENV_NAME = 'TRADIER_ENV';
+export const TRADIER_USE_SANDBOX_ENV_NAME = 'TRADIER_USE_SANDBOX';
 
 export interface TradierConfig {
   /** Secreto. Jamás loguear. */
@@ -87,6 +89,12 @@ export interface TradierConfig {
   readonly restBaseUrl: string;
   readonly wsBaseUrl: string;
   readonly configured: boolean;
+  /** Pieza 41.2: true solo para aliases genéricos (`TRADIER_TOKEN`/`TRADIER_API_TOKEN`). */
+  readonly tokenIsGeneric: boolean;
+  /** Pieza 41.2: se puede pasar de Live a Sandbox ante 401/403. */
+  readonly sandboxFallbackAllowed: boolean;
+  /** Pieza 41.2: true después de la conmutación explícita. */
+  readonly sandboxFallbackUsed?: boolean;
 }
 
 export function resolveTradierConfig(
@@ -118,6 +126,10 @@ export function resolveTradierConfig(
     }
   }
   const envRaw = resolveMassiveEnvValue(source, TRADIER_ENV_ENV_NAME).toLowerCase();
+  const useSandboxRaw = resolveMassiveEnvValue(source, TRADIER_USE_SANDBOX_ENV_NAME).toLowerCase();
+  const tokenIsGeneric =
+    tokenEnvName === 'TRADIER_TOKEN' || tokenEnvName === 'TRADIER_API_TOKEN';
+  const sandboxFallbackAllowed = useSandboxRaw !== 'false';
   const apiEnv: TradierApiEnv = tokenIsSandbox || envRaw === 'sandbox' ? 'sandbox' : 'prod';
   return {
     accessToken,
@@ -126,6 +138,8 @@ export function resolveTradierConfig(
     restBaseUrl: apiEnv === 'sandbox' ? TRADIER_SANDBOX_REST_BASE : TRADIER_PROD_REST_BASE,
     wsBaseUrl: apiEnv === 'sandbox' ? TRADIER_SANDBOX_WS_BASE : TRADIER_WS_BASE,
     configured: accessToken !== null,
+    tokenIsGeneric,
+    sandboxFallbackAllowed,
   };
 }
 
@@ -135,6 +149,20 @@ export function loadTradierConfigFromEnv(
   envFilePath?: string,
 ): TradierConfig {
   return resolveTradierConfig(env, envFilePath);
+}
+
+/**
+ * Pieza 41.2: conmuta un token genérico Live a Sandbox tras un 401/403 real.
+ * No cambia el token ni el alias; solo endpoints y provenance de entorno.
+ */
+export function switchTradierConfigToSandbox(config: TradierConfig): TradierConfig {
+  return {
+    ...config,
+    apiEnv: 'sandbox',
+    restBaseUrl: TRADIER_SANDBOX_REST_BASE,
+    wsBaseUrl: TRADIER_SANDBOX_WS_BASE,
+    sandboxFallbackUsed: true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,7 +1069,7 @@ export function extractInvalidTradierSymbol(rawMessage: string): string | null {
 }
 
 export class TradierLiveManager {
-  private readonly config: TradierConfig;
+  private config: TradierConfig;
   private readonly httpFn: TradierHttpFn;
   private readonly createSocketFn: TradierSocketFactory;
   private readonly nowMsFn: () => number;
@@ -1054,6 +1082,8 @@ export class TradierLiveManager {
   });
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
+
+  private sandboxFallbackAttempted = false;
 
   private readonly latest = new Map<string, MutableLiveQuoteState>();
   private readonly rejectedSymbols = new Set<string>();
@@ -1193,6 +1223,16 @@ export class TradierLiveManager {
       timeoutMs: 10_000,
     });
     if (!response.ok) {
+      const canFallbackToSandbox =
+        this.config.tokenIsGeneric &&
+        this.config.sandboxFallbackAllowed &&
+        this.config.apiEnv === 'prod' &&
+        !this.sandboxFallbackAttempted &&
+        (response.status === 401 || response.status === 403);
+      if (canFallbackToSandbox) {        this.sandboxFallbackAttempted = true;
+        this.config = switchTradierConfigToSandbox(this.config);
+        return this.createSession();
+      }
       throw new Error(`Tradier session HTTP ${String(response.status)}`);
     }
     const body = parseJsonBody(response.text);
@@ -1205,7 +1245,10 @@ export class TradierLiveManager {
       stream !== null && typeof stream['url'] === 'string' && stream['url'].trim() !== ''
         ? stream['url'].trim()
         : this.config.wsBaseUrl;
-    return { sessionId, wsUrl: urlFromResponse };
+    // Tras la conmutación explícita Live -> Sandbox, la URL del proveedor no
+    // puede reabrir el endpoint Live.
+    const effectiveWsUrl = this.sandboxFallbackAttempted ? this.config.wsBaseUrl : urlFromResponse;
+    return { sessionId, wsUrl: effectiveWsUrl };
   }
 
   private async connectCycle(preserveConnectedState = false): Promise<void> {

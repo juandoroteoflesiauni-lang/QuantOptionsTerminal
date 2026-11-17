@@ -269,6 +269,8 @@ describe('Pieza 36 — escala USD, spreads y flujo', () => {
       restBaseUrl: 'https://api.tradier.com/v1',
       wsBaseUrl: 'wss://ws.tradier.com/v1/markets/events',
       configured: true,
+      tokenIsGeneric: false,
+      sandboxFallbackAllowed: false,
     };
     const body = {
       options: {
@@ -440,6 +442,8 @@ describe('Pieza 36 — /api/snapshot QQQ sin ORATS y /api/us/vol-surface on-dema
         restBaseUrl: 'https://api.tradier.com/v1',
         wsBaseUrl: 'wss://ws.tradier.com/v1/markets/events',
         configured: true,
+        tokenIsGeneric: false,
+        sandboxFallbackAllowed: false,
       },
       tradierChainFetchFn: (symbol, expiration) => {
         if (symbol !== 'QQQ' || expiration !== qqqExpiry) {
