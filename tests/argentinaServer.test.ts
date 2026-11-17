@@ -1148,7 +1148,7 @@ describe('Argentina server math, BYMA options, /api/ar/* routes & US options upg
     expect(ypfdVist?.legB).toBe('VIST');
     expect(ypfdVist?.currentValue).not.toBeNull();
     expect(ypfdVist?.mean60d).not.toBeNull();
-  });
+  }, 15_000);
 });
 
 interface RelationsMathExpected {

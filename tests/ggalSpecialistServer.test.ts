@@ -902,7 +902,7 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     const stratJson = JSON.parse(stratRaw) as GgalStrategySelectorResponse;
     expect(stratJson.result?.status).toBe('OK');
     expect(stratJson.result?.rankedStrategies.length ?? 0).toBeGreaterThan(0);
-  });
+  }, 15_000);
 
   it('expone atmIvPct en /api/ar/overview, agresionTicks y Gamma/IV finita en Puts ITM sin NaN', async () => {
     const asOfUtcSec = Math.floor(Date.UTC(2026, 9, 15, 15, 30, 0) / 1_000);

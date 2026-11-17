@@ -155,7 +155,7 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
         'LMT', 'RTX', 'NOC', 'GD', 'GE', 'HON', 'UNP', 'UPS', 'FDX', 'XOM', 'CVX', 'OXY', 'SLB', 'HAL',
         'FCX', 'NEM', 'AA', 'NUE', 'JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'BLK', 'SCHW', 'V', 'MA', 'AXP',
         'UNH', 'LLY', 'NVO', 'JNJ', 'PFE', 'MRK', 'ABBV', 'ISRG', 'TMO', 'DHR', 'AMGN', 'GILD', 'BIIB',
-        'MRNA', 'VKTX', 'HIMS', 'TEM', 'RXRX', 'IONQ', 'RGTI', 'QBTS', 'SOUN', 'BBAI', 'PATH', 'AI', 'C3AI',
+        'MRNA', 'VKTX', 'HIMS', 'TEM', 'RXRX', 'IONQ', 'RGTI', 'QBTS', 'SOUN', 'BBAI', 'PATH', 'AI', 'PLTR',
       ]),
     );
 

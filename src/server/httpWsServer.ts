@@ -516,7 +516,10 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       if (pathname === '/api/snapshot') {
         const symbol = params.get('symbol') ?? 'SPY';
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
-        const snapshot = await runtime.getSnapshot(symbol, { forceRefresh });
+        const snapshot = await runtime.getSnapshot(symbol, {
+          forceRefresh,
+          prefetch: true,
+        });
         sendJson(res, 200, snapshot);
         return;
       }

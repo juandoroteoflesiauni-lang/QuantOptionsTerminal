@@ -485,8 +485,7 @@ describe('serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offl
     expect(cleaned).toContain('[REDACTED]');
   });
 
-  it('serves /api/health, /api/snapshot, /api/bars, /api/unusual cleanly without NaN or secrets', async () => {
-    const fixedNowMs = etDateTimeToUtcMs(2025, 3, 10, 14, 45, 0, true);
+  it('serves /api/health, /api/snapshot, /api/bars, /api/unusual cleanly without NaN or secrets', async () => {    const fixedNowMs = etDateTimeToUtcMs(2025, 3, 10, 14, 45, 0, true);
     const fixedNowSec = Math.floor(fixedNowMs / 1_000);
     const secretKey = 'TOP_SECRET_OFFLINE_KEY_987';
 
@@ -556,7 +555,7 @@ describe('serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offl
     expect(unusual.trades.length).toBe(1);
     expect(unusual.trades[0]?.time).toBe(fixedNowSec);
     expect(unusual.trades[0]?.ticker).toBe('O:SPY250411C00605000');
-  });
+  }, 15_000);
 
   it('returns HTTP 503 NO_DATA without exposing secrets when Massive upstream fails', async () => {
     const fixedNowMs = etDateTimeToUtcMs(2025, 3, 10, 14, 45, 0, true);

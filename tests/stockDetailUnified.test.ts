@@ -12,7 +12,8 @@ import { describe, expect, it } from 'vitest';
 import type { Bar } from '../src/core/types.js';
 import type { FetchFn } from '../src/data/types.js';
 import { ArgentinaMarketRuntime } from '../src/server/argentinaMarketLoader.js';
-import { MarketRuntime } from '../src/server/marketRuntime.js';
+import { MarketRuntime, US_PANEL_TICKERS } from '../src/server/marketRuntime.js';
+import { extractInvalidTradierSymbol } from '../src/server/tradierAdapter.js';
 import {
   computeAnchoredVwapPure,
   computeAtrPositionSize,
@@ -507,5 +508,169 @@ describe('Stock Detail Backend DTO Extensions (offline)', () => {
     expect(detail.adrBars?.adrRatio).toBe(10);
     // Spot 8100 * 10 / 60 = CCL 1350 => 60 USD * (1350 / 10) = 8100 ARS
     expect(Math.abs((detail.adrBars?.bars[0]?.close ?? 0) - 8100)).toBeLessThan(1e-6);
+  });
+});
+
+describe('Pieza 37 — deep history, AR indicators and Tradier symbol prune', () => {
+  function makeDailyBars(count: number, endSec = 1_790_000_000): Bar[] {
+    return Array.from({ length: count }, (_, idx) => {
+      const time = endSec - (count - 1 - idx) * 86_400;
+      const base = 100 + idx * 0.05 + Math.sin(idx / 13) * 1.5;
+      return {
+        time,
+        open: base - 0.4,
+        high: base + 0.8,
+        low: base - 0.8,
+        close: base,
+        volume: 1_000 + idx,
+        vw: base,
+      };
+    });
+  }
+
+  function makeIntradayBars(count: number, endSec = 1_790_000_000): Bar[] {
+    return Array.from({ length: count }, (_, idx) => {
+      const time = endSec - (count - 1 - idx) * 300;
+      const base = 100 + Math.sin(idx / 19) * 0.7;
+      return {
+        time,
+        open: base - 0.1,
+        high: base + 0.2,
+        low: base - 0.2,
+        close: base,
+        volume: 500 + idx,
+        vw: base,
+      };
+    });
+  }
+
+  it('loads 1250 daily and 1000 intraday US bars with EMA200 and AVWAP bands for IREN', async () => {
+    const dailyBars = makeDailyBars(1_250);
+    const intradayBars = makeIntradayBars(1_000);
+    const rt = new MarketRuntime({
+      apiKey: 'deep-history-key',
+      enableWs: false,
+      nowMsFn: () => 1_790_000_500_000,
+      loadBarsFn: ((req: { readonly timeframe?: string }) =>
+        Promise.resolve({
+          bars: req.timeframe === '1D' ? dailyBars : intradayBars,
+          visibleStart: 0,
+          report: { provider: 'massive', fetchedPages: 1, barsCount: req.timeframe === '1D' ? 1250 : 1000, providerError: null },
+        })) as unknown as NonNullable<MrDeps['loadBarsFn']>,
+    });
+
+    const daily = await rt.getBars('IREN', '1D', { visibleBars: 1_250 });
+    expect(daily.bars).toHaveLength(1_250);
+    expect(daily.visibleStartIndex).toBe(0);
+    expect(daily.overlays.ema200).toHaveLength(1_250);
+    expect(daily.overlays.ema200?.[1_249]).not.toBeNull();
+    expect(daily.overlays.avwap).toHaveLength(1_250);
+    expect(daily.overlays.avwap[1_249]).not.toBeNull();
+    expect(daily.overlays.avwapUpper1[1_249]).not.toBeNull();
+    expect(daily.overlays.avwapLower1[1_249]).not.toBeNull();
+    expect(daily.overlays.avwapUpper2[1_249]).not.toBeNull();
+    expect(daily.overlays.avwapLower2[1_249]).not.toBeNull();
+
+    const intraday = await rt.getBars('IREN', '5m', { visibleBars: 1_000 });
+    expect(intraday.bars).toHaveLength(1_000);
+    expect(intraday.overlays.ema200).toHaveLength(1_000);
+    expect(intraday.overlays.ema200?.[999]).not.toBeNull();
+    expect(intraday.overlays.sessionVwapSupported).toBe(true);
+  });
+
+  it('loads deep AR history and computes EMA/VWAP/AVWAP for Panel Líder GGAL', async () => {
+    const bars = makeDailyBars(1_250);
+    const mockFetch: FetchFn = (url) => {
+      if (url.includes('/historical/stocks/GGAL')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: {},
+          text: JSON.stringify(bars.map((bar) => ({
+            date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+            o: bar.open,
+            h: bar.high,
+            l: bar.low,
+            c: bar.close,
+            v: bar.volume,
+          }))),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, headers: {}, text: '[]' });
+    };
+
+    const arRt = new ArgentinaMarketRuntime({
+      fetchFn: mockFetch,
+      minData912IntervalMs: 0,
+      nowMsFn: () => 1_790_000_500_000,
+    });
+    const detail = await arRt.getStockDetail('GGAL', false, '1D');
+    expect(detail.historicalBars).toHaveLength(1_250);
+    const overlays = detail.overlays;
+    expect(overlays).not.toBeNull();
+    expect(overlays?.ema9).toHaveLength(1_250);
+    expect(overlays?.ema21).toHaveLength(1_250);
+    expect(overlays?.ema50).toHaveLength(1_250);
+    expect(overlays?.ema200).toHaveLength(1_250);
+    expect(overlays?.ema200[1_249]).not.toBeNull();
+    expect(overlays?.sessionVwap[1_249]).toBeNull();
+    expect(overlays?.sessionVwapSupported).toBe(false);
+    expect(overlays?.avwap[1_249]).not.toBeNull();
+    expect(overlays?.avwapUpper1[1_249]).not.toBeNull();
+    expect(overlays?.avwapLower2[1_249]).not.toBeNull();
+    expect(overlays?.avwapAnchorAvailable).toBe(true);
+  });
+
+  it('computes the same pure indicator overlays for Panel General and CEDEARs', async () => {
+    const hargBars = makeDailyBars(260);
+    const valoBars = makeDailyBars(260);
+    const spyCedearBars = makeDailyBars(300);
+    const mockFetch: FetchFn = (url) => {
+      const match = url.match(/\/historical\/(stocks|cedears)\/([A-Z0-9]+)/);
+      const ticker = match?.[2];
+      const bars = ticker === 'HARG' ? hargBars : ticker === 'VALO' ? valoBars : ticker === 'SPY' ? spyCedearBars : [];
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: {},
+        text: JSON.stringify(bars.map((bar) => ({
+          date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+          o: bar.open,
+          h: bar.high,
+          l: bar.low,
+          c: bar.close,
+          v: bar.volume,
+        }))),
+      });
+    };
+
+    const arRt = new ArgentinaMarketRuntime({
+      fetchFn: mockFetch,
+      minData912IntervalMs: 0,
+      nowMsFn: () => 1_790_000_500_000,
+    });
+
+    const harg = await arRt.getStockDetail('HARG', false, '1D');
+    expect(harg.assetType).toBe('STOCK');
+    expect(harg.historicalBars).toHaveLength(260);
+    expect(harg.overlays?.ema200[259]).not.toBeNull();
+    expect(harg.overlays?.avwap[259]).not.toBeNull();
+
+    const valo = await arRt.getStockDetail('VALO', false, '1D');
+    expect(valo.assetType).toBe('STOCK');
+    expect(valo.overlays?.ema200[259]).not.toBeNull();
+
+    const spyCedear = await arRt.getStockDetail('SPY', false, '1D');
+    expect(spyCedear.assetType).toBe('CEDEAR');
+    expect(spyCedear.overlays?.ema200[299]).not.toBeNull();
+    expect(spyCedear.overlays?.avwapAnchorAvailable).toBe(true);
+  });
+
+  it('prunes invalid Tradier symbols and replaces C3AI with a valid Tradier symbol', () => {
+    expect(extractInvalidTradierSymbol('C3AI is not a valid symbol')).toBe('C3AI');
+    expect(US_PANEL_TICKERS).not.toContain('C3AI');
+    expect(US_PANEL_TICKERS).toContain('AI');
+    expect(US_PANEL_TICKERS).toContain('PLTR');
+    expect(US_PANEL_TICKERS).toHaveLength(162);
   });
 });

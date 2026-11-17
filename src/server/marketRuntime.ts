@@ -1249,7 +1249,7 @@ export const US_EQUITY_UNIVERSE: readonly UsEquityUniverseMeta[] = [
   makeGeneralUsEquityMeta('BBAI', 'BigBear.ai Holdings Inc.', 'Semiconductores', '#2EDC7E'),
   makeGeneralUsEquityMeta('PATH', 'UiPath Inc.', 'Mega Caps / Tech', '#F5B544'),
   makeGeneralUsEquityMeta('AI', 'C3.ai Inc.', 'Mega Caps / Tech', '#38BDF8'),
-  makeGeneralUsEquityMeta('C3AI', 'C3.ai Inc. (C3AI)', 'Mega Caps / Tech', '#2EDC7E'),
+  makeGeneralUsEquityMeta('PLTR', 'Palantir Technologies Inc.', 'Mega Caps / Tech', '#101010'),
 ] as const;
 
 export const US_EQUITY_META_MAP: ReadonlyMap<string, UsEquityUniverseMeta> = new Map(
@@ -1319,16 +1319,6 @@ export interface OptionsUnderlyingMetaDto {
 
 /** Extensión exclusiva del selector de Opciones (Pieza 36), sin alterar el panel. */
 const OPTIONS_ONLY_US_EXTENSIONS: readonly OptionsUnderlyingMetaDto[] = [
-  {
-    key: 'PLTR',
-    symbol: 'PLTR',
-    market: 'US',
-    venue: 'OPRA',
-    currency: 'USD',
-    name: 'Palantir Technologies Inc.',
-    sector: 'Mega Caps / Tech',
-    color: '#101010',
-  },
   {
     key: 'IBIT',
     symbol: 'IBIT',
@@ -5048,7 +5038,7 @@ export class MarketRuntime {
         ...(options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh }),
       },
     );
-    if (options.prefetch !== false && normalizedExpiration === '') {
+    if (options.prefetch === true && normalizedExpiration === '') {
       const selection = result.value.optionsChain ?? null;
       for (const expiration of selection?.prefetchExpirationDates ?? []) {
         void this.getSnapshot(parsed.canonicalSymbol, {
@@ -7199,8 +7189,9 @@ export class MarketRuntime {
   ): Promise<TerminalBarsResponse> {
     const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
     const timeframe = parseTimeframe(rawTimeframe, this.secrets);
-    const defaultVisible = timeframe === '1D' ? 2_016 : 240;
-    const visibleBars = Math.min(Math.max(options.visibleBars ?? defaultVisible, 20), 2_200);
+    const maxVisible = timeframe === '1D' ? 1_250 : 1_000;
+    const defaultVisible = maxVisible;
+    const visibleBars = Math.min(Math.max(options.visibleBars ?? defaultVisible, 20), maxVisible);
     const requestedRthOnly = options.rthOnly ?? false;
     const effectiveRthOnly = requestedRthOnly && timeframe !== '1D' && timeframe !== '4h';
     const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}`;
@@ -7228,7 +7219,7 @@ export class MarketRuntime {
       symbol: parsed.canonicalSymbol,
       timeframe,
       visibleBars,
-      warmupBars: 220,
+      warmupBars: 0,
       rthOnly,
       maxPages: timeframe === '1D' ? 12 : 8,
       now: nowSec,
@@ -7258,7 +7249,11 @@ export class MarketRuntime {
     const sessionVwap = sessionVwapSupported
       ? computeSessionVwap(bars, { market: 'EQUITY', barSeconds })
       : null;
-    const avwap = computeAnchoredVwap(bars, 'SESSION', { market: 'EQUITY' });
+    const avwap = computeAnchoredVwap(
+      bars,
+      timeframe === '1D' ? 'MONTH' : 'SESSION',
+      { market: 'EQUITY' },
+    );
     const rsi14 = computeWilderRsiSeries(closes, 14);
 
     const cvdResult = analyzeCvdAndAbsorption(bars, {
@@ -7318,8 +7313,14 @@ export class MarketRuntime {
       })),
     ];
 
-    const startSlice = Math.max(0, res.visibleStart - 40);
+    const startSlice = Math.max(0, res.visibleStart);
     const slicedBars = bars.slice(startSlice);
+    const avwapByTime = new Map(avwap.points.map((point) => [point.time, point] as const));
+    const avwapAligned = (selector: (point: typeof avwap.points[number]) => number): (number | null)[] =>
+      slicedBars.map((bar) => {
+        const point = avwapByTime.get(bar.time);
+        return point === undefined ? null : sanitizeFinite(selector(point));
+      });
     const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
 
     const payload: TerminalBarsResponse = {
@@ -7344,14 +7345,17 @@ export class MarketRuntime {
         sma200: sma200.slice(startSlice).map((v) => sanitizeFinite(v)),
         hma55: hma55.slice(startSlice).map((v) => sanitizeFinite(v)),
         sessionVwap: sessionVwapSupported && sessionVwap !== null
-          ? sessionVwap.points.slice(startSlice).map((p) => sanitizeFinite(p.vwap))
+          ? (() => {
+              const sessionVwapByTime = new Map(sessionVwap.points.map((point) => [point.time, point.vwap] as const));
+              return slicedBars.map((bar) => sanitizeFinite(sessionVwapByTime.get(bar.time)));
+            })()
           : slicedBars.map(() => null),
         sessionVwapSupported,
-        avwap: avwap.points.slice(startSlice).map((p) => sanitizeFinite(p.vwap)),
-        avwapUpper1: avwap.points.slice(startSlice).map((p) => sanitizeFinite(p.upper1)),
-        avwapLower1: avwap.points.slice(startSlice).map((p) => sanitizeFinite(p.lower1)),
-        avwapUpper2: avwap.points.slice(startSlice).map((p) => sanitizeFinite(p.upper2)),
-        avwapLower2: avwap.points.slice(startSlice).map((p) => sanitizeFinite(p.lower2)),
+        avwap: avwapAligned((point) => point.vwap),
+        avwapUpper1: avwapAligned((point) => point.upper1),
+        avwapLower1: avwapAligned((point) => point.lower1),
+        avwapUpper2: avwapAligned((point) => point.upper2),
+        avwapLower2: avwapAligned((point) => point.lower2),
       },
       subPanes: {
         rsi14: rsi14.slice(startSlice).map((v) => sanitizeFinite(v)),

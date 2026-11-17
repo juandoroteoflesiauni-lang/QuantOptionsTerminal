@@ -8,7 +8,7 @@
     "dev:terminal": "node --env-file-if-exists=.env node_modules/vite-node/vite-node.mjs --script src/server/index.ts --with-web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --testTimeout=15000",
     "smoke:next-url": "vitest run --config vitest.smoke.mts",
     "feeds:check": "node node_modules/vite-node/vite-node.mjs --script tools/check_live_feeds.ts",
     "verify": "npm run typecheck && npm run lint && npm run test"

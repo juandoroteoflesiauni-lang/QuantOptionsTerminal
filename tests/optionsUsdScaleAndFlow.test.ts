@@ -518,6 +518,7 @@ describe('Pieza 36 — /api/snapshot QQQ sin ORATS y /api/us/vol-surface on-dema
   it('expone el universo completo con GGAL dual y extensiones de Opciones', () => {
     const keys = OPTIONS_UNDERLYING_UNIVERSE.map((meta) => meta.key);
     expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toHaveLength(164);
     expect(keys).toContain('GGAL');
     expect(keys).toContain('US:GGAL');
     expect(keys).toContain('PLTR');

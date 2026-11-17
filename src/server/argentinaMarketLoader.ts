@@ -32,12 +32,19 @@
  *    (`LIVE`, `DIFERIDO_20M`, `PARTIAL`, `NO_DATA`) y `providerErrors`.
  */
 
-import { calculateEma } from '../core/ema.js';
+import { calculateEma, computeEmaSuite } from '../core/ema.js';
 import {
   computeSmaSeries,
   evaluateMtfStructure,
 } from '../core/microstructure/mtfStructure.js';
 import { computeWilderRsiSeries } from '../core/microstructure/divergences.js';
+import {
+  BYMA_MARKET_TZ,
+  computeAnchoredVwapSeries,
+  computeSessionVwapSeries,
+  getSessionDateKey,
+} from '../core/ggal/technicalIndicators.js';
+import type { GgalChartBarPoint } from '../core/ggal/institutionalContracts.js';
 import {
   computeVolumeProfileAmt,
   trackNakedPocs,
@@ -525,6 +532,123 @@ export interface ArOptionsQuantEnginesDto {
   readonly volAnalyticsSuite?: JsonSafe<VolAnalyticsSuiteResult> | null;
 }
 
+export interface ArStockDetailIndicatorOverlays {
+  readonly ema9: readonly (number | null)[];
+  readonly ema21: readonly (number | null)[];
+  readonly ema50: readonly (number | null)[];
+  readonly ema200: readonly (number | null)[];
+  readonly sessionVwap: readonly (number | null)[];
+  readonly sessionVwapSupported: boolean;
+  readonly avwap: readonly (number | null)[];
+  readonly avwapUpper1: readonly (number | null)[];
+  readonly avwapLower1: readonly (number | null)[];
+  readonly avwapUpper2: readonly (number | null)[];
+  readonly avwapLower2: readonly (number | null)[];
+  readonly avwapAnchorAvailable: boolean;
+  readonly avwapAnchorMode: 'MONTH_START';
+  readonly avwapAnchorUtcSec: number | null;
+}
+
+function barsToGgalChartPoints(bars: readonly Bar[]): readonly GgalChartBarPoint[] {
+  return bars.map((bar) => ({
+    timeSec: bar.time,
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+  }));
+}
+
+function sanitizeIndicatorSeries(values: readonly (number | undefined)[]): readonly (number | null)[] {
+  return values.map((value) => sanitizeFinite(value ?? Number.NaN));
+}
+
+function alignPointsToBars(
+  bars: readonly Bar[],
+  points: readonly { readonly timeSec: number; readonly value: number }[],
+): readonly (number | null)[] {
+  const byTime = new Map(points.map((point) => [point.timeSec, point.value] as const));
+  return bars.map((bar) => sanitizeFinite(byTime.get(bar.time) ?? Number.NaN));
+}
+
+function alignBandPointsToBars(
+  bars: readonly Bar[],
+  points: readonly {
+    readonly timeSec: number;
+    readonly avwap: number;
+    readonly plus1Sigma: number;
+    readonly minus1Sigma: number;
+    readonly plus2Sigma: number;
+    readonly minus2Sigma: number;
+  }[],
+): {
+  readonly avwap: readonly (number | null)[];
+  readonly upper1: readonly (number | null)[];
+  readonly lower1: readonly (number | null)[];
+  readonly upper2: readonly (number | null)[];
+  readonly lower2: readonly (number | null)[];
+} {
+  const byTime = new Map(points.map((point) => [point.timeSec, point] as const));
+  return {
+    avwap: bars.map((bar) => sanitizeFinite(byTime.get(bar.time)?.avwap ?? Number.NaN)),
+    upper1: bars.map((bar) => sanitizeFinite(byTime.get(bar.time)?.plus1Sigma ?? Number.NaN)),
+    lower1: bars.map((bar) => sanitizeFinite(byTime.get(bar.time)?.minus1Sigma ?? Number.NaN)),
+    upper2: bars.map((bar) => sanitizeFinite(byTime.get(bar.time)?.plus2Sigma ?? Number.NaN)),
+    lower2: bars.map((bar) => sanitizeFinite(byTime.get(bar.time)?.minus2Sigma ?? Number.NaN)),
+  };
+}
+
+function buildArStockDetailOverlays(
+  bars: readonly Bar[],
+  timeframe: Timeframe,
+): ArStockDetailIndicatorOverlays {
+  const indicatorWindowStart = Math.max(0, bars.length - 250);
+  const indicatorWindow = bars.slice(indicatorWindowStart);
+  const indicatorChartPoints = barsToGgalChartPoints(indicatorWindow);
+  const emaCloses = indicatorWindow.map((bar) => bar.close);
+  const emaSuite = computeEmaSuite(emaCloses);
+  const sessionVwapPoints =
+    timeframe === '1D' ? [] : computeSessionVwapSeries(indicatorChartPoints, BYMA_MARKET_TZ);
+
+  const lastBar = bars[bars.length - 1];
+  const sessionDateKeys = bars.map((bar) => getSessionDateKey(bar.time, BYMA_MARKET_TZ));
+  let anchorBarIndex = -1;
+  if (lastBar !== undefined) {
+    const monthKey = sessionDateKeys.at(-1)?.slice(0, 7) ?? null;
+    anchorBarIndex = monthKey === null ? -1 : sessionDateKeys.findIndex((dateKey) => dateKey.slice(0, 7) === monthKey);
+  }
+  const anchorBar = anchorBarIndex >= 0 ? bars[anchorBarIndex] : undefined;
+  const anchorTimeSec = anchorBar?.time ?? null;
+  // AVWAP se calcula sobre la ventana operativa reciente: el ancla de mes/año/click
+  // siempre cae dentro de las últimas 250 ruedas para 1D y 1000 velas intradiarias.
+  const avwapWindowStart = Math.max(0, bars.length - 250);
+  const avwapWindow = bars.slice(avwapWindowStart);
+  const avwapChartPoints = barsToGgalChartPoints(avwapWindow);
+  const avwapPoints =
+    anchorTimeSec === null ? [] : computeAnchoredVwapSeries(avwapChartPoints, anchorTimeSec);
+  const avwapBands = alignBandPointsToBars(avwapWindow, avwapPoints);
+  const avwapLeadingNulls = Array.from({ length: avwapWindowStart }, () => null);
+
+  const emaLeadingNulls = Array.from({ length: indicatorWindowStart }, () => null);
+  return {
+    ema9: [...emaLeadingNulls, ...sanitizeIndicatorSeries(emaSuite[9])],
+    ema21: [...emaLeadingNulls, ...sanitizeIndicatorSeries(emaSuite[21])],
+    ema50: [...emaLeadingNulls, ...sanitizeIndicatorSeries(emaSuite[50])],
+    ema200: [...emaLeadingNulls, ...sanitizeIndicatorSeries(emaSuite[200])],
+    sessionVwap: alignPointsToBars(bars, sessionVwapPoints),
+    sessionVwapSupported: timeframe !== '1D',
+    avwap: [...avwapLeadingNulls, ...avwapBands.avwap],
+    avwapUpper1: [...avwapLeadingNulls, ...avwapBands.upper1],
+    avwapLower1: [...avwapLeadingNulls, ...avwapBands.lower1],
+    avwapUpper2: [...avwapLeadingNulls, ...avwapBands.upper2],
+    avwapLower2: [...avwapLeadingNulls, ...avwapBands.lower2],
+    avwapAnchorAvailable: anchorBarIndex >= 0,
+    avwapAnchorMode: 'MONTH_START',
+    avwapAnchorUtcSec: anchorTimeSec,
+  };
+}
+
 export interface ArStockDetailResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
@@ -533,6 +657,7 @@ export interface ArStockDetailResponse {
   readonly stock: ArStockDto | null;
   readonly bond: ArBondDto | null;
   readonly historicalBars: readonly ArHistoricalBarDto[];
+  readonly overlays?: ArStockDetailIndicatorOverlays | null;
   readonly adrBars?: {
     readonly timeframe: Timeframe;
     readonly source: 'MASSIVE_ADR_CONVERTED';
@@ -3200,6 +3325,11 @@ export class ArgentinaMarketRuntime {
       readonly atmIvPct: number;
       readonly compositeOtmPoints: readonly CompositeOtmSmilePoint[];
     }[]
+  >();
+  private readonly arOverlayCache = new Map<string, ArStockDetailIndicatorOverlays>();
+  private readonly stockDetailCache = new Map<
+    string,
+    { readonly atMs: number; readonly response: ArStockDetailResponse }
   >();
 
   private data912Queue: Promise<void> = Promise.resolve();
@@ -6568,7 +6698,15 @@ export class ArgentinaMarketRuntime {
     timeframe: Timeframe = '1D',
   ): Promise<ArStockDetailResponse> {
     const symbol = rawSymbol.trim().toUpperCase();
-    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const cacheKey = `${symbol}:${timeframe}`;
+    const nowMs = this.nowMsFn();
+    if (!forceRefresh) {
+      const cached = this.stockDetailCache.get(cacheKey);
+      if (cached !== undefined && nowMs - cached.atMs < 1_500) {
+        return cached.response;
+      }
+    }
+    const nowSec = Math.floor(nowMs / 1_000);
     const isBond = SOVEREIGN_BONDS.some((b) => b.baseTicker === symbol || `${b.baseTicker}D` === symbol || `${b.baseTicker}C` === symbol);
     const isCedear = symbol in CEDEAR_RATIOS && !STOCK_META_MAP.has(symbol);
     const kind: 'stocks' | 'cedears' | 'bonds' = isBond ? 'bonds' : isCedear ? 'cedears' : 'stocks';
@@ -6664,7 +6802,26 @@ export class ArgentinaMarketRuntime {
       benchmarkBars: benchBars,
     });
 
-    const recentBars = bars.slice(-240);
+    const recentBars = bars.slice(-1_250);
+    const lastRecentBar = recentBars.at(-1);
+    const overlayCacheKey =
+      lastRecentBar === undefined
+        ? null
+        : `${symbol}:${timeframe}:${String(lastRecentBar.time)}:${String(recentBars.length)}`;
+    let arIndicatorOverlays: ArStockDetailIndicatorOverlays | null = null;
+    if (overlayCacheKey !== null) {
+      const cachedOverlays = this.arOverlayCache.get(overlayCacheKey);
+      if (cachedOverlays !== undefined) {
+        arIndicatorOverlays = cachedOverlays;
+      } else {
+        arIndicatorOverlays = buildArStockDetailOverlays(recentBars, timeframe);
+        this.arOverlayCache.set(overlayCacheKey, arIndicatorOverlays);
+        if (this.arOverlayCache.size > 64) {
+          const oldestKey = this.arOverlayCache.keys().next().value;
+          if (oldestKey !== undefined) this.arOverlayCache.delete(oldestKey);
+        }
+      }
+    }
     const toArBarDtos = (srcBars: readonly Bar[], divCcl: number | null): readonly ArHistoricalBarDto[] =>
       srcBars.map((b, idx) => {
         const prev = srcBars[idx - 1];
@@ -6833,7 +6990,7 @@ export class ArgentinaMarketRuntime {
       macroIfPrimary?.rofxFutures?.find((c) => (c.category === 'OUTRIGHT' || c.category === 'MINI') && c.price !== null) ??
       null;
 
-    return {
+    const response: ArStockDetailResponse = {
       asOfUtcSec: nowSec,
       feedStatus,
       symbol,
@@ -6841,6 +6998,7 @@ export class ArgentinaMarketRuntime {
       stock,
       bond,
       historicalBars,
+      overlays: arIndicatorOverlays,
       adrBars,
       benchmarkSymbol: symbol === 'SPY' ? 'SPY CEDEAR' : 'SPY CEDEAR',
       benchmarkBars1d,
@@ -6871,6 +7029,14 @@ export class ArgentinaMarketRuntime {
       rofexFrontContract,
       providerErrors,
     };
+    if (!forceRefresh) {
+      this.stockDetailCache.set(cacheKey, { atMs: nowMs, response });
+      if (this.stockDetailCache.size > 32) {
+        const oldestKey = this.stockDetailCache.keys().next().value;
+        if (oldestKey !== undefined) this.stockDetailCache.delete(oldestKey);
+      }
+    }
+    return response;
   }
 
   public async getOptionsChain(rawUnderlying = 'GGAL', forceRefresh = false): Promise<ArOptionsResponse> {
