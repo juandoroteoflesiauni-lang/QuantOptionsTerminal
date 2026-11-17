@@ -56,16 +56,23 @@ type PanelId =
   | 'cauciones';
 
 /**
- * Rutas válidas de la API v2 de InvertirOnline (documentación oficial):
+ * Fallback de CEDEARs ante HTTP 400/404 en la ruta primaria: el panel
+ * `CEDEARs` también responde bajo el instrumento `acciones`.
+ */
+export const IOL_CEDEARS_FALLBACK_PATH = '/api/v2/Cotizaciones/acciones/CEDEARs/argentina';
+
+/**
+ * Rutas válidas de la API v2 de InvertirOnline:
  * - `acciones` usa paneles nombrados: "Merval" (líderes) y "Panel General"
  *   (URL-encoded como `Panel%20General`); `acciones/todas` devuelve HTTP 404.
- * - el mercado de CEDEARs es singular: `cedear` (no `cedears`, que devuelve
- *   HTTP 400).
+ * - CEDEARs exige el nombre de panel `CEDEARs`: `cedear/todas` y
+ *   `cedears/todas` devuelven HTTP 400 en producción. La ruta primaria
+ *   `cedears/CEDEARs` cae a `IOL_CEDEARS_FALLBACK_PATH` ante HTTP 400/404.
  */
 export const IOL_PANELS: readonly { readonly id: PanelId; readonly path: string }[] = [
   { id: 'acciones', path: '/api/v2/Cotizaciones/acciones/Merval/argentina' },
   { id: 'accionesPanelGeneral', path: '/api/v2/Cotizaciones/acciones/Panel%20General/argentina' },
-  { id: 'cedears', path: '/api/v2/Cotizaciones/cedear/todas/argentina' },
+  { id: 'cedears', path: '/api/v2/Cotizaciones/cedears/CEDEARs/argentina' },
   { id: 'bonos', path: '/api/v2/Cotizaciones/bonos/todas/argentina' },
   { id: 'letras', path: '/api/v2/Cotizaciones/letras/todas/argentina' },
   { id: 'obligacionesNegociables', path: '/api/v2/Cotizaciones/obligacionesNegociables/todas/argentina' },
@@ -374,7 +381,7 @@ export class IolFeedAdapter {
     return this.accessToken;
   }
 
-  private async getPanel(path: string, retry = true): Promise<unknown> {
+  private async getPanel(path: string, retry = true, fallbackPath?: string): Promise<unknown> {
     const token = await this.ensureToken();
     const startedAtMs = this.nowMsFn();
     let response: IolHttpResponse;
@@ -401,7 +408,10 @@ export class IolFeedAdapter {
       this.accessToken = null;
       this.accessTokenExpiresAtMs = 0;
       await this.authenticate();
-      return this.getPanel(path, false);
+      return this.getPanel(path, false, fallbackPath);
+    }
+    if (!response.ok && fallbackPath !== undefined && (response.status === 400 || response.status === 404)) {
+      return this.getPanel(fallbackPath, retry);
     }
     if (!response.ok) throw new Error(`IOL panel HTTP ${String(response.status)} for ${path}`);
     return JSON.parse(response.text) as unknown;
@@ -409,7 +419,11 @@ export class IolFeedAdapter {
 
   private async pollPanels(generation: number): Promise<void> {
     const results = await Promise.allSettled(IOL_PANELS.map(async (panel) => {
-      const body = await this.getPanel(panel.path);
+      const body = await this.getPanel(
+        panel.path,
+        true,
+        panel.id === 'cedears' ? IOL_CEDEARS_FALLBACK_PATH : undefined,
+      );
       return { panel, body };
     }));
     if (generation !== this.generation || !this.running) return;
