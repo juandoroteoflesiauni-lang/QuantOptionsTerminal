@@ -433,6 +433,49 @@ describe('Pieza 41.2 — bootstrap explícito del .env raíz', () => {
   });
 });
 
+describe('Pieza 41.3 — runtime de producción lee FMP/Tradier del entorno', () => {
+  it('no entra en harness cuando el entrypoint no re-pasa apiKey', () => {
+    const restoreEnvValue = (key: string, previous: string | undefined): void => {
+      if (previous === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = previous;
+    };
+    const envKeys = [
+      'FMP_API_KEY',
+      'FMP_KEY_QUOTES',
+      'FMP_KEY_MARKET',
+      'TRADIER_API_TOKEN',
+      'TRADIER_TOKEN',
+      'TRADIER_SANDBOX_TOKEN',
+      'TRADIER_USE_SANDBOX',
+    ] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    try {
+      process.env['FMP_API_KEY'] = 'fmp-production-key';
+      process.env['FMP_KEY_QUOTES'] = 'fmp-quotes-key';
+      process.env['FMP_KEY_MARKET'] = 'fmp-market-key';
+      process.env['TRADIER_API_TOKEN'] = 'tradier-production-token';
+      process.env['TRADIER_TOKEN'] = 'tradier-production-token';
+      process.env['TRADIER_SANDBOX_TOKEN'] = 'tradier-production-token';
+      process.env['TRADIER_USE_SANDBOX'] = 'true';
+      const productionRuntime = new MarketRuntime({ enableWs: false });
+      const fmp = productionRuntime.getFmpEnterpriseFeedHealth();
+      expect(fmp.configured).toBe(true);
+      expect(fmp.subscribedSymbols.length).toBeGreaterThan(0);
+      const tradier = productionRuntime.getTradierLiveStatus();
+      expect(tradier.configured).toBe(true);
+      expect(tradier.environment).toBe('SANDBOX');
+      expect(tradier.restBaseUrl).toBe(TRADIER_SANDBOX_REST_BASE);
+      expect(tradier.wsBaseUrl).toBe(TRADIER_SANDBOX_WS_BASE);
+
+      const harnessRuntime = new MarketRuntime({ apiKey: 'harness-key', enableWs: false });
+      expect(harnessRuntime.getFmpEnterpriseFeedHealth().configured).toBe(false);
+      expect(harnessRuntime.getTradierLiveStatus().configured).toBe(false);
+    } finally {
+      for (const [key, previous] of previousEnv) restoreEnvValue(key, previous);
+    }
+  });
+});
+
 describe('Pieza 41 — Tradier stream e histórico REST', () => {
   it('define el núcleo líquido exacto sin índices Massive', () => {
     const required = ['SPY', 'QQQ', 'IWM', 'DIA', 'VIXY', 'GGAL', 'YPF', 'BMA', 'PAM', 'BBAR', 'SUPV', 'TGS', 'CEPU', 'CRESY', 'EDN', 'LOMA', 'MELI', 'NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'TSLA', 'GOOGL', 'KO', 'EWZ', 'IBIT'];

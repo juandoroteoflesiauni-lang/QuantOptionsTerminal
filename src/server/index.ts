@@ -55,7 +55,8 @@ export async function startServerFromEnv(env: NodeJS.ProcessEnv = process.env): 
   const auth = loadRuntimeAuth(env);
 
   const runtime = new MarketRuntime({
-    apiKey: auth.apiKey,
+    // Pieza 41.3: `apiKey` es inyección de tests. Si se re-pasa la clave de
+    // producción, MarketRuntime entra en harness y FMP/Tradier quedan vacíos.
     secrets: auth.secrets,
     watchedSymbols,
     enableWs,
