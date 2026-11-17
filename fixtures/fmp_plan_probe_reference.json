@@ -1,0 +1,126 @@
+{
+  "definitions": [
+    {
+      "alias": "FMP_API_KEY",
+      "endpoint": "/stable/profile?symbol=AAPL",
+      "planTierRequired": "STARTER",
+      "planFeature": "Company Profile Data"
+    },
+    {
+      "alias": "FMP_KEY_13F",
+      "endpoint": "/stable/institutional-ownership/dates?cik=0001067983",
+      "planTierRequired": "ULTIMATE",
+      "planFeature": "Form 13F Filings Dates"
+    },
+    {
+      "alias": "FMP_KEY_ANALYST",
+      "endpoint": "/stable/analyst-estimates?symbol=AAPL&period=annual&page=0&limit=10",
+      "planTierRequired": "ULTIMATE",
+      "planFeature": "Financial Estimates"
+    },
+    {
+      "alias": "FMP_KEY_CALENDARS",
+      "endpoint": "/stable/earnings-calendar?from=2026-11-17&to=2026-11-20",
+      "planTierRequired": "STARTER",
+      "planFeature": "Earnings Calendar"
+    },
+    {
+      "alias": "FMP_KEY_ETF",
+      "endpoint": "/stable/etf-list",
+      "planTierRequired": "STARTER",
+      "planFeature": "ETF Symbol Search"
+    },
+    {
+      "alias": "FMP_KEY_FILINGS",
+      "endpoint": "/stable/sec-filings-search/form-type?formType=8-K&from=2026-11-01&to=2026-11-17&page=0&limit=10",
+      "planTierRequired": "STARTER",
+      "planFeature": "SEC Filings By Form Type"
+    },
+    {
+      "alias": "FMP_KEY_MACRO",
+      "endpoint": "/stable/economic-calendar?from=2026-11-17&to=2026-11-20",
+      "planTierRequired": "STARTER",
+      "planFeature": "Economic Data Releases Calendar"
+    },
+    {
+      "alias": "FMP_KEY_MARKET",
+      "endpoint": "/stable/historical-chart/5min?symbol=AAPL",
+      "planTierRequired": "STARTER",
+      "planFeature": "5 Min Interval Stock Chart"
+    },
+    {
+      "alias": "FMP_KEY_NEWS",
+      "endpoint": "/stable/news/stock-latest?page=0&limit=20",
+      "planTierRequired": "STARTER",
+      "planFeature": "Stock News"
+    },
+    {
+      "alias": "FMP_KEY_PROFILES",
+      "endpoint": "/stable/profile?symbol=AAPL",
+      "planTierRequired": "STARTER",
+      "planFeature": "Company Profile Data"
+    },
+    {
+      "alias": "FMP_KEY_QUOTES",
+      "endpoint": "/stable/quote?symbol=AAPL",
+      "planTierRequired": "ULTIMATE",
+      "planFeature": "Stock Quote"
+    },
+    {
+      "alias": "FMP_KEY_STATEMENTS",
+      "endpoint": "/stable/income-statement?symbol=AAPL&limit=1",
+      "planTierRequired": "STARTER",
+      "planFeature": "Income Statement"
+    },
+    {
+      "alias": "FMP_KEY_TECHNICAL",
+      "endpoint": "/stable/technical-indicators/sma?symbol=AAPL&periodLength=10&timeframe=1day",
+      "planTierRequired": "STARTER",
+      "planFeature": "Simple Moving Average"
+    },
+    {
+      "alias": "FMP_KEY_TRANSCRIPTS",
+      "endpoint": "/stable/earning-call-transcript?symbol=AAPL&year=2020&quarter=3",
+      "planTierRequired": "ULTIMATE",
+      "planFeature": "Earnings Transcript"
+    }
+  ],
+  "classification": [
+    {
+      "httpStatus": 200,
+      "rows": 1,
+      "error": null,
+      "access": "ALLOWED"
+    },
+    {
+      "httpStatus": 401,
+      "rows": null,
+      "error": "HTTP_401",
+      "access": "BLOCKED"
+    },
+    {
+      "httpStatus": 402,
+      "rows": null,
+      "error": "HTTP_402",
+      "access": "BLOCKED"
+    },
+    {
+      "httpStatus": 403,
+      "rows": null,
+      "error": "HTTP_403",
+      "access": "BLOCKED"
+    },
+    {
+      "httpStatus": 500,
+      "rows": null,
+      "error": "HTTP_500",
+      "access": "ERROR"
+    },
+    {
+      "httpStatus": null,
+      "rows": null,
+      "error": "NETWORK_ERROR",
+      "access": "ERROR"
+    }
+  ]
+}

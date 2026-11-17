@@ -11,6 +11,11 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { bootstrapRootEnv, cleanEnvValue } from '../src/server/envBootstrap.js';
 import {
+  classifyFmpPlanProbe,
+  FMP_PLAN_PROBE_DEFINITIONS,
+  probeFmpPlans,
+} from '../src/server/fmpPlanProbe.js';
+import {
   FmpEnterpriseClient,
   loadFmpConfigFromEnv,
   resolveFmpConfig,
@@ -213,6 +218,25 @@ interface ReferenceFixture {
 const fixture = JSON.parse(
   readFileSync(resolve(__dirname, '..', 'fixtures', 'fmp_enterprise_and_argy_stream_reference.json'), 'utf-8'),
 ) as ReferenceFixture;
+
+interface PlanProbeFixture {
+  readonly definitions: readonly {
+    readonly alias: string;
+    readonly endpoint: string;
+    readonly planTierRequired: 'STARTER' | 'PREMIUM' | 'ULTIMATE';
+    readonly planFeature: string;
+  }[];
+  readonly classification: readonly {
+    readonly httpStatus: number | null;
+    readonly rows: number | null;
+    readonly error: string | null;
+    readonly access: 'ALLOWED' | 'BLOCKED' | 'ERROR';
+  }[];
+}
+
+const planProbeFixture = JSON.parse(
+  readFileSync(resolve(__dirname, '..', 'fixtures', 'fmp_plan_probe_reference.json'), 'utf-8'),
+) as PlanProbeFixture;
 
 const EMPTY_TELEMETRY = {
   startedAtMs: null,
@@ -851,6 +875,85 @@ describe('Pieza 41 — Stock Detail AR:/US: y fallback BYMA', () => {
     expect(realtimeQuoteKey('AL30', '24hs')).toBe('AL30|24');
     expect(realtimeQuoteKey('AL30', 'CI')).toBe('AL30|CI');
     expect(parseStockDetailKey('US:YPF')).toEqual({ key: 'US:YPF', symbol: 'YPF', market: 'US' });
+  });
+});
+
+describe('Pieza 41.4 — plan probe FMP', () => {
+  it('coincide con la referencia independiente de planes por alias', () => {
+    expect(FMP_PLAN_PROBE_DEFINITIONS).toHaveLength(planProbeFixture.definitions.length);
+    for (let index = 0; index < planProbeFixture.definitions.length; index += 1) {
+      const actual = FMP_PLAN_PROBE_DEFINITIONS[index];
+      const expected = planProbeFixture.definitions[index];
+      expect(actual?.alias).toBe(expected?.alias);
+      expect(actual?.endpoint).toBe(expected?.endpoint);
+      expect(actual?.planTierRequired).toBe(expected?.planTierRequired);
+      expect(actual?.planFeature).toBe(expected?.planFeature);
+    }
+  });
+
+  it('clasifica acceso, bloqueo y error igual a la referencia Python', () => {
+    for (const caseItem of planProbeFixture.classification) {
+      expect(
+        classifyFmpPlanProbe({
+          httpStatus: caseItem.httpStatus,
+          rows: caseItem.rows,
+          error: caseItem.error,
+        }),
+      ).toBe(caseItem.access);
+    }
+  });
+
+  it('probea cada alias y no expone claves en la respuesta', async () => {
+    const requestedAliases: string[] = [];
+    const urls: string[] = [];
+    const response = await probeFmpPlans({
+      env: {
+        FMP_API_KEY: 'fmp-primary-key',
+        FMP_KEY_13F: 'fmp-13f-key',
+        FMP_KEY_ANALYST: 'fmp-analyst-key',
+        FMP_KEY_CALENDARS: 'fmp-calendars-key',
+        FMP_KEY_ETF: 'fmp-etf-key',
+        FMP_KEY_FILINGS: 'fmp-filings-key',
+        FMP_KEY_MACRO: 'fmp-macro-key',
+        FMP_KEY_MARKET: 'fmp-market-key',
+        FMP_KEY_NEWS: 'fmp-news-key',
+        FMP_KEY_PROFILES: 'fmp-profiles-key',
+        FMP_KEY_QUOTES: 'fmp-quotes-key',
+        FMP_KEY_STATEMENTS: 'fmp-statements-key',
+        FMP_KEY_TECHNICAL: 'fmp-technical-key',
+        FMP_KEY_TRANSCRIPTS: 'fmp-transcripts-key',
+      },
+      fetchFn: async (url) => {
+        await Promise.resolve();
+        urls.push(url);
+        const aliasIndex = requestedAliases.push(url.split('?')[0] ?? '') - 1;
+        if (aliasIndex === 2 || aliasIndex === 13) {
+          return { ok: false, status: 402, text: '' };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify([{ symbol: 'AAPL', price: 100 }]),
+        };
+      },
+      nowMsFn: () => 1_700_000_000_000,
+    });
+    expect(response.probes).toHaveLength(planProbeFixture.definitions.length);
+    expect(response.summary.totalProbes).toBe(planProbeFixture.definitions.length);
+    expect(response.summary.blockedCount).toBe(2);
+    expect(response.summary.allowedCount).toBe(planProbeFixture.definitions.length - 2);
+    expect(response.summary.errorCount).toBe(0);
+    for (const probe of response.probes) {
+      expect(probe.planTierRequired).toBe(
+        planProbeFixture.definitions.find((definition) => definition.alias === probe.alias)
+          ?.planTierRequired,
+      );
+    }
+    const serialized = JSON.stringify(response);
+    expect(serialized).not.toContain('fmp-primary-key');
+    expect(serialized).not.toContain('fmp-transcripts-key');
+    expect(urls).toHaveLength(planProbeFixture.definitions.length);
+    expect(urls.every((url) => url.startsWith('https://financialmodelingprep.com/'))).toBe(true);
   });
 });
 

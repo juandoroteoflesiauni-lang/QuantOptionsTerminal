@@ -24,6 +24,7 @@
  *  - `GET /api/us/providers-status` (Pieza 32: MASSIVE_WS, MASSIVE_REST_POOL,
  *    TRADIER_LIVE y ORATS con keySlot/activeRole, sin material secreto)
  *  - `GET /api/system/feeds-health` (Pieza 33: telemetría unificada de 7 feeds)
+ *  - `GET /api/fmp/plan-probe` (Pieza 41.4: plan mínimo FMP por alias, sin secretos)
  *  - `POST /api/system/feeds-reconnect` (Pieza 33: reconnect/resync individual)
  *
  * WebSocket:
@@ -66,6 +67,7 @@ import {
   type RuntimeWsBroadcast,
 } from './marketRuntime.js';
 import { loadOratsClientConfigFromEnv } from './oratsHybridClient.js';
+import { probeFmpPlans } from './fmpPlanProbe.js';
 import { collectBrokerSecretsFromEnv } from './primaryRofexLoader.js';
 import { redactSecrets } from './runtimeCache.js';
 
@@ -572,6 +574,12 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
             iol: safeIol,
           },
         });
+        return;
+      }
+
+      if (pathname === '/api/fmp/plan-probe') {
+        const planProbe = await probeFmpPlans();
+        sendJson(res, 200, planProbe);
         return;
       }
 
