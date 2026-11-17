@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { type OptionExpiryGroup, fmtNum } from '../../data/marketData';
-import type { ArOptionsQuantEnginesDto, ArOptionsResponse, UsSnapshotResponseDto } from '../../data/liveTypes';
+import type { ArOptionsQuantEnginesDto, ArOptionsResponse, UsSnapshotResponseDto, UsVolSurfaceResponseDto } from '../../data/liveTypes';
 import type { StratLeg } from './engine';
 import {
   type UnifiedQuantEnginesDto,
@@ -46,6 +46,7 @@ export interface VolatilitySuiteViewProps {
   readonly liveOptions: ArOptionsResponse | undefined;
   readonly activeQuantEngines: ArOptionsQuantEnginesDto | null;
   readonly usSnapshot: UsSnapshotResponseDto | undefined;
+  readonly usVolSurface?: UsVolSurfaceResponseDto | null;
   readonly onSendToBuilder: (legs: StratLeg[]) => void;
 }
 
@@ -131,6 +132,7 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
   liveOptions,
   activeQuantEngines,
   usSnapshot,
+  usVolSurface,
   onSendToBuilder,
 }) => {
   const [activeTab, setActiveTab] = useState<VolatilitySubTabId>('resumen');
@@ -171,6 +173,10 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
   const hist = suite?.historicalConditional ?? null;
   const marketTag = suite?.market ?? (usSnapshot ? 'US' : 'BYMA');
   const currencyPrefix = marketTag === 'US' ? 'US$' : '$';
+  const oratsSurface =
+    usVolSurface?.surface?.status === 'OPERATIONAL' ? usVolSurface.surface : null;
+  const oratsIvRank =
+    usVolSurface?.ivRank?.status === 'OPERATIONAL' ? usVolSurface.ivRank.row : null;
   const benchmarkText = suite
     ? `${suite.benchmarkLabel}: ${fmtNullableNumber(suite.rateTeaPct, 2, '%')}`
     : `Tasa ref.: ${fmtNullableNumber(effectiveTlrPct, 2, '%')}`;
@@ -290,6 +296,46 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Pieza 36: ORATS solo bajo demanda para Volatilidad US */}
+        {marketTag === 'US' && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 border-t border-[#1C1C24] pt-3">
+            <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS IV Rank 1Y</div>
+              <div className="text-[15px] font-extrabold font-mono-num text-[#E5C76B]">
+                {fmtNullableNumber(oratsIvRank?.ivRank1y ?? null, 1, '%')}
+              </div>
+            </div>
+            <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS IV Percentile 1Y</div>
+              <div className="text-[15px] font-extrabold font-mono-num text-[#B794F4]">
+                {fmtNullableNumber(oratsIvRank?.ivPct1y ?? null, 1, '%')}
+              </div>
+            </div>
+            <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS Ex-Earnings IV 30D</div>
+              <div className="text-[15px] font-extrabold font-mono-num text-[#38BDF8]">
+                {fmtNullableNumber(
+                  oratsSurface?.exErnIv30d != null ? oratsSurface.exErnIv30d * 100 : null,
+                  1,
+                  '%',
+                )}
+              </div>
+            </div>
+            <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS Superficie smvVol</div>
+              <div className="text-[15px] font-extrabold font-mono-num text-[#F3F4F6]">
+                {oratsSurface?.strikes?.length != null && oratsSurface.strikes.length > 0
+                  ? `${String(oratsSurface.strikes.length)} nodos`
+                  : '—'}
+              </div>
+              <div className="text-[10px] font-mono-num text-[#9CA3AF]">
+                {usVolSurface?.cacheState ?? '—'}
+                {usVolSurface?.stale === true ? ' · stale' : ''}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Navegación limpia de las 6 sub-pestañas */}
         <div className="flex flex-wrap gap-1.5 pt-1 border-t border-[#1C1C24]">

@@ -16,17 +16,29 @@ import {
   Bell,
   HelpCircle,
   AlignLeft,
+  Search,
   Map as MapIcon,
 } from 'lucide-react';
 import {
   AR_STOCKS,
   GGAL_OPTION_EXPIRIES,
+  US_MARKET_DATA,
   fmtMoneyCompact,
   fmtNum,
   fmtPct,
   OptionChainRow,
 } from '../data/marketData';
-import { requestOptionsChain, useLiveMarketState } from '../data/liveRuntimeBridge';
+import {
+  requestOptionsChain,
+  requestOptionsUniverse,
+  requestUsVolSurface,
+  useLiveMarketState,
+} from '../data/liveRuntimeBridge';
+import {
+  OPTIONS_FAVORITE_KEYS,
+  parseOptionsUnderlyingKey,
+} from '../data/optionsUnderlying';
+import { OptionsSymbolSelector } from './OptionsSymbolSelector';
 import {
   getMarketLiveClock,
   getMarketLiveQuote,
@@ -54,6 +66,7 @@ import {
 } from './options/engine';
 import { InteractiveOptionPriceMap } from './options/map/InteractiveOptionPriceMap';
 import { VolatilitySuiteView } from './options/VolatilitySuiteView';
+import { computeVerticalSpreadMetrics } from '../../../src/core/options/verticalSpreads';
 import {
   type BidirectionalFlowRow,
   type BuilderLeg,
@@ -383,26 +396,6 @@ type DetailedSpreadRow = {
   readonly sigmaMarkerAfter?: string;
 };
 
-function resolveOptionSpreadPrice(
-  row: OptionChainRow,
-  side: 'CALL' | 'PUT',
-  legRole: 'BUY' | 'SELL',
-): { readonly price: number; readonly eodFallback: boolean } {
-  const bid = side === 'CALL' ? row.callBid : row.putBid;
-  const ask = side === 'CALL' ? row.callAsk : row.putAsk;
-  const last = side === 'CALL' ? row.callLast : row.putLast;
-  if (legRole === 'BUY') {
-    if (Number.isFinite(ask) && ask > 0) return { price: ask, eodFallback: false };
-    if (Number.isFinite(last) && last > 0) return { price: last, eodFallback: true };
-    if (Number.isFinite(bid) && bid > 0) return { price: bid, eodFallback: true };
-    return { price: Number.NaN, eodFallback: false };
-  }
-  if (Number.isFinite(bid) && bid > 0) return { price: bid, eodFallback: false };
-  if (Number.isFinite(last) && last > 0) return { price: last, eodFallback: true };
-  if (Number.isFinite(ask) && ask > 0) return { price: ask, eodFallback: true };
-  return { price: Number.NaN, eodFallback: false };
-}
-
 function buildDetailedSpreadMatrix(
   rows: readonly OptionChainRow[],
   spot: number,
@@ -411,8 +404,14 @@ function buildDetailedSpreadMatrix(
   rateDec: number,
   atmIvDec: number,
   filter: 'donde_estoy' | 'cerca' | 'tenencia' | 'todas',
+  isUsMarket: boolean,
 ): readonly DetailedSpreadRow[] {
   if (rows.length < 2) return [];
+  const formatStrike = (value: number): string =>
+    isUsMarket ? fmtNum(value, 2) : fk(value);
+  const formatPriceValue = (value: number, decimals = 2): string =>
+    fmtNum(value, isUsMarket ? 2 : decimals);
+  const formatSigmaValue = (value: number): string => fmtNum(value, isUsMarket ? 2 : 0);
   const sorted = [...rows].sort((a, b) => a.strike - b.strike);
   const visible = sorted.filter((r) => {
     if (!Number.isFinite(spot) || spot <= 0 || filter === 'todas') return true;
@@ -422,8 +421,6 @@ function buildDetailedSpreadMatrix(
     return dist <= 0.14;
   });
   const target = visible.length > 0 ? visible : sorted;
-  const tExp = Math.max(1 / 365, (Number.isFinite(daysToExpiry) && daysToExpiry > 0 ? daysToExpiry : 30) / 365);
-  const rCont = Number.isFinite(rateDec) ? rateDec : 0;
 
   const makeMetric = (
     longRow: OptionChainRow | undefined,
@@ -432,57 +429,41 @@ function buildDetailedSpreadMatrix(
     widthBases: 1 | 2 | 3 | 4,
   ): SpreadCellMetric | null => {
     if (!longRow || !shortRow) return null;
-    const widthArs = Math.abs(shortRow.strike - longRow.strike);
-    if (!(widthArs > 0)) return null;
-    const buyLeg = resolveOptionSpreadPrice(longRow, side, 'BUY');
-    const sellLeg = resolveOptionSpreadPrice(shortRow, side, 'SELL');
-    if (!Number.isFinite(buyLeg.price) || !Number.isFinite(sellLeg.price)) return null;
-    const debit = buyLeg.price - sellLeg.price;
-    if (!(debit > 0.05) || debit >= widthArs - 0.01) return null;
-    const maxProfit = widthArs - debit;
-    const ratio = maxProfit / debit;
-    const breakeven = side === 'CALL' ? longRow.strike + debit : longRow.strike - debit;
-    const beDistPct =
-      Number.isFinite(spot) && spot > 0 ? ((breakeven - spot) / spot) * 100 : Number.NaN;
-
-    const longIv = (side === 'CALL' ? longRow.callIV : longRow.putIV) / 100;
-    const shortIv = (side === 'CALL' ? shortRow.callIV : shortRow.putIV) / 100;
-    const ivSamples = [longIv, shortIv, atmIvDec].filter((v) => Number.isFinite(v) && v > 0.01);
-    const ivMean =
-      ivSamples.length > 0 ? ivSamples.reduce((a, b) => a + b, 0) / ivSamples.length : Number.NaN;
-
-    let probBePct = Number.NaN;
-    let edgePct = Number.NaN;
-    if (
-      Number.isFinite(spot) &&
-      spot > 0 &&
-      breakeven > 0 &&
-      Number.isFinite(ivMean) &&
-      ivMean > 0.01
-    ) {
-      const denom = ivMean * Math.sqrt(tExp);
-      const d2 = (Math.log(spot / breakeven) + (rCont - 0.5 * ivMean * ivMean) * tExp) / denom;
-      const probBe = side === 'CALL' ? ncdf(d2) : ncdf(-d2);
-      if (Number.isFinite(probBe)) {
-        probBePct = probBe * 100;
-        edgePct = (probBe - debit / widthArs) * 100;
-      }
-    }
+    const result = computeVerticalSpreadMetrics({
+      side,
+      longLeg: {
+        strike: longRow.strike,
+        bid: side === 'CALL' ? longRow.callBid : longRow.putBid,
+        ask: side === 'CALL' ? longRow.callAsk : longRow.putAsk,
+        last: side === 'CALL' ? longRow.callLast : longRow.putLast,
+      },
+      shortLeg: {
+        strike: shortRow.strike,
+        bid: side === 'CALL' ? shortRow.callBid : shortRow.putBid,
+        ask: side === 'CALL' ? shortRow.callAsk : shortRow.putAsk,
+        last: side === 'CALL' ? shortRow.callLast : shortRow.putLast,
+      },
+      spot,
+      daysToExpiry,
+      rateDec,
+      atmIvDec,
+    });
+    if (!result.valid) return null;
 
     return {
       side,
       longStrike: longRow.strike,
       shortStrike: shortRow.strike,
       widthBases,
-      widthArs,
-      debit,
-      maxProfit,
-      ratio,
-      breakeven,
-      beDistPct,
-      probBePct,
-      edgePct,
-      usesEodRef: buyLeg.eodFallback || sellLeg.eodFallback,
+      widthArs: result.width,
+      debit: result.debit,
+      maxProfit: result.maxProfit,
+      ratio: result.rewardRiskRatio,
+      breakeven: result.breakeven,
+      beDistPct: result.breakevenDistPct,
+      probBePct: result.probAtBreakevenPct,
+      edgePct: result.edgePct,
+      usesEodRef: result.longUsesEodRef || result.shortUsesEodRef,
     };
   };
 
@@ -495,7 +476,7 @@ function buildDetailedSpreadMatrix(
     let spotMarkerAfter: string | undefined;
     if (!insertedSpot && Number.isFinite(spot) && next && row.strike <= spot && next.strike > spot) {
       insertedSpot = true;
-      spotMarkerAfter = `SPOT $${fmtNum(spot, 1)}`;
+      spotMarkerAfter = `SPOT $${formatPriceValue(spot, isUsMarket ? 2 : 1)}`;
     }
     let sigmaMarkerAfter: string | undefined;
     if (
@@ -506,11 +487,11 @@ function buildDetailedSpreadMatrix(
       next.strike > oneSigmaHigh
     ) {
       insertedSigma = true;
-      sigmaMarkerAfter = `+1σ ($${fmtNum(oneSigmaHigh, 0)})`;
+      sigmaMarkerAfter = `+1σ ($${formatSigmaValue(oneSigmaHigh)})`;
     }
 
     return {
-      base: fk(row.strike),
+      base: formatStrike(row.strike),
       strikeNum: row.strike,
       // Call Bull Spread: Long Call strike bajo -> Short Call k bases más alto
       c1: makeMetric(row, sorted[fullIdx + 1], 'CALL', 1),
@@ -578,13 +559,47 @@ export const OptionsModule: React.FC<{
 }) => {
   const liveMarket = useLiveMarketState();
   const liveStream = useMarketLiveStream();
-  const upperUnderlying = selectedUnderlying.toUpperCase();
+  const selectedUnderlyingKey = parseOptionsUnderlyingKey(selectedUnderlying).key;
+  const underlyingMeta = parseOptionsUnderlyingKey(selectedUnderlyingKey);
+  const upperUnderlying = underlyingMeta.symbol;
+  const isUsMarket = underlyingMeta.market === 'US';
+  const optionCurrency = underlyingMeta.currency;
   // Pieza 32: origen del feed de opciones US (Tradier Live + ORATS / Massive + ORATS).
   const usOptionsFeedBadge = useUsOptionsFeedBadge();
+  const [symbolSelectorOpen, setSymbolSelectorOpen] = useState(false);
 
   useEffect(() => {
-    void requestOptionsChain(upperUnderlying);
-  }, [upperUnderlying]);
+    void requestOptionsUniverse();
+  }, []);
+
+  useEffect(() => {
+    void requestOptionsChain(selectedUnderlyingKey);
+  }, [selectedUnderlyingKey]);
+
+  // Pieza 36: ORATS se consulta solo al abrir Volatilidad en un subyacente US.
+  useEffect(() => {
+    if (!isUsMarket || activeSubView !== 'volatilidad') return;
+    void requestUsVolSurface(selectedUnderlyingKey);
+  }, [activeSubView, isUsMarket, selectedUnderlyingKey]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSymbolSelectorOpen((v) => !v);
+        return;
+      }
+      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const tag = (event.target as HTMLElement | null)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        event.preventDefault();
+        setSymbolSelectorOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // Estado del Header de Opciones
   const [selectedExpiryId, setSelectedExpiryId] = useState<string>('');
@@ -644,30 +659,40 @@ export const OptionsModule: React.FC<{
   const [simIvShift, setSimIvShift] = useState<number>(0);
   const [simTlr, setSimTlr] = useState<number>(Number.NaN);
 
-  const liveOptions = liveMarket.optionsByUnderlying[upperUnderlying];
+  const liveOptions = liveMarket.optionsByUnderlying[selectedUnderlyingKey];
   const liveOptionsExt = liveOptions as
-    | (typeof liveOptions & {
-        readonly primaryLiquidExpiryCode?: string | null;
+    | (NonNullable<typeof liveOptions> & {
         readonly quantEnginesByExpiry?: Readonly<
           Record<string, NonNullable<typeof liveOptions>['quantEngines']>
         >;
       })
     | undefined;
-  const primaryLiquidCode = liveOptionsExt?.primaryLiquidExpiryCode ?? null;
+  const primaryLiquidCode = liveOptions?.primaryLiquidExpiryCode ?? null;
+  const contractMultiplier = liveOptions?.lotSize ?? Number.NaN;
 
   useEffect(() => {
     setSelectedExpiryId('');
   }, [upperUnderlying]);
 
-  const catalogStock = AR_STOCKS.find((s) => s.ticker === upperUnderlying) ?? AR_STOCKS[0];
+  const catalogStock =
+    underlyingMeta.market === 'AR' ? AR_STOCKS.find((s) => s.ticker === upperUnderlying) ?? AR_STOCKS[0] : undefined;
   const overviewStock =
-    liveMarket.overview?.mervalStocks.find((s) => s.ticker === upperUnderlying) ??
-    liveMarket.overview?.generalPanelStocks.find((s) => s.ticker === upperUnderlying) ??
-    liveMarket.overview?.cedears.find((s) => s.ticker === upperUnderlying);
+    underlyingMeta.market === 'AR'
+      ? liveMarket.overview?.mervalStocks.find((s) => s.ticker === upperUnderlying) ??
+        liveMarket.overview?.generalPanelStocks.find((s) => s.ticker === upperUnderlying) ??
+        liveMarket.overview?.cedears.find((s) => s.ticker === upperUnderlying)
+      : undefined;
+  const usMeta = underlyingMeta.market === 'US' ? US_MARKET_DATA.find((u) => u.ticker === upperUnderlying) : undefined;
 
-  const stockName = overviewStock?.name ?? catalogStock?.name ?? upperUnderlying;
-  const displayDeltaPct = overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
-  const usUnderlying = ['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT'].includes(upperUnderlying);
+  const stockName =
+    usMeta?.name ??
+    overviewStock?.name ??
+    catalogStock?.name ??
+    liveMarket.optionsUnderlyings.find((u) => u.key === selectedUnderlyingKey)?.name ??
+    upperUnderlying;
+  const displayDeltaPct =
+    usMeta?.deltaPct ?? overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
+  const usUnderlying = underlyingMeta.market === 'US';
   const liveUnderlyingQuote = getMarketLiveQuote(liveStream, usUnderlying ? 'US' : 'AR', upperUnderlying);
   const throttledLivePrice = useThrottledLiveValue(liveUnderlyingQuote?.price ?? Number.NaN, 1_000);
   const displaySpot = Number.isFinite(throttledLivePrice)
@@ -841,8 +866,9 @@ export const OptionsModule: React.FC<{
         effectiveRateDec,
         activeAtmIvDec,
         spreadFilter,
+        isUsMarket,
       ),
-    [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, liveMarket.version],
+    [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, liveMarket.version],
   );
 
   const spreadSummaryStats = useMemo(() => {
@@ -902,8 +928,12 @@ export const OptionsModule: React.FC<{
   }, [activeQuantEngines, liveMarket.usSnapshotsBySymbol, upperUnderlying]);
 
   const flowSummary = useMemo(
-    () => buildBidirectionalFlow(activeExpiry?.rows ?? [], displaySpot, flowUnit),
-    [activeExpiry, displaySpot, flowUnit, liveMarket.version]
+    () =>
+      buildBidirectionalFlow(activeExpiry?.rows ?? [], displaySpot, flowUnit, {
+        market: underlyingMeta.market,
+        contractMultiplier,
+      }),
+    [activeExpiry, displaySpot, flowUnit, underlyingMeta.market, contractMultiplier, liveMarket.version]
   );
 
   const builderAnalytics = useMemo(
@@ -921,10 +951,11 @@ export const OptionsModule: React.FC<{
     [legs, simSpot, simDaysLeft, simIvShift, simTlr, displaySpot, activeExpiry, liveMarket.version]
   );
 
-  const underlyingChoices = useMemo(() => {
-    const base = ['GGAL', 'YPFD', 'PAMP', 'BMA', 'COME', 'ALUA', 'TXAR', 'SUPV', 'SPY', 'QQQ'];
-    return base.includes(upperUnderlying) ? base : [upperUnderlying, ...base];
-  }, [upperUnderlying]);
+  const formatStrike = (value: number): string =>
+    isUsMarket ? fmtNum(value, 2) : fk(value);
+  const formatPrice = (value: number, decimals = 2): string =>
+    fmtNum(value, isUsMarket ? 2 : decimals);
+  const formatSigma = (value: number): string => fmtNum(value, isUsMarket ? 2 : 0);
 
   const subViews: { id: OptionsSubView; label: string; icon: React.ReactNode }[] = [
     { id: 'mapa', label: 'Mapa', icon: <MapIcon className="w-3.5 h-3.5" /> },
@@ -1003,20 +1034,20 @@ export const OptionsModule: React.FC<{
             <div className="flex items-center gap-3">
               <CompanyLogo ticker={upperUnderlying} name={stockName} size="lg" />
               <div>
-                <div className="flex items-center gap-1.5">
-                  <select
-                    value={upperUnderlying}
-                    onChange={(e) => onSelectUnderlying(e.target.value)}
-                    className="bg-transparent text-[20px] font-extrabold text-[#FFFFFF] tracking-tight outline-none cursor-pointer"
-                  >
-                    {underlyingChoices.map((t) => (
-                      <option key={t} value={t} className="bg-[#131722] text-white">
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-[#9CA3AF] -ml-1 pointer-events-none" />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setSymbolSelectorOpen(true)}
+                  title="Selector de subyacente · Ctrl+K o /"
+                  className="group inline-flex items-center gap-1.5 rounded-[8px] px-2 py-1 -mx-1 hover:bg-[#161A25] transition-colors cursor-pointer"
+                >
+                  <span className="text-[20px] font-extrabold text-[#FFFFFF] tracking-tight">
+                    {upperUnderlying}
+                  </span>
+                  <span className="rounded-full border border-[#232733] bg-[#0B0E14] px-1.5 py-0.5 font-mono-num text-[10px] font-semibold text-[#9CA3AF]">
+                    {underlyingMeta.market} · {underlyingMeta.venue}
+                  </span>
+                  <ChevronDown className="w-4 h-4 text-[#9CA3AF] transition-colors group-hover:text-white" />
+                </button>
                 <div className="text-[12px] text-[#787B86] leading-none">{stockName}</div>
               </div>
             </div>
@@ -1041,14 +1072,7 @@ export const OptionsModule: React.FC<{
                   {fmtNum(headerSpot, 2)}
                 </span>
                 <span className="text-[12px] font-mono-num text-[#787B86]">
-                  {upperUnderlying === 'SPY' ||
-                  upperUnderlying === 'QQQ' ||
-                  upperUnderlying === 'NVDA' ||
-                  upperUnderlying === 'AAPL' ||
-                  upperUnderlying === 'MSFT' ||
-                  upperUnderlying === 'I:SPX'
-                    ? 'USD'
-                    : 'ARS'}
+                  {optionCurrency}
                 </span>
                 <span
                   className={`font-mono-num text-[13px] font-semibold ${
@@ -1152,29 +1176,41 @@ export const OptionsModule: React.FC<{
           </div>
         </div>
 
-        {/* Selector rápido con logo por subyacente */}
+        {/* Favoritos / Plazas líquidas (selector completo en Ctrl+K / /) */}
         <div className="pt-2 border-t border-[#1E222D]/60 flex items-center gap-1.5 overflow-x-auto">
           <span className="text-[10px] font-mono-num uppercase tracking-wider text-[#6D7282] mr-1 shrink-0">
-            Subyacente:
+            Favoritos:
           </span>
-          {underlyingChoices.map((t) => {
-            const active = t === upperUnderlying;
+          {OPTIONS_FAVORITE_KEYS.map((key) => {
+            const meta = liveMarket.optionsUnderlyings.find((u) => u.key === key);
+            const symbol = parseOptionsUnderlyingKey(key).symbol;
+            const active = key === selectedUnderlyingKey;
             return (
               <button
-                key={`opt-under-${t}`}
+                key={`opt-under-${key}`}
                 type="button"
-                onClick={() => onSelectUnderlying(t)}
+                onClick={() => onSelectUnderlying(key)}
+                title={meta ? `${meta.name} · ${meta.market} · ${meta.currency}` : symbol}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono-num font-semibold transition-colors cursor-pointer shrink-0 ${
                   active
                     ? 'bg-[#211B3A] border-[#8B7CF6]/70 text-[#FFFFFF]'
                     : 'bg-[#090B10] border-[#1E222D] text-[#9CA3AF] hover:text-[#FFFFFF] hover:border-[#2E3446]'
                 }`}
               >
-                <CompanyLogo ticker={t} size="xs" />
-                <span>{t}</span>
+                <CompanyLogo ticker={symbol} size="xs" />
+                <span>{key === 'US:GGAL' ? 'GGAL·US' : symbol}</span>
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => setSymbolSelectorOpen(true)}
+            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#232733] bg-[#0B0E14] px-2.5 py-1 text-[11px] font-semibold text-[#9CA3AF] hover:border-[#2E3446] hover:text-white cursor-pointer"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span>Buscar</span>
+            <kbd className="rounded bg-[#161A25] px-1 font-mono-num text-[10px]">Ctrl K</kbd>
+          </button>
         </div>
 
         {/* Navegación interna de los 7 módulos de Opciones */}
@@ -1210,7 +1246,7 @@ export const OptionsModule: React.FC<{
           </div>
           <span className="text-[11px] font-mono-num text-[#787B86] hidden lg:inline">
             {Number.isFinite(headerOneSigmaAbs) && Number.isFinite(headerOneSigmaPct) && activeExpiry
-              ? `1σ hoy = $${fmtNum(headerOneSigmaAbs, 0)} (±${fmtNum(headerOneSigmaPct, 1)}% al ${activeExpiry.label})`
+              ? `1σ hoy = $${formatSigma(headerOneSigmaAbs)} (±${fmtNum(headerOneSigmaPct, 1)}% al ${activeExpiry.label})`
               : '1σ hoy = —'}
           </span>
         </div>
@@ -2055,10 +2091,12 @@ export const OptionsModule: React.FC<{
               </div>
               <div>
                 <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#787B86]">
-                  EN PESOS (PRIMAS)
+                  {isUsMarket ? 'EN USD (PRIMAS)' : 'EN PESOS (PRIMAS)'}
                 </div>
                 <div className="font-mono-num text-[18px] font-extrabold text-[#FFFFFF] mt-0.5">
-                  {flowSummary.totalTurnoverArsM > 0 ? fmtMoneyCompact(flowSummary.totalTurnoverArsM) : '—'}
+                  {Number.isFinite(flowSummary.totalTurnoverM) && flowSummary.totalTurnoverM > 0
+                    ? fmtMoneyCompact(flowSummary.totalTurnoverM)
+                    : '—'}
                 </div>
               </div>
               <div>
@@ -2122,7 +2160,9 @@ export const OptionsModule: React.FC<{
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase text-[#787B86]">EN USD-CCL</div>
+                  <div className="text-[10px] uppercase text-[#787B86]">
+                    {isUsMarket ? 'EN USD (NETO)' : 'EN USD-CCL'}
+                  </div>
                   <div className="font-bold text-[14px] text-[#38BDF8]">
                     {activeQuantEngines.netDirectionalPremiumUsdCcl != null
                       ? `US$ ${fmtNum(activeQuantEngines.netDirectionalPremiumUsdCcl, 0)}`
@@ -3147,6 +3187,7 @@ export const OptionsModule: React.FC<{
                 liveOptions={liveOptions}
                 activeQuantEngines={activeQuantEngines}
                 usSnapshot={liveMarket.usSnapshotsBySymbol[upperUnderlying]}
+                usVolSurface={liveMarket.usVolSurfaceBySymbol[selectedUnderlyingKey] ?? null}
                 onSendToBuilder={(builderLegs) => {
                   loadIntoBuilder(priceLegs(labMarket, builderLegs), 1);
                 }}
@@ -3940,6 +3981,19 @@ export const OptionsModule: React.FC<{
           </div>
         </div>
       )}
+
+      <OptionsSymbolSelector
+        open={symbolSelectorOpen}
+        onClose={() => setSymbolSelectorOpen(false)}
+        onSelect={onSelectUnderlying}
+        selectedKey={selectedUnderlyingKey}
+        underlyings={liveMarket.optionsUnderlyings}
+        status={liveMarket.optionsUnderlyingsStatus}
+        selectedName={stockName}
+        selectedPrice={headerSpot}
+        selectedChangePct={Number.isFinite(headerDeltaPct) ? headerDeltaPct : Number.NaN}
+        selectedFlash={headerFlash}
+      />
     </div>
   );
 };

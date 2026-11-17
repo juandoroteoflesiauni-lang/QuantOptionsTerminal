@@ -149,7 +149,14 @@ import {
   type VolAnalyticsPriorSmileSnapshot,
   type VolAnalyticsSuiteResult,
 } from '../core/options/volAnalyticsSuite.js';
-import { getMarketParts, MAX_TIME_SECONDS } from '../core/sessions.js';
+import {
+  computeYangZhangVol,
+  type YangZhangOhlcBar,
+} from '../core/ggal/l2AndRegimeEngines.js';
+import {
+  getMarketParts,
+  MAX_TIME_SECONDS,
+} from '../core/sessions.js';
 import { computeSessionVwap } from '../core/sessionVwap.js';
 import { evaluateTerminalConfluence } from '../core/terminal/confluenceOrchestrator.js';
 import { computeIntradayRealizedVol } from '../core/terminal/realizedVol.js';
@@ -242,6 +249,11 @@ import {
   getMassiveStocksWsKey,
   type MassiveKeySlot,
 } from './massiveKeyPool.js';
+import {
+  OratsHybridClient,
+  type OratsIvRankPayload,
+  type OratsHybridSurfacePayload,
+} from './oratsHybridClient.js';
 import {
   fetchTradierOptionChain,
   fetchTradierQuotes,
@@ -386,6 +398,23 @@ export interface UsOptionsFeedProvenance {
   readonly provider: 'TRADIER' | 'MASSIVE';
   readonly badge: UsOptionsFeedBadge;
   readonly tradierOverlay: TradierChainOverlaySummary | null;
+}
+
+export interface UsOptionExpiryDto {
+  readonly expirationDate: string;
+  readonly daysToExpiry: number;
+  readonly validCallCount: number;
+  readonly validPutCount: number;
+  readonly nearAtmLiquidity: number;
+  readonly inDefaultWindow: boolean;
+  readonly hasCompleteAtmChain: boolean;
+}
+
+export interface UsOptionsChainMeta {
+  readonly selectedExpirationDate: string | null;
+  readonly selectionReason: string | null;
+  readonly prefetchExpirationDates: readonly string[];
+  readonly availableExpirations: readonly UsOptionExpiryDto[];
 }
 
 export interface SerializedStrikeExposure {
@@ -800,6 +829,7 @@ export interface TerminalSnapshotResponse {
   readonly benchmarkBars1d?: readonly SerializedBar[] | undefined;
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
   readonly usOptionsFeed?: UsOptionsFeedProvenance | undefined;
+  readonly optionsChain?: UsOptionsChainMeta | null;
   readonly dataQuality: SnapshotDataQuality;
 }
 
@@ -961,6 +991,8 @@ export interface MarketRuntimeDeps {
   /** Pieza 32: funciones Tradier inyectables para determinismo en tests. */
   readonly tradierChainFetchFn?: typeof fetchTradierOptionChain;
   readonly tradierQuotesFetchFn?: typeof fetchTradierQuotes;
+  /** Pieza 36: cliente ORATS inyectable; tests offline sin inyección quedan UNAVAILABLE. */
+  readonly oratsClient?: OratsHybridClient | null;
 }
 
 interface ParsedSymbol {
@@ -1272,6 +1304,212 @@ export const US_STREAM_SYMBOLS: readonly string[] = [
     'I:VIX',
   ]),
 ] as const;
+
+export interface OptionsUnderlyingMetaDto {
+  /** Clave estable para el selector: GGAL BYMA es `GGAL`; el ADR es `US:GGAL`. */
+  readonly key: string;
+  readonly symbol: string;
+  readonly market: 'AR' | 'US';
+  readonly venue: 'BYMA' | 'OPRA';
+  readonly currency: 'ARS' | 'USD';
+  readonly name: string;
+  readonly sector: string;
+  readonly color: string;
+}
+
+/** Extensión exclusiva del selector de Opciones (Pieza 36), sin alterar el panel. */
+const OPTIONS_ONLY_US_EXTENSIONS: readonly OptionsUnderlyingMetaDto[] = [
+  {
+    key: 'PLTR',
+    symbol: 'PLTR',
+    market: 'US',
+    venue: 'OPRA',
+    currency: 'USD',
+    name: 'Palantir Technologies Inc.',
+    sector: 'Mega Caps / Tech',
+    color: '#101010',
+  },
+  {
+    key: 'IBIT',
+    symbol: 'IBIT',
+    market: 'US',
+    venue: 'OPRA',
+    currency: 'USD',
+    name: 'iShares Bitcoin Trust ETF',
+    sector: 'Índices / ETF',
+    color: '#F7931A',
+  },
+] as const;
+
+export const OPTIONS_UNDERLYING_UNIVERSE: readonly OptionsUnderlyingMetaDto[] = [
+  ...US_EQUITY_UNIVERSE.map((meta): OptionsUnderlyingMetaDto => ({
+    key: meta.symbol === 'GGAL' ? 'US:GGAL' : meta.symbol,
+    symbol: meta.symbol,
+    market: 'US',
+    venue: 'OPRA',
+    currency: 'USD',
+    name: meta.name,
+    sector: meta.sector,
+    color: meta.color,
+  })),
+  ...OPTIONS_ONLY_US_EXTENSIONS,
+  {
+    key: 'GGAL',
+    symbol: 'GGAL',
+    market: 'AR',
+    venue: 'BYMA',
+    currency: 'ARS',
+    name: 'Grupo Financiero Galicia',
+    sector: 'Bancos',
+    color: '#8B7CF6',
+  },
+];
+
+export const OPTIONS_UNDERLYING_BY_KEY: ReadonlyMap<string, OptionsUnderlyingMetaDto> = new Map(
+  OPTIONS_UNDERLYING_UNIVERSE.map((meta) => [meta.key, meta]),
+);
+
+export interface UsOptionExpiryCandidate {
+  readonly expirationDate: string;
+  readonly daysToExpiry: number;
+  readonly validCallCount: number;
+  readonly validPutCount: number;
+  readonly nearAtmLiquidity: number;
+  readonly inDefaultWindow: boolean;
+  readonly hasCompleteAtmChain: boolean;
+}
+
+export interface UsOptionExpirySelection {
+  readonly defaultExpirationDate: string | null;
+  readonly prefetchExpirationDates: readonly string[];
+  readonly availableExpirations: readonly UsOptionExpiryCandidate[];
+  readonly reason: string | null;
+}
+
+function isValidOptionQuote(contract: OptionSnapshotContract): boolean {
+  const { bid, ask } = contract.lastQuote;
+  if (Number.isFinite(bid) && bid >= 0 && Number.isFinite(ask) && ask > 0) return true;
+  return Number.isFinite(contract.lastTrade.price) && contract.lastTrade.price > 0;
+}
+
+function isNearAtm(contract: OptionSnapshotContract, spot: number): boolean {
+  return Number.isFinite(spot) && spot > 0 && Math.abs(contract.strikePrice - spot) <= spot * 0.15;
+}
+
+function liquidityValue(contract: OptionSnapshotContract): number {
+  const volume = Number.isFinite(contract.day.volume) && contract.day.volume >= 0 ? contract.day.volume : 0;
+  const openInterest = Number.isFinite(contract.openInterest) && contract.openInterest >= 0 ? contract.openInterest : 0;
+  return volume + openInterest;
+}
+
+/**
+ * Selección determinista del vencimiento US por defecto (Pieza 36):
+ *  1) ventana 14–45 DTE con calls y puts usables alrededor de ATM;
+ *  2) menor DTE y, ante empate, mayor liquidez cerca de ATM;
+ *  3) si no hay candidatos, primer vencimiento con cadena ATM completa.
+ * No hay fallback a 0–4 DTE con cadena incompleta.
+ */
+export function selectUsOptionExpirations(
+  contracts: readonly OptionSnapshotContract[],
+  spot: number,
+  nowSec: number,
+  requestedExpiration?: string,
+): UsOptionExpirySelection {
+  const byDate = new Map<string, OptionSnapshotContract[]>();
+  for (const contract of contracts) {
+    if (!(contract.expirationTime > nowSec + 60)) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(contract.expirationDate)) continue;
+    const list = byDate.get(contract.expirationDate) ?? [];
+    list.push(contract);
+    byDate.set(contract.expirationDate, list);
+  }
+
+  const available: UsOptionExpiryCandidate[] = [];
+  for (const [expirationDate, list] of byDate) {
+    const validContracts = list.filter(isValidOptionQuote);
+    const validCalls = validContracts.filter((c) => c.contractType === 'call');
+    const validPuts = validContracts.filter((c) => c.contractType === 'put');
+    const nearCalls = validCalls.filter((c) => isNearAtm(c, spot));
+    const nearPuts = validPuts.filter((c) => isNearAtm(c, spot));
+    const sampleExpirationTime = list[0]?.expirationTime ?? nowSec + 86_400;
+    const daysToExpiry = Math.max(1, Math.floor((sampleExpirationTime - nowSec) / 86_400));
+    const hasCompleteAtmChain = nearCalls.length >= 2 && nearPuts.length >= 2;
+    available.push({
+      expirationDate,
+      daysToExpiry,
+      validCallCount: validCalls.length,
+      validPutCount: validPuts.length,
+      nearAtmLiquidity: [...nearCalls, ...nearPuts].reduce((sum, c) => sum + liquidityValue(c), 0),
+      inDefaultWindow: daysToExpiry >= 14 && daysToExpiry <= 45,
+      hasCompleteAtmChain,
+    });
+  }
+
+  available.sort((a, b) => a.expirationDate.localeCompare(b.expirationDate));
+  const complete = available.filter((e) => e.hasCompleteAtmChain);
+  const windowed = complete.filter((e) => e.inDefaultWindow);
+  const ranked = [...windowed]
+    .sort((a, b) => a.daysToExpiry - b.daysToExpiry || b.nearAtmLiquidity - a.nearAtmLiquidity)
+    .concat(
+      complete
+        .filter((e) => !e.inDefaultWindow)
+        .sort((a, b) => a.daysToExpiry - b.daysToExpiry || b.nearAtmLiquidity - a.nearAtmLiquidity),
+    );
+
+  const requested = requestedExpiration?.trim() ?? '';
+  const requestedCandidate =
+    requested !== '' ? available.find((e) => e.expirationDate === requested) ?? null : null;
+  if (requested !== '' && requestedCandidate === null) {
+    return {
+      defaultExpirationDate: ranked[0]?.expirationDate ?? null,
+      prefetchExpirationDates: ranked.slice(0, 2).map((e) => e.expirationDate),
+      availableExpirations: available,
+      reason: `REQUESTED_EXPIRATION_NOT_AVAILABLE:${requested}`,
+    };
+  }
+
+  const defaultCandidate = requestedCandidate ?? ranked[0] ?? null;
+  if (defaultCandidate === null) {
+    return {
+      defaultExpirationDate: null,
+      prefetchExpirationDates: [],
+      availableExpirations: available,
+      reason: 'NO_COMPLETE_ATM_OPTION_EXPIRY',
+    };
+  }
+
+  const byLiquidity = [...complete]
+    .filter((e) => e.expirationDate !== defaultCandidate.expirationDate)
+    .sort((a, b) => b.nearAtmLiquidity - a.nearAtmLiquidity || a.daysToExpiry - b.daysToExpiry);
+  const prefetch = [defaultCandidate.expirationDate, byLiquidity[0]?.expirationDate]
+    .filter((date): date is string => typeof date === 'string')
+    .slice(0, 2);
+
+  return {
+    defaultExpirationDate: defaultCandidate.expirationDate,
+    prefetchExpirationDates: prefetch,
+    availableExpirations: available,
+    reason:
+      requestedCandidate !== null
+        ? 'REQUESTED_EXPIRATION_SELECTED'
+        : windowed.length > 0
+          ? 'DEFAULT_LIQUID_14_45_DTE'
+          : 'FIRST_COMPLETE_ATM_EXPIRY',
+  };
+}
+
+export const US_VOL_SURFACE_TTL_MS = 10 * 60 * 1_000;
+
+export interface UsVolSurfaceResponse {
+  readonly status: 'OK' | 'PARTIAL' | 'NO_DATA';
+  readonly symbol: string;
+  readonly asOfUtcSec: number;
+  readonly cacheState: 'HIT' | 'MISS' | 'STALE' | 'UNAVAILABLE';
+  readonly stale: boolean;
+  readonly reason: string | null;
+  readonly surface: JsonSafeValue<OratsHybridSurfacePayload>;
+  readonly ivRank: JsonSafeValue<OratsIvRankPayload>;
+}
 
 export interface EquityRiskReturnMetrics {
   readonly last: number | null;
@@ -3238,6 +3476,13 @@ export class MarketRuntime {
   private tradierManager: TradierLiveManager | null;
   private readonly tradierChainFetchFn: typeof fetchTradierOptionChain;
   private readonly tradierQuotesFetchFn: typeof fetchTradierQuotes;
+  private readonly oratsClient: OratsHybridClient | null;
+  private readonly usVolSurfaceCache = new Map<
+    string,
+    { readonly fetchedAtMs: number; readonly response: UsVolSurfaceResponse }
+  >();
+  private readonly usVolSurfaceInFlight = new Map<string, Promise<UsVolSurfaceResponse>>();
+  private lastUsOptionsPrefetchError: string | null = null;
   private readonly tradierChainCache = new Map<
     string,
     { readonly atMs: number; readonly result: TradierOptionChainResult }
@@ -3750,6 +3995,17 @@ export class MarketRuntime {
     this.tradierChainFetchFn = deps.tradierChainFetchFn ?? fetchTradierOptionChain;
     this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
     this.secrets = [...secretSet];
+    this.oratsClient =
+      deps.oratsClient !== undefined
+        ? deps.oratsClient
+        : isMockFetch
+          ? null
+          : new OratsHybridClient({
+              env: process.env,
+              nowMsFn: deps.nowMsFn ?? (() => Date.now()),
+              cacheTtlMs: US_VOL_SURFACE_TTL_MS,
+              secrets: this.secrets,
+            });
     this.baseUrl = deps.baseUrl;
     const baseFetch = deps.fetchFn ?? createRedactingFetch(this.secrets);
     const massiveRestBase = (this.baseUrl ?? 'https://api.massive.com').replace(/\/+$/, '');
@@ -4772,16 +5028,180 @@ export class MarketRuntime {
 
   public async getSnapshot(
     rawSymbol: string,
-    options: { readonly forceRefresh?: boolean } = {},
+    options: {
+      readonly forceRefresh?: boolean;
+      readonly expiration?: string;
+      /** Solo para usos internos (warmup/vol-surface): evita precalentar cadenas recursivamente. */
+      readonly prefetch?: boolean;
+    } = {},
   ): Promise<TerminalSnapshotResponse> {
     const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
-    const cacheKey = `snapshot:${parsed.canonicalSymbol}`;
+    const normalizedExpiration = options.expiration?.trim().toUpperCase() ?? '';
+    const cacheKey = normalizedExpiration === ''
+      ? `snapshot:${parsed.canonicalSymbol}`
+      : `snapshot:${parsed.canonicalSymbol}:${normalizedExpiration}`;
     const result = await this.snapshotCache.getOrCompute(
       cacheKey,
-      () => this.computeSnapshot(parsed),
-      options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh },
+      () => this.computeSnapshot(parsed, { ...(normalizedExpiration === '' ? {} : { expiration: normalizedExpiration }) }),
+      {
+        ttlMs: 15_000,
+        ...(options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh }),
+      },
     );
+    if (options.prefetch !== false && normalizedExpiration === '') {
+      const selection = result.value.optionsChain ?? null;
+      for (const expiration of selection?.prefetchExpirationDates ?? []) {
+        void this.getSnapshot(parsed.canonicalSymbol, {
+          expiration,
+          prefetch: false,
+        }).catch((err: unknown) => {
+          this.lastUsOptionsPrefetchError = redactSecrets(
+            extractErrorMessage(err, 'US option snapshot prefetch failed'),
+            this.secrets,
+          );
+        });
+      }
+    }
     return this.overlayLiveSnapshot(result.value);
+  }
+
+  private async computeUsVolSurface(canonicalSymbol: string, forceRefresh: boolean): Promise<UsVolSurfaceResponse> {
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    if (this.oratsClient === null) {
+      const unavailableSurface: OratsHybridSurfacePayload = {
+        status: 'UNAVAILABLE',
+        source: 'ORATS_DELAYED_CORE',
+        ticker: canonicalSymbol,
+        asOfUtcSec: nowSec,
+        reason: 'ORATS_API_KEY_NOT_CONFIGURED',
+        massiveSpotPrice: null,
+        massiveSpotSourceMode: 'UNAVAILABLE',
+        yangZhangAdrVol: Number.NaN,
+      };
+      const unavailableRank: OratsIvRankPayload = {
+        status: 'UNAVAILABLE',
+        source: 'ORATS_IV_RANK',
+        ticker: canonicalSymbol,
+        reason: 'ORATS_API_KEY_NOT_CONFIGURED',
+      };
+      return {
+        status: 'NO_DATA',
+        symbol: canonicalSymbol,
+        asOfUtcSec: nowSec,
+        cacheState: 'UNAVAILABLE',
+        stale: false,
+        reason: 'ORATS_CLIENT_NOT_CONFIGURED',
+        surface: sanitizeJsonValue(unavailableSurface),
+        ivRank: sanitizeJsonValue(unavailableRank),
+      };
+    }
+
+    // La cadena base nunca consulta ORATS; aquí solo se consume su snapshot ya cacheado.
+    const snapshot = await this.getSnapshot(canonicalSymbol, { prefetch: false });
+    const spot = sanitizeFinite(snapshot.envelope.snapshot.metrics.spot);
+    const quote = snapshot.marketContext.unifiedQuotes.find((q) => q.ticker === canonicalSymbol);
+    const quoteBid = quote?.bid;
+    const quoteAsk = quote?.ask;
+    const hasNbbo =
+      quoteBid !== undefined &&
+      quoteBid !== null &&
+      Number.isFinite(quoteBid) &&
+      quoteBid > 0 &&
+      quoteAsk !== undefined &&
+      quoteAsk !== null &&
+      Number.isFinite(quoteAsk) &&
+      quoteAsk > 0 &&
+      quoteAsk >= quoteBid;
+    const barsRes = await this.getCachedDailyBars1d(canonicalSymbol, 265, false);
+    const yzBars: YangZhangOhlcBar[] = normalizeClosedDailyBarsUs(barsRes.bars, nowSec).map((b) => ({
+      timeSec: b.time,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+    }));
+    const yangZhangAdrVol = computeYangZhangVol(yzBars, 252);
+
+    const [surface, ivRank] = await Promise.all([
+      this.oratsClient.fetchHybridSurface({
+        ticker: canonicalSymbol,
+        massiveSpotPrice: spot,
+        massiveSpotSourceMode: hasNbbo ? 'MASSIVE_NBBO' : spot !== null ? 'MASSIVE_BARS' : 'UNAVAILABLE',
+        yangZhangAdrVol,
+        forceRefresh,
+      }),
+      this.oratsClient.fetchIvRank(canonicalSymbol, forceRefresh),
+    ]);
+
+    const surfaceOk = surface.status === 'OPERATIONAL';
+    const ivRankOk = ivRank.status === 'OPERATIONAL';
+    const status: UsVolSurfaceResponse['status'] =
+      surfaceOk && ivRankOk ? 'OK' : surfaceOk || ivRankOk ? 'PARTIAL' : 'NO_DATA';
+    const reason =
+      surfaceOk && ivRankOk
+        ? null
+        : `${surfaceOk ? 'SURFACE_OK' : `SURFACE:${surface.reason}`} | ${
+            ivRankOk ? 'IV_RANK_OK' : `IV_RANK:${ivRank.reason}`
+          }`;
+    return {
+      status,
+      symbol: canonicalSymbol,
+      asOfUtcSec: nowSec,
+      cacheState: 'MISS',
+      stale: false,
+      reason,
+      surface: sanitizeJsonValue(surface),
+      ivRank: sanitizeJsonValue(ivRank),
+    };
+  }
+
+  public async getUsVolSurface(
+    rawSymbol: string,
+    options: { readonly forceRefresh?: boolean } = {},
+  ): Promise<UsVolSurfaceResponse> {
+    const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
+    const cacheKey = `us:vol-surface:${parsed.canonicalSymbol}`;
+    const forceRefresh = options.forceRefresh === true;
+    const nowMs = this.nowMsFn();
+    if (!forceRefresh) {
+      const cached = this.usVolSurfaceCache.get(cacheKey);
+      if (cached !== undefined) {
+        const ageMs = nowMs - cached.fetchedAtMs;
+        if (ageMs < US_VOL_SURFACE_TTL_MS) {
+          return { ...cached.response, cacheState: 'HIT', stale: false };
+        }
+        const inflight = this.usVolSurfaceInFlight.get(cacheKey);
+        if (inflight === undefined) {
+          const refresh = this.computeUsVolSurface(parsed.canonicalSymbol, false)
+            .then((fresh) => {
+              this.usVolSurfaceCache.set(cacheKey, { fetchedAtMs: this.nowMsFn(), response: fresh });
+              return fresh;
+            })
+            .finally(() => {
+              this.usVolSurfaceInFlight.delete(cacheKey);
+            });
+          this.usVolSurfaceInFlight.set(cacheKey, refresh);
+        }
+        return { ...cached.response, cacheState: 'STALE', stale: true };
+      }
+    }
+
+    const inflight = this.usVolSurfaceInFlight.get(cacheKey);
+    if (inflight !== undefined) {
+      return inflight;
+    }
+    const compute = this.computeUsVolSurface(parsed.canonicalSymbol, forceRefresh)
+      .then((fresh) => {
+        this.usVolSurfaceCache.set(cacheKey, { fetchedAtMs: this.nowMsFn(), response: fresh });
+        return fresh;
+      })
+      .finally(() => {
+        if (this.usVolSurfaceInFlight.get(cacheKey) === compute) {
+          this.usVolSurfaceInFlight.delete(cacheKey);
+        }
+      });
+    this.usVolSurfaceInFlight.set(cacheKey, compute);
+    return compute;
   }
 
   private async getUsStocksV2Batch(
@@ -4953,7 +5373,10 @@ export class MarketRuntime {
     };
   }
 
-  private async computeSnapshot(parsed: ParsedSymbol): Promise<TerminalSnapshotResponse> {
+  private async computeSnapshot(
+    parsed: ParsedSymbol,
+    options: { readonly expiration?: string } = {},
+  ): Promise<TerminalSnapshotResponse> {
     const apiKey = this.assertRestApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const { canonicalSymbol, correlatedSymbol, isIndex } = parsed;
@@ -5300,6 +5723,16 @@ export class MarketRuntime {
 
     const tradierOverlay = await this.tryTradierChainOverlay(canonicalSymbol, isIndex, contracts, nowSec, warnings);
     contracts = tradierOverlay.contracts;
+
+    const usExpirySelection = selectUsOptionExpirations(
+      contracts,
+      spot,
+      nowSec,
+      options.expiration,
+    );
+    if (usExpirySelection.reason !== null && usExpirySelection.defaultExpirationDate === null) {
+      warnings.push(`US options expiry selection: ${usExpirySelection.reason}`);
+    }
 
     const rawOptionContracts: readonly OptionSnapshotContract[] = contracts;
     const eodQuotesRes = applyEodCloseRefQuotes(rawOptionContracts, {
@@ -6735,6 +7168,12 @@ export class MarketRuntime {
             },
           }
         : {}),
+      optionsChain: {
+        selectedExpirationDate: usExpirySelection.defaultExpirationDate,
+        selectionReason: usExpirySelection.reason,
+        prefetchExpirationDates: usExpirySelection.prefetchExpirationDates,
+        availableExpirations: usExpirySelection.availableExpirations,
+      },
       dataQuality: {
         ownSolvedIvContracts,
         providerFallbackIvContracts,

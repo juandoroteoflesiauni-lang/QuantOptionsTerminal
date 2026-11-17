@@ -16,6 +16,8 @@ import type {
   OratsHybridSurfacePayload,
   OratsSurfaceStrikeRow,
 } from '../core/ggal/institutionalContracts.js';
+
+export type { OratsHybridSurfacePayload };
 import {
   RollingFeedTelemetry,
   type FeedTelemetrySnapshot,
@@ -176,12 +178,69 @@ export function parseOratsStrikeRow(row: Record<string, unknown>): OratsSurfaceS
   };
 }
 
+export interface OratsIvRankRow {
+  readonly ticker: string;
+  readonly tradeDate: string;
+  readonly iv: number;
+  readonly ivRank1m: number;
+  readonly ivPct1m: number;
+  readonly ivRank1y: number;
+  readonly ivPct1y: number;
+  readonly updatedAtUtcSec: number;
+}
+
+export type OratsIvRankPayload =
+  | ({
+      readonly status: 'OPERATIONAL';
+      readonly source: 'ORATS_IV_RANK';
+      readonly row: OratsIvRankRow;
+    })
+  | {
+      readonly status: 'UNAVAILABLE';
+      readonly source: 'ORATS_IV_RANK';
+      readonly ticker: string;
+      readonly reason: string;
+    };
+
+export function parseOratsIvRankRow(row: Record<string, unknown>): OratsIvRankRow | null {
+  const ticker = readStr(row, 'ticker').toUpperCase();
+  const tradeDate = readStr(row, 'tradeDate');
+  const iv = readNum(row, 'iv');
+  const ivRank1y = readNum(row, 'ivRank1y');
+  const ivPct1y = readNum(row, 'ivPct1y');
+  const updatedAtMs = Date.parse(readStr(row, 'updatedAt'));
+  if (
+    ticker === '' ||
+    tradeDate === '' ||
+    !Number.isFinite(iv) ||
+    !Number.isFinite(ivRank1y) ||
+    !Number.isFinite(ivPct1y)
+  ) {
+    return null;
+  }
+  return {
+    ticker,
+    tradeDate,
+    iv,
+    ivRank1m: readNum(row, 'ivRank1m'),
+    ivPct1m: readNum(row, 'ivPct1m'),
+    ivRank1y,
+    ivPct1y,
+    updatedAtUtcSec: Number.isFinite(updatedAtMs) ? Math.floor(updatedAtMs / 1_000) : Number.NaN,
+  };
+}
+
 export class OratsHybridClient {
   private readonly deps: OratsHybridClientDeps;
   private readonly surfaceCache = new Map<
     string,
     { readonly fetchedAtMs: number; readonly payload: OratsHybridSurfaceOperational }
   >();
+  private readonly ivRankCache = new Map<
+    string,
+    { readonly fetchedAtMs: number; readonly row: OratsIvRankRow }
+  >();
+  private readonly ivRankInFlight = new Map<string, Promise<OratsIvRankPayload>>();
   private readonly telemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
   });
@@ -275,6 +334,104 @@ export class OratsHybridClient {
       });
       throw err;
     }
+  }
+
+  /**
+   * Pieza 36: IV Rank/Percentile oficial de ORATS (`GET /datav2/ivrank`).
+   * Solo se invoca desde la carga on-demand de Volatilidad; los errores son
+   * `UNAVAILABLE` explícitos y no se cachean.
+   */
+  public async fetchIvRank(rawTicker: string, forceRefresh = false): Promise<OratsIvRankPayload> {
+    const ticker = rawTicker.trim().toUpperCase();
+    const nowMs = this.deps.nowMsFn();
+    if (this.deps.apiKey === null) {
+      return {
+        status: 'UNAVAILABLE',
+        source: 'ORATS_IV_RANK',
+        ticker,
+        reason: 'ORATS_API_KEY_NOT_CONFIGURED',
+      };
+    }
+    if (ticker === '') {
+      return {
+        status: 'UNAVAILABLE',
+        source: 'ORATS_IV_RANK',
+        ticker,
+        reason: 'ORATS_IV_RANK_EMPTY_TICKER',
+      };
+    }
+
+    if (!forceRefresh) {
+      const cached = this.ivRankCache.get(ticker);
+      if (cached !== undefined && nowMs - cached.fetchedAtMs < this.deps.cacheTtlMs) {
+        return { status: 'OPERATIONAL', source: 'ORATS_IV_RANK', row: cached.row };
+      }
+      const inflight = this.ivRankInFlight.get(ticker);
+      if (inflight !== undefined) {
+        return inflight;
+      }
+    }
+
+    const request = (async (): Promise<OratsIvRankPayload> => {
+      const circuit = this.getCircuitBreaker(nowMs);
+      if (circuit.state === 'OPEN') {
+        return {
+          status: 'UNAVAILABLE',
+          source: 'ORATS_IV_RANK',
+          ticker,
+          reason: 'ORATS_CIRCUIT_OPEN',
+        };
+      }
+      const token = encodeURIComponent(this.deps.apiKey ?? '');
+      const symbolEnc = encodeURIComponent(ticker);
+      const url = `${this.deps.baseUrl}/ivrank?token=${token}&ticker=${symbolEnc}`;
+      try {
+        const response = await this.timedFetch(url, 10_000);
+        if (!response.ok) {
+          this.recordHttpFailure();
+          return {
+            status: 'UNAVAILABLE',
+            source: 'ORATS_IV_RANK',
+            ticker,
+            reason: `ORATS_IV_RANK_HTTP_${String(response.status)}`,
+          };
+        }
+        const json = await response.json();
+        const rows = extractDataRows(json);
+        const rawRow = rows[0];
+        const parsed = rawRow === undefined ? null : parseOratsIvRankRow(rawRow);
+        if (parsed === null) {
+          this.recordHttpFailure();
+          return {
+            status: 'UNAVAILABLE',
+            source: 'ORATS_IV_RANK',
+            ticker,
+            reason: 'ORATS_IV_RANK_EMPTY_OR_INVALID_RESPONSE',
+          };
+        }
+        this.recordHttpSuccess();
+        this.ivRankCache.set(ticker, { fetchedAtMs: this.deps.nowMsFn(), row: parsed });
+        return { status: 'OPERATIONAL', source: 'ORATS_IV_RANK', row: parsed };
+      } catch (err: unknown) {
+        this.recordHttpFailure();
+        return {
+          status: 'UNAVAILABLE',
+          source: 'ORATS_IV_RANK',
+          ticker,
+          reason: `ORATS_IV_RANK_FETCH_ERROR: ${redactSecrets(
+            err instanceof Error ? err.message : String(err),
+            this.deps.secrets,
+          )}`,
+        };
+      } finally {
+        this.ivRankInFlight.delete(ticker);
+      }
+    })();
+
+    if (!forceRefresh) {
+      this.ivRankInFlight.set(ticker, request);
+    }
+    return request;
   }
 
   public async fetchHybridSurface(

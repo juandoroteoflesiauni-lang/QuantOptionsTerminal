@@ -435,6 +435,18 @@ export interface TradierOptionContractNormalized {
   readonly greeks: TradierGreeks;
   readonly asOfUtcSec: number;
   readonly provider: 'TRADIER';
+  /** OCC estándar. Los contratos ajustados/binarios quedan fuera de la cadena. */
+  readonly sharesPerContract: 100;
+}
+
+/** Extrae strike codificado OCC (8 dígitos, milésimas) o `NaN` si no matchea. */
+export function parseOccEncodedStrike(occSymbol: string): number {
+  const normalized = occSymbol.trim().toUpperCase().replace(/^O:/, '');
+  const match = normalized.match(/^([A-Z0-9./-]{1,6})(\d{6})([CP])(\d{8})$/);
+  const encoded = match?.[4];
+  if (encoded === undefined) return Number.NaN;
+  const value = Number(encoded) / 1_000;
+  return Number.isFinite(value) ? value : Number.NaN;
 }
 
 export interface TradierOptionChainResult {
@@ -453,11 +465,14 @@ function parseChainRow(raw: unknown, parseDiscarded: { count: number }): Tradier
   const expirationDate =
     typeof raw['expiration_date'] === 'string' ? raw['expiration_date'].trim() : '';
   const parsedExpiration = parseExpirationDate(expirationDate);
+  const occEncodedStrike = parseOccEncodedStrike(occSymbol);
   if (
     occSymbol === '' ||
     (optionType !== 'call' && optionType !== 'put') ||
     !Number.isFinite(strike) ||
     strike <= 0 ||
+    !Number.isFinite(occEncodedStrike) ||
+    Math.abs(occEncodedStrike - strike) > 1e-6 ||
     parsedExpiration === null
   ) {
     parseDiscarded.count += 1;
@@ -489,6 +504,7 @@ function parseChainRow(raw: unknown, parseDiscarded: { count: number }): Tradier
     greeks,
     asOfUtcSec: quoteAsOf,
     provider: 'TRADIER',
+    sharesPerContract: 100,
   };
 }
 
@@ -584,6 +600,41 @@ export function normalizeOccTicker(ticker: string): string {
   return ticker.trim().toUpperCase().replace(/^O:/, '');
 }
 
+function overlayFlowFields(
+  contract: OptionSnapshotContract,
+  tradier: TradierOptionContractNormalized,
+  summary: MutableOverlaySummary,
+): OptionSnapshotContract {
+  let changed = false;
+  let nextDay: OptionDaySummary = contract.day;
+  let nextOpenInterest = contract.openInterest;
+
+  // Volumen del día: máximo acumulado válido entre Massive y Tradier.
+  if (Number.isFinite(tradier.volume) && tradier.volume >= 0 && tradier.volume > contract.day.volume) {
+    nextDay = { ...contract.day, volume: tradier.volume };
+    summary.overlaidVolume += 1;
+    changed = true;
+  }
+
+  // Open interest: solo valores finitos y no negativos; nunca 0/NaN pisan un dato válido.
+  if (
+    Number.isFinite(tradier.openInterest) &&
+    tradier.openInterest >= 0 &&
+    tradier.openInterest > contract.openInterest
+  ) {
+    nextOpenInterest = tradier.openInterest;
+    summary.overlaidOpenInterest += 1;
+    changed = true;
+  }
+
+  if (!changed) return contract;
+  return {
+    ...contract,
+    day: nextDay,
+    openInterest: nextOpenInterest,
+  };
+}
+
 function overlayQuote(
   contract: OptionSnapshotContract,
   tradier: TradierOptionContractNormalized,
@@ -595,7 +646,6 @@ function overlayQuote(
   let nextGreeks: OptionGreeks = contract.greeks;
   let nextOpenInterest = contract.openInterest;
   let nextIv = contract.impliedVolatility;
-
   // Puntas y tamaños (Tradier 0 = sin punta -> se mantiene el valor canónico).
   const bidValid = Number.isFinite(tradier.bid) && tradier.bid > 0;
   const askValid = Number.isFinite(tradier.ask) && tradier.ask > 0 && tradier.ask >= tradier.bid;
@@ -740,8 +790,12 @@ export function overlayTradierChainOnCanonicalContracts(
       Number.isFinite(massiveUpdatedAt) &&
       tradierAsOf + MASSIVE_FRESHER_TOLERANCE_SEC < massiveUpdatedAt;
     if (tradierTooOld || massiveFresher) {
+      // Una punta stale no descarta el flujo del día ni el OI: se fusionan campo
+      // por campo, mientras que puntas/griegas/IV quedan explícitamente sin tocar.
+      const flowOnly = overlayFlowFields(contract, matched, summary);
+      if (flowOnly !== contract) summary.overlaidContracts += 1;
       summary.skippedStaleQuotes += 1;
-      out.push(contract);
+      out.push(flowOnly);
       continue;
     }
     const next = overlayQuote(contract, matched, summary);
@@ -929,6 +983,22 @@ function parseStreamFrame(text: string): readonly Record<string, unknown>[] {
  * `{"symbols":[...],"sessionid":"...","filter":["trade","quote"],"linebreak":true}`
  * y emite ticks normalizados. Reconexión con backoff explícito.
  */
+const INVALID_TRADIER_SYMBOL_RE =
+  /(?:^|[\s:("'])([A-Za-z0-9./^-]+)\s+is\s+not\s+a\s+valid\s+symbol\b/i;
+
+/**
+ * Extrae el ticker inválido cuando Tradier rechaza la suscripción WS con
+ * `<SYMBOL> is not a valid symbol` (en frame de mensaje o razón de cierre 1007).
+ */
+export function extractInvalidTradierSymbol(rawMessage: string): string | null {
+  const match = INVALID_TRADIER_SYMBOL_RE.exec(rawMessage);
+  if (match === null || match[1] === undefined) {
+    return null;
+  }
+  const symbol = match[1].trim().toUpperCase();
+  return symbol !== '' ? symbol : null;
+}
+
 export class TradierLiveManager {
   private readonly config: TradierConfig;
   private readonly httpFn: TradierHttpFn;
@@ -945,6 +1015,7 @@ export class TradierLiveManager {
   private readonly reconnectMaxDelayMs: number;
 
   private readonly latest = new Map<string, MutableLiveQuoteState>();
+  private readonly rejectedSymbols = new Set<string>();
 
   private socket: WsSocketLike | null = null;
   private subscribedSymbols: readonly string[] = [];
@@ -1025,7 +1096,13 @@ export class TradierLiveManager {
       throw new TradierNotConfiguredError();
     }
     this.stopped = false;
-    const clean = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter((s) => s !== ''))];
+    const clean = [
+      ...new Set(
+        symbols
+          .map((s) => s.trim().toUpperCase())
+          .filter((s) => s !== '' && !this.rejectedSymbols.has(s)),
+      ),
+    ];
     if (clean.length === 0) {
       throw new Error('TradierLiveManager.start: empty symbol list');
     }
@@ -1043,6 +1120,10 @@ export class TradierLiveManager {
     this.socket = null;
     current?.close(1000, 'server_shutdown');
     this.setState('CLOSED');
+  }
+
+  private hasBeenStopped(): boolean {
+    return this.stopped;
   }
 
   private setState(next: TradierStreamState): void {
@@ -1082,16 +1163,19 @@ export class TradierLiveManager {
     return { sessionId, wsUrl: urlFromResponse };
   }
 
-  private async connectCycle(): Promise<void> {
+  private async connectCycle(preserveConnectedState = false): Promise<void> {
     if (this.stopped) return;
-    this.setState(this.reconnectAttempts === 0 ? 'CONNECTING' : 'RECONNECTING');
+    if (!preserveConnectedState || this.state !== 'CONNECTED') {
+      this.setState(this.reconnectAttempts === 0 ? 'CONNECTING' : 'RECONNECTING');
+    }
     try {
       const { sessionId, wsUrl } = await this.createSession();
+      if (this.hasBeenStopped()) return;
       this.sessionCreated = true;
       const socket = this.createSocketFn(wsUrl);
       this.socket = socket;
       socket.onOpen = () => {
-        if (this.stopped) return;
+        if (this.stopped || this.socket !== socket) return;
         const payload = JSON.stringify({
           symbols: this.subscribedSymbols,
           sessionid: sessionId,
@@ -1100,25 +1184,63 @@ export class TradierLiveManager {
         });
         socket.send(payload);
         this.reconnectAttempts = 0;
+        this.lastError = null;
         this.setState('CONNECTED');
       };
       socket.onMessage = (data) => {
-        if (this.stopped) return;
+        if (this.stopped || this.socket !== socket) return;
+        if (this.pruneInvalidSymbolAndReconnect(data)) return;
         this.ingestFrames(data);
       };
       socket.onClose = (info) => {
-        if (this.stopped) return;
+        if (this.stopped || this.socket !== socket) return;
+        if (this.pruneInvalidSymbolAndReconnect(info.reason)) return;
         this.scheduleReconnect(`socket closed (${String(info.code)} ${info.reason})`);
       };
       socket.onError = (error) => {
-        if (this.stopped) return;
+        if (this.stopped || this.socket !== socket) return;
         const message = error instanceof Error ? error.message : String(error);
+        if (this.pruneInvalidSymbolAndReconnect(message)) return;
         this.scheduleReconnect(`socket error: ${message}`);
       };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.scheduleReconnect(message);
     }
+  }
+
+  private pruneInvalidSymbolAndReconnect(rawReason: string): boolean {
+    const invalidSymbol = extractInvalidTradierSymbol(rawReason);
+    if (invalidSymbol === null) {
+      return false;
+    }
+    this.rejectedSymbols.add(invalidSymbol);
+    const nextSymbols = this.subscribedSymbols.filter((s) => s !== invalidSymbol);
+    if (nextSymbols.length === this.subscribedSymbols.length) {
+      return false;
+    }
+    this.subscribedSymbols = nextSymbols;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const current = this.socket;
+    this.socket = null;
+    if (current !== null) {
+      current.onOpen = null;
+      current.onMessage = null;
+      current.onClose = null;
+      current.onError = null;
+      current.close(1000, 'prune_invalid_symbol');
+    }
+    if (this.subscribedSymbols.length === 0) {
+      this.scheduleReconnect(`all symbols rejected (last: ${invalidSymbol})`);
+      return true;
+    }
+    this.lastError = null;
+    this.reconnectAttempts = 0;
+    void this.connectCycle(true);
+    return true;
   }
 
   private scheduleReconnect(reason: string): void {
@@ -1151,6 +1273,9 @@ export class TradierLiveManager {
       }
       if (type === 'ERROR') {
         const message = typeof event['message'] === 'string' ? event['message'] : 'stream ERROR';
+        if (this.pruneInvalidSymbolAndReconnect(message)) {
+          return;
+        }
         this.scheduleReconnect(`stream ERROR: ${message}`);
         continue;
       }

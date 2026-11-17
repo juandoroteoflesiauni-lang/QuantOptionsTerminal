@@ -1004,6 +1004,7 @@ export function hydrateFromArMonitoring(mon: ArMonitoringResponse): void {
 
 export function hydrateFromArOptions(res: ArOptionsResponse): void {
   const spot = res.spot !== null && Number.isFinite(res.spot) ? res.spot : Number.NaN;
+  const isUsMarket = res.market === 'US';
   const groups: OptionExpiryGroup[] = res.expiries.map((exp) => {
     const callByStrike = new Map<number, ArOptionContractDto>();
     const putByStrike = new Map<number, ArOptionContractDto>();
@@ -1015,8 +1016,18 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
       Number.isFinite(spot) && Number.isFinite(atmIvDec)
         ? spot * atmIvDec * Math.sqrt(Math.max(exp.days, 1) / 365)
         : Number.NaN;
-    const oneSigmaLow = Number.isFinite(sigmaBandAbs) ? Math.round(spot - sigmaBandAbs) : Number.NaN;
-    const oneSigmaHigh = Number.isFinite(sigmaBandAbs) ? Math.round(spot + sigmaBandAbs) : Number.NaN;
+    const oneSigmaLow =
+      Number.isFinite(sigmaBandAbs)
+        ? isUsMarket
+          ? spot - sigmaBandAbs
+          : Math.round(spot - sigmaBandAbs)
+        : Number.NaN;
+    const oneSigmaHigh =
+      Number.isFinite(sigmaBandAbs)
+        ? isUsMarket
+          ? spot + sigmaBandAbs
+          : Math.round(spot + sigmaBandAbs)
+        : Number.NaN;
 
     let callVolTotal = 0;
     let putVolTotal = 0;

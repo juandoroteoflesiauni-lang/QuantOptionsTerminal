@@ -1,0 +1,108 @@
+{
+  "qqq": {
+    "symbol": "QQQ",
+    "spot": 663.16,
+    "occ_contract_multiplier": 100,
+    "expected_strikes_usd_1x": [
+      660.0,
+      665.0,
+      670.0
+    ],
+    "atm_iv_dec": 0.22,
+    "days_to_expiry": 21,
+    "rate_dec": 0.043,
+    "bull_call_spread": {
+      "valid": true,
+      "width": 5.0,
+      "long_price": 8.2,
+      "short_price": 4.1,
+      "long_uses_eod_ref": false,
+      "short_uses_eod_ref": false,
+      "debit": 4.1,
+      "max_profit": 0.9000000000000004,
+      "reward_risk_ratio": 0.21951219512195133,
+      "breakeven": 664.1,
+      "breakeven_dist_pct": 0.14174558176006613,
+      "prob_at_breakeven_pct": 49.74688520948957,
+      "edge_pct": -32.25311479051043
+    },
+    "bear_put_spread": {
+      "valid": true,
+      "width": 5.0,
+      "long_price": 2.1,
+      "short_price": 0.35,
+      "long_uses_eod_ref": false,
+      "short_uses_eod_ref": false,
+      "debit": 1.75,
+      "max_profit": 3.25,
+      "reward_risk_ratio": 1.8571428571428572,
+      "breakeven": 663.25,
+      "breakeven_dist_pct": 0.01357138548766992,
+      "prob_at_breakeven_pct": 49.28490436079797,
+      "edge_pct": 14.284904360797967
+    }
+  },
+  "flow_fusion": {
+    "massive_volume": 1250,
+    "massive_open_interest": 8000,
+    "tradier_volume": 0,
+    "tradier_open_interest": 0,
+    "expected_volume": 1250,
+    "expected_open_interest": 8000,
+    "larger_tradier_volume": 1875,
+    "expected_volume_after_larger_tradier": 1875
+  },
+  "occ_strike_validation": [
+    {
+      "occ_symbol": "O:QQQ260331C00660000",
+      "raw_strike": 660.0,
+      "accepted": true
+    },
+    {
+      "occ_symbol": "O:QQQ260331C00660000",
+      "raw_strike": 6600.0,
+      "accepted": false
+    },
+    {
+      "occ_symbol": "BADSYMBOL",
+      "raw_strike": 660.0,
+      "accepted": false
+    }
+  ],
+  "expiry_selection": {
+    "qqq": {
+      "default_expiration_date": "2025-03-31",
+      "prefetch_expiration_dates": [
+        "2025-03-31"
+      ],
+      "reason": "DEFAULT_LIQUID_14_45_DTE"
+    },
+    "prefetch": {
+      "default_expiration_date": "2026-01-23",
+      "prefetch_expiration_dates": [
+        "2026-01-23",
+        "2026-02-20"
+      ],
+      "reason": "DEFAULT_LIQUID_14_45_DTE"
+    },
+    "requested_missing": {
+      "default_expiration_date": "2026-01-23",
+      "prefetch_expiration_dates": [
+        "2026-01-23"
+      ],
+      "reason": "REQUESTED_EXPIRATION_NOT_AVAILABLE:2099-01-01"
+    }
+  },
+  "orats_ivrank": {
+    "row": {
+      "ticker": "QQQ",
+      "tradeDate": "2025-03-10",
+      "iv": 18.311,
+      "ivRank1m": 7.25,
+      "ivPct1m": 9.0,
+      "ivRank1y": 17.49,
+      "ivPct1y": 12.75,
+      "updatedAt": "2025-03-10T20:55:02Z"
+    }
+  }
+}

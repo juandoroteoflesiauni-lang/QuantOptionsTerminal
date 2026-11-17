@@ -153,7 +153,9 @@ describe('Pieza 33 — máquina de estados y resumen', () => {
       const providers = createMonitor({
         ...(stateCase.expected === 'ARMED_OUT_OF_SESSION'
           ? { nowMs: Date.UTC(2026, 10, 14, 8, 0, 0) }
-          : {}),
+          : stateCase.expected === 'DEGRADED'
+            ? { nowMs: Date.UTC(2026, 10, 16, 15, 0, 0) }
+            : {}),
         massiveWs: {
           configured: stateCase.configured,
           connected: stateCase.connected ?? false,

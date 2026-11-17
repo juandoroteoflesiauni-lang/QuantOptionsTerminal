@@ -61,6 +61,7 @@ import {
   MarketRuntime,
   RuntimeNoDataError,
   loadRuntimeAuth,
+  OPTIONS_UNDERLYING_UNIVERSE,
   type RuntimeWsBroadcast,
 } from './marketRuntime.js';
 import { loadOratsClientConfigFromEnv } from './oratsHybridClient.js';
@@ -546,8 +547,26 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       // se muestra cuando el stream Tradier está configurado y conectado; en otro
       // caso `MASSIVE + ORATS` (cero fallbacks silenciosos: cada proveedor expone
       // configured/connected/keySlot/activeRole sin material secreto).
-      if (pathname === '/api/us/providers-status') {
-        const usProviders = runtime.getUsProvidersStatus();
+      if (pathname === '/api/options/underlyings') {
+        sendJson(res, 200, {
+          status: 'OK' as const,
+          asOfUtcSec: Math.floor(Date.now() / 1_000),
+          underlyings: OPTIONS_UNDERLYING_UNIVERSE,
+        });
+        return;
+      }
+
+      if (pathname === '/api/us/vol-surface') {
+        const symbol = params.get('symbol')?.trim() || 'SPY';
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const volSurface = await runtime.getUsVolSurface(symbol, {
+          ...(forceRefresh ? { forceRefresh: true } : {}),
+        });
+        sendJson(res, 200, volSurface);
+        return;
+      }
+
+      if (pathname === '/api/us/providers-status') {        const usProviders = runtime.getUsProvidersStatus();
         const oratsStatus = ggalRuntime.getOratsStatus();
         const tradierLive = usProviders.TRADIER_LIVE;
         const usOptionsFeedBadge: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' =

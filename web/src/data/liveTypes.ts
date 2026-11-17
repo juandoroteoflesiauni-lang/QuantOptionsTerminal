@@ -780,6 +780,7 @@ export interface ArOptionsResponse {
   readonly asOfUtcSec: number;
   readonly feedStatus: FeedStatus;
   readonly underlying: string;
+  readonly market?: 'AR' | 'US';
   readonly spot: number | null;
   readonly rateTna: number | null;
   readonly continuousRate: number | null;
@@ -827,6 +828,7 @@ export interface ArOptionsResponse {
     readonly vatRate: number;
     readonly bondsVatExempt: true;
   };
+  readonly primaryLiquidExpiryCode?: string | null;
   readonly quantEngines?: ArOptionsQuantEnginesDto | null;
   readonly providerErrors: readonly string[];
 }
@@ -1063,4 +1065,112 @@ export interface UsSnapshotResponseDto {
   } | null;
   readonly benchmarkBars1d?: readonly SerializedBarDto[];
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
+  readonly optionsChain?: {
+    readonly selectedExpirationDate?: string | null;
+    readonly selectionReason?: string | null;
+    readonly prefetchExpirationDates?: readonly string[];
+    readonly availableExpirations?: readonly {
+      readonly expirationDate: string;
+      readonly daysToExpiry: number;
+      readonly validCallCount: number;
+      readonly validPutCount: number;
+      readonly nearAtmLiquidity: number;
+      readonly inDefaultWindow: boolean;
+      readonly hasCompleteAtmChain: boolean;
+    }[];
+  } | null;
+}
+
+export interface UsVolSurfaceResponseDto {
+  readonly status: 'OK' | 'PARTIAL' | 'NO_DATA';
+  readonly symbol: string;
+  readonly asOfUtcSec: number;
+  readonly cacheState: 'HIT' | 'MISS' | 'STALE' | 'UNAVAILABLE';
+  readonly stale: boolean;
+  readonly reason: string | null;
+  readonly surface?:
+    | {
+        readonly status: 'OPERATIONAL';
+        readonly source: 'ORATS_DELAYED_CORE';
+        readonly ticker: string;
+        readonly tradeDate?: string | null;
+        readonly stockPrice?: number | null;
+        readonly massiveSpotPrice?: number | null;
+        readonly smvVol?: number | null;
+        readonly iv10d?: number | null;
+        readonly iv20d?: number | null;
+        readonly iv30d?: number | null;
+        readonly iv60d?: number | null;
+        readonly iv90d?: number | null;
+        readonly iv6m?: number | null;
+        readonly iv1y?: number | null;
+        readonly exErnIv10d?: number | null;
+        readonly exErnIv20d?: number | null;
+        readonly exErnIv30d?: number | null;
+        readonly exErnIv60d?: number | null;
+        readonly exErnIv90d?: number | null;
+        readonly impliedMove?: number | null;
+        readonly yangZhangAdrVol?: number | null;
+        readonly strikes?: readonly {
+          readonly strike: number;
+          readonly expirDate: string;
+          readonly dte: number;
+          readonly smvVol: number;
+          readonly callValue: number;
+          readonly putValue: number;
+          readonly callMidIv: number;
+          readonly putMidIv: number;
+          readonly delta: number;
+          readonly gamma: number;
+          readonly theta: number;
+          readonly vega: number;
+        }[];
+        readonly reason?: null;
+      }
+    | {
+        readonly status: 'UNAVAILABLE';
+        readonly source: 'ORATS_DELAYED_CORE';
+        readonly ticker: string;
+        readonly reason: string;
+      }
+    | null;
+  readonly ivRank?:
+    | {
+        readonly status: 'OPERATIONAL';
+        readonly source: 'ORATS_IV_RANK';
+        readonly row: {
+          readonly ticker: string;
+          readonly tradeDate: string;
+          readonly iv: number;
+          readonly ivRank1m: number;
+          readonly ivPct1m: number;
+          readonly ivRank1y: number;
+          readonly ivPct1y: number;
+          readonly updatedAtUtcSec: number;
+        };
+      }
+    | {
+        readonly status: 'UNAVAILABLE';
+        readonly source: 'ORATS_IV_RANK';
+        readonly ticker: string;
+        readonly reason: string;
+      }
+    | null;
+}
+
+export interface OptionsUnderlyingMetaDto {
+  readonly key: string;
+  readonly symbol: string;
+  readonly market: 'AR' | 'US';
+  readonly venue: 'BYMA' | 'OPRA';
+  readonly currency: 'ARS' | 'USD';
+  readonly name: string;
+  readonly sector: string;
+  readonly color: string;
+}
+
+export interface OptionsUnderlyingsResponseDto {
+  readonly status: 'OK';
+  readonly asOfUtcSec: number;
+  readonly underlyings: readonly OptionsUnderlyingMetaDto[];
 }

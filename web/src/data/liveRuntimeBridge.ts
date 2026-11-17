@@ -8,9 +8,12 @@ import type {
   ArRelationsResponse,
   ArStockDetailResponse,
   FeedStatus,
+  OptionsUnderlyingsResponseDto,
+  OptionsUnderlyingMetaDto,
   TerminalTimeframe,
   UsSnapshotResponseDto,
   UsTerminalBarsResponseDto,
+  UsVolSurfaceResponseDto,
 } from './liveTypes';
 import {
   AR_STOCKS,
@@ -23,6 +26,7 @@ import {
   hydrateFromArRelations,
   hydrateFromUsSnapshot,
 } from './marketData';
+import { parseOptionsUnderlyingKey } from './optionsUnderlying';
 
 export interface LiveTickerUpdate {
   readonly id: string;
@@ -46,6 +50,12 @@ export interface LiveMarketState {
   readonly stockDetailsBySymbol: Readonly<Record<string, ArStockDetailResponse>>;
   readonly optionsByUnderlying: Readonly<Record<string, ArOptionsResponse>>;
   readonly usSnapshotsBySymbol: Readonly<Record<string, UsSnapshotResponseDto>>;
+  readonly optionsUnderlyings: readonly OptionsUnderlyingMetaDto[];
+  readonly optionsUnderlyingsStatus: 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA';
+  readonly usVolSurfaceBySymbol: Readonly<Record<string, UsVolSurfaceResponseDto | null>>;
+  readonly usVolSurfaceStatusBySymbol: Readonly<
+    Record<string, 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA'>
+  >;
   readonly tickFlashes: Readonly<Record<string, 'up' | 'down' | null>>;
   readonly isBackendConnected: boolean;
   readonly warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY';
@@ -68,6 +78,10 @@ let state: LiveMarketState = {
   stockDetailsBySymbol: {},
   optionsByUnderlying: {},
   usSnapshotsBySymbol: {},
+  optionsUnderlyings: [],
+  optionsUnderlyingsStatus: 'IDLE',
+  usVolSurfaceBySymbol: {},
+  usVolSurfaceStatusBySymbol: {},
   tickFlashes: {},
   isBackendConnected: false,
   warmupStatus: 'IDLE',
@@ -350,8 +364,6 @@ export async function requestTerminalBars(
   );
 }
 
-const US_OPTION_UNDERLYINGS = new Set(['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT']);
-
 interface HealthResponseDto {
   readonly ok?: boolean;
   readonly warmupStatus?: 'IDLE' | 'WARMING_UP' | 'READY';
@@ -508,6 +520,7 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
     asOfUtcSec: snap.asOfUtcSec,
     feedStatus,
     underlying: clean,
+    market: 'US',
     spot,
     rateTna,
     continuousRate: rateDec,
@@ -547,18 +560,24 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       vatRate: 0,
       bondsVatExempt: true,
     },
+    primaryLiquidExpiryCode: snap.optionsChain?.selectedExpirationDate ?? null,
     quantEngines,
     providerErrors: [],
   };
 }
 
-export async function requestOptionsChain(underlying: string, force = false): Promise<void> {
-  const clean = underlying.trim().toUpperCase();
+export async function requestOptionsChain(
+  underlying: string,
+  force = false,
+  expiration?: string,
+): Promise<void> {
+  const selection = parseOptionsUnderlyingKey(underlying);
+  const clean = selection.symbol;
   if (!clean) return;
-  if (US_OPTION_UNDERLYINGS.has(clean)) {
+  if (selection.market === 'US') {
     const snap = await fetchJsonGuarded<UsSnapshotResponseDto>(
-      `us:opt:${clean}`,
-      `/api/snapshot?symbol=${encodeURIComponent(clean)}`
+      `us:opt:${selection.key}${expiration ? `:${expiration}` : ''}`,
+      `/api/snapshot?symbol=${encodeURIComponent(clean)}${expiration ? `&expiration=${encodeURIComponent(expiration)}` : ''}`
     );
     if (!snap) return;
     hydrateFromUsSnapshot(snap);
@@ -569,7 +588,7 @@ export async function requestOptionsChain(underlying: string, force = false): Pr
       ...state,
       isBackendConnected: true,
       usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: snap },
-      optionsByUnderlying: { ...state.optionsByUnderlying, [clean]: mapped },
+      optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: mapped },
       feedStatus: combineFeedStatus(state.feedStatus, mapped.feedStatus),
       lastSyncUtcSec: snap.asOfUtcSec,
     };
@@ -577,7 +596,7 @@ export async function requestOptionsChain(underlying: string, force = false): Pr
     return;
   }
   const res = await fetchJsonGuarded<ArOptionsResponse>(
-    `options:${clean}`,
+    `options:${selection.key}`,
     `/api/ar/options?underlying=${encodeURIComponent(clean)}${force ? '&refresh=1' : ''}`,
     { force }
   );
@@ -587,9 +606,70 @@ export async function requestOptionsChain(underlying: string, force = false): Pr
   state = {
     ...state,
     isBackendConnected: true,
-    optionsByUnderlying: { ...state.optionsByUnderlying, [clean]: res },
+    optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: res },
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
+  };
+  notify();
+}
+
+export async function requestOptionsUniverse(force = false): Promise<void> {
+  if (state.optionsUnderlyingsStatus === 'OK' && !force) return;
+  state = { ...state, optionsUnderlyingsStatus: 'LOADING' };
+  notify();
+  const res = await fetchJsonGuarded<OptionsUnderlyingsResponseDto>(
+    'options:underlyings',
+    '/api/options/underlyings',
+    { force },
+  );
+  if (!res || !Array.isArray(res.underlyings) || res.underlyings.length === 0) {
+    state = { ...state, optionsUnderlyingsStatus: 'NO_DATA' };
+    notify();
+    return;
+  }
+  state = {
+    ...state,
+    optionsUnderlyings: res.underlyings,
+    optionsUnderlyingsStatus: 'OK',
+    isBackendConnected: true,
+  };
+  notify();
+}
+
+export async function requestUsVolSurface(
+  underlying: string,
+  force = false,
+): Promise<void> {
+  const selection = parseOptionsUnderlyingKey(underlying);
+  if (selection.market !== 'US') return;
+  const status = state.usVolSurfaceStatusBySymbol[selection.key] ?? 'IDLE';
+  if (status === 'LOADING' || (status === 'OK' && !force)) return;
+  state = {
+    ...state,
+    usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: 'LOADING' },
+  };
+  notify();
+  const res = await fetchJsonGuarded<UsVolSurfaceResponseDto>(
+    `us:vol-surface:${selection.key}${force ? ':force' : ''}`,
+    `/api/us/vol-surface?symbol=${encodeURIComponent(selection.symbol)}${force ? '&refresh=1' : ''}`,
+    { force },
+  );
+  if (!res) {
+    state = {
+      ...state,
+      usVolSurfaceBySymbol: { ...state.usVolSurfaceBySymbol, [selection.key]: null },
+      usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: 'NO_DATA' },
+    };
+    notify();
+    return;
+  }
+  state = {
+    ...state,
+    usVolSurfaceBySymbol: { ...state.usVolSurfaceBySymbol, [selection.key]: res },
+    usVolSurfaceStatusBySymbol: {
+      ...state.usVolSurfaceStatusBySymbol,
+      [selection.key]: res.status === 'NO_DATA' ? 'NO_DATA' : 'OK',
+    },
   };
   notify();
 }
@@ -676,6 +756,7 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
       requestRelations(),
       requestUsSnapshot('SPY'),
       requestUsSnapshot('QQQ'),
+      requestOptionsUniverse(),
     ]);
     if (disposed) return;
     await Promise.all([

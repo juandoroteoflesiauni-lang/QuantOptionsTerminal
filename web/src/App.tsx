@@ -85,6 +85,7 @@ export default function App() {
   const [monitorPanel, setMonitorPanel] = useState<MonitorSubPanel>('acciones');
   const [optionsSubView, setOptionsSubView] = useState<OptionsSubView>('estrategias');
   const [selectedTicker, setSelectedTicker] = useState<string>('GGAL');
+  const [selectedOptionsUnderlying, setSelectedOptionsUnderlying] = useState<string>('GGAL');
 
   // Estado de Shell y Diseño
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -143,6 +144,8 @@ export default function App() {
       const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        // Pieza 36: dentro de Opciones, Ctrl+K pertenece al selector institucional.
+        if (activePage === 'opciones') return;
         e.preventDefault();
         setCommandOpen((v) => !v);
         return;
@@ -150,6 +153,7 @@ export default function App() {
       if (isInput) return;
 
       if (e.key === '/') {
+        if (activePage === 'opciones') return;
         e.preventDefault();
         setCommandOpen(true);
       } else if (e.key.toLowerCase() === 'n') {
@@ -165,7 +169,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [activePage]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -201,7 +205,7 @@ export default function App() {
     eeuu: '/eeuu/wall-street',
     monitoreo: `/monitoreo/${monitorPanel}`,
     acciones: `/acciones/${selectedTicker}`,
-    opciones: `/opciones/${selectedTicker}/${optionsSubView}`,
+    opciones: `/opciones/${selectedOptionsUnderlying}/${optionsSubView}`,
     futuros: '/futuros',
     bonos: '/bonos/curva-soberana',
     relaciones: '/relaciones',
@@ -226,7 +230,7 @@ export default function App() {
         : 'Cauciones por Plazo'
     }`,
     acciones: `Ficha Técnica · ${selectedTicker} (Contado, ADR, 5 Puntas y VWAP)`,
-    opciones: `Opciones · ${selectedTicker} (${optionsSubView.toUpperCase()})`,
+    opciones: `Opciones · ${selectedOptionsUnderlying} (${optionsSubView.toUpperCase()})`,
     futuros: 'Futuros Rofex DLR y Sintéticos USD',
     bonos: 'Bonos Soberanos · Curva TIR vs. Duration',
     relaciones: 'Relaciones y Arbitraje Estadístico (Z-Score)',
@@ -681,7 +685,7 @@ export default function App() {
                 ticker={selectedTicker}
                 onSelectTicker={setSelectedTicker}
                 onGoToOptions={(t) => {
-                  setSelectedTicker(t);
+                  setSelectedOptionsUnderlying(t === 'GGAL' ? 'GGAL' : t);
                   setActivePage('opciones');
                 }}
                 onBackToMonitor={() => {
@@ -696,8 +700,8 @@ export default function App() {
               <OptionsModule
                 activeSubView={optionsSubView}
                 onSelectSubView={setOptionsSubView}
-                selectedUnderlying={selectedTicker}
-                onSelectUnderlying={setSelectedTicker}
+                selectedUnderlying={selectedOptionsUnderlying}
+                onSelectUnderlying={setSelectedOptionsUnderlying}
                 density={density}
                 onOpenOrderTicket={handleOpenOrderTicket}
               />

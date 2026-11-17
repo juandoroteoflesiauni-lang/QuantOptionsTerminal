@@ -137,11 +137,16 @@ export interface FlowSummary {
   totalCallLots: number;
   totalPutLots: number;
   totalLots: number;
-  totalTurnoverArsM: number;
+  totalTurnoverM: number;
   callSharePct: number;
   putCallRatio: number;
   netDeltaEqShares: number;
   dominantDirection: string;
+}
+
+export interface FlowCurrencyOptions {
+  readonly market: 'AR' | 'US';
+  readonly contractMultiplier: number;
 }
 
 export interface GreekComponentRow {
@@ -524,15 +529,33 @@ export function buildSpreadLadder(
 export function buildBidirectionalFlow(
   rows: readonly OptionChainRow[],
   spot: number,
-  unit: 'lotes' | '$'
+  unit: 'lotes' | '$',
+  currencyOptions: FlowCurrencyOptions
 ): FlowSummary {
+  const multiplier =
+    Number.isFinite(currencyOptions.contractMultiplier) && currencyOptions.contractMultiplier > 0
+      ? currencyOptions.contractMultiplier
+      : Number.NaN;
+  if (!Number.isFinite(multiplier) || multiplier <= 0) {
+    return {
+      rows: [],
+      totalCallLots: 0,
+      totalPutLots: 0,
+      totalLots: 0,
+      totalTurnoverM: Number.NaN,
+      callSharePct: Number.NaN,
+      putCallRatio: Number.NaN,
+      netDeltaEqShares: Number.NaN,
+      dominantDirection: '—',
+    };
+  }
   if (rows.length === 0) {
     return {
       rows: [],
       totalCallLots: 0,
       totalPutLots: 0,
       totalLots: 0,
-      totalTurnoverArsM: 0,
+      totalTurnoverM: 0,
       callSharePct: Number.NaN,
       putCallRatio: Number.NaN,
       netDeltaEqShares: Number.NaN,
@@ -543,7 +566,7 @@ export function buildBidirectionalFlow(
   const sorted = [...rows].sort((a, b) => a.strike - b.strike);
   let totalCallLots = 0;
   let totalPutLots = 0;
-  let totalTurnoverArs = 0;
+  let totalTurnover = 0;
   let netDeltaEqShares = 0;
   let hasDelta = false;
 
@@ -560,19 +583,19 @@ export function buildBidirectionalFlow(
     const pLots = Number.isFinite(r.putVolumeLots) ? Math.max(0, r.putVolumeLots) : 0;
     const cPx = pickRefPx(r.callLast, r.callBid, r.callAsk);
     const pPx = pickRefPx(r.putLast, r.putBid, r.putAsk);
-    const cVal = cLots * LOT * cPx;
-    const pVal = pLots * LOT * pPx;
+    const cVal = cLots * multiplier * cPx;
+    const pVal = pLots * multiplier * pPx;
 
     totalCallLots += cLots;
     totalPutLots += pLots;
-    totalTurnoverArs += cVal + pVal;
+    totalTurnover += cVal + pVal;
 
     if (Number.isFinite(r.callDelta)) {
-      netDeltaEqShares += cLots * LOT * r.callDelta;
+      netDeltaEqShares += cLots * multiplier * r.callDelta;
       hasDelta = true;
     }
     if (Number.isFinite(r.putDelta)) {
-      netDeltaEqShares += pLots * LOT * r.putDelta;
+      netDeltaEqShares += pLots * multiplier * r.putDelta;
       hasDelta = true;
     }
 
@@ -643,7 +666,7 @@ export function buildBidirectionalFlow(
     totalCallLots,
     totalPutLots,
     totalLots,
-    totalTurnoverArsM: totalTurnoverArs / 1_000_000,
+    totalTurnoverM: totalTurnover / 1_000_000,
     callSharePct,
     putCallRatio,
     netDeltaEqShares: hasDelta ? netDeltaEqShares : Number.NaN,
