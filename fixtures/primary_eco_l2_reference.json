@@ -1,0 +1,1027 @@
+{
+  "schemaVersion": 1,
+  "description": "Referencia independiente del conector Primary Eco Valores XOMS: config de entorno (PRIMARY_BASE_URL/PRIMARY_WS_URL/ECO_MATRIZ_*), parser MERV con alias T1, selección del universo BYMA L2 (Merval + CEDEARs + GFGC*/GFGV*), decisión del tick ARS de GGAL y microestructura 5 puntas (orden + spread/imbalance). Sin valores de credenciales.",
+  "configCases": [
+    {
+      "id": "eco_xoms_base_url_with_matriz_credentials",
+      "env": {
+        "PRIMARY_BASE_URL": "https://api.eco.xoms.com.ar",
+        "ECO_MATRIZ_USERNAME": "matriz_user",
+        "ECO_MATRIZ_PASSWORD": "matriz_pass"
+      },
+      "expected": {
+        "apiUrl": "https://api.eco.xoms.com.ar",
+        "wsUrl": "wss://api.eco.xoms.com.ar/",
+        "usernameConfigured": true,
+        "passwordConfigured": true,
+        "configured": true
+      }
+    },
+    {
+      "id": "legacy_primary_api_url_and_credentials",
+      "env": {
+        "PRIMARY_API_URL": "https://api.remarkets.primary.com.ar",
+        "PRIMARY_USERNAME": "primary_user",
+        "PRIMARY_PASSWORD": "primary_pass"
+      },
+      "expected": {
+        "apiUrl": "https://api.remarkets.primary.com.ar",
+        "wsUrl": "wss://api.remarkets.primary.com.ar/",
+        "usernameConfigured": true,
+        "passwordConfigured": true,
+        "configured": true
+      }
+    },
+    {
+      "id": "explicit_ws_url_wins_and_trailing_slash_trimmed",
+      "env": {
+        "PRIMARY_BASE_URL": "https://api.eco.xoms.com.ar/",
+        "PRIMARY_WS_URL": "wss://ws.eco.xoms.com.ar/",
+        "PRIMARY_USERNAME": "primary_user",
+        "PRIMARY_PASSWORD": "primary_pass",
+        "ECO_MATRIZ_USERNAME": "matriz_user",
+        "ECO_MATRIZ_PASSWORD": "matriz_pass"
+      },
+      "expected": {
+        "apiUrl": "https://api.eco.xoms.com.ar",
+        "wsUrl": "wss://ws.eco.xoms.com.ar/",
+        "usernameConfigured": true,
+        "passwordConfigured": true,
+        "configured": true
+      }
+    },
+    {
+      "id": "defaults_without_env",
+      "env": {},
+      "expected": {
+        "apiUrl": "https://api.remarkets.primary.com.ar",
+        "wsUrl": "wss://api.remarkets.primary.com.ar/",
+        "usernameConfigured": false,
+        "passwordConfigured": false,
+        "configured": false
+      }
+    },
+    {
+      "id": "primary_credentials_win_over_matriz",
+      "env": {
+        "PRIMARY_USERNAME": "primary_user",
+        "ECO_MATRIZ_USERNAME": "matriz_user",
+        "PRIMARY_PASSWORD": "primary_pass",
+        "ECO_MATRIZ_PASSWORD": "matriz_pass"
+      },
+      "expected": {
+        "apiUrl": "https://api.remarkets.primary.com.ar",
+        "wsUrl": "wss://api.remarkets.primary.com.ar/",
+        "usernameConfigured": true,
+        "passwordConfigured": true,
+        "configured": true
+      }
+    },
+    {
+      "id": "ws_derived_from_http_base_url",
+      "env": {
+        "PRIMARY_BASE_URL": "http://api.eco.xoms.com.ar",
+        "PRIMARY_USERNAME": "primary_user",
+        "PRIMARY_PASSWORD": "primary_pass"
+      },
+      "expected": {
+        "apiUrl": "http://api.eco.xoms.com.ar",
+        "wsUrl": "ws://api.eco.xoms.com.ar/",
+        "usernameConfigured": true,
+        "passwordConfigured": true,
+        "configured": true
+      }
+    }
+  ],
+  "mervSymbolCases": [
+    {
+      "symbol": "MERV - XMEV - GGAL - 24hs",
+      "parsed": {
+        "ticker": "GGAL",
+        "settlement": "24hs",
+        "rawSymbol": "MERV - XMEV - GGAL - 24hs"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - GGAL - T1",
+      "parsed": {
+        "ticker": "GGAL",
+        "settlement": "24hs",
+        "rawSymbol": "MERV - XMEV - GGAL - T1"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - GGAL - CI",
+      "parsed": {
+        "ticker": "GGAL",
+        "settlement": "CI",
+        "rawSymbol": "MERV - XMEV - GGAL - CI"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - GGAL - 48HS",
+      "parsed": {
+        "ticker": "GGAL",
+        "settlement": "48HS",
+        "rawSymbol": "MERV - XMEV - GGAL - 48HS"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - SUPV- 24hs",
+      "parsed": {
+        "ticker": "SUPV",
+        "settlement": "24hs",
+        "rawSymbol": "MERV - XMEV - SUPV- 24hs"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - TGNO4 - 24hs",
+      "parsed": {
+        "ticker": "TGNO4",
+        "settlement": "24hs",
+        "rawSymbol": "MERV - XMEV - TGNO4 - 24hs"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - SPY - 24hs",
+      "parsed": {
+        "ticker": "SPY",
+        "settlement": "24hs",
+        "rawSymbol": "MERV - XMEV - SPY - 24hs"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - GFGC61120C - 24hs",
+      "parsed": {
+        "ticker": "GFGC61120C",
+        "settlement": "24hs",
+        "rawSymbol": "MERV - XMEV - GFGC61120C - 24hs"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - GFGV61050P - CI",
+      "parsed": {
+        "ticker": "GFGV61050P",
+        "settlement": "CI",
+        "rawSymbol": "MERV - XMEV - GFGV61050P - CI"
+      }
+    },
+    {
+      "symbol": "MERV - XMEV - GGAL",
+      "parsed": null
+    },
+    {
+      "symbol": "MERV - XMEV -  - 24hs",
+      "parsed": null
+    },
+    {
+      "symbol": "DLR/NOV26",
+      "parsed": null
+    },
+    {
+      "symbol": "MERV-XMEV-GGAL-24hs",
+      "parsed": {
+        "ticker": "GGAL",
+        "settlement": "24hs",
+        "rawSymbol": "MERV-XMEV-GGAL-24hs"
+      }
+    }
+  ],
+  "selection": {
+    "universeTickers": [
+      "GGAL",
+      "YPFD",
+      "BMA",
+      "PAMP",
+      "BBAR",
+      "SUPV",
+      "TGSU2",
+      "TXAR",
+      "ALUA",
+      "BYMA",
+      "CEPU",
+      "CRES",
+      "EDN",
+      "LOMA",
+      "METR",
+      "MIRG",
+      "TGNO4",
+      "TRAN",
+      "VALO",
+      "SPY",
+      "QQQ",
+      "NVDA",
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "META",
+      "TSLA",
+      "MELI",
+      "KO",
+      "EWZ",
+      "IBIT"
+    ],
+    "optionPrefixes": [
+      "GFGC",
+      "GFGV"
+    ],
+    "instruments": [
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - YPFD - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - BMA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - BBAR - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - SUPV - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TGSU2 - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TXAR - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - ALUA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - BYMA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - CEPU - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - CRES - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - EDN - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - LOMA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - METR - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TGNO4 - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TRAN - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - VALO - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - SPY - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - QQQ - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - NVDA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AAPL - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - MSFT - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AMZN - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - META - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TSLA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - MELI - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - KO - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - EWZ - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - IBIT - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - MIRG - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - 48HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - SPY - SPOT"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGC61120C - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGC61500C - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGV61050P - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGV62000P - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - YPFD61120C - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL61120C - 24hs"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "DLR/NOV26"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "DLR/DIC26"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "DLR/ABR27"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "DLR/NOV26M"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "DLR/SPOT"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "MERV - XMEV - PAMP - 24hs"
+      }
+    ],
+    "expectedProducts": [
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AAPL - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - ALUA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AMZN - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - BBAR - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - BMA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - BYMA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - CEPU - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - CRES - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - EDN - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - EWZ - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGC61120C - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGC61500C - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGV61050P - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GFGV62000P - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - IBIT - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - KO - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - LOMA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - MELI - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - META - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - METR - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - MIRG - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - MSFT - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - NVDA - 24hs"
+      },
+      {
+        "marketId": "ROFX",
+        "symbol": "MERV - XMEV - PAMP - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - QQQ - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - SPY - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - SUPV - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TGNO4 - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TGSU2 - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TRAN - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TSLA - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TXAR - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - VALO - 24hs"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - YPFD - 24hs"
+      }
+    ]
+  },
+  "tickCases": [
+    {
+      "id": "la_trade_updates_cache_and_emits",
+      "frame": {
+        "laPrice": 7195.0,
+        "laSize": 100.0,
+        "laTimeSec": 1795202400,
+        "hasBookUpdate": true,
+        "frameTimeSec": 1795202401
+      },
+      "cache": null,
+      "expected": {
+        "emit": true,
+        "tick": {
+          "price": 7195.0,
+          "size": 100.0,
+          "timeSec": 1795202400
+        },
+        "cache": {
+          "price": 7195.0,
+          "size": 100.0,
+          "timeSec": 1795202400
+        }
+      }
+    },
+    {
+      "id": "book_only_reemits_cached_price_without_volume",
+      "frame": {
+        "laPrice": null,
+        "laSize": null,
+        "laTimeSec": null,
+        "hasBookUpdate": true,
+        "frameTimeSec": 1795202405
+      },
+      "cache": {
+        "price": 7195.0,
+        "size": 100.0,
+        "timeSec": 1795202400
+      },
+      "expected": {
+        "emit": true,
+        "tick": {
+          "price": 7195.0,
+          "size": 0,
+          "timeSec": 1795202405
+        },
+        "cache": {
+          "price": 7195.0,
+          "size": 100.0,
+          "timeSec": 1795202400
+        }
+      }
+    },
+    {
+      "id": "book_only_without_cache_never_emits",
+      "frame": {
+        "laPrice": null,
+        "laSize": null,
+        "laTimeSec": null,
+        "hasBookUpdate": true,
+        "frameTimeSec": 1795202406
+      },
+      "cache": null,
+      "expected": {
+        "emit": false,
+        "tick": null,
+        "cache": null
+      }
+    },
+    {
+      "id": "duplicate_la_frame_is_suppressed",
+      "frame": {
+        "laPrice": 7195.0,
+        "laSize": 100.0,
+        "laTimeSec": 1795202400,
+        "hasBookUpdate": false,
+        "frameTimeSec": 1795202407
+      },
+      "cache": {
+        "price": 7195.0,
+        "size": 100.0,
+        "timeSec": 1795202400
+      },
+      "expected": {
+        "emit": false,
+        "tick": null,
+        "cache": {
+          "price": 7195.0,
+          "size": 100.0,
+          "timeSec": 1795202400
+        }
+      }
+    },
+    {
+      "id": "invalid_la_price_without_book_does_not_emit",
+      "frame": {
+        "laPrice": 0.0,
+        "laSize": null,
+        "laTimeSec": 1795202408,
+        "hasBookUpdate": false,
+        "frameTimeSec": 1795202408
+      },
+      "cache": null,
+      "expected": {
+        "emit": false,
+        "tick": null,
+        "cache": null
+      }
+    },
+    {
+      "id": "la_without_date_uses_frame_timestamp",
+      "frame": {
+        "laPrice": 7198.5,
+        "laSize": null,
+        "laTimeSec": null,
+        "hasBookUpdate": false,
+        "frameTimeSec": 1795202410
+      },
+      "cache": {
+        "price": 7195.0,
+        "size": 100.0,
+        "timeSec": 1795202400
+      },
+      "expected": {
+        "emit": true,
+        "tick": {
+          "price": 7198.5,
+          "size": 0,
+          "timeSec": 1795202410
+        },
+        "cache": {
+          "price": 7198.5,
+          "size": 0,
+          "timeSec": 1795202410
+        }
+      }
+    },
+    {
+      "id": "la_without_any_timestamp_falls_back_to_book_path",
+      "frame": {
+        "laPrice": 7199.0,
+        "laSize": 5.0,
+        "laTimeSec": null,
+        "hasBookUpdate": true,
+        "frameTimeSec": null
+      },
+      "cache": {
+        "price": 7195.0,
+        "size": 100.0,
+        "timeSec": 1795202400
+      },
+      "expected": {
+        "emit": true,
+        "tick": {
+          "price": 7195.0,
+          "size": 0,
+          "timeSec": 1795202400
+        },
+        "cache": {
+          "price": 7195.0,
+          "size": 100.0,
+          "timeSec": 1795202400
+        }
+      }
+    },
+    {
+      "id": "book_only_without_frame_time_reuses_cached_time",
+      "frame": {
+        "laPrice": null,
+        "laSize": null,
+        "laTimeSec": null,
+        "hasBookUpdate": true,
+        "frameTimeSec": null
+      },
+      "cache": {
+        "price": 7200.0,
+        "size": 42.0,
+        "timeSec": 1795202390
+      },
+      "expected": {
+        "emit": true,
+        "tick": {
+          "price": 7200.0,
+          "size": 0,
+          "timeSec": 1795202390
+        },
+        "cache": {
+          "price": 7200.0,
+          "size": 42.0,
+          "timeSec": 1795202390
+        }
+      }
+    },
+    {
+      "id": "negative_la_size_clamps_to_zero",
+      "frame": {
+        "laPrice": 7210.0,
+        "laSize": -3.0,
+        "laTimeSec": 1795202420,
+        "hasBookUpdate": false,
+        "frameTimeSec": 1795202420
+      },
+      "cache": {
+        "price": 7200.0,
+        "size": 42.0,
+        "timeSec": 1795202390
+      },
+      "expected": {
+        "emit": true,
+        "tick": {
+          "price": 7210.0,
+          "size": 0,
+          "timeSec": 1795202420
+        },
+        "cache": {
+          "price": 7210.0,
+          "size": 0,
+          "timeSec": 1795202420
+        }
+      }
+    }
+  ],
+  "bookCases": [
+    {
+      "id": "ggal_24hs_five_levels",
+      "symbol": "MERV - XMEV - GGAL - 24hs",
+      "marketId": "MERV",
+      "frame": {
+        "type": "Md",
+        "timestamp": 1795202400000,
+        "instrumentId": {
+          "marketId": "MERV",
+          "symbol": "MERV - XMEV - GGAL - 24hs"
+        },
+        "marketData": {
+          "BI": [
+            {
+              "price": 7190.0,
+              "size": 1200.0
+            },
+            {
+              "price": 7175.0,
+              "size": 850.0
+            },
+            {
+              "price": 7160.0,
+              "size": 400.0
+            },
+            {
+              "price": 7150.0,
+              "size": 500.0
+            },
+            {
+              "price": 7120.0,
+              "size": 2500.0
+            }
+          ],
+          "OF": [
+            {
+              "price": 7205.0,
+              "size": 600.0
+            },
+            {
+              "price": 7210.0,
+              "size": 700.0
+            },
+            {
+              "price": 7220.0,
+              "size": 900.0
+            },
+            {
+              "price": 7240.0,
+              "size": 1500.0
+            },
+            {
+              "price": 7260.0,
+              "size": 300.0
+            }
+          ],
+          "LA": {
+            "price": 7195.0,
+            "size": 100.0,
+            "date": 1795202399000
+          }
+        }
+      },
+      "expected": {
+        "bestBid": 7190.0,
+        "bestAsk": 7205.0,
+        "mid": 7197.5,
+        "spread": 15.0,
+        "spreadPct": 0.20840569642236886,
+        "bidDepthSize": 5450.0,
+        "askDepthSize": 4000.0,
+        "bidDepthNotional": 38965750.0,
+        "askDepthNotional": 28906000.0,
+        "vwapBid5": 7149.678899082569,
+        "vwapAsk5": 7226.5,
+        "vwapBook5": 7182.195767195767,
+        "obi5": 0.15343915343915343,
+        "orderedBids": [
+          {
+            "price": 7190.0,
+            "size": 1200.0
+          },
+          {
+            "price": 7175.0,
+            "size": 850.0
+          },
+          {
+            "price": 7160.0,
+            "size": 400.0
+          },
+          {
+            "price": 7150.0,
+            "size": 500.0
+          },
+          {
+            "price": 7120.0,
+            "size": 2500.0
+          }
+        ],
+        "orderedAsks": [
+          {
+            "price": 7205.0,
+            "size": 600.0
+          },
+          {
+            "price": 7210.0,
+            "size": 700.0
+          },
+          {
+            "price": 7220.0,
+            "size": 900.0
+          },
+          {
+            "price": 7240.0,
+            "size": 1500.0
+          },
+          {
+            "price": 7260.0,
+            "size": 300.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "gfgc_option_five_levels_unsorted_input",
+      "symbol": "MERV - XMEV - GFGC61120C - 24hs",
+      "marketId": "MERV",
+      "frame": {
+        "type": "Md",
+        "timestamp": 1795202400000,
+        "instrumentId": {
+          "marketId": "MERV",
+          "symbol": "MERV - XMEV - GFGC61120C - 24hs"
+        },
+        "marketData": {
+          "BI": [
+            {
+              "price": 290.0,
+              "size": 5.0
+            },
+            {
+              "price": 295.0,
+              "size": 10.0
+            },
+            {
+              "price": 300.0,
+              "size": 80.0
+            },
+            {
+              "price": 305.0,
+              "size": 25.0
+            },
+            {
+              "price": 310.0,
+              "size": 50.0
+            }
+          ],
+          "OF": [
+            {
+              "price": 340.0,
+              "size": 8.0
+            },
+            {
+              "price": 330.0,
+              "size": 20.0
+            },
+            {
+              "price": 325.0,
+              "size": 60.0
+            },
+            {
+              "price": 320.0,
+              "size": 15.0
+            },
+            {
+              "price": 315.0,
+              "size": 30.0
+            }
+          ],
+          "LA": {
+            "price": 312.0,
+            "size": 10.0,
+            "date": 1795202399000
+          }
+        }
+      },
+      "expected": {
+        "bestBid": 310.0,
+        "bestAsk": 315.0,
+        "mid": 312.5,
+        "spread": 5.0,
+        "spreadPct": 1.6,
+        "bidDepthSize": 170.0,
+        "askDepthSize": 133.0,
+        "bidDepthNotional": 51525.0,
+        "askDepthNotional": 43070.0,
+        "vwapBid5": 303.0882352941176,
+        "vwapAsk5": 323.83458646616543,
+        "vwapBook5": 312.19471947194717,
+        "obi5": 0.12211221122112212,
+        "orderedBids": [
+          {
+            "price": 310.0,
+            "size": 50.0
+          },
+          {
+            "price": 305.0,
+            "size": 25.0
+          },
+          {
+            "price": 300.0,
+            "size": 80.0
+          },
+          {
+            "price": 295.0,
+            "size": 10.0
+          },
+          {
+            "price": 290.0,
+            "size": 5.0
+          }
+        ],
+        "orderedAsks": [
+          {
+            "price": 315.0,
+            "size": 30.0
+          },
+          {
+            "price": 320.0,
+            "size": 15.0
+          },
+          {
+            "price": 325.0,
+            "size": 60.0
+          },
+          {
+            "price": 330.0,
+            "size": 20.0
+          },
+          {
+            "price": 340.0,
+            "size": 8.0
+          }
+        ]
+      }
+    }
+  ]
+}

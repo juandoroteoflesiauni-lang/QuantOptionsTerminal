@@ -127,7 +127,7 @@ export interface ArFeedRuntimeTelemetryInput {
   readonly primaryFuturesLive?: boolean;
   readonly primaryFuturesLastMsgUtcSec?: number | null;
   readonly primaryFuturesCount?: number;
-  readonly primaryEnvironment?: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
+  readonly primaryEnvironment?: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
   readonly bmbConfigured?: boolean;
   readonly bmbConnected?: boolean;
   readonly bmbLastMsgUtcSec?: number | null;
@@ -255,7 +255,7 @@ function defaultHealthEntry(
 
 export interface ArFeedRouterStatusSnapshotExt extends ArFeedRouterStatusSnapshot {
   readonly futuresDlrLive: 'CONNECTED' | 'DISCONNECTED';
-  readonly futuresDlrProvider: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
+  readonly futuresDlrProvider: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null;
   readonly futuresDlrLastMsgUtcSec: number | null;
   readonly futuresDlrCount: number;
 }
@@ -269,7 +269,11 @@ export class ArFeedRouter {
   private futuresDlrLive = false;
   private futuresDlrLastMsgUtcSec: number | null = null;
   private futuresDlrCount = 0;
-  private futuresDlrProvider: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' | null = null;
+  private futuresDlrProvider:
+    | 'PRIMARY_MATRIZ_WS'
+    | 'PRIMARY_ECO_XOMS_WS'
+    | 'PRIMARY_REMARKETS_SANDBOX'
+    | null = null;
 
   public constructor(opts?: {
     readonly config?: ArMarketFeedRouterConfig;

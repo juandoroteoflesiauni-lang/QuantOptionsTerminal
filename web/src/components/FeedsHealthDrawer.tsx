@@ -69,9 +69,13 @@ interface PrimaryFeedDetails {
   readonly authenticated: boolean;
   readonly tokenValidUntilUtcSec: number | null;
   readonly tokenRenewCount: number;
-  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  /** Host REST conectado (p. ej. `api.eco.xoms.com.ar`); sin credenciales. */
+  readonly apiUrl: string;
   readonly dlrSubscribedCount: number;
+  readonly mervSubscribedCount: number;
   readonly liveDlrCount: number;
+  readonly liveMervBookCount: number;
   readonly liveDlrLastUpdateAgeMs: number | null;
 }
 
@@ -436,6 +440,12 @@ function formatUtcSec(value: number | null): string {
   return new Date(value * 1_000).toLocaleTimeString('es-AR', { hour12: false });
 }
 
+/** Host REST del entorno Primary conectado (p. ej. `api.eco.xoms.com.ar`); sin protocolo ni credenciales. */
+function primaryApiHost(apiUrl: string): string {
+  if (typeof apiUrl !== 'string' || apiUrl.trim() === '') return '—';
+  return apiUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '') || '—';
+}
+
 function stateStyles(state: FeedProviderState): { readonly bg: string; readonly text: string; readonly border: string } {
   if (state === 'CONNECTED') {
     return { bg: 'bg-[#0D221E]', text: 'text-[#22C55E]', border: 'border-[#164E3F]' };
@@ -531,8 +541,10 @@ const ProviderCard: React.FC<{
 
       {provider.primary !== undefined && (
         <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
-          <DetailRow label="Entorno / Token" value={`${provider.primary.wsEnvironment} · ${provider.primary.authenticated ? 'OK' : '—'}`} />
-          <DetailRow label="DLR suscriptos / vivos" value={`${String(provider.primary.dlrSubscribedCount)} / ${String(provider.primary.liveDlrCount)}`} />
+          <DetailRow label="Entorno conectado" value={primaryApiHost(provider.primary.apiUrl)} />
+          <DetailRow label="WS / Token" value={`${provider.primary.wsEnvironment} · ${provider.primary.authenticated ? 'OK' : '—'}`} />
+          <DetailRow label="Suscriptos BYMA L2 / ROFEX" value={`${String(provider.primary.mervSubscribedCount)} / ${String(provider.primary.dlrSubscribedCount)}`} />
+          <DetailRow label="Libros L2 activos" value={formatCount(provider.primary.liveMervBookCount + provider.primary.liveDlrCount)} />
           <DetailRow label="Renovaciones token" value={formatCount(provider.primary.tokenRenewCount)} />
           <DetailRow label="Último DLR" value={formatAgeMs(provider.primary.liveDlrLastUpdateAgeMs)} />
         </div>

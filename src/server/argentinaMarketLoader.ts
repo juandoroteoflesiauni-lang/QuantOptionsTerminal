@@ -3519,6 +3519,25 @@ export class ArgentinaMarketRuntime {
       this.usRuntime?.attachGgalArsTickSource?.(this.bmbClient);
     }
 
+    // Eco Valores XOMS: ticks ARS de GGAL (LA/BI/OF) desde el stream L2 de Primary.
+    // Prioridad explícita: cuando el bridge BMB está conectado (L2 vivo) sus trades
+    // alimentan el motor; el tick de Primary solo se aplica con BMB L2 deshabilitado
+    // o desconectado, evitando doble conteo de volumen en la vela ARS.
+    const bmbTickAdapter = this.bmbClient instanceof BmbFeedAdapter ? this.bmbClient : null;
+    this.usRuntime?.attachGgalArsTickSource?.({
+      setGgalArsTickListener: (tickListener) => {
+        this.primaryClient.setGgalArsTickListener((tick) => {
+          if (bmbTickAdapter !== null && bmbTickAdapter.getSafeHealthStatus().connected) {
+            return;
+          }
+          if (tickListener === null) {
+            return;
+          }
+          tickListener(tick);
+        });
+      },
+    });
+
     const ttlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     const quoteTtlResolver = (nowMs: number): number => {
       if (deps.cacheTtlMs !== undefined) return ttlMs;
@@ -3558,7 +3577,7 @@ export class ArgentinaMarketRuntime {
     };
   }
 
-  /** Pieza 33: telemetría real del stream Primary DLR. */
+  /** Pieza 33: telemetría real del stream Primary DLR + L2 BYMA (Eco Valores XOMS). */
   public getPrimaryFeedHealth() {
     const health = this.primaryClient.getSafeHealthStatus();
     const nowMs = this.nowMsFn();
@@ -3569,10 +3588,14 @@ export class ArgentinaMarketRuntime {
       tokenValidUntilUtcSec: health.tokenValidUntilUtcSec,
       tokenRenewCount: health.tokenRenewCount,
       wsEnvironment: health.wsEnvironment,
+      apiUrl: health.apiUrl,
       dlrSubscribedCount: health.dlrSubscribedCount,
       dlrSubscribedSymbols: this.primaryClient.getDlrSubscribedSymbols(),
+      mervSubscribedCount: health.mervSubscribedCount,
+      bymaL2SubscribedSymbols: this.primaryClient.getBymaL2SubscribedSymbols(),
       liveDlrCount: health.liveDlrCount,
       liveDlrLastUpdateUtcSec: health.liveDlrLastUpdateUtcSec,
+      liveMervBookCount: health.liveMervBookCount,
       lastError: health.lastError,
       telemetry: this.primaryClient.getFeedTelemetrySnapshot(nowMs),
     };
@@ -3662,6 +3685,8 @@ export class ArgentinaMarketRuntime {
     ];
     this.realtimeBus.start(symbols);
     void this.primaryClient.startDlrLiveStream().catch(() => undefined);
+    // Stream productivo Eco Valores XOMS: L2 BYMA 5 puntas (MERV) + curva DLR/*.
+    void this.primaryClient.startBymaL2LiveStream().catch(() => undefined);
     const run = async (): Promise<void> => {
       if (!this.liveStreaming || this.liveRefreshInFlight) return;
       const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));

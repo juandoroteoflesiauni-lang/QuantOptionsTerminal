@@ -1,13 +1,27 @@
 /**
- * Conectores reales para Primary API v1.21 (reMarkets / MATBA ROFEX + MERV)
- * y cliente consumidor del puente local Bull Market Brokers (HomeBroker SignalR, broker 153).
+ * Conectores reales para Primary API v1.21 (reMarkets / MATBA ROFEX + MERV,
+ * y entorno productivo Eco Valores XOMS `api.eco.xoms.com.ar`) y cliente
+ * consumidor del puente local Bull Market Brokers (HomeBroker SignalR, broker 153).
+ *
+ * Soporte multi-mercado (Pieza XOMS L2):
+ *  - `PRIMARY_BASE_URL` (default `https://api.remarkets.primary.com.ar`, soporta
+ *    `https://api.eco.xoms.com.ar`); `PRIMARY_WS_URL` se deriva automáticamente
+ *    (`wss://...`) si no está definida.
+ *  - Credenciales `PRIMARY_USERNAME`/`PRIMARY_PASSWORD` con fallback opcional
+ *    `ECO_MATRIZ_USERNAME`/`ECO_MATRIZ_PASSWORD`.
+ *  - Descubrimiento dinámico por `GET /rest/instruments/all`: universo BYMA
+ *    (MERV) — GGAL 24hs/T1 + CI, líderes Merval, CEDEARs y opciones `GFGC`/`GFGV` —
+ *    más la curva `DLR/*` outright (ROFX), suscriptos con `level: 2` y puntas
+ *    BI/OF hasta 5 niveles.
  *
  * Seguridad y Zero Silent Fallbacks:
  *  - Lee credenciales exclusivamente desde `process.env` (o `env` inyectado en tests).
- *  - Nunca hardcodea ni expone `PRIMARY_PASSWORD`, `PRIMARY_USERNAME`, `BMB_PASSWORD`,
+ *  - Nunca hardcodea ni expone `PRIMARY_PASSWORD`, `PRIMARY_USERNAME`,
+ *    `ECO_MATRIZ_USERNAME`, `ECO_MATRIZ_PASSWORD`, `BMB_PASSWORD`,
  *    `BMB_DNI`, `BMB_USERNAME` ni `X-Auth-Token` en respuestas HTTP, WebSocket o logs.
  *  - Toda cadena matemática pura (devaluación directa, TNA/TEA base 365, métricas L2 5 puntas,
- *    TEA de cauciones) vive en funciones puras sin red que devuelven `NaN` si faltan datos.
+ *    TEA de cauciones, decisión de tick ARS de GGAL) vive en funciones puras sin red que
+ *    devuelven `NaN` si faltan datos.
  *  - Si un mercado está cerrado (fin de semana) o falta `pyhomebroker`/`BMB_PASSWORD`,
  *    degrada explícitamente con badges y estados reales sin inventar puntas ni precios.
  */
@@ -43,6 +57,19 @@ export type PrimaryWsFactory = (
   url: string,
   headers: Readonly<Record<string, string>>,
 ) => PrimaryWsLike;
+
+/** Opciones de suscripción WS `smd` (level/entries por grupo de stream). */
+export interface PrimaryWsSubscribeOptions {
+  readonly level?: number;
+  readonly entries?: readonly string[];
+}
+
+interface WsSubscriptionGroup {
+  readonly level: number;
+  readonly entries: readonly string[];
+  readonly depth: number;
+  products: readonly { readonly marketId: string; readonly symbol: string }[];
+}
 
 export interface PrimaryConfig {
   readonly apiUrl: string;
@@ -326,12 +353,14 @@ export interface PrimaryConnectorHealthDto {
   readonly tokenValidUntilUtcSec: number | null;
   readonly tokenRenewCount: number;
   readonly wsConnected: boolean;
-  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX';
   readonly wsLastMessageUtcSec: number | null;
   readonly dlrCount: number;
   readonly liveDlrCount: number;
   readonly liveDlrLastUpdateUtcSec: number | null;
   readonly dlrSubscribedCount: number;
+  readonly mervSubscribedCount: number;
+  readonly liveMervBookCount: number;
   readonly ddfCount: number;
   readonly mervCount: number;
   readonly lastError: string | null;
@@ -382,6 +411,17 @@ const BMB_CACHE_TTL_MS = 8_000;
 const DEFAULT_PRIMARY_MIN_REQUEST_INTERVAL_MS = 350;
 const DEFAULT_PRIMARY_RETRY_429_DELAY_MS = 15_000;
 const PRIMARY_429_BACKOFF_MAX_MS = 60_000;
+
+// Suscripción WS por defecto (stream DLR/*, level 5 con OI/IV/SE).
+const DEFAULT_DLR_SMD_ENTRIES: readonly string[] = ['BI', 'OF', 'LA', 'OI', 'IV', 'SE'];
+// Stream productivo Eco Valores XOMS — L2 BYMA 5 puntas: mensaje `smd` level 2 con
+// entradas BI/OF/LA/OP/CL/SE/HI/LO/NV/OI y puntas hasta `depth` 5 niveles por lado
+// (la profundidad del book es el parámetro `depth` según Primary API v1.21).
+const BYMA_L2_SMD_LEVEL = 2;
+const BYMA_L2_SMD_ENTRIES: readonly string[] = ['BI', 'OF', 'LA', 'OP', 'CL', 'SE', 'HI', 'LO', 'NV', 'OI'];
+const BYMA_L2_SMD_DEPTH = 5;
+// Edad máxima del snapshot WS de MERV para servir el libro L2 en vivo sin REST.
+const LIVE_MERV_WS_MAX_AGE_SEC = 30;
 
 const ROFEX_MONTH_TO_NUM: Readonly<Record<string, number>> = {
   ENE: 1,
@@ -477,18 +517,55 @@ async function defaultPrimaryHttpFn(
 }
 
 /**
- * Lee credenciales Primary exclusivamente desde `env` (`process.env` por defecto).
+ * Deriva la URL WebSocket de Primary a partir de la URL REST: `https://host` ->
+ * `wss://host/` (y `http://` -> `ws://`). Devuelve `null` si la URL no es http(s).
+ */
+export function derivePrimaryWsUrlFromApiUrl(apiUrl: string): string | null {
+  const clean = apiUrl.trim().replace(/\/+$/, '');
+  if (clean === '') {
+    return null;
+  }
+  if (/^https:\/\//i.test(clean)) {
+    return `wss://${clean.slice('https://'.length)}/`;
+  }
+  if (/^http:\/\//i.test(clean)) {
+    return `ws://${clean.slice('http://'.length)}/`;
+  }
+  return null;
+}
+
+function pickEnvValue(env: NodeJS.ProcessEnv, ...keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = (env[key] ?? '').trim();
+    if (value !== '') {
+      return value;
+    }
+  }
+  return '';
+}
+
+/**
+ * Lee la configuración Primary exclusivamente desde `env` (`process.env` por defecto).
+ *
+ * Multi-mercado Eco Valores XOMS: `PRIMARY_BASE_URL` tiene prioridad sobre el legacy
+ * `PRIMARY_API_URL` (default `https://api.remarkets.primary.com.ar`, soporta
+ * `https://api.eco.xoms.com.ar`); `PRIMARY_WS_URL` se deriva automáticamente como
+ * `wss://host/` si no está definida. Credenciales `PRIMARY_USERNAME`/`PRIMARY_PASSWORD`
+ * con fallback opcional `ECO_MATRIZ_USERNAME`/`ECO_MATRIZ_PASSWORD`.
  */
 export function loadPrimaryConfigFromEnv(env: NodeJS.ProcessEnv = process.env): PrimaryConfig {
-  const apiUrl = (env['PRIMARY_API_URL'] ?? DEFAULT_PRIMARY_API_URL).trim().replace(/\/+$/, '');
-  const wsUrl = (env['PRIMARY_WS_URL'] ?? DEFAULT_PRIMARY_WS_URL).trim();
-  const username = (env['PRIMARY_USERNAME'] ?? '').trim();
-  const password = (env['PRIMARY_PASSWORD'] ?? '').trim();
+  const apiRaw = pickEnvValue(env, 'PRIMARY_BASE_URL', 'PRIMARY_API_URL');
+  const apiUrl = (apiRaw !== '' ? apiRaw : DEFAULT_PRIMARY_API_URL).replace(/\/+$/, '');
+  const wsExplicit = pickEnvValue(env, 'PRIMARY_WS_URL');
+  const wsDerived = derivePrimaryWsUrlFromApiUrl(apiUrl);
+  const wsUrl = wsExplicit !== '' ? wsExplicit : (wsDerived ?? DEFAULT_PRIMARY_WS_URL);
+  const username = pickEnvValue(env, 'PRIMARY_USERNAME', 'ECO_MATRIZ_USERNAME');
+  const password = pickEnvValue(env, 'PRIMARY_PASSWORD', 'ECO_MATRIZ_PASSWORD');
   const account = (env['PRIMARY_ACCOUNT'] ?? '').trim();
 
   return {
-    apiUrl: apiUrl || DEFAULT_PRIMARY_API_URL,
-    wsUrl: wsUrl || DEFAULT_PRIMARY_WS_URL,
+    apiUrl,
+    wsUrl,
     username,
     password,
     account,
@@ -546,11 +623,14 @@ export function redactHubQueryCredentials(text: string): string {
 
 /**
  * Recolecta credenciales sensibles (sin incluir etiquetas no secretas como REM22710) para `redactSecrets`.
+ * Incluye las credenciales del entorno productivo Eco Valores XOMS (`ECO_MATRIZ_*`).
  */
 export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env): readonly string[] {
   const names = [
     'PRIMARY_PASSWORD',
     'PRIMARY_USERNAME',
+    'ECO_MATRIZ_PASSWORD',
+    'ECO_MATRIZ_USERNAME',
     'BMB_PASSWORD',
     'BMB_PASS',
     'BMB_DNI',
@@ -931,20 +1011,240 @@ export function parseMervInstrumentSymbol(rawSymbol: string): {
   readonly settlement: string;
   readonly rawSymbol: string;
 } | null {
-  const m = /^MERV\s*-\s*XMEV\s*-\s*([A-Z0-9.]+)\s*-\s*(24HS|CI|48HS|SPOT)$/i.exec(rawSymbol.trim());
+  const m = /^MERV\s*-\s*XMEV\s*-\s*([A-Z0-9.]+)\s*-\s*(24HS|CI|48HS|SPOT|T1)$/i.exec(rawSymbol.trim());
   if (m === null) {
     return null;
   }
   const ticker = m[1]?.toUpperCase() ?? '';
-  const settlement = m[2] ?? '';
-  if (ticker === '' || settlement === '') {
+  const settlementRaw = m[2] ?? '';
+  if (ticker === '' || settlementRaw === '') {
     return null;
   }
+  // `T1` es el alias del plazo normal `24hs` (liquidación T+1) en Eco Valores XOMS.
+  const settlementUpper = settlementRaw.toUpperCase();
+  const settlement = settlementUpper === '24HS' || settlementUpper === 'T1' ? '24hs' : settlementRaw;
   return {
     ticker,
-    settlement: settlement.toUpperCase() === '24HS' ? '24hs' : settlement,
+    settlement,
     rawSymbol,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Universo BYMA L2 (Eco Valores XOMS) — selección pura de productos MERV
+// ---------------------------------------------------------------------------
+
+/** Líderes del Merval suscriptos en L2 (GGAL incluido; plazo normal 24hs/T1 + CI). */
+export const BYMA_L2_MERVAL_TICKERS: readonly string[] = [
+  'GGAL',
+  'YPFD',
+  'BMA',
+  'PAMP',
+  'BBAR',
+  'SUPV',
+  'TGSU2',
+  'TXAR',
+  'ALUA',
+  'BYMA',
+  'CEPU',
+  'CRES',
+  'EDN',
+  'LOMA',
+  'METR',
+  'MIRG',
+  'TGNO4',
+  'TRAN',
+  'VALO',
+];
+
+/** Principales CEDEARs suscriptos en L2. */
+export const BYMA_L2_CEDEAR_TICKERS: readonly string[] = [
+  'SPY',
+  'QQQ',
+  'NVDA',
+  'AAPL',
+  'MSFT',
+  'AMZN',
+  'META',
+  'TSLA',
+  'MELI',
+  'KO',
+  'EWZ',
+  'IBIT',
+];
+
+export const BYMA_L2_UNIVERSE_TICKERS: readonly string[] = [
+  ...BYMA_L2_MERVAL_TICKERS,
+  ...BYMA_L2_CEDEAR_TICKERS,
+];
+
+/** Raíces de opciones activas de Galicia (GGAL): calls `GFGC*` y puts `GFGV*`. */
+export const BYMA_L2_OPTION_PREFIXES: readonly string[] = ['GFGC', 'GFGV'];
+
+export const BYMA_L2_GGAL_TICKER = 'GGAL';
+
+/**
+ * Selecciona los productos BYMA (MERV) a suscribir en el stream L2 de 5 puntas a
+ * partir del catálogo descubierto (`/rest/instruments/all`):
+ *  - Tickers del universo: plazo normal `24hs`/`T1`; para `GGAL` se incluye
+ *    además `CI`. Si un ticker no tiene `24hs`/`T1`, se usa `CI` como fallback
+ *    explícito. Nunca se suscriben `48HS` ni `SPOT`.
+ *  - Opciones activas de Galicia con raíz `GFGC*`/`GFGV*` (mismo orden de
+ *    liquidación preferido).
+ * El `marketId` descubierto se respeta (MERV en producción Eco Valores, ROFX en
+ * reMarkets). La salida es determinista: orden ascendente por símbolo.
+ */
+export function selectBymaL2Products(
+  instruments: readonly DlrInstrumentRef[],
+  options: {
+    readonly universeTickers?: readonly string[];
+    readonly optionPrefixes?: readonly string[];
+  } = {},
+): readonly DlrInstrumentRef[] {
+  const universe = new Set(
+    (options.universeTickers ?? BYMA_L2_UNIVERSE_TICKERS).map((ticker) => ticker.trim().toUpperCase()),
+  );
+  const prefixes = (options.optionPrefixes ?? BYMA_L2_OPTION_PREFIXES).map((prefix) => prefix.trim().toUpperCase());
+
+  const settlementsByTicker = new Map<string, Map<string, string>>();
+  const marketIdBySymbol = new Map<string, string>();
+  for (const instrument of instruments) {
+    const parsed = parseMervInstrumentSymbol(instrument.symbol);
+    if (parsed === null) {
+      continue;
+    }
+    if (parsed.settlement !== '24hs' && parsed.settlement.toUpperCase() !== 'CI') {
+      continue;
+    }
+    let bucket = settlementsByTicker.get(parsed.ticker);
+    if (bucket === undefined) {
+      bucket = new Map<string, string>();
+      settlementsByTicker.set(parsed.ticker, bucket);
+    }
+    if (!bucket.has(parsed.rawSymbol)) {
+      bucket.set(parsed.rawSymbol, parsed.settlement);
+      marketIdBySymbol.set(parsed.rawSymbol, instrument.marketId);
+    }
+  }
+
+  const out: DlrInstrumentRef[] = [];
+  const isOptionTicker = (ticker: string): boolean =>
+    prefixes.some((prefix) => prefix !== '' && ticker.startsWith(prefix));
+  for (const [ticker, settlements] of settlementsByTicker) {
+    const inUniverse = universe.has(ticker);
+    const isOption = isOptionTicker(ticker);
+    if (!inUniverse && !isOption) {
+      continue;
+    }
+    let has24hs = false;
+    for (const settlement of settlements.values()) {
+      if (settlement === '24hs') {
+        has24hs = true;
+        break;
+      }
+    }
+    for (const [rawSymbol, settlement] of settlements) {
+      const isCi = settlement.toUpperCase() === 'CI';
+      const include = isOption
+        ? settlement === '24hs' || (isCi && !has24hs)
+        : settlement === '24hs' || (isCi && (ticker === BYMA_L2_GGAL_TICKER || !has24hs));
+      if (!include) {
+        continue;
+      }
+      out.push({ marketId: marketIdBySymbol.get(rawSymbol) ?? 'MERV', symbol: rawSymbol });
+    }
+  }
+  out.sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Tick ARS de GGAL (vela ARS + CCL implícito `ARS * 10 / ADR`)
+// ---------------------------------------------------------------------------
+
+export interface GgalArsTickFrameInput {
+  /** `marketData.LA.price` del frame `Md` (null si la entry no vino). */
+  readonly laPrice: number | null;
+  /** `marketData.LA.size` del frame `Md` (null si la entry no vino). */
+  readonly laSize: number | null;
+  /** `marketData.LA.date` convertido a segundos UTC (null si no vino). */
+  readonly laTimeSec: number | null;
+  /** true si el frame trajo alguna entry `BI`/`OF` (actualización de puntas). */
+  readonly hasBookUpdate: boolean;
+  /** `timestamp` del frame `Md` convertido a segundos UTC (null si no vino). */
+  readonly frameTimeSec: number | null;
+}
+
+export interface GgalArsTickCache {
+  readonly price: number | null;
+  readonly size: number | null;
+  readonly timeSec: number | null;
+}
+
+export interface GgalArsTickDecision {
+  readonly emit: boolean;
+  readonly tick: { readonly price: number; readonly size: number; readonly timeSec: number } | null;
+  readonly cache: GgalArsTickCache | null;
+}
+
+function isValidPositive(value: number | null): boolean {
+  return value !== null && Number.isFinite(value) && value > 0;
+}
+
+function isValidTickTimeSec(value: number | null): boolean {
+  return value !== null && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Decisión pura de emisión del tick ARS de GGAL ante cada frame `Md`:
+ *  1. `LA` con precio positivo y tiempo ubicable (fecha del trade o timestamp del
+ *     frame): emite el trade con su tamaño real (0 si es inválido) y actualiza la
+ *     caché. Un frame `LA` duplicado (mismo precio y mismo tiempo) se suprime para
+ *     no doble-contar volumen en la vela ARS.
+ *  2. Solo puntas (`BI`/`OF`) con trade previo en caché: re-emite el último precio
+ *     con tamaño 0 (no infla volumen) sellado al tiempo del frame (o al tiempo en
+ *     caché si el frame no trae timestamp).
+ *  3. Sin trade previo ni `LA`: no emite nunca (Zero Silent Fallbacks).
+ */
+export function decideGgalArsTick(
+  frame: GgalArsTickFrameInput,
+  cache: GgalArsTickCache | null,
+): GgalArsTickDecision {
+  const tradeTimeSec = isValidTickTimeSec(frame.laTimeSec)
+    ? frame.laTimeSec
+    : isValidTickTimeSec(frame.frameTimeSec)
+      ? frame.frameTimeSec
+      : null;
+
+  if (isValidPositive(frame.laPrice) && tradeTimeSec !== null) {
+    const laPrice = frame.laPrice as number;
+    const laTimeSec = tradeTimeSec;
+    const size =
+      frame.laSize !== null && Number.isFinite(frame.laSize) && frame.laSize >= 0 ? frame.laSize : 0;
+    if (
+      cache !== null &&
+      cache.price === laPrice &&
+      cache.timeSec === laTimeSec
+    ) {
+      return { emit: false, tick: null, cache };
+    }
+    const nextCache: GgalArsTickCache = { price: laPrice, size, timeSec: laTimeSec };
+    return { emit: true, tick: { price: laPrice, size, timeSec: laTimeSec }, cache: nextCache };
+  }
+
+  if (
+    frame.hasBookUpdate &&
+    cache !== null &&
+    isValidPositive(cache.price) &&
+    isValidTickTimeSec(cache.timeSec)
+  ) {
+    const cachedPrice = cache.price as number;
+    const cachedTimeSec = cache.timeSec as number;
+    const timeSec = isValidTickTimeSec(frame.frameTimeSec) ? (frame.frameTimeSec as number) : cachedTimeSec;
+    return { emit: true, tick: { price: cachedPrice, size: 0, timeSec }, cache };
+  }
+
+  return { emit: false, tick: null, cache };
 }
 
 function parseDepthLevels(raw: unknown): readonly OrderBookLevel[] {
@@ -1086,9 +1386,13 @@ export class PrimaryRofexClient {
   private readonly wsSnapshots = new Map<string, ParsedPrimaryMarketData>();
   private lastError: string | null = null;
 
-  private readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
-  private wsSubscriptions: readonly { readonly marketId: string; readonly symbol: string }[] = [];
-  private wsDepth = 5;
+  private readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  /**
+   * Grupos de suscripción WS `smd`. Cada grupo tiene su propio `level`,
+   * `entries` y `depth` (stream DLR level 5 vs stream BYMA L2 level 2) y
+   * se re-envía completo tras cada reconexión.
+   */
+  private readonly wsGroups = new Map<string, WsSubscriptionGroup>();
   private wsLastMessageAtMs = 0;
   private wsReconnectAttempts = 0;
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1096,6 +1400,7 @@ export class PrimaryRofexClient {
   private tokenRenewTimer: ReturnType<typeof setInterval> | null = null;
   private wsIntentionalClose = false;
   private dlrStreamInFlight: Promise<void> | null = null;
+  private bymaStreamInFlight: Promise<void> | null = null;
   private liveDlrContracts: readonly PrimaryDlrContractDto[] = [];
   private liveDlrLastUpdateUtcSec: number | null = null;
   private referenceSpotA3500: number | null = null;
@@ -1103,6 +1408,11 @@ export class PrimaryRofexClient {
     string,
     { readonly maturityDate: string | null; readonly contractMultiplier: number | null; readonly minPriceIncrement: number | null }
   >();
+  /** Listener del tick ARS de GGAL (vela ARS + CCL implícito hacia ggalSpecialistRuntime). */
+  private ggalArsTickListener:
+    | ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void)
+    | null = null;
+  private ggalArsTickCache: GgalArsTickCache | null = null;
 
   private readonly instrumentListCache: SingleFlightRuntimeCache<readonly { readonly marketId: string; readonly symbol: string }[]>;
   private readonly detailCache: SingleFlightRuntimeCache<InstrumentDetailMetadata | null>;
@@ -1132,9 +1442,11 @@ export class PrimaryRofexClient {
       deps.minRequestIntervalMs ?? (deps.fetchFn !== undefined ? 0 : DEFAULT_PRIMARY_MIN_REQUEST_INTERVAL_MS);
     this.retry429DelayMs =
       deps.retry429DelayMs ?? (deps.fetchFn !== undefined ? 0 : DEFAULT_PRIMARY_RETRY_429_DELAY_MS);
-    this.wsEnvironment = /sandbox/i.test(this.config.wsUrl)
-      ? 'PRIMARY_REMARKETS_SANDBOX'
-      : 'PRIMARY_MATRIZ_WS';
+    this.wsEnvironment = /eco\.xoms/i.test(this.config.wsUrl) || /eco\.xoms/i.test(this.config.apiUrl)
+      ? 'PRIMARY_ECO_XOMS_WS'
+      : /sandbox/i.test(this.config.wsUrl) || /sandbox/i.test(this.config.apiUrl)
+        ? 'PRIMARY_REMARKETS_SANDBOX'
+        : 'PRIMARY_MATRIZ_WS';
 
     const secretSet = new Set<string>(deps.secrets ?? []);
     for (const s of collectBrokerSecretsFromEnv(env)) {
@@ -1521,13 +1833,13 @@ export class PrimaryRofexClient {
         // The reconnect path below owns recovery.
       }
     }
-    if (this.wsSubscriptions.length > 0) {
-      void this.connectAndSubscribeWs(this.wsSubscriptions, this.wsDepth).catch(() => undefined);
+    if (this.wsGroups.size > 0) {
+      void this.openWsAndSubscribeAll().catch(() => undefined);
     }
   }
 
   private scheduleWsReconnect(): void {
-    if (this.wsIntentionalClose || this.wsReconnectTimer !== null || this.wsSubscriptions.length === 0) {
+    if (this.wsIntentionalClose || this.wsReconnectTimer !== null || this.wsGroups.size === 0) {
       return;
     }
     const delayMs = Math.min(
@@ -1537,8 +1849,8 @@ export class PrimaryRofexClient {
     this.wsReconnectAttempts += 1;
     this.wsReconnectTimer = setTimeout(() => {
       this.wsReconnectTimer = null;
-      if (this.wsIntentionalClose || this.wsSubscriptions.length === 0) return;
-      void this.connectAndSubscribeWs(this.wsSubscriptions, this.wsDepth).catch(() => undefined);
+      if (this.wsIntentionalClose || this.wsGroups.size === 0) return;
+      void this.openWsAndSubscribeAll().catch(() => undefined);
     }, delayMs);
     this.wsReconnectTimer.unref();
   }
@@ -1556,19 +1868,47 @@ export class PrimaryRofexClient {
     this.wsHeartbeatTimer.unref();
   }
 
-  /**
-   * Suscripción WebSocket `type: "smd"` con `level: 5` y `depth: 5` hacia Primary,
-   * heartbeat cada 20 s y reconexión exponencial con el mismo token renovado.
-   */
-  public async connectAndSubscribeWs(
+  private groupKey(level: number, entries: readonly string[], depth: number): string {
+    return `${String(level)}|${entries.join(',')}|${String(depth)}`;
+  }
+
+  private buildSmdPayload(group: WsSubscriptionGroup): string {
+    return JSON.stringify({
+      type: 'smd',
+      level: group.level,
+      entries: [...group.entries],
+      products: group.products,
+      depth: group.depth,
+    });
+  }
+
+  /** Unión de productos suscriptos en todos los grupos `smd` activos. */
+  private get wsSubscriptions(): readonly { readonly marketId: string; readonly symbol: string }[] {
+    const out: { readonly marketId: string; readonly symbol: string }[] = [];
+    for (const group of this.wsGroups.values()) {
+      out.push(...group.products);
+    }
+    return out;
+  }
+
+  private areAllSymbolsSubscribed(
     products: readonly { readonly marketId: string; readonly symbol: string }[],
-    depth = 5,
-  ): Promise<void> {
-    if (!this.config.configured || products.length === 0) {
+  ): boolean {
+    if (products.length === 0) {
+      return false;
+    }
+    const subscribed = new Set(this.wsSubscriptions.map((product) => product.symbol));
+    return products.every((product) => subscribed.has(product.symbol));
+  }
+
+  /**
+   * Abre el socket autenticado (`X-Auth-Token` en header) y envía el payload `smd`
+   * de CADA grupo de suscripción (stream DLR level 5 y stream BYMA L2 level 2).
+   */
+  private async openWsAndSubscribeAll(): Promise<void> {
+    if (this.wsGroups.size === 0) {
       return;
     }
-    this.wsSubscriptions = [...products];
-    this.wsDepth = depth;
     this.wsIntentionalClose = false;
     let token: string;
     try {
@@ -1578,18 +1918,7 @@ export class PrimaryRofexClient {
       this.scheduleWsReconnect();
       throw err;
     }
-    const subscribePayload = JSON.stringify({
-      type: 'smd',
-      level: 5,
-      entries: ['BI', 'OF', 'LA', 'OI', 'IV', 'SE'],
-      products,
-      depth,
-    });
-
-    if (this.ws !== null && this.wsConnected && this.ws.readyState === 1) {
-      this.ws.send(subscribePayload);
-      return;
-    }
+    const payloads = [...this.wsGroups.values()].map((group) => this.buildSmdPayload(group));
 
     await new Promise<void>((resolveConn) => {
       let settled = false;
@@ -1615,10 +1944,12 @@ export class PrimaryRofexClient {
           this.wsReconnectAttempts = 0;
           this.lastError = null;
           this.startWsHeartbeat(sock);
-          try {
-            sock.send(subscribePayload);
-          } catch (err: unknown) {
-            this.lastError = this.redact(err instanceof Error ? err.message : String(err));
+          for (const payload of payloads) {
+            try {
+              sock.send(payload);
+            } catch (err: unknown) {
+              this.lastError = this.redact(err instanceof Error ? err.message : String(err));
+            }
           }
           done();
         });
@@ -1656,6 +1987,14 @@ export class PrimaryRofexClient {
                   isValidTick: true,
                 });
                 this.recomputeLiveDlrDerived();
+              }
+              const mervParsed = parseMervInstrumentSymbol(sym);
+              if (
+                mervParsed !== null &&
+                mervParsed.ticker === BYMA_L2_GGAL_TICKER &&
+                mervParsed.settlement === '24hs'
+              ) {
+                this.maybeEmitGgalArsTick(parsed['marketData'], parsed['timestamp']);
               }
             }
           } catch {
@@ -1697,9 +2036,87 @@ export class PrimaryRofexClient {
     });
   }
 
+  /**
+   * Suscripción WebSocket `type: "smd"` con heartbeat cada 20 s y reconexión
+   * exponencial con el mismo token renovado. Por defecto suscribe el stream
+   * DLR (level 5, entries BI/OF/LA/OI/IV/SE); con `options` se registran otros
+   * grupos (p. ej. el stream BYMA L2 level 2 de Eco Valores XOMS) sobre el
+   * mismo socket, y cada grupo se re-envía íntegro tras cada reconexión.
+   */
+  public async connectAndSubscribeWs(
+    products: readonly { readonly marketId: string; readonly symbol: string }[],
+    depth = 5,
+    options?: PrimaryWsSubscribeOptions,
+  ): Promise<void> {
+    if (!this.config.configured || products.length === 0) {
+      return;
+    }
+    const level = options?.level ?? 5;
+    const entries = options?.entries ?? DEFAULT_DLR_SMD_ENTRIES;
+    const key = this.groupKey(level, entries, depth);
+    const existing = this.wsGroups.get(key);
+    const group: WsSubscriptionGroup = existing ?? { level, entries: [...entries], depth, products: [] };
+    group.products = [...products];
+    this.wsGroups.set(key, group);
+    this.wsIntentionalClose = false;
+
+    if (this.ws !== null && this.wsConnected && this.ws.readyState === 1) {
+      this.ws.send(this.buildSmdPayload(group));
+      return;
+    }
+
+    await this.openWsAndSubscribeAll();
+  }
+
+  /**
+   * Stream L2 BYMA 5 puntas (Eco Valores XOMS): mensaje `smd` con `level: 2`,
+   * entries `BI,OF,LA,OP,CL,SE,HI,LO,NV,OI` y puntas hasta 5 niveles por lado.
+   */
+  public async connectAndSubscribeBymaL2(
+    products: readonly { readonly marketId: string; readonly symbol: string }[],
+  ): Promise<void> {
+    await this.connectAndSubscribeWs(products, BYMA_L2_SMD_DEPTH, {
+      level: BYMA_L2_SMD_LEVEL,
+      entries: BYMA_L2_SMD_ENTRIES,
+    });
+  }
+
+  /** Listener del tick ARS de GGAL (LA/BI/OF) para el motor tick del GGAL Specialist. */
+  public setGgalArsTickListener(
+    listener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null,
+  ): void {
+    this.ggalArsTickListener = listener;
+  }
+
+  private maybeEmitGgalArsTick(md: Readonly<Record<string, unknown>>, timestampRaw: unknown): void {
+    const la = parseEntryPriceAndTime(md['LA']);
+    const frameTimeSec = toUtcSecFromMixed(
+      typeof timestampRaw === 'number' && Number.isFinite(timestampRaw) ? timestampRaw : null,
+    );
+    const decision = decideGgalArsTick(
+      {
+        laPrice: la.price,
+        laSize: la.size,
+        laTimeSec: la.utcSec,
+        hasBookUpdate: md['BI'] !== undefined || md['OF'] !== undefined,
+        frameTimeSec,
+      },
+      this.ggalArsTickCache,
+    );
+    this.ggalArsTickCache = decision.cache;
+    if (decision.emit && decision.tick !== null && this.ggalArsTickListener !== null) {
+      try {
+        this.ggalArsTickListener(decision.tick);
+      } catch {
+        // Consumidor aislado: un error del motor tick no rompe el stream L2.
+      }
+    }
+  }
+
   public closeWebSocket(): void {
     this.wsIntentionalClose = true;
-    this.wsSubscriptions = [];
+    this.wsGroups.clear();
+    this.ggalArsTickCache = null;
     this.clearWsSessionTimers();
     if (this.tokenRenewTimer !== null) clearInterval(this.tokenRenewTimer);
     this.tokenRenewTimer = null;
@@ -1822,18 +2239,18 @@ export class PrimaryRofexClient {
     return this.liveDlrLastUpdateUtcSec;
   }
 
-  public getWsEnvironment(): 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX' {
+  public getWsEnvironment(): 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX' {
     return this.wsEnvironment;
   }
 
   /**
    * Descubre contratos DLR/* vigentes y abre el stream `smd` autenticado.
-   * Solo futuros outright `DLR/MMMYY` (sin SPOT, minis, opciones ni pases):
-   * un único mensaje `smd` con todos los productos, sin loops REST por contrato.
-   * Idempotente: no duplica sockets ni suscripciones mientras el WS esté vivo.
+   * Solo futuros outright `DLR/MMMYY` (sin SPOT, minis, opciones ni pases).
+   * Idempotente: no duplica sockets ni suscripciones; si el stream BYMA L2 de
+   * Eco Valores ya cubre toda la curva descubierta, no agrega un segundo grupo.
    */
   public async startDlrLiveStream(): Promise<void> {
-    if (!this.config.configured || this.wsConnected) return;
+    if (!this.config.configured) return;
     if (this.dlrStreamInFlight !== null) return this.dlrStreamInFlight;
     const run = async (): Promise<void> => {
       const discovered = await this.discoverDlrInstruments(false);
@@ -1847,12 +2264,53 @@ export class PrimaryRofexClient {
         (symbol) => this.dlrDetailBySymbol.get(symbol)?.maturityDate ?? null,
       );
       if (products.length === 0) return;
+      if (this.areAllSymbolsSubscribed(products)) return;
       await this.connectAndSubscribeWs(products, 5);
     };
     this.dlrStreamInFlight = run().finally(() => {
       this.dlrStreamInFlight = null;
     });
     return this.dlrStreamInFlight;
+  }
+
+  /**
+   * Stream productivo Eco Valores XOMS — L2 BYMA 5 puntas + curva ROFEX.
+   *
+   * Descubre dinámicamente por `GET /rest/instruments/all`:
+   *  - BYMA (MERV): GGAL plazo normal `24hs`/`T1` + `CI`, líderes del Merval,
+   *    principales CEDEARs y opciones activas `GFGC*`/`GFGV*`.
+   *  - ROFX: toda la curva outright `DLR/MMMYY` vigente.
+   * y los suscribe en un único mensaje `smd` level 2 con puntas BI/OF hasta 5
+   * niveles por lado. Idempotente (single-flight + cobertura por símbolo).
+   */
+  public async startBymaL2LiveStream(): Promise<void> {
+    if (!this.config.configured) return;
+    if (this.bymaStreamInFlight !== null) return this.bymaStreamInFlight;
+    const run = async (): Promise<void> => {
+      const catalog = await this.getAllInstruments(false);
+      const mervProducts = selectBymaL2Products(catalog);
+      const todayUtc = new Date(this.nowMsFn()).toISOString().slice(0, 10).replace(/-/g, '');
+      const dlrProducts = filterDlrOutrightProducts(
+        catalog,
+        todayUtc,
+        (symbol) => this.dlrDetailBySymbol.get(symbol)?.maturityDate ?? null,
+      );
+      const merged = new Map<string, { readonly marketId: string; readonly symbol: string }>();
+      for (const product of [...mervProducts, ...dlrProducts]) {
+        const key = `${product.marketId}:${product.symbol}`;
+        if (!merged.has(key)) {
+          merged.set(key, product);
+        }
+      }
+      const products = [...merged.values()].sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+      if (products.length === 0) return;
+      if (this.areAllSymbolsSubscribed(products)) return;
+      await this.connectAndSubscribeBymaL2(products);
+    };
+    this.bymaStreamInFlight = run().finally(() => {
+      this.bymaStreamInFlight = null;
+    });
+    return this.bymaStreamInFlight;
   }
 
   /**
@@ -2027,12 +2485,32 @@ export class PrimaryRofexClient {
         return null;
       }
 
-      const md = await this.getMarketData(
-        preferred.item.symbol,
-        preferred.item.marketId,
-        5,
-        forceRefresh,
-      );
+      // Fast path en vivo: con el stream L2 BYMA conectado, el snapshot WS `Md`
+      // más reciente alimenta la 5 puntas sin REST (ggalSpecialistRuntime y
+      // StockDetailView la consumen con prioridad cuando BMB L2 está deshabilitado).
+      const nowSecForWs = Math.floor(this.nowMsFn() / 1_000);
+      const liveSnap =
+        this.wsSnapshots.get(`${preferred.item.marketId}:${preferred.item.symbol}`) ?? null;
+      const liveSnapFresh =
+        liveSnap !== null &&
+        liveSnap.updatedAtUtcSec !== null &&
+        liveSnap.updatedAtUtcSec > 0 &&
+        nowSecForWs >= liveSnap.updatedAtUtcSec &&
+        nowSecForWs - liveSnap.updatedAtUtcSec <= LIVE_MERV_WS_MAX_AGE_SEC &&
+        (liveSnap.bids.length > 0 || liveSnap.asks.length > 0 || liveSnap.last !== null);
+
+      let md: ParsedPrimaryMarketData | null = null;
+      if (liveSnapFresh) {
+        // `liveSnapFresh` (alias const de la condición) ya angosta liveSnap a no-null (TS 4.4+).
+        md = liveSnap;
+      } else {
+        md = await this.getMarketData(
+          preferred.item.symbol,
+          preferred.item.marketId,
+          5,
+          forceRefresh,
+        );
+      }
       if (md === null) {
         return null;
       }
@@ -2254,10 +2732,30 @@ export class PrimaryRofexClient {
       liveDlrCount: this.liveDlrContracts.filter((contract) => contract.category !== 'SPOT').length,
       liveDlrLastUpdateUtcSec: this.liveDlrLastUpdateUtcSec,
       dlrSubscribedCount: this.wsSubscriptions.filter((item) => item.symbol.startsWith('DLR/')).length,
+      mervSubscribedCount: this.wsSubscriptions.filter(
+        (item) => parseMervInstrumentSymbol(item.symbol) !== null,
+      ).length,
+      liveMervBookCount: this.countLiveMervBooks(),
       ddfCount: this.cachedCounts.ddf,
       mervCount: this.cachedCounts.merv,
       lastError: this.lastError !== null ? this.redact(this.lastError) : null,
     };
+  }
+
+  /** Libros MERV con puntas vivas en los snapshots WS (`Md`). */
+  private countLiveMervBooks(): number {
+    let count = 0;
+    for (const [key, snap] of this.wsSnapshots) {
+      const separator = key.indexOf(':');
+      const symbol = separator >= 0 ? key.slice(separator + 1) : key;
+      if (parseMervInstrumentSymbol(symbol) === null) {
+        continue;
+      }
+      if (snap.bids.length > 0 || snap.asks.length > 0) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   public getDlrSubscribedSymbols(): readonly string[] {
@@ -2266,16 +2764,22 @@ export class PrimaryRofexClient {
       .map((item) => item.symbol);
   }
 
+  public getBymaL2SubscribedSymbols(): readonly string[] {
+    return this.wsSubscriptions
+      .filter((item) => parseMervInstrumentSymbol(item.symbol) !== null)
+      .map((item) => item.symbol);
+  }
+
   public getFeedTelemetrySnapshot(nowMs: number): FeedTelemetrySnapshot {
     return this.wsTelemetry.snapshot(nowMs);
   }
 
-  /** Pieza 33: fuerza token nuevo + reapertura del stream `smd` DLR. */
+  /** Pieza 33: fuerza token nuevo + reapertura de todos los streams `smd` activos. */
   public async reconnectDlrLiveStream(): Promise<void> {
     if (!this.config.configured) {
       throw new Error('PRIMARY_USERNAME / PRIMARY_PASSWORD not configured');
     }
-    const products = [...this.wsSubscriptions];
+    const hasGroups = this.wsGroups.size > 0;
     this.wsIntentionalClose = true;
     this.clearWsSessionTimers();
     if (this.wsReconnectTimer !== null) {
@@ -2293,11 +2797,12 @@ export class PrimaryRofexClient {
       }
     }
     await this.getAuthToken(true);
-    this.wsIntentionalClose = false;
-    if (products.length > 0) {
-      await this.connectAndSubscribeWs(products, this.wsDepth);
+    if (hasGroups) {
+      // Reabre el socket y re-envía cada grupo con su propio payload (DLR level 5 + BYMA L2 level 2).
+      await this.openWsAndSubscribeAll();
       return;
     }
+    this.wsIntentionalClose = false;
     await this.startDlrLiveStream();
   }
 }

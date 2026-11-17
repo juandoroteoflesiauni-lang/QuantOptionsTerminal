@@ -321,9 +321,13 @@ export interface PrimaryFeedDetails {
   readonly authenticated: boolean;
   readonly tokenValidUntilUtcSec: number | null;
   readonly tokenRenewCount: number;
-  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  /** Host REST conectado (p. ej. `api.eco.xoms.com.ar`); sin credenciales. */
+  readonly apiUrl: string;
   readonly dlrSubscribedCount: number;
+  readonly mervSubscribedCount: number;
   readonly liveDlrCount: number;
+  readonly liveMervBookCount: number;
   readonly liveDlrLastUpdateAgeMs: number | null;
 }
 
@@ -627,8 +631,14 @@ export interface PrimaryFeedHealthSource {
   readonly wsConnected: boolean;
   readonly tokenValidUntilUtcSec: number | null;
   readonly tokenRenewCount: number;
-  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_REMARKETS_SANDBOX';
+  readonly wsEnvironment: 'PRIMARY_MATRIZ_WS' | 'PRIMARY_ECO_XOMS_WS' | 'PRIMARY_REMARKETS_SANDBOX';
   readonly dlrSubscribedCount: number;
+  /** Instrumentos BYMA (MERV) suscriptos al stream L2 de 5 puntas. */
+  readonly mervSubscribedCount?: number;
+  /** Libros MERV con puntas vivas en los snapshots WS. */
+  readonly liveMervBookCount?: number;
+  /** Host REST conectado (p. ej. `api.eco.xoms.com.ar`); sin credenciales. */
+  readonly apiUrl?: string;
   readonly liveDlrCount: number;
   readonly liveDlrLastUpdateUtcSec: number | null;
   readonly lastError: string | null;
@@ -821,14 +831,14 @@ export class FeedsHealthMonitor {
       ...commonProvider({
         id: 'PRIMARY_REMARKETS_DLR',
         region: 'AR',
-        role: 'Futuros DLR/* outright',
+        role: 'Futuros DLR/* outright + BYMA L2 5 Puntas',
         configured: primary.configured,
         connected: primary.authenticated && primary.wsConnected,
         sessionMode: arSession,
         telemetry: primary.telemetry,
         latencyKind: 'PROVIDER_EVENT_AGE',
         lastError: primary.lastError,
-        activeSymbolCount: primary.dlrSubscribedCount,
+        activeSymbolCount: primary.dlrSubscribedCount + (primary.mervSubscribedCount ?? 0),
         subscribedSymbols: [],
         reconnectable: true,
         nowMs,
@@ -839,8 +849,11 @@ export class FeedsHealthMonitor {
         tokenValidUntilUtcSec: primary.tokenValidUntilUtcSec,
         tokenRenewCount: primary.tokenRenewCount,
         wsEnvironment: primary.wsEnvironment,
+        apiUrl: primary.apiUrl ?? '',
         dlrSubscribedCount: primary.dlrSubscribedCount,
+        mervSubscribedCount: primary.mervSubscribedCount ?? 0,
         liveDlrCount: primary.liveDlrCount,
+        liveMervBookCount: primary.liveMervBookCount ?? 0,
         liveDlrLastUpdateAgeMs: ageMsFrom(
           primary.liveDlrLastUpdateUtcSec === null ? null : primary.liveDlrLastUpdateUtcSec * 1_000,
           nowMs,
