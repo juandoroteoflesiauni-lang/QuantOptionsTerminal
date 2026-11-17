@@ -6,12 +6,14 @@ and BYMA options (`on_options`) on `127.0.0.1:8788` (configurable via env).
 
 Zero Silent Fallbacks & Security Rules:
 - Reads credentials exclusively from `os.environ` (`BMB_BROKER_ID`, `BMB_DNI`,
-  `BMB_USERNAME`/`BMB_USER`, `BMB_PASSWORD`, `BMB_ACCOUNT`, `BMB_SESSION_COOKIE`).
+  `BMB_USERNAME`/`BMB_USER`, `BMB_PASSWORD`, `BMB_ACCOUNT`, `BMB_SESSION_COOKIE`,
+  `BMB_HUB_TOKEN`).
 - `BMB_DNI` is cleaned to digits only (`re.sub(r"\\D", "", dni)`); `BMB_USER`
   and `BMB_PASSWORD` are read from `os.environ` without content alterations.
 - Never logs or returns `BMB_PASSWORD`, `BMB_DNI`, `BMB_USERNAME`,
-  `BMB_SESSION_COOKIE` (or any other credential) in HTTP responses or logs;
-  scrubs sensitive tokens from all error messages.
+  `BMB_SESSION_COOKIE`, `BMB_HUB_TOKEN` (or any other credential) in HTTP
+  responses or logs; scrubs sensitive tokens from all error messages and strips
+  `?token=`/`?id=` query values from any diagnostic text.
 - If `pyhomebroker` is not installed, degrades cleanly with `MISSING_DEPENDENCY`.
 - If `BMB_PASSWORD` is empty, degrades cleanly with `DISABLED_NO_PASSWORD`.
 - A pyhomebroker login failure is classified explicitly: a two-factor challenge
@@ -344,6 +346,9 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
     # redacta; jamás se loguea ni se expone.
     raw_session_cookie = environ.get("BMB_SESSION_COOKIE") or ""
     session_cookie = raw_session_cookie.strip()
+    # Token del hub ASP.NET Core SignalR (opcional): solo se lee y se redacta.
+    raw_hub_token = environ.get("BMB_HUB_TOKEN") or ""
+    hub_token = raw_hub_token.strip()
     host = (environ.get("BMB_BRIDGE_HOST") or DEFAULT_HOST).strip() or DEFAULT_HOST
     try:
         port = int((environ.get("BMB_BRIDGE_PORT") or str(DEFAULT_PORT)).strip())
@@ -365,6 +370,8 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
                 raw_dni,
                 raw_session_cookie,
                 session_cookie,
+                raw_hub_token,
+                hub_token,
             )
             if s
         )
@@ -376,6 +383,7 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
         "password": password,
         "account": account,
         "session_cookie": session_cookie,
+        "hub_token": hub_token,
         "host": host,
         "port": port,
         "leaders": leaders,
@@ -700,6 +708,51 @@ class BmbBridgeState:
                 pass
         with self._lock:
             self._connected = False
+
+    def ingest_l2_records(self, records: list[dict[str, Any]]) -> int:
+        """Ingiere registros L2 mapeados (5 puntas) en el estado del bridge.
+
+        Solo los plazos `24hs` alimentan la escalera productiva (misma regla que
+        la escalera pyhomebroker); `CI` se descarta para la escalera. Devuelve
+        la cantidad de libros almacenados. Los registros provienen del conector
+        SignalR Core (`tools/bmb_inversiones_signalr.py`).
+        """
+        now_sec = int(time.time())
+        stored = 0
+        with self._lock:
+            for record in records:
+                symbol = str(record.get("symbol") or "").strip().upper()
+                if not symbol or record.get("settlement") != "24hs":
+                    continue
+                raw_bids = record.get("bids") if isinstance(record.get("bids"), list) else []
+                raw_asks = record.get("asks") if isinstance(record.get("asks"), list) else []
+                if not raw_bids and not raw_asks:
+                    continue
+                as_of = record.get("asOfUtcSec")
+                as_of_sec = (
+                    int(as_of)
+                    if isinstance(as_of, (int, float)) and not isinstance(as_of, bool) and as_of > 0
+                    else now_sec
+                )
+                self._order_books[symbol] = {
+                    "symbol": symbol,
+                    "settlement": "24hs",
+                    "bids": [dict(level) for level in raw_bids][:5],
+                    "asks": [dict(level) for level in raw_asks][:5],
+                    "asOfUtcSec": as_of_sec,
+                    "source": "BMB_HOMEBROKER",
+                }
+                stored += 1
+            if stored:
+                self._connected = True
+                self._last_update_sec = now_sec
+                self._error = None
+                book = self._order_books.get("GGAL")
+                if book and book["bids"] and book["asks"]:
+                    self._status = "CONNECTED_L2"
+                elif self._status not in {"ERROR", BMB_STANDBY_2FA_STATUS}:
+                    self._status = "READY"
+        return stored
 
     def get_health(self) -> dict[str, Any]:
         with self._lock:

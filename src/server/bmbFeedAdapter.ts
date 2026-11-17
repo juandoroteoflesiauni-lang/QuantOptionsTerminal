@@ -3,10 +3,15 @@
  *
  * Security / Zero Silent Fallbacks:
  * - credentials are read only from process.env and forwarded only to the local child
- *   (including the optional trusted-device `BMB_SESSION_COOKIE`);
- * - no credential (password, DNI, user, account or session cookie), child
- *   stdout/stderr, or request payload is logged; every credential alias is part
- *   of the redaction secret list;
+ *   (including the optional trusted-device `BMB_SESSION_COOKIE` and hub token
+ *   `BMB_HUB_TOKEN` for the ASP.NET Core SignalR connector, Pieza 38);
+ * - no credential (password, DNI, user, account, session cookie or hub token),
+ *   child stdout/stderr, or request payload is logged; every credential alias is
+ *   part of the redaction secret list and `?token=`/`?id=` query values are
+ *   sanitized out of any diagnostic text before it reaches logs or `lastError`;
+ * - with `BMB_HUB_TOKEN` or `BMB_SESSION_COOKIE` present, the adapter starts
+ *   `tools/bmb_inversiones_signalr.py` (SignalR Core 5-puntas L2) instead of the
+ *   legacy pyhomebroker flow, consuming its stdout JSONL `L2_UPDATE` events live;
  * - polls are globally single-flight and separated by at least 1.5 seconds;
  * - outside 11:00–17:00 ART (Mon–Fri), no cached book is exposed as live;
  * - authentication/dependency/network failures remain explicit for Data912 EOD routing.
@@ -22,12 +27,15 @@ import type {
 } from '../core/ggal/l2AndRegimeEngines.js';
 import {
   BmbBridgeClient,
+  isBmbInversionesSignalRConfigured,
   loadBmbConfigFromEnv,
+  redactHubQueryCredentials,
   type BmbBridgeBookEntry,
   type BmbBridgeClientDeps,
   type BmbBridgeSnapshotDto,
   type BmbConnectorHealthDto,
   type BmbTradeRowDto,
+  type OrderBookLevel,
 } from './primaryRofexLoader.js';
 import { redactSecrets } from './runtimeCache.js';
 import {
@@ -73,7 +81,126 @@ export function isBymaL2SessionUtcSec(utcSec: number): boolean {
   return parts.weekday >= 1 && parts.weekday <= 5 && parts.minutesOfDay >= 11 * 60 && parts.minutesOfDay < 17 * 60;
 }
 
+/** Conector SignalR Core (Pieza 38) vs flujo legacy `pyhomebroker`. */
+export const BMB_SIGNALR_SCRIPT = 'tools/bmb_inversiones_signalr.py';
+export const BMB_LEGACY_SCRIPT = 'tools/bmb_bridge.py';
+
+/**
+ * Con `BMB_HUB_TOKEN` o `BMB_SESSION_COOKIE` presentes se inicia el conector
+ * SignalR Core (`tools/bmb_inversiones_signalr.py`) en lugar del flujo legacy.
+ */
+export function resolveBmbBridgeScriptPath(env: NodeJS.ProcessEnv): string {
+  return isBmbInversionesSignalRConfigured(env) ? BMB_SIGNALR_SCRIPT : BMB_LEGACY_SCRIPT;
+}
+
+function parseLiveL2Level(value: unknown): OrderBookLevel | null {
+  if (!isPlainRecord(value)) return null;
+  const price = value['price'];
+  const size = value['size'];
+  const rawOrderCount = value['orderCount'];
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return null;
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return null;
+  const orderCount =
+    typeof rawOrderCount === 'number' && Number.isFinite(rawOrderCount) && rawOrderCount >= 0
+      ? rawOrderCount
+      : null;
+  return { price, size, orderCount };
+}
+
+function parseLiveL2Levels(value: unknown): readonly OrderBookLevel[] {
+  if (!Array.isArray(value)) return [];
+  const levels: OrderBookLevel[] = [];
+  for (const item of value) {
+    const level = parseLiveL2Level(item);
+    if (level !== null) {
+      levels.push(level);
+    }
+  }
+  return levels;
+}
+
+/**
+ * Ingiere un evento JSONL `{"event":"L2_UPDATE","record":{...}}` emitido por el
+ * conector SignalR Core. Puro: devuelve los libros originales ante cualquier
+ * registro inválido (JSON malformado, evento desconocido, CI, libro vacío);
+ * ordena por precio y trunca a 5 puntas antes de almacenar.
+ */
+export function ingestLiveL2Record(
+  parsed: unknown,
+  books: Readonly<Record<string, BmbBridgeBookEntry>>,
+): Readonly<Record<string, BmbBridgeBookEntry>> {
+  if (!isPlainRecord(parsed) || parsed['event'] !== 'L2_UPDATE' || !isPlainRecord(parsed['record'])) {
+    return books;
+  }
+  const record = parsed['record'];
+  const symbol = typeof record['symbol'] === 'string' ? record['symbol'].trim().toUpperCase() : '';
+  if (symbol === '' || record['settlement'] !== '24hs') {
+    return books;
+  }
+  const bids = parseLiveL2Levels(record['bids']);
+  const asks = parseLiveL2Levels(record['asks']);
+  if (bids.length === 0 && asks.length === 0) {
+    return books;
+  }
+  const rawAsOf = record['asOfUtcSec'];
+  const asOfUtcSec =
+    typeof rawAsOf === 'number' && Number.isInteger(rawAsOf) && rawAsOf > 0 ? rawAsOf : null;
+  const entry: BmbBridgeBookEntry = {
+    symbol,
+    settlement: '24hs',
+    bids: [...bids].sort((a, b) => b.price - a.price).slice(0, 5),
+    asks: [...asks].sort((a, b) => a.price - b.price).slice(0, 5),
+    asOfUtcSec,
+    source: 'BMB_HOMEBROKER',
+  };
+  return { ...books, [symbol]: entry };
+}
+
+/** Variante por línea de stdout JSONL (ignora líneas no-JSON). */
+export function ingestLiveL2Line(
+  line: string,
+  books: Readonly<Record<string, BmbBridgeBookEntry>>,
+): Readonly<Record<string, BmbBridgeBookEntry>> {
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return books;
+  }
+  return ingestLiveL2Record(parsed, books);
+}
+
+/**
+ * Fusiona los libros L2 vivos (stdout JSONL) en el snapshot polled por HTTP:
+ * cada símbolo toma la entrada más reciente por `asOfUtcSec` (empate -> live).
+ */
+export function mergeLiveL2IntoSnapshot(
+  snapshot: BmbBridgeSnapshotDto,
+  liveBooks: Readonly<Record<string, BmbBridgeBookEntry>>,
+): BmbBridgeSnapshotDto {
+  const liveKeys = Object.keys(liveBooks);
+  if (liveKeys.length === 0) {
+    return snapshot;
+  }
+  let changed = false;
+  const merged: Record<string, BmbBridgeBookEntry> = { ...snapshot.orderBooksBySymbol };
+  for (const key of liveKeys) {
+    const live = liveBooks[key];
+    const existing = merged[key];
+    if (live === undefined) continue;
+    if (existing === undefined || (live.asOfUtcSec ?? 0) >= (existing.asOfUtcSec ?? 0)) {
+      merged[key] = live;
+      changed = true;
+    }
+  }
+  return changed ? { ...snapshot, orderBooksBySymbol: merged } : snapshot;
+}
+
 export function isBmbFeedConfigured(env: NodeJS.ProcessEnv): boolean {
+  // Modo conector SignalR Core: BMB_HUB_TOKEN o BMB_SESSION_COOKIE bastan.
+  if (isBmbInversionesSignalRConfigured(env)) {
+    return true;
+  }
   const cfg = loadBmbConfigFromEnv(env);
   const rawBroker = env['BMB_BROKER_ID']?.trim() ?? '';
   const brokerId = Number(rawBroker);
@@ -231,6 +358,8 @@ export class BmbFeedAdapter {
   private liveLoopRunning = false;
   private liveLoopSymbols: readonly string[] = [];
   private nextPrimeIndex = 0;
+  private readonly signalRMode: boolean;
+  private liveL2Books: Readonly<Record<string, BmbBridgeBookEntry>> = {};
   private readonly httpTelemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
   });
@@ -245,8 +374,10 @@ export class BmbFeedAdapter {
     this.manageProcess = deps.manageProcess ?? this.env['BMB_BRIDGE_URL'] === undefined;
     this.spawnFn = deps.spawnFn ?? spawn;
     this.pythonBinary = deps.pythonBinary ?? this.env['BMB_PYTHON_BIN']?.trim() ?? 'python';
-    this.bridgeScriptPath = deps.bridgeScriptPath ?? resolve(process.cwd(), 'tools/bmb_bridge.py');
+    this.bridgeScriptPath =
+      deps.bridgeScriptPath ?? resolve(process.cwd(), resolveBmbBridgeScriptPath(this.env));
     const cfg = loadBmbConfigFromEnv(this.env);
+    this.signalRMode = isBmbInversionesSignalRConfigured(this.env);
     this.configured = isBmbFeedConfigured(this.env);
     this.secrets = [
       cfg.password,
@@ -254,13 +385,30 @@ export class BmbFeedAdapter {
       cfg.username,
       cfg.account,
       cfg.sessionCookie,
+      cfg.hubToken,
     ].filter((s) => s !== '');
     this.lastHealth = {
       ...this.delegate.getSafeHealthStatus(),
-      status: cfg.password === '' ? 'DISABLED_NO_PASSWORD' : this.configured ? 'OFFLINE' : 'ERROR',
+      status: this.signalRMode
+        ? 'OFFLINE'
+        : cfg.password === ''
+          ? 'DISABLED_NO_PASSWORD'
+          : this.configured
+            ? 'OFFLINE'
+            : 'ERROR',
       connected: false,
-      error: cfg.password !== '' && !this.configured ? 'INVALID_BMB_CONFIGURATION' : null,
+      error:
+        this.signalRMode || cfg.password === ''
+          ? null
+          : this.configured
+            ? null
+            : 'INVALID_BMB_CONFIGURATION',
     };
+  }
+
+  /** Redacción completa: secretos de env + valores `?token=`/`?id=` de query. */
+  private sanitizeError(message: string): string {
+    return redactHubQueryCredentials(redactSecrets(message, this.secrets));
   }
 
   private outOfSessionHealth(): BmbConnectorHealthDto {
@@ -300,7 +448,7 @@ export class BmbFeedAdapter {
       try {
         await pending;
       } catch (err: unknown) {
-        this.processError = redactSecrets(err instanceof Error ? err.message : String(err), this.secrets);
+        this.processError = this.sanitizeError(err instanceof Error ? err.message : String(err));
         if (this.processReady === pending) {
           this.processReady = null;
         }
@@ -313,7 +461,7 @@ export class BmbFeedAdapter {
     try {
       endpoint = this.bridgeHostAndPort();
     } catch (err: unknown) {
-      this.processError = redactSecrets(err instanceof Error ? err.message : String(err), this.secrets);
+      this.processError = this.sanitizeError(err instanceof Error ? err.message : String(err));
       return;
     }
 
@@ -330,6 +478,7 @@ export class BmbFeedAdapter {
       BMB_PASSWORD: cfg.password,
       BMB_ACCOUNT: cfg.account,
       ...(cfg.sessionCookie !== '' ? { BMB_SESSION_COOKIE: cfg.sessionCookie } : {}),
+      ...(cfg.hubToken !== '' ? { BMB_HUB_TOKEN: cfg.hubToken } : {}),
       ...(this.env['BMB_LEADERS'] !== undefined ? { BMB_LEADERS: this.env['BMB_LEADERS'] } : {}),
       BMB_BRIDGE_HOST: endpoint.host,
       BMB_BRIDGE_PORT: String(endpoint.port),
@@ -347,7 +496,7 @@ export class BmbFeedAdapter {
         },
       );
     } catch (err: unknown) {
-      this.processError = redactSecrets(err instanceof Error ? err.message : String(err), this.secrets);
+      this.processError = this.sanitizeError(err instanceof Error ? err.message : String(err));
       return;
     }
 
@@ -382,6 +531,13 @@ export class BmbFeedAdapter {
             const parsed: unknown = JSON.parse(line);
             if (isPlainRecord(parsed) && parsed['event'] === 'LISTENING') {
               finish(null);
+              continue;
+            }
+            // JSONL L2_UPDATE del conector SignalR Core: ingesta en vivo de las
+            // 5 puntas sin esperar el poll HTTP (líneas inválidas se ignoran).
+            const updated = ingestLiveL2Record(parsed, this.liveL2Books);
+            if (updated !== this.liveL2Books) {
+              this.liveL2Books = updated;
             }
           } catch {
             // Never forward child output to logs; malformed/non-JSON output is ignored.
@@ -390,13 +546,13 @@ export class BmbFeedAdapter {
       });
       child.stderr?.setEncoding('utf8');
       child.stderr?.on('data', (chunk: unknown) => {
-        const safe = redactSecrets(String(chunk), this.secrets).trim().slice(0, 1_000);
+        const safe = this.sanitizeError(String(chunk)).trim().slice(0, 1_000);
         if (safe !== '') {
           this.processError = safe;
         }
       });
       child.once('error', (err) => {
-        finish(new Error(redactSecrets(err.message, this.secrets)));
+        finish(new Error(this.sanitizeError(err.message)));
       });
       child.once('exit', (code) => {
         if (this.child === child) {
@@ -410,7 +566,7 @@ export class BmbFeedAdapter {
     try {
       await this.processReady;
     } catch (err: unknown) {
-      this.processError = redactSecrets(err instanceof Error ? err.message : String(err), this.secrets);
+      this.processError = this.sanitizeError(err instanceof Error ? err.message : String(err));
       this.processReady = null;
       this.stopProcess();
     }
@@ -418,11 +574,13 @@ export class BmbFeedAdapter {
 
   private normalizeSnapshot(snapshot: BmbBridgeSnapshotDto): BmbBridgeSnapshotDto {
     const ggal = snapshot.orderBooksBySymbol['GGAL'];
+    const liveGgal = this.liveL2Books['GGAL'];
+    const ggalBook = liveGgal ?? ggal;
     const hasConnectedL2 =
       snapshot.health.connected &&
-      ggal !== undefined &&
-      ggal.bids.length > 0 &&
-      ggal.asks.length > 0;
+      ggalBook !== undefined &&
+      ggalBook.bids.length > 0 &&
+      ggalBook.asks.length > 0;
     const status: BmbConnectorHealthDto['status'] = hasConnectedL2
       ? 'CONNECTED_L2'
       : this.processError !== null && !snapshot.health.connected
@@ -432,16 +590,22 @@ export class BmbFeedAdapter {
       ...snapshot.health,
       status,
       connected: status === 'READY' || status === 'CONNECTED_L2',
-      error: this.processError !== null && !snapshot.health.connected
-        ? redactSecrets(this.processError, this.secrets)
-        : snapshot.health.error,
+      error:
+        this.processError !== null && !snapshot.health.connected
+          ? this.sanitizeError(this.processError)
+          : snapshot.health.error,
     };
     this.lastHealth = health;
-    return {
+    const normalized: BmbBridgeSnapshotDto = {
       ...snapshot,
       health,
       tradesBySymbol: snapshot.tradesBySymbol ?? {},
     };
+    // Los libros L2 vivos (stdout JSONL del conector SignalR) se fusionan por
+    // asOfUtcSec antes de exponerlos a ggalSpecialistRuntime y StockDetailView.
+    const merged = mergeLiveL2IntoSnapshot(normalized, this.liveL2Books);
+    this.lastSnapshot = merged;
+    return merged;
   }
 
   private filterSymbol(snapshot: BmbBridgeSnapshotDto, symbol?: string): BmbBridgeSnapshotDto {
@@ -464,7 +628,9 @@ export class BmbFeedAdapter {
     forceRefresh = false,
   ): Promise<BmbBridgeSnapshotDto> {
     const cfg = loadBmbConfigFromEnv(this.env);
-    if (cfg.password === '') {
+    // El conector SignalR Core (BMB_HUB_TOKEN/BMB_SESSION_COOKIE) no requiere
+    // BMB_PASSWORD: su material de autenticación es propio.
+    if (!this.signalRMode && cfg.password === '') {
       this.lastHealth = {
         ...this.lastHealth,
         status: 'DISABLED_NO_PASSWORD',
@@ -491,7 +657,6 @@ export class BmbFeedAdapter {
       this.lastPollStartedMs = null;
       return emptySnapshot(this.outOfSessionHealth());
     }
-
     if (forceRefresh && this.processError !== null) {
       // Explicit retry after the rate-limit window; stale process errors are not sticky.
       this.processError = null;
@@ -573,7 +738,7 @@ export class BmbFeedAdapter {
           await this.getSnapshot(undefined, null, false);
         }
       } catch (err: unknown) {
-        this.processError = redactSecrets(err instanceof Error ? err.message : String(err), this.secrets);
+        this.processError = this.sanitizeError(err instanceof Error ? err.message : String(err));
       } finally {
         if (this.isLiveLoopActive()) {
           this.liveLoopTimer = setTimeout(() => {
@@ -633,6 +798,7 @@ export class BmbFeedAdapter {
     const child = this.child;
     this.child = null;
     this.processReady = null;
+    this.liveL2Books = {};
     if (child !== null) {
       try {
         child.kill();

@@ -52,6 +52,85 @@ def load_session_cookie_fixture() -> dict[str, Any]:
     return json.loads(SESSION_COOKIE_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+SIGNALR_FIXTURE_PATH = TOOL_DIR.parent / "fixtures" / "bmb_inversiones_sendprices.json"
+
+SIGNALR_MODULE_PATH = TOOL_DIR / "bmb_inversiones_signalr.py"
+_signalr_spec = importlib.util.spec_from_file_location("bmb_inversiones_signalr_under_test", SIGNALR_MODULE_PATH)
+if _signalr_spec is None or _signalr_spec.loader is None:
+    raise RuntimeError(f"cannot load {SIGNALR_MODULE_PATH}")
+signalr = importlib.util.module_from_spec(_signalr_spec)
+sys.modules[_signalr_spec.name] = signalr
+_signalr_spec.loader.exec_module(signalr)
+
+
+def load_signalr_fixture() -> dict[str, Any]:
+    return json.loads(SIGNALR_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def make_signalr_env(**overrides: Any) -> dict[str, str]:
+    env = {
+        "BMB_BROKER_ID": "153",
+        "BMB_DNI": "20123456789",
+        "BMB_USERNAME": "test-user",
+        "BMB_PASSWORD": "test-password",
+        "BMB_SESSION_COOKIE": "fake_session_cookie=44444444-5555-6666-7777-888888888888",
+        "BMB_HUB_TOKEN": "11111111-2222-3333-4444-555555555555",
+    }
+    env.update(overrides)
+    return env
+
+
+def make_signalr_state(
+    env: dict[str, str] | None = None,
+    connector_deps: dict[str, Any] | None = None,
+) -> Any:
+    cfg = base.read_bmb_env(env or make_signalr_env())
+    return signalr.InversionesSignalRState(cfg, connector_deps)
+
+
+class FakeWebSocket:
+    """Fake `websocket` con semántica mínima del handshake ASP.NET Core."""
+
+    def __init__(self, recv_sequence: list[Any]) -> None:
+        self._recv_sequence = list(recv_sequence)
+        self.sent: list[str] = []
+        self.closed = False
+
+    def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    def recv(self) -> str:
+        if not self._recv_sequence:
+            raise RuntimeError("no more fake frames")
+        item = self._recv_sequence.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if callable(item):
+            item()
+            return ""
+        return str(item)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def make_connector(
+    state: Any,
+    fetch_html: Any = None,
+    post_negotiate: Any = None,
+    ws_factory: Any = None,
+    emitter: Any = None,
+) -> Any:
+    return signalr.InversionesSignalRConnector(
+        state,
+        state._cfg,
+        fetch_html=fetch_html,
+        post_negotiate=post_negotiate,
+        ws_factory=ws_factory,
+        emitter=emitter,
+    )
+
+
 def make_state() -> Any:
     cfg = {
         "broker_id": 153,
@@ -503,6 +582,316 @@ def test_bridge_without_session_cookie_goes_straight_to_login() -> None:
     assert auth.login_calls == 1
     assert state._connected is True
     assert state._status in {"READY", "CONNECTED_L2"}
+
+
+# ---------------------------------------------------------------------------
+# Pieza 38 — conector ASP.NET Core SignalR stock-prices-hub
+# ---------------------------------------------------------------------------
+
+def test_hub_token_extraction_matches_reference_fixture() -> None:
+    fixture = load_signalr_fixture()
+    for case in fixture["hubToken"]["htmlCases"]:
+        assert signalr.extract_hub_token_from_html(case["html"]) == case["expectedToken"], (
+            f"case {case['name']}"
+        )
+
+
+def test_hub_token_resolution_matches_reference_fixture() -> None:
+    fixture = load_signalr_fixture()
+    fetch_calls: list[tuple[str, str]] = []
+
+    def fake_fetch(url: str, cookie_header: str) -> tuple[int | None, str, str]:
+        fetch_calls.append((url, cookie_header))
+        return (
+            current_case["portalStatus"],
+            current_case["portalFinalUrl"],
+            current_case["portalHtml"],
+        )
+
+    for case in fixture["hubToken"]["resolveCases"]:
+        current_case = case
+        state = make_signalr_state(
+            make_signalr_env(
+                BMB_HUB_TOKEN=case["hubToken"],
+                BMB_SESSION_COOKIE=case["sessionCookie"],
+            )
+        )
+        connector = make_connector(state, fetch_html=fake_fetch)
+        token, status = connector.resolve_hub_token()
+        assert token == case["expectedToken"], f"case {case['name']}: token"
+        assert status == case["expectedStatus"], f"case {case['name']}: status"
+        if case["hubToken"]:
+            assert fetch_calls == [], f"case {case['name']}: BMB_HUB_TOKEN tiene prioridad"
+
+
+def test_connector_run_login_redirect_sets_standby_2fa() -> None:
+    fixture = load_signalr_fixture()
+    portal = next(c for c in fixture["hubToken"]["resolveCases"] if c["name"] == "login_redirect_is_standby")
+
+    def fake_fetch(_url: str, _cookie: str) -> tuple[int | None, str, str]:
+        return portal["portalStatus"], portal["portalFinalUrl"], portal["portalHtml"]
+
+    state = make_signalr_state(make_signalr_env(BMB_HUB_TOKEN=""))
+    connector = make_connector(state, fetch_html=fake_fetch)
+    connector.run()
+    assert state._status == "STANDBY_2FA"
+    assert state._error == signalr.BMB_STANDBY_2FA_MESSAGE
+    assert state._connected is False
+
+
+def test_negotiate_urls_headers_and_response_parsing_match_reference() -> None:
+    fixture = load_signalr_fixture()
+    for case in fixture["hubToken"]["urlCases"]:
+        assert signalr.build_negotiate_url(case["hubToken"]) == case["expectedNegotiateUrl"]
+        assert signalr.build_ws_url(case["hubToken"], case["connectionToken"]) == case["expectedWsUrl"]
+        assert signalr.build_negotiate_headers() == case["expectedNegotiateHeaders"]
+        assert signalr.build_ws_headers() == case["expectedWsHeaders"]
+    for case in fixture["hubToken"]["negotiateResponses"]:
+        assert signalr.parse_negotiate_response(case["body"]) == case["expectedConnectionToken"], (
+            f"case {case['name']}"
+        )
+
+
+def test_handshake_and_ping_frames_match_reference() -> None:
+    fixture = load_signalr_fixture()
+    handshake = fixture["hubToken"]["handshake"]
+    assert signalr.build_handshake_frame() == handshake["frame"]
+    assert signalr.ping_reply_frame() == handshake["pingReply"]
+    for payload in handshake["okPayloads"]:
+        assert signalr.handshake_payload_ok(payload) is True
+    for payload in handshake["invalidPayloads"]:
+        assert signalr.handshake_payload_ok(payload) is False
+
+
+def test_ws_handshake_error_classification_matches_reference() -> None:
+    fixture = load_signalr_fixture()
+    for case in fixture["hubToken"]["wsHandshakeErrorCases"]:
+        assert signalr.classify_ws_handshake_error(case["message"]) == case["expected"], (
+            f"case {case['name']}"
+        )
+
+
+def test_frame_parsing_concatenated_matches_reference() -> None:
+    fixture = load_signalr_fixture()
+    case = fixture["frames"]["concatenatedCase"]
+    frames, remainder = signalr.extract_signalr_frames("", case["chunk"])
+    assert frames == case["expectedFrames"]
+    assert remainder == case["expectedRemainder"]
+    parsed_targets = [signalr.parse_signalr_message(frame) for frame in frames]
+    assert all(payload is not None for payload in parsed_targets)
+
+
+def test_frame_parsing_fragmented_matches_reference() -> None:
+    fixture = load_signalr_fixture()
+    case = fixture["frames"]["fragmentedCase"]
+    frames, remainder = signalr.extract_signalr_frames(case["bufferBefore"], case["firstChunk"])
+    assert frames == case["expectedFramesAfterFirst"]
+    assert remainder == case["expectedRemainderAfterFirst"]
+    completed, final_remainder = signalr.extract_signalr_frames(remainder, case["secondChunk"])
+    assert completed == case["expectedFramesAfterSecond"]
+    assert final_remainder == ""
+
+
+def test_sendprices_mapping_matches_reference() -> None:
+    fixture = load_signalr_fixture()
+    for case in fixture["frames"]["mappedCases"]:
+        actual = signalr.map_sendprices_row(case["row"])
+        if case["expectedRecord"] is None:
+            assert actual is None, f"case {case['name']}"
+        else:
+            assert actual == case["expectedRecord"], f"case {case['name']}"
+
+
+def test_connector_stream_flow_ingests_frames_and_replies_pings() -> None:
+    fixture = load_signalr_fixture()
+    concatenated = fixture["frames"]["concatenatedCase"]
+    ggal_expected = next(
+        c["expectedRecord"] for c in fixture["frames"]["mappedCases"] if c["name"] == "ggal_five_levels"
+    )
+
+    negotiate_calls: list[tuple[str, dict[str, str]]] = []
+    ws_calls: list[tuple[str, dict[str, str]]] = []
+    fake_ws_holder: list[Any] = []
+    emitted: list[dict[str, Any]] = []
+    state = make_signalr_state()
+    stop_event = state._stop_event
+
+    def post_negotiate(url: str, headers: dict[str, str]) -> tuple[int | None, str]:
+        negotiate_calls.append((url, dict(headers)))
+        return 200, json.dumps({"connectionToken": "22222222-3333-4444-5555-666666666666"})
+
+    def ws_factory(url: str, headers: dict[str, str]) -> Any:
+        ws_calls.append((url, dict(headers)))
+
+        def third_recv() -> None:
+            stop_event.set()
+
+        ws = FakeWebSocket(
+            [
+                '{}\x1e',  # handshake ok
+                concatenated["chunk"],
+                third_recv,
+            ]
+        )
+        fake_ws_holder.append(ws)
+        return ws
+
+    connector = make_connector(
+        state,
+        post_negotiate=post_negotiate,
+        ws_factory=ws_factory,
+        emitter=lambda payload: emitted.append(payload),
+    )
+    connector.run()
+
+    # Negotiate con negotiateVersion=1 y Origin del portal.
+    assert len(negotiate_calls) == 1
+    url, headers = negotiate_calls[0]
+    assert url.endswith("/negotiate?token=11111111-2222-3333-4444-555555555555&negotiateVersion=1")
+    assert headers["Origin"] == "https://inversiones.bullmarket.com.ar"
+    # WebSocket con token + id y Origin del portal.
+    assert len(ws_calls) == 1
+    ws_url, ws_headers = ws_calls[0]
+    assert ws_url.startswith("wss://hub.bullmarketbrokers.com/stock-prices-hub?token=")
+    assert "&id=22222222-3333-4444-5555-666666666666" in ws_url
+    assert ws_headers["Origin"] == "https://inversiones.bullmarket.com.ar"
+
+    # 5 puntas GGAL almacenadas; CI (BMA) fuera de la escalera 24hs.
+    book = state._order_books.get("GGAL")
+    assert book is not None
+    assert book["symbol"] == "GGAL"
+    assert book["settlement"] == "24hs"
+    assert book["bids"] == ggal_expected["bids"]
+    assert book["asks"] == ggal_expected["asks"]
+    assert len(book["bids"]) == 5 and len(book["asks"]) == 5
+    assert "BMA" not in state._order_books
+    assert "PAMP" in state._order_books and "SUPV" in state._order_books
+
+    health = state.get_health()
+    telemetry = health["telemetry"]
+    assert telemetry["sendPricesUpdates"] == 3  # GGAL, PAMP, SUPV (BMA es CI)
+    assert telemetry["sendIndexes"] == concatenated["expectedCounts"]["sendIndexes"]
+    assert telemetry["sendMarketTotals"] == concatenated["expectedCounts"]["sendMarketTotals"]
+    assert telemetry["pingsReplied"] == 1
+    assert telemetry["negotiateCount"] == 1
+    assert health["status"] == "CONNECTED_L2"
+    assert health["ok"] is True
+
+    # Ping respondido con {"type":6}\x1e tras el handshake.
+    fake_ws_sent = fake_ws_holder[0].sent
+    assert fake_ws_sent[0] == signalr.build_handshake_frame()
+    assert signalr.ping_reply_frame() in fake_ws_sent
+
+    # JSONL: un L2_UPDATE por registro 24hs, en orden de llegada.
+    assert [event["record"]["symbol"] for event in emitted] == ["GGAL", "PAMP", "SUPV"]
+
+
+def test_connector_negotiate_401_sets_standby_without_retry() -> None:
+    state = make_signalr_state()
+    calls: list[str] = []
+
+    def post_negotiate(url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        calls.append(url)
+        return 401, ""
+
+    connector = make_connector(state, post_negotiate=post_negotiate)
+    connector.run()
+    assert len(calls) == 1, "sin bucle de reintento ante 401"
+    assert state._status == "STANDBY_2FA"
+    assert state._error == signalr.BMB_STANDBY_2FA_MESSAGE
+
+
+def test_connector_ws_403_sets_standby() -> None:
+    state = make_signalr_state()
+
+    def post_negotiate(_url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        return 200, json.dumps({"connectionToken": "22222222-3333-4444-5555-666666666666"})
+
+    def ws_factory(_url: str, _headers: dict[str, str]) -> Any:
+        raise RuntimeError("Handshake status 403 Forbidden")
+
+    connector = make_connector(state, post_negotiate=post_negotiate, ws_factory=ws_factory)
+    connector.run()
+    assert state._status == "STANDBY_2FA"
+    assert state._error == signalr.BMB_STANDBY_2FA_MESSAGE
+
+
+def test_connector_errors_redact_token_id_and_cookie() -> None:
+    env = make_signalr_env()
+    state = make_signalr_state(env)
+    secrets = state._cfg["secrets"]
+    leaked_url = signalr.build_negotiate_url(env["BMB_HUB_TOKEN"])
+
+    def post_negotiate(_url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        raise RuntimeError(f"negotiate failed for {leaked_url} with cookie {env['BMB_SESSION_COOKIE']}")
+
+    connector = make_connector(state, post_negotiate=post_negotiate)
+    connector.run()
+
+    error = str(state._error)
+    for secret in secrets:
+        assert secret not in error, "credencial cruda en el error"
+    assert "token=[REDACTED]" in error
+    assert state._status == "ERROR"
+    # La salida de salud tampoco expone credenciales.
+    health_payload = json.dumps(state.get_health())
+    for secret in secrets:
+        assert secret not in health_payload
+
+
+def test_state_ingest_l2_records_24hs_only() -> None:
+    fixture = load_signalr_fixture()
+    ggal = next(c["expectedRecord"] for c in fixture["frames"]["mappedCases"] if c["name"] == "ggal_five_levels")
+    bma = next(c["expectedRecord"] for c in fixture["frames"]["mappedCases"] if c["name"] == "bma_ci_settlement")
+    state = make_signalr_state()
+    stored = state.ingest_l2_records([ggal, bma])
+    assert stored == 1
+    assert "GGAL" in state._order_books
+    assert "BMA" not in state._order_books
+    assert state._status == "CONNECTED_L2"
+
+
+def test_signalr_state_start_without_credentials_sets_explicit_error() -> None:
+    state = make_signalr_state(make_signalr_env(BMB_HUB_TOKEN="", BMB_SESSION_COOKIE=""))
+    state.start()
+    assert state._status == "ERROR"
+    assert "BMB_HUB_TOKEN o BMB_SESSION_COOKIE" in str(state._error)
+
+
+def test_signalr_state_start_end_to_end_with_injected_deps() -> None:
+    fixture = load_signalr_fixture()
+    concatenated = fixture["frames"]["concatenatedCase"]
+    state = make_signalr_state()
+    emitted: list[dict[str, Any]] = []
+
+    def post_negotiate(_url: str, _headers: dict[str, str]) -> tuple[int | None, str]:
+        return 200, json.dumps({"connectionToken": "22222222-3333-4444-5555-666666666666"})
+
+    def ws_factory(_url: str, _headers: dict[str, str]) -> Any:
+        def third_recv() -> None:
+            state._stop_event.set()
+
+        return FakeWebSocket(['{}\x1e', concatenated["chunk"], third_recv])
+
+    state._connector_deps = {
+        "post_negotiate": post_negotiate,
+        "ws_factory": ws_factory,
+        "emitter": lambda payload: emitted.append(payload),
+    }
+    state.start()
+
+    assert "GGAL" in state._order_books
+    telemetry = state.get_health()["telemetry"]
+    assert telemetry["sendPricesUpdates"] >= 1
+    assert telemetry["pingsReplied"] == 1
+    # JSONL en stdout del bridge: un L2_UPDATE por registro 24hs.
+    assert [event["event"] for event in emitted] == ["L2_UPDATE"] * len(emitted)
+    assert {event["record"]["symbol"] for event in emitted} == {"GGAL", "PAMP", "SUPV"}
+    for event in emitted:
+        assert json.dumps(event).count("11111111") == 0, "sin hub_token en stdout"
+    # El stream terminó limpio (stop event) -> DISCONNECTED sin ERROR.
+    assert state._status in {"DISCONNECTED", "CONNECTED_L2"}
+    assert state._error is None
 
 
 if __name__ == "__main__":

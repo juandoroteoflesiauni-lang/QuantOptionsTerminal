@@ -62,6 +62,8 @@ export interface BmbConfig {
   readonly account: string;
   /** Cookie de sesión / dispositivo de confianza (opcional, `BMB_SESSION_COOKIE`). */
   readonly sessionCookie: string;
+  /** Token del hub ASP.NET Core SignalR (opcional, `BMB_HUB_TOKEN`). */
+  readonly hubToken: string;
   readonly passwordConfigured: boolean;
 }
 
@@ -507,6 +509,7 @@ export function loadBmbConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BmbC
   const password = (env['BMB_PASSWORD'] ?? env['BMB_PASS'] ?? '').trim();
   const account = (env['BMB_ACCOUNT'] ?? env['BMB_COMITENTE'] ?? '').trim();
   const sessionCookie = (env['BMB_SESSION_COOKIE'] ?? '').trim();
+  const hubToken = (env['BMB_HUB_TOKEN'] ?? '').trim();
 
   return {
     bridgeUrl: bridgeUrl || DEFAULT_BMB_BRIDGE_URL,
@@ -516,8 +519,29 @@ export function loadBmbConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BmbC
     password,
     account,
     sessionCookie,
+    hubToken,
     passwordConfigured: password !== '',
   };
+}
+
+/**
+ * Modo conector SignalR Core (Pieza 38): con `BMB_HUB_TOKEN` o
+ * `BMB_SESSION_COOKIE` presente, `bmbFeedAdapter.ts` inicia
+ * `tools/bmb_inversiones_signalr.py` en lugar del flujo legacy `pyhomebroker`.
+ */
+export function isBmbInversionesSignalRConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  const hubToken = (env['BMB_HUB_TOKEN'] ?? '').trim();
+  const sessionCookie = (env['BMB_SESSION_COOKIE'] ?? '').trim();
+  return hubToken !== '' || sessionCookie !== '';
+}
+
+/**
+ * Sanea query strings con credenciales (`?token=...`, `&id=...`) antes de
+ * exponer cualquier texto diagnóstico en logs o `lastError`. Complementa (no
+ * reemplaza) `redactSecrets` con los secretos de env.
+ */
+export function redactHubQueryCredentials(text: string): string {
+  return text.replace(/([?&])(token|id)=[^&\s"']+/g, '$1$2=[REDACTED]');
 }
 
 /**
@@ -535,6 +559,7 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'BMB_ACCOUNT',
     'BMB_COMITENTE',
     'BMB_SESSION_COOKIE',
+    'BMB_HUB_TOKEN',
   ] as const;
   const out = new Set<string>();
   for (const key of names) {
@@ -2295,6 +2320,7 @@ export class BmbBridgeClient {
   private readonly secrets: readonly string[];
   private readonly timeoutMs: number;
   private readonly snapshotCache: SingleFlightRuntimeCache<BmbBridgeSnapshotDto>;
+  private readonly signalRConfigured: boolean;
   private lastHealth: BmbConnectorHealthDto;
 
   public constructor(deps: BmbBridgeClientDeps = {}) {
@@ -2303,6 +2329,7 @@ export class BmbBridgeClient {
     this.fetchFn = deps.fetchFn ?? defaultPrimaryHttpFn;
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_BMB_TIMEOUT_MS;
+    this.signalRConfigured = isBmbInversionesSignalRConfigured(env);
 
     const secretSet = new Set<string>(deps.secrets ?? []);
     for (const s of collectBrokerSecretsFromEnv(env)) {
@@ -2338,7 +2365,7 @@ export class BmbBridgeClient {
     forceRefresh = false,
   ): Promise<BmbBridgeSnapshotDto> {
     const symKey = symbol !== undefined && symbol.trim() !== '' ? symbol.trim().toUpperCase() : 'ALL';
-    if (!this.config.passwordConfigured) {
+    if (!this.config.passwordConfigured && !this.signalRConfigured) {
       this.lastHealth = {
         ...this.lastHealth,
         status: 'DISABLED_NO_PASSWORD',

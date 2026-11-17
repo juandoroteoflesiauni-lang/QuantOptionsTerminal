@@ -1,0 +1,892 @@
+{
+  "frames": {
+    "concatenatedCase": {
+      "chunk": "{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"GGAL\",\"term\":\"2\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:05Z\",\"stockState\":{\"price\":6450.5,\"open\":6430.0,\"min\":6415.25,\"max\":6468.0,\"close\":6420.75,\"variation\":0.46,\"totalNominalValue\":12345678.5,\"totalAmount\":1234567890.25,\"operations\":4211},\"stockOffer\":{\"bidTop\":[{\"position\":3,\"price\":6449.5,\"quantity\":800.0},{\"position\":1,\"price\":6450.5,\"quantity\":1200.0},{\"position\":5,\"price\":6448.5,\"quantity\":150.0},{\"position\":2,\"price\":6450.0,\"quantity\":3500.0},{\"position\":4,\"price\":6449.0,\"quantity\":2500.0},{\"position\":6,\"price\":6448.0,\"quantity\":10.0}],\"askTop\":[{\"position\":4,\"price\":6452.5,\"quantity\":600.0},{\"position\":1,\"price\":6451.0,\"quantity\":900.0},{\"position\":3,\"price\":6452.0,\"quantity\":1400.0},{\"position\":2,\"price\":6451.5,\"quantity\":2200.0},{\"position\":5,\"price\":6453.0,\"quantity\":3100.0}]}},{\"ticker\":\"BMA\",\"term\":\"1\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:07Z\",\"stockState\":{\"price\":682.4,\"open\":681.0,\"min\":679.8,\"max\":684.2,\"close\":680.9,\"variation\":0.22,\"totalNominalValue\":45210.0,\"totalAmount\":30874321.0,\"operations\":152},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":682.4,\"quantity\":300.0}],\"askTop\":[{\"position\":1,\"price\":682.6,\"quantity\":250.0}]}},{\"ticker\":\"PAMP\",\"term\":\"2\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:08Z\",\"stockState\":{\"price\":1899.75,\"open\":1892.0,\"min\":1885.5,\"max\":1905.0,\"close\":1890.25,\"variation\":0.5,\"totalNominalValue\":1203400.0,\"totalAmount\":2285123456.0,\"operations\":2450},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":1899.75,\"quantity\":4300.0},{\"position\":2,\"price\":1899.5,\"quantity\":2100.0},{\"position\":3,\"price\":1899.0,\"quantity\":980.0}],\"askTop\":[{\"position\":1,\"price\":1900.0,\"quantity\":3900.0},{\"position\":2,\"price\":1900.5,\"quantity\":1250.0}]}},{\"ticker\":\"SUPV\",\"term\":\"2\",\"currency\":\"USD\",\"date\":\"2026-11-17T14:30:09Z\",\"stockState\":{\"price\":24.85,\"open\":24.7,\"min\":24.55,\"max\":24.95,\"close\":24.68,\"variation\":0.69,\"totalNominalValue\":98765.0,\"totalAmount\":2454321.0,\"operations\":640},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":24.85,\"quantity\":1500.0}],\"askTop\":[{\"position\":1,\"price\":24.87,\"quantity\":1100.0}]}}]]}\u001e{\"type\":6}\u001e{\"type\":1,\"target\":\"SendIndexes\",\"arguments\":[[{\"index\":\"IM\",\"price\":812345.67}]]}\u001e{\"type\":1,\"target\":\"SendMarketTotals\",\"arguments\":[{\"tradedAmount\":123456.78,\"tradedVolume\":4321.0}]}\u001e{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"YPF",
+      "expectedCounts": {
+        "sendIndexes": 1,
+        "sendMarketTotals": 1
+      },
+      "expectedFrames": [
+        "{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"GGAL\",\"term\":\"2\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:05Z\",\"stockState\":{\"price\":6450.5,\"open\":6430.0,\"min\":6415.25,\"max\":6468.0,\"close\":6420.75,\"variation\":0.46,\"totalNominalValue\":12345678.5,\"totalAmount\":1234567890.25,\"operations\":4211},\"stockOffer\":{\"bidTop\":[{\"position\":3,\"price\":6449.5,\"quantity\":800.0},{\"position\":1,\"price\":6450.5,\"quantity\":1200.0},{\"position\":5,\"price\":6448.5,\"quantity\":150.0},{\"position\":2,\"price\":6450.0,\"quantity\":3500.0},{\"position\":4,\"price\":6449.0,\"quantity\":2500.0},{\"position\":6,\"price\":6448.0,\"quantity\":10.0}],\"askTop\":[{\"position\":4,\"price\":6452.5,\"quantity\":600.0},{\"position\":1,\"price\":6451.0,\"quantity\":900.0},{\"position\":3,\"price\":6452.0,\"quantity\":1400.0},{\"position\":2,\"price\":6451.5,\"quantity\":2200.0},{\"position\":5,\"price\":6453.0,\"quantity\":3100.0}]}},{\"ticker\":\"BMA\",\"term\":\"1\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:07Z\",\"stockState\":{\"price\":682.4,\"open\":681.0,\"min\":679.8,\"max\":684.2,\"close\":680.9,\"variation\":0.22,\"totalNominalValue\":45210.0,\"totalAmount\":30874321.0,\"operations\":152},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":682.4,\"quantity\":300.0}],\"askTop\":[{\"position\":1,\"price\":682.6,\"quantity\":250.0}]}},{\"ticker\":\"PAMP\",\"term\":\"2\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:08Z\",\"stockState\":{\"price\":1899.75,\"open\":1892.0,\"min\":1885.5,\"max\":1905.0,\"close\":1890.25,\"variation\":0.5,\"totalNominalValue\":1203400.0,\"totalAmount\":2285123456.0,\"operations\":2450},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":1899.75,\"quantity\":4300.0},{\"position\":2,\"price\":1899.5,\"quantity\":2100.0},{\"position\":3,\"price\":1899.0,\"quantity\":980.0}],\"askTop\":[{\"position\":1,\"price\":1900.0,\"quantity\":3900.0},{\"position\":2,\"price\":1900.5,\"quantity\":1250.0}]}},{\"ticker\":\"SUPV\",\"term\":\"2\",\"currency\":\"USD\",\"date\":\"2026-11-17T14:30:09Z\",\"stockState\":{\"price\":24.85,\"open\":24.7,\"min\":24.55,\"max\":24.95,\"close\":24.68,\"variation\":0.69,\"totalNominalValue\":98765.0,\"totalAmount\":2454321.0,\"operations\":640},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":24.85,\"quantity\":1500.0}],\"askTop\":[{\"position\":1,\"price\":24.87,\"quantity\":1100.0}]}}]]}",
+        "{\"type\":6}",
+        "{\"type\":1,\"target\":\"SendIndexes\",\"arguments\":[[{\"index\":\"IM\",\"price\":812345.67}]]}",
+        "{\"type\":1,\"target\":\"SendMarketTotals\",\"arguments\":[{\"tradedAmount\":123456.78,\"tradedVolume\":4321.0}]}"
+      ],
+      "expectedPingReply": "{\"type\":6}\u001e",
+      "expectedRemainder": "{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"YPF",
+      "name": "mixed_frames_and_fragment"
+    },
+    "fragmentedCase": {
+      "bufferBefore": "",
+      "expectedFramesAfterFirst": [],
+      "expectedFramesAfterSecond": [
+        "{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"YPFD\",\"term\":\"2\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:06Z\",\"stockState\":{\"price\":45120.0,\"open\":44980.0,\"min\":44895.0,\"max\":45210.0,\"close\":44950.0,\"variation\":0.38,\"totalNominalValue\":88231.0,\"totalAmount\":3980123456.0,\"operations\":987},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":45120.0,\"quantity\":55.0},{\"position\":2,\"price\":45119.0,\"quantity\":120.0}],\"askTop\":[{\"position\":1,\"price\":45122.0,\"quantity\":40.0},{\"position\":2,\"price\":45123.5,\"quantity\":85.0},{\"position\":3,\"price\":45125.0,\"quantity\":200.0}]}}]]}"
+      ],
+      "expectedRemainderAfterFirst": "{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"YPF",
+      "firstChunk": "{\"type\":1,\"target\":\"SendPrices\",\"arguments\":[[{\"ticker\":\"YPF",
+      "name": "ypfd_frame_split_across_chunks",
+      "secondChunk": "D\",\"term\":\"2\",\"currency\":\"ARS\",\"date\":\"2026-11-17T14:30:06Z\",\"stockState\":{\"price\":45120.0,\"open\":44980.0,\"min\":44895.0,\"max\":45210.0,\"close\":44950.0,\"variation\":0.38,\"totalNominalValue\":88231.0,\"totalAmount\":3980123456.0,\"operations\":987},\"stockOffer\":{\"bidTop\":[{\"position\":1,\"price\":45120.0,\"quantity\":55.0},{\"position\":2,\"price\":45119.0,\"quantity\":120.0}],\"askTop\":[{\"position\":1,\"price\":45122.0,\"quantity\":40.0},{\"position\":2,\"price\":45123.5,\"quantity\":85.0},{\"position\":3,\"price\":45125.0,\"quantity\":200.0}]}}]]}\u001e"
+    },
+    "mappedCases": [
+      {
+        "expectedRecord": {
+          "asOfUtcSec": 1794925805,
+          "asks": [
+            {
+              "orderCount": null,
+              "price": 6451.0,
+              "size": 900.0
+            },
+            {
+              "orderCount": null,
+              "price": 6451.5,
+              "size": 2200.0
+            },
+            {
+              "orderCount": null,
+              "price": 6452.0,
+              "size": 1400.0
+            },
+            {
+              "orderCount": null,
+              "price": 6452.5,
+              "size": 600.0
+            },
+            {
+              "orderCount": null,
+              "price": 6453.0,
+              "size": 3100.0
+            }
+          ],
+          "bids": [
+            {
+              "orderCount": null,
+              "price": 6450.5,
+              "size": 1200.0
+            },
+            {
+              "orderCount": null,
+              "price": 6450.0,
+              "size": 3500.0
+            },
+            {
+              "orderCount": null,
+              "price": 6449.5,
+              "size": 800.0
+            },
+            {
+              "orderCount": null,
+              "price": 6449.0,
+              "size": 2500.0
+            },
+            {
+              "orderCount": null,
+              "price": 6448.5,
+              "size": 150.0
+            }
+          ],
+          "close": 6420.75,
+          "currency": "ARS",
+          "last": 6450.5,
+          "max": 6468.0,
+          "min": 6415.25,
+          "open": 6430.0,
+          "operations": 4211.0,
+          "settlement": "24hs",
+          "source": "BMB_HOMEBROKER",
+          "symbol": "GGAL",
+          "totalAmount": 1234567890.25,
+          "totalNominalValue": 12345678.5,
+          "variation": 0.46
+        },
+        "name": "ggal_five_levels",
+        "row": {
+          "currency": "ARS",
+          "date": "2026-11-17T14:30:05Z",
+          "stockOffer": {
+            "askTop": [
+              {
+                "position": 4,
+                "price": 6452.5,
+                "quantity": 600.0
+              },
+              {
+                "position": 1,
+                "price": 6451.0,
+                "quantity": 900.0
+              },
+              {
+                "position": 3,
+                "price": 6452.0,
+                "quantity": 1400.0
+              },
+              {
+                "position": 2,
+                "price": 6451.5,
+                "quantity": 2200.0
+              },
+              {
+                "position": 5,
+                "price": 6453.0,
+                "quantity": 3100.0
+              }
+            ],
+            "bidTop": [
+              {
+                "position": 3,
+                "price": 6449.5,
+                "quantity": 800.0
+              },
+              {
+                "position": 1,
+                "price": 6450.5,
+                "quantity": 1200.0
+              },
+              {
+                "position": 5,
+                "price": 6448.5,
+                "quantity": 150.0
+              },
+              {
+                "position": 2,
+                "price": 6450.0,
+                "quantity": 3500.0
+              },
+              {
+                "position": 4,
+                "price": 6449.0,
+                "quantity": 2500.0
+              },
+              {
+                "position": 6,
+                "price": 6448.0,
+                "quantity": 10.0
+              }
+            ]
+          },
+          "stockState": {
+            "close": 6420.75,
+            "max": 6468.0,
+            "min": 6415.25,
+            "open": 6430.0,
+            "operations": 4211,
+            "price": 6450.5,
+            "totalAmount": 1234567890.25,
+            "totalNominalValue": 12345678.5,
+            "variation": 0.46
+          },
+          "term": "2",
+          "ticker": "GGAL"
+        }
+      },
+      {
+        "expectedRecord": {
+          "asOfUtcSec": 1794925806,
+          "asks": [
+            {
+              "orderCount": null,
+              "price": 45122.0,
+              "size": 40.0
+            },
+            {
+              "orderCount": null,
+              "price": 45123.5,
+              "size": 85.0
+            },
+            {
+              "orderCount": null,
+              "price": 45125.0,
+              "size": 200.0
+            }
+          ],
+          "bids": [
+            {
+              "orderCount": null,
+              "price": 45120.0,
+              "size": 55.0
+            },
+            {
+              "orderCount": null,
+              "price": 45119.0,
+              "size": 120.0
+            }
+          ],
+          "close": 44950.0,
+          "currency": "ARS",
+          "last": 45120.0,
+          "max": 45210.0,
+          "min": 44895.0,
+          "open": 44980.0,
+          "operations": 987.0,
+          "settlement": "24hs",
+          "source": "BMB_HOMEBROKER",
+          "symbol": "YPFD",
+          "totalAmount": 3980123456.0,
+          "totalNominalValue": 88231.0,
+          "variation": 0.38
+        },
+        "name": "ypfd_partial_depth",
+        "row": {
+          "currency": "ARS",
+          "date": "2026-11-17T14:30:06Z",
+          "stockOffer": {
+            "askTop": [
+              {
+                "position": 1,
+                "price": 45122.0,
+                "quantity": 40.0
+              },
+              {
+                "position": 2,
+                "price": 45123.5,
+                "quantity": 85.0
+              },
+              {
+                "position": 3,
+                "price": 45125.0,
+                "quantity": 200.0
+              }
+            ],
+            "bidTop": [
+              {
+                "position": 1,
+                "price": 45120.0,
+                "quantity": 55.0
+              },
+              {
+                "position": 2,
+                "price": 45119.0,
+                "quantity": 120.0
+              }
+            ]
+          },
+          "stockState": {
+            "close": 44950.0,
+            "max": 45210.0,
+            "min": 44895.0,
+            "open": 44980.0,
+            "operations": 987,
+            "price": 45120.0,
+            "totalAmount": 3980123456.0,
+            "totalNominalValue": 88231.0,
+            "variation": 0.38
+          },
+          "term": "2",
+          "ticker": "YPFD"
+        }
+      },
+      {
+        "expectedRecord": {
+          "asOfUtcSec": 1794925807,
+          "asks": [
+            {
+              "orderCount": null,
+              "price": 682.6,
+              "size": 250.0
+            }
+          ],
+          "bids": [
+            {
+              "orderCount": null,
+              "price": 682.4,
+              "size": 300.0
+            }
+          ],
+          "close": 680.9,
+          "currency": "ARS",
+          "last": 682.4,
+          "max": 684.2,
+          "min": 679.8,
+          "open": 681.0,
+          "operations": 152.0,
+          "settlement": "CI",
+          "source": "BMB_HOMEBROKER",
+          "symbol": "BMA",
+          "totalAmount": 30874321.0,
+          "totalNominalValue": 45210.0,
+          "variation": 0.22
+        },
+        "name": "bma_ci_settlement",
+        "row": {
+          "currency": "ARS",
+          "date": "2026-11-17T14:30:07Z",
+          "stockOffer": {
+            "askTop": [
+              {
+                "position": 1,
+                "price": 682.6,
+                "quantity": 250.0
+              }
+            ],
+            "bidTop": [
+              {
+                "position": 1,
+                "price": 682.4,
+                "quantity": 300.0
+              }
+            ]
+          },
+          "stockState": {
+            "close": 680.9,
+            "max": 684.2,
+            "min": 679.8,
+            "open": 681.0,
+            "operations": 152,
+            "price": 682.4,
+            "totalAmount": 30874321.0,
+            "totalNominalValue": 45210.0,
+            "variation": 0.22
+          },
+          "term": "1",
+          "ticker": "BMA"
+        }
+      },
+      {
+        "expectedRecord": {
+          "asOfUtcSec": 1794925808,
+          "asks": [
+            {
+              "orderCount": null,
+              "price": 1900.0,
+              "size": 3900.0
+            },
+            {
+              "orderCount": null,
+              "price": 1900.5,
+              "size": 1250.0
+            }
+          ],
+          "bids": [
+            {
+              "orderCount": null,
+              "price": 1899.75,
+              "size": 4300.0
+            },
+            {
+              "orderCount": null,
+              "price": 1899.5,
+              "size": 2100.0
+            },
+            {
+              "orderCount": null,
+              "price": 1899.0,
+              "size": 980.0
+            }
+          ],
+          "close": 1890.25,
+          "currency": "ARS",
+          "last": 1899.75,
+          "max": 1905.0,
+          "min": 1885.5,
+          "open": 1892.0,
+          "operations": 2450.0,
+          "settlement": "24hs",
+          "source": "BMB_HOMEBROKER",
+          "symbol": "PAMP",
+          "totalAmount": 2285123456.0,
+          "totalNominalValue": 1203400.0,
+          "variation": 0.5
+        },
+        "name": "pamp_ars",
+        "row": {
+          "currency": "ARS",
+          "date": "2026-11-17T14:30:08Z",
+          "stockOffer": {
+            "askTop": [
+              {
+                "position": 1,
+                "price": 1900.0,
+                "quantity": 3900.0
+              },
+              {
+                "position": 2,
+                "price": 1900.5,
+                "quantity": 1250.0
+              }
+            ],
+            "bidTop": [
+              {
+                "position": 1,
+                "price": 1899.75,
+                "quantity": 4300.0
+              },
+              {
+                "position": 2,
+                "price": 1899.5,
+                "quantity": 2100.0
+              },
+              {
+                "position": 3,
+                "price": 1899.0,
+                "quantity": 980.0
+              }
+            ]
+          },
+          "stockState": {
+            "close": 1890.25,
+            "max": 1905.0,
+            "min": 1885.5,
+            "open": 1892.0,
+            "operations": 2450,
+            "price": 1899.75,
+            "totalAmount": 2285123456.0,
+            "totalNominalValue": 1203400.0,
+            "variation": 0.5
+          },
+          "term": "2",
+          "ticker": "PAMP"
+        }
+      },
+      {
+        "expectedRecord": {
+          "asOfUtcSec": 1794925809,
+          "asks": [
+            {
+              "orderCount": null,
+              "price": 24.87,
+              "size": 1100.0
+            }
+          ],
+          "bids": [
+            {
+              "orderCount": null,
+              "price": 24.85,
+              "size": 1500.0
+            }
+          ],
+          "close": 24.68,
+          "currency": "USD",
+          "last": 24.85,
+          "max": 24.95,
+          "min": 24.55,
+          "open": 24.7,
+          "operations": 640.0,
+          "settlement": "24hs",
+          "source": "BMB_HOMEBROKER",
+          "symbol": "SUPV",
+          "totalAmount": 2454321.0,
+          "totalNominalValue": 98765.0,
+          "variation": 0.69
+        },
+        "name": "supv_usd",
+        "row": {
+          "currency": "USD",
+          "date": "2026-11-17T14:30:09Z",
+          "stockOffer": {
+            "askTop": [
+              {
+                "position": 1,
+                "price": 24.87,
+                "quantity": 1100.0
+              }
+            ],
+            "bidTop": [
+              {
+                "position": 1,
+                "price": 24.85,
+                "quantity": 1500.0
+              }
+            ]
+          },
+          "stockState": {
+            "close": 24.68,
+            "max": 24.95,
+            "min": 24.55,
+            "open": 24.7,
+            "operations": 640,
+            "price": 24.85,
+            "totalAmount": 2454321.0,
+            "totalNominalValue": 98765.0,
+            "variation": 0.69
+          },
+          "term": "2",
+          "ticker": "SUPV"
+        }
+      },
+      {
+        "expectedRecord": null,
+        "name": "unknown_term_dropped",
+        "row": {
+          "currency": "ARS",
+          "date": "2026-11-17T14:30:05Z",
+          "stockOffer": {
+            "bidTop": [
+              {
+                "position": 1,
+                "price": 99.9,
+                "quantity": 10.0
+              }
+            ]
+          },
+          "stockState": {
+            "price": 100.0
+          },
+          "term": "3",
+          "ticker": "TS"
+        }
+      },
+      {
+        "expectedRecord": null,
+        "name": "non_dict_dropped",
+        "row": "garbage"
+      }
+    ]
+  },
+  "hubToken": {
+    "handshake": {
+      "frame": "{\"protocol\":\"json\",\"version\":1}\u001e",
+      "invalidPayloads": [
+        "{\"error\":\"Unsupported protocol version\"}",
+        "garbage",
+        ""
+      ],
+      "okPayloads": [
+        "{}",
+        "  {}  "
+      ],
+      "pingFrame": "{\"type\":6}",
+      "pingReply": "{\"type\":6}\u001e"
+    },
+    "htmlCases": [
+      {
+        "expectedToken": "11111111-2222-3333-4444-555555555555",
+        "html": "<html><script>var hubConnection = hubConnect(\"stock-prices-hub?token=11111111-2222-3333-4444-555555555555&negotiateVersion=1\");</script></html>",
+        "name": "html_with_token"
+      },
+      {
+        "expectedToken": "",
+        "html": "<html><body>Sin hub</body></html>",
+        "name": "html_other_page_without_token"
+      },
+      {
+        "expectedToken": "",
+        "html": "",
+        "name": "empty_html"
+      }
+    ],
+    "negotiateResponses": [
+      {
+        "body": "{\"connectionToken\": \"22222222-3333-4444-5555-666666666666\", \"negotiateVersion\": 1}",
+        "expectedConnectionToken": "22222222-3333-4444-5555-666666666666",
+        "name": "connectionToken"
+      },
+      {
+        "body": "{\"connectionId\": \"22222222-3333-4444-5555-666666666666\"}",
+        "expectedConnectionToken": "22222222-3333-4444-5555-666666666666",
+        "name": "connectionId_fallback"
+      },
+      {
+        "body": "{\"negotiateVersion\": 1}",
+        "expectedConnectionToken": "",
+        "name": "missing"
+      },
+      {
+        "body": "not-json",
+        "expectedConnectionToken": "",
+        "name": "malformed"
+      }
+    ],
+    "resolveCases": [
+      {
+        "expectedStatus": "OK",
+        "expectedToken": "11111111-2222-3333-4444-555555555555",
+        "hubToken": "11111111-2222-3333-4444-555555555555",
+        "name": "env_token_priority",
+        "portalFinalUrl": "https://inversiones.bullmarket.com.ar/Cotizaciones",
+        "portalHtml": "<div data-hub=\"stock-prices-hub?token=99999999-8888-7777-6666-555555555555&negotiateVersion=1\"></div>",
+        "portalStatus": 200,
+        "sessionCookie": "fake_session_cookie=44444444-5555-6666-7777-888888888888"
+      },
+      {
+        "expectedStatus": "OK",
+        "expectedToken": "11111111-2222-3333-4444-555555555555",
+        "hubToken": "",
+        "name": "cookie_scrape_success",
+        "portalFinalUrl": "https://inversiones.bullmarket.com.ar/Cotizaciones",
+        "portalHtml": "<html><script>var hubConnection = hubConnect(\"stock-prices-hub?token=11111111-2222-3333-4444-555555555555&negotiateVersion=1\");</script></html>",
+        "portalStatus": 200,
+        "sessionCookie": "fake_session_cookie=44444444-5555-6666-7777-888888888888"
+      },
+      {
+        "expectedStatus": "STANDBY_2FA",
+        "expectedToken": "",
+        "hubToken": "",
+        "name": "login_redirect_is_standby",
+        "portalFinalUrl": "https://inversiones.bullmarket.com.ar/Login/Ingresar?ReturnUrl=%2FCotizaciones",
+        "portalHtml": "<html><script>var hubConnection = hubConnect(\"stock-prices-hub?token=11111111-2222-3333-4444-555555555555&negotiateVersion=1\");</script></html>",
+        "portalStatus": 200,
+        "sessionCookie": "fake_session_cookie=44444444-5555-6666-7777-888888888888"
+      },
+      {
+        "expectedStatus": "STANDBY_2FA",
+        "expectedToken": "",
+        "hubToken": "",
+        "name": "portal_401_is_standby",
+        "portalFinalUrl": "https://inversiones.bullmarket.com.ar/Cotizaciones",
+        "portalHtml": "",
+        "portalStatus": 401,
+        "sessionCookie": "fake_session_cookie=44444444-5555-6666-7777-888888888888"
+      },
+      {
+        "expectedStatus": "PORTAL_ERROR",
+        "expectedToken": "",
+        "hubToken": "",
+        "name": "portal_500_is_error",
+        "portalFinalUrl": "https://inversiones.bullmarket.com.ar/Cotizaciones",
+        "portalHtml": "",
+        "portalStatus": 500,
+        "sessionCookie": "fake_session_cookie=44444444-5555-6666-7777-888888888888"
+      },
+      {
+        "expectedStatus": "STANDBY_2FA",
+        "expectedToken": "",
+        "hubToken": "",
+        "name": "no_token_no_cookie_is_standby",
+        "portalFinalUrl": "",
+        "portalHtml": "",
+        "portalStatus": null,
+        "sessionCookie": ""
+      }
+    ],
+    "urlCases": [
+      {
+        "connectionToken": "22222222-3333-4444-5555-666666666666",
+        "expectedNegotiateHeaders": {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          "Origin": "https://inversiones.bullmarket.com.ar",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        },
+        "expectedNegotiateUrl": "https://hub.bullmarketbrokers.com/stock-prices-hub/negotiate?token=11111111-2222-3333-4444-555555555555&negotiateVersion=1",
+        "expectedWsHeaders": {
+          "Origin": "https://inversiones.bullmarket.com.ar",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        },
+        "expectedWsUrl": "wss://hub.bullmarketbrokers.com/stock-prices-hub?token=11111111-2222-3333-4444-555555555555&id=22222222-3333-4444-5555-666666666666",
+        "hubToken": "11111111-2222-3333-4444-555555555555",
+        "name": "default"
+      }
+    ],
+    "wsHandshakeErrorCases": [
+      {
+        "expected": "STANDBY_2FA",
+        "message": "Handshake status 401 Unauthorized",
+        "name": "unauthorized_401"
+      },
+      {
+        "expected": "STANDBY_2FA",
+        "message": "Handshake status 403",
+        "name": "forbidden_403"
+      },
+      {
+        "expected": "ERROR",
+        "message": "Handshake status 500",
+        "name": "server_500"
+      },
+      {
+        "expected": "ERROR",
+        "message": "connection refused",
+        "name": "network"
+      }
+    ]
+  },
+  "l2UpdateLines": [
+    {
+      "expectedBook": {
+        "asOfUtcSec": 1794925805,
+        "asks": [
+          {
+            "orderCount": null,
+            "price": 6451.0,
+            "size": 900.0
+          },
+          {
+            "orderCount": null,
+            "price": 6451.5,
+            "size": 2200.0
+          },
+          {
+            "orderCount": null,
+            "price": 6452.0,
+            "size": 1400.0
+          },
+          {
+            "orderCount": null,
+            "price": 6452.5,
+            "size": 600.0
+          },
+          {
+            "orderCount": null,
+            "price": 6453.0,
+            "size": 3100.0
+          }
+        ],
+        "bids": [
+          {
+            "orderCount": null,
+            "price": 6450.5,
+            "size": 1200.0
+          },
+          {
+            "orderCount": null,
+            "price": 6450.0,
+            "size": 3500.0
+          },
+          {
+            "orderCount": null,
+            "price": 6449.5,
+            "size": 800.0
+          },
+          {
+            "orderCount": null,
+            "price": 6449.0,
+            "size": 2500.0
+          },
+          {
+            "orderCount": null,
+            "price": 6448.5,
+            "size": 150.0
+          }
+        ],
+        "settlement": "24hs",
+        "source": "BMB_HOMEBROKER",
+        "symbol": "GGAL"
+      },
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"GGAL\", \"settlement\": \"24hs\", \"currency\": \"ARS\", \"asOfUtcSec\": 1794925805, \"last\": 6450.5, \"open\": 6430.0, \"min\": 6415.25, \"max\": 6468.0, \"close\": 6420.75, \"variation\": 0.46, \"totalNominalValue\": 12345678.5, \"totalAmount\": 1234567890.25, \"operations\": 4211.0, \"bids\": [{\"price\": 6450.5, \"size\": 1200.0, \"orderCount\": null}, {\"price\": 6450.0, \"size\": 3500.0, \"orderCount\": null}, {\"price\": 6449.5, \"size\": 800.0, \"orderCount\": null}, {\"price\": 6449.0, \"size\": 2500.0, \"orderCount\": null}, {\"price\": 6448.5, \"size\": 150.0, \"orderCount\": null}], \"asks\": [{\"price\": 6451.0, \"size\": 900.0, \"orderCount\": null}, {\"price\": 6451.5, \"size\": 2200.0, \"orderCount\": null}, {\"price\": 6452.0, \"size\": 1400.0, \"orderCount\": null}, {\"price\": 6452.5, \"size\": 600.0, \"orderCount\": null}, {\"price\": 6453.0, \"size\": 3100.0, \"orderCount\": null}], \"source\": \"BMB_HOMEBROKER\"}}",
+      "name": "ggal"
+    },
+    {
+      "expectedBook": null,
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"BMA\", \"settlement\": \"CI\", \"currency\": \"ARS\", \"asOfUtcSec\": 1794925807, \"last\": 682.4, \"open\": 681.0, \"min\": 679.8, \"max\": 684.2, \"close\": 680.9, \"variation\": 0.22, \"totalNominalValue\": 45210.0, \"totalAmount\": 30874321.0, \"operations\": 152.0, \"bids\": [{\"price\": 682.4, \"size\": 300.0, \"orderCount\": null}], \"asks\": [{\"price\": 682.6, \"size\": 250.0, \"orderCount\": null}], \"source\": \"BMB_HOMEBROKER\"}}",
+      "name": "bma_ci_skipped"
+    },
+    {
+      "expectedBook": {
+        "asOfUtcSec": 1794925809,
+        "asks": [
+          {
+            "orderCount": null,
+            "price": 24.87,
+            "size": 1100.0
+          }
+        ],
+        "bids": [
+          {
+            "orderCount": null,
+            "price": 24.85,
+            "size": 1500.0
+          }
+        ],
+        "settlement": "24hs",
+        "source": "BMB_HOMEBROKER",
+        "symbol": "SUPV"
+      },
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"SUPV\", \"settlement\": \"24hs\", \"currency\": \"USD\", \"asOfUtcSec\": 1794925809, \"last\": 24.85, \"open\": 24.7, \"min\": 24.55, \"max\": 24.95, \"close\": 24.68, \"variation\": 0.69, \"totalNominalValue\": 98765.0, \"totalAmount\": 2454321.0, \"operations\": 640.0, \"bids\": [{\"price\": 24.85, \"size\": 1500.0, \"orderCount\": null}], \"asks\": [{\"price\": 24.87, \"size\": 1100.0, \"orderCount\": null}], \"source\": \"BMB_HOMEBROKER\"}}",
+      "name": "supv"
+    },
+    {
+      "expectedBook": {
+        "asOfUtcSec": 1794925805,
+        "asks": [
+          {
+            "orderCount": null,
+            "price": 6451.0,
+            "size": 700.0
+          }
+        ],
+        "bids": [
+          {
+            "orderCount": null,
+            "price": 6450.5,
+            "size": 100.0
+          },
+          {
+            "orderCount": null,
+            "price": 6450.0,
+            "size": 200.0
+          },
+          {
+            "orderCount": null,
+            "price": 6449.5,
+            "size": 300.0
+          },
+          {
+            "orderCount": null,
+            "price": 6449.0,
+            "size": 400.0
+          },
+          {
+            "orderCount": null,
+            "price": 6448.5,
+            "size": 500.0
+          }
+        ],
+        "settlement": "24hs",
+        "source": "BMB_HOMEBROKER",
+        "symbol": "GGAL"
+      },
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"GGAL\", \"settlement\": \"24hs\", \"currency\": \"ARS\", \"asOfUtcSec\": 1794925805, \"last\": 6450.5, \"bids\": [{\"price\": 6450.5, \"size\": 100.0, \"orderCount\": null}, {\"price\": 6450.0, \"size\": 200.0, \"orderCount\": null}, {\"price\": 6449.5, \"size\": 300.0, \"orderCount\": null}, {\"price\": 6449.0, \"size\": 400.0, \"orderCount\": null}, {\"price\": 6448.5, \"size\": 500.0, \"orderCount\": null}, {\"price\": 6448.0, \"size\": 600.0, \"orderCount\": null}], \"asks\": [{\"price\": 6451.0, \"size\": 700.0, \"orderCount\": null}], \"source\": \"BMB_HOMEBROKER\"}}",
+      "name": "six_bids_truncated"
+    },
+    {
+      "expectedBook": {
+        "asOfUtcSec": 1794925808,
+        "asks": [],
+        "bids": [
+          {
+            "orderCount": null,
+            "price": 1899.0,
+            "size": 980.0
+          }
+        ],
+        "settlement": "24hs",
+        "source": "BMB_HOMEBROKER",
+        "symbol": "PAMP"
+      },
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"PAMP\", \"settlement\": \"24hs\", \"currency\": \"ARS\", \"asOfUtcSec\": 1794925808, \"last\": 1899.75, \"bids\": [{\"price\": \"not-a-number\", \"size\": 10.0, \"orderCount\": null}, {\"price\": 1899.0, \"size\": 980.0, \"orderCount\": null}], \"asks\": [{\"price\": 0, \"size\": 5.0, \"orderCount\": null}], \"source\": \"BMB_HOMEBROKER\"}}",
+      "name": "invalid_levels_dropped"
+    },
+    {
+      "expectedBook": null,
+      "line": "oops-not-json",
+      "name": "invalid_json"
+    },
+    {
+      "expectedBook": null,
+      "line": "{\"event\": \"OTHER\", \"record\": {}}",
+      "name": "wrong_event"
+    },
+    {
+      "expectedBook": null,
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"BMA\", \"settlement\": \"CI\", \"bids\": [{\"price\": 682.4, \"size\": 300.0, \"orderCount\": null}], \"asks\": [], \"asOfUtcSec\": 1794925807, \"source\": \"BMB_HOMEBROKER\"}}",
+      "name": "ci_settlement_skipped"
+    },
+    {
+      "expectedBook": null,
+      "line": "{\"event\": \"L2_UPDATE\", \"record\": {\"symbol\": \"GGAL\", \"settlement\": \"24hs\", \"bids\": [], \"asks\": []}}",
+      "name": "empty_book_rejected"
+    }
+  ],
+  "redactionCases": [
+    {
+      "expected": "SignalR negotiate HTTP 500: https://hub.bullmarketbrokers.com/stock-prices-hub/negotiate?token=[REDACTED]&negotiateVersion=1",
+      "input": "SignalR negotiate HTTP 500: https://hub.bullmarketbrokers.com/stock-prices-hub/negotiate?token=11111111-2222-3333-4444-555555555555&negotiateVersion=1",
+      "name": "negotiate_url_token"
+    },
+    {
+      "expected": "SignalR ws error: wss://hub.bullmarketbrokers.com/stock-prices-hub?token=[REDACTED]&id=[REDACTED]",
+      "input": "SignalR ws error: wss://hub.bullmarketbrokers.com/stock-prices-hub?token=11111111-2222-3333-4444-555555555555&id=22222222-3333-4444-5555-666666666666",
+      "name": "ws_url_token_and_id"
+    },
+    {
+      "expected": "handshake rejected at wss://fallback.local/?id=[REDACTED]",
+      "input": "handshake rejected at wss://fallback.local/?id=22222222-3333-4444-5555-666666666666",
+      "name": "id_query_only"
+    },
+    {
+      "expected": "SignalR negotiate sin connectionToken/connectionId",
+      "input": "SignalR negotiate sin connectionToken/connectionId",
+      "name": "no_credentials_untouched"
+    }
+  ]
+}

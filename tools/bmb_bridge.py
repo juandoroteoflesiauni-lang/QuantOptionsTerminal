@@ -72,10 +72,12 @@ def read_bmb_config(environ: dict[str, str] | os._Environ[str] = os.environ) -> 
                 cfg["username"],
                 cfg["account"],
                 cfg["session_cookie"],
+                cfg["hub_token"],
                 str(normalized.get("BMB_DNI") or ""),
                 str(normalized.get("BMB_USER") or ""),
                 str(normalized.get("BMB_PASS") or ""),
                 str(normalized.get("BMB_SESSION_COOKIE") or ""),
+                str(normalized.get("BMB_HUB_TOKEN") or ""),
             )
             if value
         )
