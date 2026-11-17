@@ -130,7 +130,8 @@ export function resolveTradierConfig(
   const tokenIsGeneric =
     tokenEnvName === 'TRADIER_TOKEN' || tokenEnvName === 'TRADIER_API_TOKEN';
   const sandboxFallbackAllowed = useSandboxRaw !== 'false';
-  const apiEnv: TradierApiEnv = tokenIsSandbox || envRaw === 'sandbox' ? 'sandbox' : 'prod';
+  const apiEnv: TradierApiEnv =
+    tokenIsSandbox || envRaw === 'sandbox' || useSandboxRaw === 'true' ? 'sandbox' : 'prod';
   return {
     accessToken,
     tokenEnvName,

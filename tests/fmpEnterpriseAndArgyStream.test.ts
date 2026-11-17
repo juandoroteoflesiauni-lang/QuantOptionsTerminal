@@ -452,6 +452,18 @@ describe('Pieza 41 — Tradier stream e histórico REST', () => {
     }
   });
 
+  it('fuerza Sandbox cuando TRADIER_USE_SANDBOX=true aunque el token sea Live', () => {
+    const config = resolveTradierConfig(
+      { TRADIER_TOKEN: 'tradier-test-token', TRADIER_USE_SANDBOX: 'true' },
+      'tests/.env-not-present',
+    );
+    expect(config.configured).toBe(true);
+    expect(config.apiEnv).toBe('sandbox');
+    expect(config.restBaseUrl).toBe(TRADIER_SANDBOX_REST_BASE);
+    expect(config.wsBaseUrl).toBe(TRADIER_SANDBOX_WS_BASE);
+    expect(config.tokenEnvName).toBe('TRADIER_TOKEN');
+  });
+
   it('reporta el entorno Tradier en estado live sin exponer token', () => {
     const runtime = new MarketRuntime({
       tradierConfig: resolveTradierConfig({ TRADIER_SANDBOX_TOKEN: 'tradier-test-token' }, 'tests/.env-not-present'),

@@ -531,6 +531,17 @@
       "environment": "SANDBOX",
       "restBaseUrl": "https://sandbox.tradier.com/v1",
       "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_TOKEN": "legacy-live",
+        "TRADIER_USE_SANDBOX": "true"
+      },
+      "configured": true,
+      "apiEnv": "sandbox",
+      "environment": "SANDBOX",
+      "restBaseUrl": "https://sandbox.tradier.com/v1",
+      "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"
     }
   ],
   "tradierSandboxFallback": {

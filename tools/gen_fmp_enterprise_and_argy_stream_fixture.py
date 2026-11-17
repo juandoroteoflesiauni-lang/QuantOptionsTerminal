@@ -173,6 +173,7 @@ def main() -> None:
             {"env": {"TRADIER_SANDBOX_KEY": "sandbox-token"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
             {"env": {"TRADIER_API_TOKEN": "live-token", "TRADIER_ENV": "sandbox"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
             {"env": {"TRADIER_SANDBOX_TOKEN": "sandbox-token", "TRADIER_ENV": "prod"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_TOKEN": "legacy-live", "TRADIER_USE_SANDBOX": "true"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
         ],
         "tradierSandboxFallback": {
             "generic": {
