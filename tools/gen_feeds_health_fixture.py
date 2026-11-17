@@ -147,6 +147,42 @@ def resolve_state(configured: bool, connected: bool | None, session_mode: str) -
     return "DEGRADED"
 
 
+MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS = 5000
+
+
+def massive_ws_socket_live(
+    connected: bool,
+    messages_per_minute: int | None,
+    last_message_age_ms: int | None,
+) -> bool:
+    """Regla de liveness del socket Massive de acciones (hotfix producción).
+
+    El socket está vivo si el cliente reporta `ready`, o si el flujo demuestra
+    recepción: mensajes en la ventana móvil y último mensaje con edad menor a
+    5 s (p. ej. 42 ms con 33.883 msg/min). La edad mide la recepción local del
+    último mensaje WebSocket; el timestamp de un tick histórico individual del
+    proveedor no participa en la decisión.
+    """
+    if connected:
+        return True
+    if messages_per_minute is None or messages_per_minute <= 0:
+        return False
+    if last_message_age_ms is None or last_message_age_ms >= MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS:
+        return False
+    return True
+
+
+def massive_ws_state(configured: bool, session_mode: str, live: bool) -> str:
+    """Estado del proveedor MASSIVE_WS_STOCKS con la liveness aplicada antes."""
+    if not configured:
+        return "NOT_CONFIGURED"
+    if live:
+        return "CONNECTED"
+    if session_mode == "OUT_OF_SESSION":
+        return "ARMED_OUT_OF_SESSION"
+    return "DEGRADED"
+
+
 def get_us_market_parts(utc_sec: int) -> dict[str, int]:
     """Reference NY calendar clock (America/New_York) without external libraries.
 
@@ -274,6 +310,42 @@ def main() -> None:
         },
     ]
     fixture["state"] = state_cases
+
+    # Liveness MASSIVE_WS_STOCKS (hotfix producción): el flujo real de mensajes
+    # manda sobre la transición momentánea del estado del cliente; el proveedor
+    # no se degrada mientras el último mensaje tenga menos de 5 s de edad.
+    us_in_session_utc_sec = 1_700_000_000
+    us_out_of_session_utc_sec = 1_699_570_200
+    liveness_specs = [
+        ("ready_socket_quiescent", True, None, None),
+        ("ready_socket_with_flow", True, 33_883, 42),
+        ("production_flap_live_flow", False, 33_883, 42),
+        ("flap_flow_below_bound", False, 1, 4_999),
+        ("flap_flow_at_bound", False, 33_883, 5_000),
+        ("flap_flow_stale", False, 33_883, 5_200),
+        ("no_messages_recent_age", False, 0, 120),
+        ("missing_telemetry", False, None, None),
+        ("flow_without_age", False, 1_200, None),
+    ]
+    liveness_cases: list[dict[str, Any]] = []
+    for name, connected, messages_per_minute, last_message_age_ms in liveness_specs:
+        for utc_sec in (us_in_session_utc_sec, us_out_of_session_utc_sec):
+            live = massive_ws_socket_live(connected, messages_per_minute, last_message_age_ms)
+            liveness_cases.append(
+                {
+                    "name": (
+                        f"{name}__"
+                        f"{'in_session' if utc_sec == us_in_session_utc_sec else 'out_of_session'}"
+                    ),
+                    "connected": connected,
+                    "messagesPerMinute": messages_per_minute,
+                    "lastMessageAgeMs": last_message_age_ms,
+                    "usUtcSec": utc_sec,
+                    "expectedConnected": live,
+                    "expectedState": massive_ws_state(True, us_session_reference(utc_sec), live),
+                }
+            )
+    fixture["massiveWsLiveness"] = liveness_cases
 
     session_cases = [
         # Wednesday 14:30 New York = IN_SESSION.

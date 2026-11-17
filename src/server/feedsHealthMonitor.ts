@@ -441,6 +441,34 @@ function resolveState(input: {
   return 'DEGRADED';
 }
 
+/** Edad máxima del último mensaje recibido para considerar vivo el socket Massive (ms). */
+export const MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS = 5_000;
+
+/**
+ * Liveness del socket Massive de acciones (hotfix producción).
+ *
+ * El socket está vivo si el cliente reporta `ready`, o si el flujo demuestra
+ * recepción: mensajes en la ventana móvil y último mensaje con edad menor a
+ * `MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS` (p. ej. 42 ms con 33.883 msg/min).
+ * Así, una transición momentánea del estado del cliente (reconnecting) nunca
+ * degrada al proveedor mientras el flujo esté vivo, y el timestamp de un tick
+ * histórico individual no participa: la edad mide la recepción local del
+ * último mensaje WebSocket, no la fecha del tick del proveedor.
+ */
+export function isMassiveWsSocketLive(input: {
+  readonly connected: boolean;
+  readonly messagesPerMinute: number | null;
+  readonly lastMessageAgeMs: number | null;
+}): boolean {
+  if (input.connected) return true;
+  return (
+    input.messagesPerMinute !== null &&
+    input.messagesPerMinute > 0 &&
+    input.lastMessageAgeMs !== null &&
+    input.lastMessageAgeMs < MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS
+  );
+}
+
 function countStates(providers: readonly FeedProviderHealth[]): FeedsHealthSummary {
   let configuredCount = 0;
   let activeCount = 0;
@@ -630,13 +658,19 @@ export class FeedsHealthMonitor {
     const bmb = this.deps.getBmb();
     const iol = this.deps.getIol();
 
+    const massiveWsSocketLive = isMassiveWsSocketLive({
+      connected: massiveWs.connected,
+      messagesPerMinute: massiveWs.telemetry.messagesPerMinute,
+      lastMessageAgeMs: massiveWs.lastWsMessageAgeMs,
+    });
+
     const massiveWsProvider: FeedProviderHealth = {
       ...commonProvider({
         id: 'MASSIVE_WS_STOCKS',
         region: 'US',
         role: 'Spot NBBO / Trades US',
         configured: massiveWs.configured,
-        connected: massiveWs.connected,
+        connected: massiveWsSocketLive,
         sessionMode: usSession,
         telemetry: massiveWs.telemetry,
         latencyKind: 'PROVIDER_EVENT_AGE',

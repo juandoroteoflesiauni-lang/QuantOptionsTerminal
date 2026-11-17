@@ -46,11 +46,26 @@ export interface IolCaucionQuote {
   readonly asOfUtcSec: number | null;
 }
 
-type PanelId = 'acciones' | 'cedears' | 'bonos' | 'letras' | 'obligacionesNegociables' | 'cauciones';
+type PanelId =
+  | 'acciones'
+  | 'accionesPanelGeneral'
+  | 'cedears'
+  | 'bonos'
+  | 'letras'
+  | 'obligacionesNegociables'
+  | 'cauciones';
 
-const PANELS: readonly { readonly id: PanelId; readonly path: string }[] = [
-  { id: 'acciones', path: '/api/v2/Cotizaciones/acciones/todas/argentina' },
-  { id: 'cedears', path: '/api/v2/Cotizaciones/cedears/todas/argentina' },
+/**
+ * Rutas válidas de la API v2 de InvertirOnline (documentación oficial):
+ * - `acciones` usa paneles nombrados: "Merval" (líderes) y "Panel General"
+ *   (URL-encoded como `Panel%20General`); `acciones/todas` devuelve HTTP 404.
+ * - el mercado de CEDEARs es singular: `cedear` (no `cedears`, que devuelve
+ *   HTTP 400).
+ */
+export const IOL_PANELS: readonly { readonly id: PanelId; readonly path: string }[] = [
+  { id: 'acciones', path: '/api/v2/Cotizaciones/acciones/Merval/argentina' },
+  { id: 'accionesPanelGeneral', path: '/api/v2/Cotizaciones/acciones/Panel%20General/argentina' },
+  { id: 'cedears', path: '/api/v2/Cotizaciones/cedear/todas/argentina' },
   { id: 'bonos', path: '/api/v2/Cotizaciones/bonos/todas/argentina' },
   { id: 'letras', path: '/api/v2/Cotizaciones/letras/todas/argentina' },
   { id: 'obligacionesNegociables', path: '/api/v2/Cotizaciones/obligacionesNegociables/todas/argentina' },
@@ -263,7 +278,7 @@ export class IolFeedAdapter {
   public getQuotes(): readonly MarketTickQuote[] {
     const nowMs = this.nowMsFn();
     const out: MarketTickQuote[] = [];
-    for (const panel of PANELS) {
+    for (const panel of IOL_PANELS) {
       const successAt = this.panelSuccessAtMs.get(panel.id);
       if (successAt === undefined || nowMs < successAt || nowMs - successAt > IOL_PANEL_STALE_MS) continue;
       out.push(...(this.quotesByPanel.get(panel.id) ?? []));
@@ -393,7 +408,7 @@ export class IolFeedAdapter {
   }
 
   private async pollPanels(generation: number): Promise<void> {
-    const results = await Promise.allSettled(PANELS.map(async (panel) => {
+    const results = await Promise.allSettled(IOL_PANELS.map(async (panel) => {
       const body = await this.getPanel(panel.path);
       return { panel, body };
     }));
@@ -401,7 +416,7 @@ export class IolFeedAdapter {
     let success = false;
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index];
-      const panel = PANELS[index];
+      const panel = IOL_PANELS[index];
       if (result === undefined || panel === undefined) continue;
       if (result.status === 'rejected') {
         const message = redactSecrets(result.reason instanceof Error ? result.reason.message : String(result.reason), this.getSecrets());
@@ -442,7 +457,7 @@ export class IolFeedAdapter {
     const change = finite(raw['variacionPorcentual']);
     const currencyRaw = nonEmpty(raw['moneda'])?.toLowerCase();
     const currency = currencyRaw?.includes('dolar') || currencyRaw?.includes('usd') ? 'USD' : currencyRaw !== undefined ? 'ARS' : null;
-    const kind = panel === 'acciones' || panel === 'cedears'
+    const kind = panel === 'acciones' || panel === 'accionesPanelGeneral' || panel === 'cedears'
       ? 'stock'
       : panel === 'bonos'
         ? 'bond'

@@ -19,6 +19,170 @@
       "nowMs": 1500
     }
   ],
+  "massiveWsLiveness": [
+    {
+      "connected": true,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": null,
+      "messagesPerMinute": null,
+      "name": "ready_socket_quiescent__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": true,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": null,
+      "messagesPerMinute": null,
+      "name": "ready_socket_quiescent__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": true,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": 42,
+      "messagesPerMinute": 33883,
+      "name": "ready_socket_with_flow__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": true,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": 42,
+      "messagesPerMinute": 33883,
+      "name": "ready_socket_with_flow__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": 42,
+      "messagesPerMinute": 33883,
+      "name": "production_flap_live_flow__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": 42,
+      "messagesPerMinute": 33883,
+      "name": "production_flap_live_flow__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": 4999,
+      "messagesPerMinute": 1,
+      "name": "flap_flow_below_bound__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED",
+      "lastMessageAgeMs": 4999,
+      "messagesPerMinute": 1,
+      "name": "flap_flow_below_bound__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": 5000,
+      "messagesPerMinute": 33883,
+      "name": "flap_flow_at_bound__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": 5000,
+      "messagesPerMinute": 33883,
+      "name": "flap_flow_at_bound__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": 5200,
+      "messagesPerMinute": 33883,
+      "name": "flap_flow_stale__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": 5200,
+      "messagesPerMinute": 33883,
+      "name": "flap_flow_stale__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": 120,
+      "messagesPerMinute": 0,
+      "name": "no_messages_recent_age__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": 120,
+      "messagesPerMinute": 0,
+      "name": "no_messages_recent_age__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": null,
+      "messagesPerMinute": null,
+      "name": "missing_telemetry__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": null,
+      "messagesPerMinute": null,
+      "name": "missing_telemetry__out_of_session",
+      "usUtcSec": 1699570200
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": null,
+      "messagesPerMinute": 1200,
+      "name": "flow_without_age__in_session",
+      "usUtcSec": 1700000000
+    },
+    {
+      "connected": false,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED",
+      "lastMessageAgeMs": null,
+      "messagesPerMinute": 1200,
+      "name": "flow_without_age__out_of_session",
+      "usUtcSec": 1699570200
+    }
+  ],
   "sessions": [
     {
       "expected": "IN_SESSION",

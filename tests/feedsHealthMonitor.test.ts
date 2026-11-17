@@ -6,6 +6,7 @@ import {
   emptyFeedTelemetrySnapshot,
   getArFeedSessionMode,
   getUsFeedSessionMode,
+  isMassiveWsSocketLive,
   type FeedTelemetrySnapshot,
   type FeedsHealthMonitorDeps,
   type MassiveWsFeedHealthSource,
@@ -58,11 +59,22 @@ interface FixtureAgeCase {
   readonly expected: number | null;
 }
 
+interface FixtureMassiveWsLivenessCase {
+  readonly name: string;
+  readonly connected: boolean;
+  readonly messagesPerMinute: number | null;
+  readonly lastMessageAgeMs: number | null;
+  readonly usUtcSec: number;
+  readonly expectedConnected: boolean;
+  readonly expectedState: 'CONNECTED' | 'ARMED_OUT_OF_SESSION' | 'DEGRADED' | 'NOT_CONFIGURED';
+}
+
 interface FixtureRoot {
   readonly telemetry: readonly FixtureTelemetryCase[];
   readonly state: readonly FixtureStateCase[];
   readonly sessions: readonly FixtureSessionCase[];
   readonly age: readonly FixtureAgeCase[];
+  readonly massiveWsLiveness: readonly FixtureMassiveWsLivenessCase[];
 }
 
 const fixture = JSON.parse(
@@ -224,6 +236,40 @@ describe('Pieza 33 — máquina de estados y resumen', () => {
   });
 });
 
+describe('Pieza 33 hotfix — liveness MASSIVE_WS_STOCKS (referencia Python independiente)', () => {
+  it('isMassiveWsSocketLive coincide con la referencia', () => {
+    for (const livenessCase of fixture.massiveWsLiveness) {
+      expect(
+        isMassiveWsSocketLive({
+          connected: livenessCase.connected,
+          messagesPerMinute: livenessCase.messagesPerMinute,
+          lastMessageAgeMs: livenessCase.lastMessageAgeMs,
+        }),
+      ).toBe(livenessCase.expectedConnected);
+    }
+  });
+
+  for (const livenessCase of fixture.massiveWsLiveness) {
+    it(`estado ${livenessCase.name} => ${livenessCase.expectedState}`, () => {
+      const providers = createMonitor({
+        nowMs: livenessCase.usUtcSec * 1_000,
+        massiveWs: {
+          configured: true,
+          connected: livenessCase.connected,
+          telemetry: {
+            ...emptyFeedTelemetrySnapshot(),
+            messagesPerMinute: livenessCase.messagesPerMinute,
+          },
+          lastWsMessageAgeMs: livenessCase.lastMessageAgeMs,
+        },
+      }).getSnapshot();
+      const provider = providers.providers[0];
+      expect(provider?.state).toBe(livenessCase.expectedState);
+      expect(provider?.connected).toBe(livenessCase.expectedConnected);
+    });
+  }
+});
+
 describe('Pieza 33 — parser/render del CLI', () => {
   it('parsea y renderiza el snapshot de salud sin inventar valores', () => {
     const raw = {
@@ -339,7 +385,7 @@ function createMonitor(overrides: MonitorOverrides = {}): FeedsHealthMonitor {
     subscribedSymbols: [],
     activeSymbolCount: 0,
     subscribedOptionQuotes: 0,
-    lastWsMessageAgeMs: null,
+    lastWsMessageAgeMs: overrides.massiveWs?.lastWsMessageAgeMs ?? null,
   };
   const deps: FeedsHealthMonitorDeps = {
     getMassiveWs: () => massiveWs,
