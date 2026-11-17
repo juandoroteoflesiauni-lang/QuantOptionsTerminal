@@ -18,6 +18,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+try:
+    import requests as _requests_module
+except ImportError:  # pragma: no cover - pyhomebroker ships requests
+    _requests_module = None
+
 TOOL_DIR = Path(__file__).resolve().parent
 if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
@@ -40,6 +45,13 @@ def load_fixture() -> dict[str, Any]:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+SESSION_COOKIE_FIXTURE_PATH = TOOL_DIR.parent / "fixtures" / "bmb_session_cookie.json"
+
+
+def load_session_cookie_fixture() -> dict[str, Any]:
+    return json.loads(SESSION_COOKIE_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
 def make_state() -> Any:
     cfg = {
         "broker_id": 153,
@@ -47,10 +59,17 @@ def make_state() -> Any:
         "username": "test-user",
         "password": "test-password",
         "account": "test-account",
+        "session_cookie": "fake_session_cookie=a1b2c3d4",
         "host": "127.0.0.1",
         "port": 8788,
         "leaders": ("GGAL",),
-        "secrets": ("20123456789", "test-user", "test-password", "test-account"),
+        "secrets": (
+            "20123456789",
+            "test-user",
+            "test-password",
+            "test-account",
+            "fake_session_cookie=a1b2c3d4",
+        ),
     }
     return module.BmbBridgeState(cfg)
 
@@ -63,6 +82,74 @@ def fake_online() -> Any:
         subscribe_options=lambda: None,
         subscribe_order_book=lambda *_args: None,
     )
+
+
+class FakeAuthClient:
+    """Fake `hb.auth` con semántica mínima de la librería (offline)."""
+
+    def __init__(self) -> None:
+        self.is_user_logged_in = False
+        self.cookies: dict[str, str] = {}
+        self.login_calls = 0
+        self.login_error: Exception | None = None
+
+    def login(self, **_kwargs: Any) -> None:
+        self.login_calls += 1
+        if self.login_error is not None:
+            self.is_user_logged_in = False
+            raise self.login_error
+        self.is_user_logged_in = True
+
+
+class FakeOnlineClient:
+    """Fake `hb.online` con semántica mínima de la librería (offline)."""
+
+    def __init__(self, connect_error: Exception | None = None, connected: bool = True) -> None:
+        self.connect_error = connect_error
+        self._connected = False
+        self.connected_after_connect = connected
+        self.connect_calls = 0
+        self.subscriptions: list[tuple[Any, ...]] = []
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        if self.connect_error is not None:
+            # El rechazo del stream con cookie agota ese único intento;
+            # los connects posteriores (post-login) ya no fallan por esto.
+            error = self.connect_error
+            self.connect_error = None
+            raise error
+        self._connected = self.connected_after_connect
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def subscribe_securities(self, *args: Any) -> None:
+        self.subscriptions.append(("securities", *args))
+
+    def subscribe_repos(self) -> None:
+        self.subscriptions.append(("repos",))
+
+    def subscribe_options(self) -> None:
+        self.subscriptions.append(("options",))
+
+    def subscribe_order_book(self, *args: Any) -> None:
+        self.subscriptions.append(("orderbook", *args))
+
+
+def make_cookie_fake_hb(
+    connect_error: Exception | None = None,
+    connected: bool = True,
+) -> tuple[Any, FakeAuthClient, FakeOnlineClient]:
+    auth = FakeAuthClient()
+    online = FakeOnlineClient(connect_error=connect_error, connected=connected)
+
+    def fake_home_broker(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(auth=auth, online=online)
+
+    module.HomeBroker = fake_home_broker
+    module.PYHOMEBROKER_AVAILABLE = True
+    return SimpleNamespace(auth=auth, online=online), auth, online
 
 
 def test_request_reconnect_closes_session_and_sets_flag() -> None:
@@ -234,6 +321,150 @@ def test_get_health_reports_standby_2fa_as_not_ok() -> None:
     assert health["status"] == "STANDBY_2FA"
     assert health["ok"] is False
     assert health["connected"] is False
+
+
+def test_session_cookie_parsing_matches_reference_fixture() -> None:
+    fixture = load_session_cookie_fixture()
+    for case in fixture["parseCases"]:
+        actual = base.parse_bmb_session_cookie(case["raw"])
+        expected = tuple(tuple(pair) for pair in case["expectedPairs"])
+        assert actual == expected, f"case {case['name']}: {actual} != {expected}"
+
+
+def test_session_cookie_injection_sets_domains_and_user_agent() -> None:
+    fixture = load_session_cookie_fixture()
+    assert _requests_module is not None, "requests es dependencia de pyhomebroker"
+    for case in fixture["parseCases"]:
+        if "expectedJarEntries" not in case:
+            continue
+        jar = _requests_module.cookies.RequestsCookieJar()
+        session = SimpleNamespace(cookies=jar, headers={})
+        entries = base.inject_bmb_session_cookies(session, case["raw"])
+        assert entries == len(case["expectedJarEntries"]), f"case {case['name']}"
+        for name, value, domain, path in case["expectedJarEntries"]:
+            match = any(
+                cookie.name == name
+                and cookie.value == value
+                and cookie.domain == domain
+                and cookie.path == path
+                for cookie in jar
+            )
+            assert match, f"case {case['name']}: missing {name}@{domain}"
+        assert base.configure_bmb_browser_session(session) is True
+        assert session.headers["User-Agent"] == fixture["browserUserAgent"]
+
+
+def test_read_bmb_env_loads_session_cookie_and_redacts_it() -> None:
+    env = {
+        "BMB_BROKER_ID": "153",
+        "BMB_DNI": " 12.345.678 ",
+        "BMB_USER": "sample-user",
+        "BMB_PASSWORD": "sample-password",
+        "BMB_SESSION_COOKIE": "  fake_session_cookie=a1b2c3d4; ASP.NET_SessionId=xyz  ",
+        "BMB_ACCOUNT": "sample-account",
+    }
+    cfg = base.read_bmb_env(env)
+    assert cfg["session_cookie"] == "fake_session_cookie=a1b2c3d4; ASP.NET_SessionId=xyz"
+    assert cfg["session_cookie"] in cfg["secrets"]
+    # El valor crudo (con bordes con espacios) también queda en la redacción.
+    assert env["BMB_SESSION_COOKIE"] in cfg["secrets"]
+    absent = base.read_bmb_env({"BMB_BROKER_ID": "153"})
+    assert absent["session_cookie"] == ""
+
+
+def test_apply_trusted_device_context_loads_auth_cookies_and_ua_labels_only() -> None:
+    fixture = load_session_cookie_fixture()
+    raw = "fake_session_cookie=a1b2c3d4; ASP.NET_SessionId=xyz123"
+    auth = FakeAuthClient()
+    online = FakeOnlineClient()
+    context = base.apply_bmb_trusted_device_context(auth, online, raw)
+    expected_pairs = base.parse_bmb_session_cookie(raw)
+    assert context["authCookiesLoaded"] == len(expected_pairs)
+    assert auth.cookies == dict(expected_pairs)
+    # Solo etiquetas/conteos: ningún valor de cookie en el contexto.
+    serialized = json.dumps(context)
+    for _name, value in expected_pairs:
+        assert value not in serialized
+    # UA moderno aplicado a los globals de módulos de la librería (si instalada).
+    if context["uaModulesUpdated"]:
+        for module_name in context["uaModulesUpdated"]:
+            assert sys.modules[module_name].user_agent == fixture["browserUserAgent"]
+
+
+def test_online_cookie_reuse_success_skips_login() -> None:
+    state = make_state()
+    hb, auth, online = make_cookie_fake_hb(connected=True)
+    state._connect_once()
+    assert online.connect_calls == 1
+    assert auth.login_calls == 0, "con cookie activa no debe ejecutar login"
+    assert auth.is_user_logged_in is True
+    assert auth.cookies == dict(base.parse_bmb_session_cookie(state._cfg["session_cookie"]))
+    assert state._connected is True
+    assert state._status in {"READY", "CONNECTED_L2"}
+    assert len(online.subscriptions) > 0
+
+
+def test_online_cookie_reuse_falls_back_to_login_when_server_requires_login() -> None:
+    state = make_state()
+    hb, auth, online = make_cookie_fake_hb(
+        connect_error=RuntimeError("login required: session expired"),
+        connected=False,
+    )
+    state._connect_once()
+    assert online.connect_calls == 2, "1 intento con cookie + 1 connect post-login"
+    assert auth.login_calls == 1, "ante 'requiere login' cae a hb.auth.login"
+    assert auth.is_user_logged_in is True
+    # Las cookies de dispositivo de confianza permanecen cargadas en la sesión.
+    assert auth.cookies == dict(base.parse_bmb_session_cookie(state._cfg["session_cookie"]))
+    assert state._connected is True
+    assert state._status in {"READY", "CONNECTED_L2"}
+
+
+def test_online_cookie_reuse_falls_back_when_stream_not_open() -> None:
+    state = make_state()
+    hb, auth, online = make_cookie_fake_hb(connected=False)
+    state._connect_once()
+    assert online.connect_calls == 2, "retry de connect tras el login"
+    assert auth.login_calls == 1
+    assert state._connected is True
+    assert state._status in {"READY", "CONNECTED_L2"}
+
+
+def test_cookie_stream_error_is_redacted_and_never_leaks_cookie() -> None:
+    state = make_state()
+    cookie = state._cfg["session_cookie"]
+    hb, auth, online = make_cookie_fake_hb(connected=False)
+    online.connect_error = RuntimeError(f"HTTP 401 rejected cookie {cookie}")
+
+    ready = state._connect_online_with_session_cookie(hb)
+
+    assert ready is False
+    assert auth.is_user_logged_in is False, "flag honesto restaurado ante fallo"
+    assert cookie not in str(state._error)
+    assert "[REDACTED]" in str(state._error)
+
+
+def test_health_and_snapshot_never_contain_session_cookie() -> None:
+    state = make_state()
+    cookie = state._cfg["session_cookie"]
+    # Adversarial: un error crudo se cuela al estado; las salidas de salud
+    # deben redactarlo de todos modos.
+    state._error = f"stream rejected cookie {cookie}"
+    state._status = "READY"
+    state._connected = True
+    payload = json.dumps(state.get_health()) + json.dumps(state.get_snapshot())
+    assert cookie not in payload
+
+
+def test_bridge_without_session_cookie_goes_straight_to_login() -> None:
+    state = make_state()
+    state._cfg["session_cookie"] = ""
+    hb, auth, online = make_cookie_fake_hb(connected=True)
+    state._connect_once()
+    assert online.connect_calls == 1, "sin cookie: connect normal post-login"
+    assert auth.login_calls == 1
+    assert state._connected is True
+    assert state._status in {"READY", "CONNECTED_L2"}
 
 
 if __name__ == "__main__":

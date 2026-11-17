@@ -60,6 +60,8 @@ export interface BmbConfig {
   readonly username: string;
   readonly password: string;
   readonly account: string;
+  /** Cookie de sesión / dispositivo de confianza (opcional, `BMB_SESSION_COOKIE`). */
+  readonly sessionCookie: string;
   readonly passwordConfigured: boolean;
 }
 
@@ -504,6 +506,7 @@ export function loadBmbConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BmbC
   const username = (env['BMB_USERNAME'] ?? env['BMB_USER'] ?? '').trim();
   const password = (env['BMB_PASSWORD'] ?? env['BMB_PASS'] ?? '').trim();
   const account = (env['BMB_ACCOUNT'] ?? env['BMB_COMITENTE'] ?? '').trim();
+  const sessionCookie = (env['BMB_SESSION_COOKIE'] ?? '').trim();
 
   return {
     bridgeUrl: bridgeUrl || DEFAULT_BMB_BRIDGE_URL,
@@ -512,6 +515,7 @@ export function loadBmbConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BmbC
     username,
     password,
     account,
+    sessionCookie,
     passwordConfigured: password !== '',
   };
 }
@@ -530,6 +534,7 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'BMB_USER',
     'BMB_ACCOUNT',
     'BMB_COMITENTE',
+    'BMB_SESSION_COOKIE',
   ] as const;
   const out = new Set<string>();
   for (const key of names) {

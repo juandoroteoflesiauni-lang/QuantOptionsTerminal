@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Local-only Bull Market Brokers HomeBroker JSON bridge for GGAL L2/options.
 
-Credentials arrive exclusively through BMB_* environment variables.  The process
-never prints or logs them.  HTTP is bound to loopback and returns normalized UTC
+Credentials arrive exclusively through BMB_* environment variables (including
+the optional `BMB_SESSION_COOKIE` trusted-device cookie).  The process never
+prints or logs them.  HTTP is bound to loopback and returns normalized UTC
 seconds, five order-book levels, GFGC/GFGV BBO sizes and classified real trades.
+The online stream is attempted first reusing the session cookie; only when the
+server requires login does the bridge fall back to `hb.auth.login(...)` with
+the trusted-device cookies kept loaded.
 """
 
 from __future__ import annotations
@@ -66,9 +70,11 @@ def read_bmb_config(environ: dict[str, str] | os._Environ[str] = os.environ) -> 
                 cfg["dni"],
                 cfg["username"],
                 cfg["account"],
+                cfg["session_cookie"],
                 str(normalized.get("BMB_DNI") or ""),
                 str(normalized.get("BMB_USER") or ""),
                 str(normalized.get("BMB_PASS") or ""),
+                str(normalized.get("BMB_SESSION_COOKIE") or ""),
             )
             if value
         )
@@ -396,25 +402,35 @@ class BmbBridgeState(BaseBmbBridgeState):
                 self._error = redact_secrets(f"BMB connect error: {exc}", self._cfg["secrets"])
             return
 
-        try:
-            hb.auth.login(
-                dni=self._cfg["dni"],
-                user=self._cfg["username"],
-                password=self._cfg["password"],
-                raise_exception=True,
-            )
-        except Exception as exc:
-            status, safe_error = self._classify_login_failure(exc)
-            with self._lock:
-                self._connected = False
-                self._status = status
-                self._error = safe_error
-            return
+        # Contexto de dispositivo de confianza: UA moderno + cookie de sesión
+        # cargada en las sesiones expuestas y en `auth.cookies`, antes de autenticar.
+        self._apply_bmb_session_context(hb)
+
+        # 1) Reutilización de sesión: abrir primero el stream online con la
+        # cookie ya autenticada. 2) Solo si el servidor exige login, caer a
+        # `hb.auth.login(...)` con las cookies de dispositivo cargadas.
+        cookie_stream_ready = self._connect_online_with_session_cookie(hb)
+        if not cookie_stream_ready:
+            try:
+                hb.auth.login(
+                    dni=self._cfg["dni"],
+                    user=self._cfg["username"],
+                    password=self._cfg["password"],
+                    raise_exception=True,
+                )
+            except Exception as exc:
+                status, safe_error = self._classify_login_failure(exc)
+                with self._lock:
+                    self._connected = False
+                    self._status = status
+                    self._error = safe_error
+                return
 
         try:
             with self._lock:
                 self._hb = hb
-            hb.online.connect()
+            if not cookie_stream_ready:
+                hb.online.connect()
             hb.online.subscribe_securities("bluechips", "24hs")
             hb.online.subscribe_repos()
             hb.online.subscribe_options()
@@ -517,7 +533,7 @@ class BmbBridgeState(BaseBmbBridgeState):
                 "pyhomebrokerInstalled": health["pyhomebrokerInstalled"],
                 "passwordConfigured": health["passwordConfigured"],
                 "asOfUtcSec": self._last_update_sec,
-                "error": self._error,
+                "error": health["error"],
                 "cauciones": list(self._cauciones),
                 "orderBooksBySymbol": books,
                 "options": list(self._options),

@@ -2,8 +2,11 @@
  * Productive Bull Market Brokers HomeBroker bridge client.
  *
  * Security / Zero Silent Fallbacks:
- * - credentials are read only from process.env and forwarded only to the local child;
- * - no credential, child stdout/stderr, or request payload is logged;
+ * - credentials are read only from process.env and forwarded only to the local child
+ *   (including the optional trusted-device `BMB_SESSION_COOKIE`);
+ * - no credential (password, DNI, user, account or session cookie), child
+ *   stdout/stderr, or request payload is logged; every credential alias is part
+ *   of the redaction secret list;
  * - polls are globally single-flight and separated by at least 1.5 seconds;
  * - outside 11:00–17:00 ART (Mon–Fri), no cached book is exposed as live;
  * - authentication/dependency/network failures remain explicit for Data912 EOD routing.
@@ -245,7 +248,13 @@ export class BmbFeedAdapter {
     this.bridgeScriptPath = deps.bridgeScriptPath ?? resolve(process.cwd(), 'tools/bmb_bridge.py');
     const cfg = loadBmbConfigFromEnv(this.env);
     this.configured = isBmbFeedConfigured(this.env);
-    this.secrets = [cfg.password, cfg.dni, cfg.username, cfg.account].filter((s) => s !== '');
+    this.secrets = [
+      cfg.password,
+      cfg.dni,
+      cfg.username,
+      cfg.account,
+      cfg.sessionCookie,
+    ].filter((s) => s !== '');
     this.lastHealth = {
       ...this.delegate.getSafeHealthStatus(),
       status: cfg.password === '' ? 'DISABLED_NO_PASSWORD' : this.configured ? 'OFFLINE' : 'ERROR',
@@ -320,6 +329,7 @@ export class BmbFeedAdapter {
       BMB_USERNAME: cfg.username,
       BMB_PASSWORD: cfg.password,
       BMB_ACCOUNT: cfg.account,
+      ...(cfg.sessionCookie !== '' ? { BMB_SESSION_COOKIE: cfg.sessionCookie } : {}),
       ...(this.env['BMB_LEADERS'] !== undefined ? { BMB_LEADERS: this.env['BMB_LEADERS'] } : {}),
       BMB_BRIDGE_HOST: endpoint.host,
       BMB_BRIDGE_PORT: String(endpoint.port),

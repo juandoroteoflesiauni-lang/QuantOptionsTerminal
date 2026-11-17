@@ -75,6 +75,7 @@ const ENV = {
   BMB_USER: 'fake_user_775',
   BMB_PASS: 'fake_pass_776',
   BMB_COMITENTE: 'fake_account_777',
+  BMB_SESSION_COOKIE: 'fake_session_cookie_778',
   BMB_BROKER_ID: '153',
 } as const satisfies NodeJS.ProcessEnv;
 
@@ -343,7 +344,7 @@ describe('BMB feed adapter independent reference parity', () => {
         text: JSON.stringify({
           status: 'ERROR',
           asOfUtcSec: null,
-          error: `login failed ${ENV.BMB_USER} ${ENV.BMB_PASS} ${ENV.BMB_DNI} ${ENV.BMB_COMITENTE}`,
+          error: `login failed ${ENV.BMB_USER} ${ENV.BMB_PASS} ${ENV.BMB_DNI} ${ENV.BMB_COMITENTE} ${ENV.BMB_SESSION_COOKIE}`,
           cauciones: [],
           orderBooksBySymbol: {},
           options: [],
@@ -353,7 +354,7 @@ describe('BMB feed adapter independent reference parity', () => {
     });
     const snapshot = await adapter.getSnapshot();
     const serialized = JSON.stringify(snapshot);
-    for (const secret of [ENV.BMB_USER, ENV.BMB_PASS, ENV.BMB_DNI]) {
+    for (const secret of [ENV.BMB_USER, ENV.BMB_PASS, ENV.BMB_DNI, ENV.BMB_SESSION_COOKIE]) {
       expect(serialized).not.toContain(secret);
     }
     expect(snapshot.health.error).not.toContain(ENV.BMB_COMITENTE);

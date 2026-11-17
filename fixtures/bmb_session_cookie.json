@@ -1,0 +1,216 @@
+{
+  "browserUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "parseCases": [
+    {
+      "expectedPairs": [],
+      "name": "empty",
+      "raw": ""
+    },
+    {
+      "expectedPairs": [],
+      "name": "whitespace_only",
+      "raw": "   "
+    },
+    {
+      "expectedJarEntries": [
+        [
+          "ASP.NET_SessionId",
+          "k1v2",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "ASP.NET_SessionId",
+          "k1v2",
+          ".bullmarketbrokers.com",
+          "/"
+        ]
+      ],
+      "expectedPairs": [
+        [
+          "ASP.NET_SessionId",
+          "k1v2"
+        ]
+      ],
+      "name": "single_pair",
+      "raw": "ASP.NET_SessionId=k1v2"
+    },
+    {
+      "expectedJarEntries": [
+        [
+          ".ASPXAUTH",
+          "AbCd/EfG==",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          ".ASPXAUTH",
+          "AbCd/EfG==",
+          ".bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "ASP.NET_SessionId",
+          "xyz123",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "ASP.NET_SessionId",
+          "xyz123",
+          ".bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          ".AspNet.Cookies",
+          "A1B2C3=",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          ".AspNet.Cookies",
+          "A1B2C3=",
+          ".bullmarketbrokers.com",
+          "/"
+        ]
+      ],
+      "expectedPairs": [
+        [
+          ".ASPXAUTH",
+          "AbCd/EfG=="
+        ],
+        [
+          "ASP.NET_SessionId",
+          "xyz123"
+        ],
+        [
+          ".AspNet.Cookies",
+          "A1B2C3="
+        ]
+      ],
+      "name": "multiple_pairs_with_spaces",
+      "raw": ".ASPXAUTH=AbCd/EfG==;  ASP.NET_SessionId=xyz123 ; .AspNet.Cookies=A1B2C3="
+    },
+    {
+      "expectedJarEntries": [
+        [
+          ".ASPXAUTH",
+          "token",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          ".ASPXAUTH",
+          "token",
+          ".bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "k",
+          "v",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "k",
+          "v",
+          ".bullmarketbrokers.com",
+          "/"
+        ]
+      ],
+      "expectedPairs": [
+        [
+          ".ASPXAUTH",
+          "token"
+        ],
+        [
+          "k",
+          "v"
+        ]
+      ],
+      "name": "malformed_fragment_ignored",
+      "raw": ".ASPXAUTH=token; not-a-cookie; k=v"
+    },
+    {
+      "expectedJarEntries": [
+        [
+          "k2",
+          "v2",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "k2",
+          "v2",
+          ".bullmarketbrokers.com",
+          "/"
+        ]
+      ],
+      "expectedPairs": [
+        [
+          "k2",
+          "v2"
+        ]
+      ],
+      "name": "empty_value_dropped",
+      "raw": "k=; k2=v2"
+    },
+    {
+      "expectedJarEntries": [
+        [
+          "k2",
+          "v2",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "k2",
+          "v2",
+          ".bullmarketbrokers.com",
+          "/"
+        ]
+      ],
+      "expectedPairs": [
+        [
+          "k2",
+          "v2"
+        ]
+      ],
+      "name": "empty_name_dropped",
+      "raw": "=v; k2=v2"
+    },
+    {
+      "expectedJarEntries": [
+        [
+          "token",
+          "abc==def",
+          "hb.bullmarketbrokers.com",
+          "/"
+        ],
+        [
+          "token",
+          "abc==def",
+          ".bullmarketbrokers.com",
+          "/"
+        ]
+      ],
+      "expectedPairs": [
+        [
+          "token",
+          "abc==def"
+        ]
+      ],
+      "name": "value_with_equals_padding",
+      "raw": "token=abc==def"
+    },
+    {
+      "expectedPairs": [],
+      "name": "no_equals_fragment_only",
+      "raw": "broken-fragment"
+    }
+  ],
+  "trustedDeviceDomains": [
+    "hb.bullmarketbrokers.com",
+    ".bullmarketbrokers.com"
+  ]
+}

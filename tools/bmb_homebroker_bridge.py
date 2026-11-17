@@ -6,11 +6,12 @@ and BYMA options (`on_options`) on `127.0.0.1:8788` (configurable via env).
 
 Zero Silent Fallbacks & Security Rules:
 - Reads credentials exclusively from `os.environ` (`BMB_BROKER_ID`, `BMB_DNI`,
-  `BMB_USERNAME`/`BMB_USER`, `BMB_PASSWORD`, `BMB_ACCOUNT`).
+  `BMB_USERNAME`/`BMB_USER`, `BMB_PASSWORD`, `BMB_ACCOUNT`, `BMB_SESSION_COOKIE`).
 - `BMB_DNI` is cleaned to digits only (`re.sub(r"\\D", "", dni)`); `BMB_USER`
   and `BMB_PASSWORD` are read from `os.environ` without content alterations.
-- Never logs or returns `BMB_PASSWORD`, `BMB_DNI`, or `BMB_USERNAME` in HTTP
-  responses or logs; scrubs sensitive tokens from all error messages.
+- Never logs or returns `BMB_PASSWORD`, `BMB_DNI`, `BMB_USERNAME`,
+  `BMB_SESSION_COOKIE` (or any other credential) in HTTP responses or logs;
+  scrubs sensitive tokens from all error messages.
 - If `pyhomebroker` is not installed, degrades cleanly with `MISSING_DEPENDENCY`.
 - If `BMB_PASSWORD` is empty, degrades cleanly with `DISABLED_NO_PASSWORD`.
 - A pyhomebroker login failure is classified explicitly: a two-factor challenge
@@ -20,6 +21,14 @@ Zero Silent Fallbacks & Security Rules:
   loops that could lock the account). Only the exception message and the
   response URL/status are inspected; credentials and response bodies are never
   read, logged or returned.
+- `BMB_SESSION_COOKIE` (trusted device / session reuse, optional): parsed as
+  `k=v; k2=v2` pairs, injected into the exposed requests sessions for the
+  `hb.bullmarketbrokers.com` / `.bullmarketbrokers.com` domains, loaded into
+  `auth.cookies` (the dict the online clients send with every request), and a
+  modern browser User-Agent is configured. The online stream is attempted FIRST
+  with the authenticated cookie; only when the server requires login does the
+  bridge fall back to `hb.auth.login(...)` keeping the trusted-device cookies
+  loaded. Cookie values are never logged.
 """
 
 from __future__ import annotations
@@ -107,6 +116,132 @@ def classify_bmb_login_failure(
     if bmb_login_format_is_valid(dni, username):
         return BMB_STANDBY_2FA_STATUS
     return "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Cookie de sesión / dispositivo de confianza (`BMB_SESSION_COOKIE`, opcional)
+# ---------------------------------------------------------------------------
+
+BMB_SESSION_COOKIE_ENV = "BMB_SESSION_COOKIE"
+# Dominios donde aplica la cookie de dispositivo de confianza antes de autenticar.
+BMB_TRUSTED_DEVICE_DOMAINS = ("hb.bullmarketbrokers.com", ".bullmarketbrokers.com")
+# User-Agent de navegador moderno (el default de la librería es Chrome/85 de 2020).
+BMB_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def parse_bmb_session_cookie(raw: str) -> tuple[tuple[str, str], ...]:
+    """Parsea pares `clave=valor` separados por `;`. Los fragmentos sin `=` o con
+    nombre/valor vacíos se ignoran explícitamente. El valor puede contener `=`
+    (base64): solo `;` separa pares. Nunca loguea los valores."""
+    pairs: list[tuple[str, str]] = []
+    for fragment in (raw or "").split(";"):
+        if not fragment.strip() or "=" not in fragment:
+            continue
+        name, _, value = fragment.partition("=")
+        name = name.strip()
+        value = value.strip()
+        if name and value:
+            pairs.append((name, value))
+    return tuple(pairs)
+
+
+def inject_bmb_session_cookies(
+    session: Any,
+    cookie_text: str,
+    domains: tuple[str, ...] = BMB_TRUSTED_DEVICE_DOMAINS,
+) -> int:
+    """Inyecta los pares parseados en el cookie jar de una sesión `requests`
+    para los dominios de dispositivo de confianza de BMB. Devuelve la cantidad
+    de entradas (nombre, valor, dominio) insertadas; 0 si no hay jar. Los
+    valores nunca se loguean."""
+    pairs = parse_bmb_session_cookie(cookie_text)
+    jar = getattr(session, "cookies", None)
+    if not pairs or jar is None:
+        return 0
+    set_cookie = getattr(jar, "set", None)
+    if not callable(set_cookie):
+        return 0
+    injected = 0
+    for name, value in pairs:
+        for domain in domains:
+            try:
+                set_cookie(name, value, domain=domain, path="/")
+                injected += 1
+            except Exception:
+                # Una entrada de cookie malformada nunca es fatal: se omite.
+                pass
+    return injected
+
+
+def configure_bmb_browser_session(session: Any) -> bool:
+    """Configura un User-Agent de navegador moderno en una sesión `requests`
+    expuesta por pyhomebroker (`hb.auth._session` / `hb.online._session`)."""
+    headers = getattr(session, "headers", None)
+    if headers is None:
+        return False
+    try:
+        headers.update({"User-Agent": BMB_BROWSER_USER_AGENT})
+        return True
+    except Exception:
+        return False
+
+
+def configure_bmb_browser_user_agent_modules() -> list[str]:
+    """En versiones de pyhomebroker sin sesiones persistentes (crean una
+    `rq.Session()` nueva por llamada y leen el global `user_agent` en cada
+    pedido), refresca ese global con un UA moderno. Devuelve solo etiquetas de
+    módulos actualizados, jamás valores."""
+    updated: list[str] = []
+    for module_name in (
+        "pyhomebroker.home_broker_session",
+        "pyhomebroker.online.online_signalr",
+        "pyhomebroker.online.online_scrapping",
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "user_agent"):
+            try:
+                module.user_agent = BMB_BROWSER_USER_AGENT
+                updated.append(module_name)
+            except Exception:
+                pass
+    return updated
+
+
+def apply_bmb_trusted_device_context(
+    auth_client: Any,
+    online_client: Any,
+    cookie_text: str,
+) -> dict[str, Any]:
+    """Configura sesión/dispositivo de confianza sobre los clientes
+    pyhomebroker. Devuelve SOLO conteos y etiquetas (nunca valores de cookie):
+    - `auth._session` / `online._session` (si la versión los expone): UA moderno
+      e inyección de pares en el cookie jar para los dominios BMB.
+    - `auth.cookies` (dict que los clientes online envían en cada request):
+      se cargan los pares parseados para reutilizar la sesión autenticada."""
+    result: dict[str, Any] = {
+        "uaSessions": [],
+        "cookieJarEntries": 0,
+        "authCookiesLoaded": 0,
+        "uaModulesUpdated": configure_bmb_browser_user_agent_modules(),
+    }
+    pairs = parse_bmb_session_cookie(cookie_text)
+    if not pairs:
+        return result
+    for label, client in (("auth", auth_client), ("online", online_client)):
+        session = getattr(client, "_session", None)
+        if session is None:
+            continue
+        if configure_bmb_browser_session(session):
+            result["uaSessions"].append(label)
+        result["cookieJarEntries"] += inject_bmb_session_cookies(session, cookie_text)
+    auth_cookies = getattr(auth_client, "cookies", None)
+    if isinstance(auth_cookies, dict):
+        auth_cookies.update(dict(pairs))
+        result["authCookiesLoaded"] = len(pairs)
+    return result
 
 
 def redact_secrets(text: str, secrets: tuple[str, ...]) -> str:
@@ -197,6 +332,10 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
     username = (environ.get("BMB_USERNAME") or environ.get("BMB_USER") or "").strip()
     password = (environ.get("BMB_PASSWORD") or "").strip()
     account = (environ.get("BMB_ACCOUNT") or "").strip()
+    # Cookie de sesión / dispositivo de confianza (opcional): solo se lee y se
+    # redacta; jamás se loguea ni se expone.
+    raw_session_cookie = environ.get("BMB_SESSION_COOKIE") or ""
+    session_cookie = raw_session_cookie.strip()
     host = (environ.get("BMB_BRIDGE_HOST") or DEFAULT_HOST).strip() or DEFAULT_HOST
     try:
         port = int((environ.get("BMB_BRIDGE_PORT") or str(DEFAULT_PORT)).strip())
@@ -209,7 +348,17 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
 
     secrets = tuple(
         dict.fromkeys(
-            s for s in (password, dni, username, account, raw_dni) if s
+            s
+            for s in (
+                password,
+                dni,
+                username,
+                account,
+                raw_dni,
+                raw_session_cookie,
+                session_cookie,
+            )
+            if s
         )
     )
     return {
@@ -218,6 +367,7 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
         "username": username,
         "password": password,
         "account": account,
+        "session_cookie": session_cookie,
         "host": host,
         "port": port,
         "leaders": leaders,
@@ -394,6 +544,56 @@ class BmbBridgeState:
             return BMB_STANDBY_2FA_STATUS, BMB_STANDBY_2FA_MESSAGE
         return "ERROR", redact_secrets(f"BMB login error: {message}", self._cfg["secrets"])
 
+    def _apply_bmb_session_context(self, hb: Any) -> dict[str, Any]:
+        """Aplica UA moderno y cookie de dispositivo de confianza sobre los
+        clientes pyhomebroker (solo conteos/etiquetas; nunca valores)."""
+        return apply_bmb_trusted_device_context(
+            getattr(hb, "auth", None),
+            getattr(hb, "online", None),
+            self._cfg["session_cookie"],
+        )
+
+    def _connect_online_with_session_cookie(self, hb: Any) -> bool:
+        """Intenta abrir el stream online reutilizando la cookie de sesión ya
+        autenticada (`BMB_SESSION_COOKIE`). Devuelve True SOLO si el stream
+        quedó realmente conectado; ante "requiere login" (excepción de conexión
+        o stream no abierto) restaura el flag honesto de la librería y devuelve
+        False para que el llamador ejecute `hb.auth.login(...)` manteniendo
+        cargadas las cookies de dispositivo de confianza en la sesión."""
+        auth_client = getattr(hb, "auth", None)
+        online_client = getattr(hb, "online", None)
+        if auth_client is None or online_client is None:
+            return False
+        if not parse_bmb_session_cookie(self._cfg["session_cookie"]):
+            return False
+        try:
+            # La librería exige el flag de sesión activa para abrir el stream;
+            # con la cookie de dispositivo cargada, el servidor valida la sesión
+            # real y rechaza la conexión si la cookie expiró o es inválida.
+            auth_client.is_user_logged_in = True
+            online_client.connect()
+        except Exception as exc:
+            auth_client.is_user_logged_in = False
+            with self._lock:
+                self._status = "CONNECTING"
+                self._error = redact_secrets(
+                    f"BMB cookie stream error: {exc}", self._cfg["secrets"]
+                )
+            return False
+        is_connected = False
+        try:
+            is_connected = bool(online_client.is_connected())
+        except Exception:
+            is_connected = False
+        if not is_connected:
+            auth_client.is_user_logged_in = False
+            with self._lock:
+                self._status = "CONNECTING"
+            return False
+        with self._lock:
+            self._error = None
+        return True
+
     def start(self) -> None:
         if not self._cfg["password"] or not PYHOMEBROKER_AVAILABLE or HomeBroker is None:
             return
@@ -423,23 +623,33 @@ class BmbBridgeState:
                 self._error = redact_secrets(f"BMB connect error: {exc}", self._cfg["secrets"])
             return
 
-        try:
-            hb.auth.login(
-                dni=self._cfg["dni"],
-                user=self._cfg["username"],
-                password=self._cfg["password"],
-                raise_exception=True,
-            )
-        except Exception as exc:
-            status, safe_error = self._classify_login_failure(exc)
-            with self._lock:
-                self._connected = False
-                self._status = status
-                self._error = safe_error
-            return
+        # Contexto de dispositivo de confianza: UA moderno + cookie de sesión
+        # cargada en las sesiones expuestas y en `auth.cookies`, antes de autenticar.
+        self._apply_bmb_session_context(hb)
+
+        # 1) Reutilización de sesión: abrir primero el stream online con la
+        # cookie ya autenticada. 2) Solo si el servidor exige login, caer a
+        # `hb.auth.login(...)` con las cookies de dispositivo cargadas.
+        cookie_stream_ready = self._connect_online_with_session_cookie(hb)
+        if not cookie_stream_ready:
+            try:
+                hb.auth.login(
+                    dni=self._cfg["dni"],
+                    user=self._cfg["username"],
+                    password=self._cfg["password"],
+                    raise_exception=True,
+                )
+            except Exception as exc:
+                status, safe_error = self._classify_login_failure(exc)
+                with self._lock:
+                    self._connected = False
+                    self._status = status
+                    self._error = safe_error
+                return
 
         try:
-            hb.online.connect()
+            if not cookie_stream_ready:
+                hb.online.connect()
             hb.online.subscribe_repos()
             hb.online.subscribe_options()
             for sym in self._cfg["leaders"]:
@@ -499,7 +709,9 @@ class BmbBridgeState:
                     "orderBooks": len(self._order_books),
                     "options": len(self._options),
                 },
-                "error": self._error,
+                # Redacción defensiva: ninguna credencial (incluida la cookie de
+                # sesión) puede salir por /health aunque un error crudo se cuele.
+                "error": redact_secrets(self._error, self._cfg["secrets"]) if self._error else None,
             }
 
     def get_snapshot(self, symbol: str | None = None) -> dict[str, Any]:
@@ -519,7 +731,7 @@ class BmbBridgeState:
                 "pyhomebrokerInstalled": health["pyhomebrokerInstalled"],
                 "passwordConfigured": health["passwordConfigured"],
                 "asOfUtcSec": self._last_update_sec,
-                "error": self._error,
+                "error": health["error"],
                 "cauciones": list(self._cauciones),
                 "orderBooksBySymbol": books,
                 "options": list(self._options),
