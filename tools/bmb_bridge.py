@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from bmb_homebroker_bridge import (  # type: ignore[import-not-found]
+    BMB_STANDBY_2FA_STATUS,
     BmbBridgeState as BaseBmbBridgeState,
     HomeBroker,
     PYHOMEBROKER_AVAILABLE,
@@ -58,7 +59,19 @@ def read_bmb_config(environ: dict[str, str] | os._Environ[str] = os.environ) -> 
     except ValueError:
         cfg["broker_id"] = 0
     cfg["secrets"] = tuple(
-        value for value in (cfg["password"], cfg["dni"], cfg["username"], cfg["account"]) if value
+        dict.fromkeys(
+            value
+            for value in (
+                cfg["password"],
+                cfg["dni"],
+                cfg["username"],
+                cfg["account"],
+                str(normalized.get("BMB_DNI") or ""),
+                str(normalized.get("BMB_USER") or ""),
+                str(normalized.get("BMB_PASS") or ""),
+            )
+            if value
+        )
     )
     return cfg
 
@@ -354,7 +367,7 @@ class BmbBridgeState(BaseBmbBridgeState):
             if connection_lost:
                 self._connected = False
                 self._status = "DISCONNECTED"
-            elif not self._connected:
+            elif not self._connected and self._status != BMB_STANDBY_2FA_STATUS:
                 self._status = "ERROR"
 
     def stop(self) -> None:
@@ -376,12 +389,29 @@ class BmbBridgeState(BaseBmbBridgeState):
                 on_error=self._on_error,
                 on_close=self._on_close,
             )
+        except Exception as exc:
+            with self._lock:
+                self._connected = False
+                self._status = "ERROR"
+                self._error = redact_secrets(f"BMB connect error: {exc}", self._cfg["secrets"])
+            return
+
+        try:
             hb.auth.login(
                 dni=self._cfg["dni"],
                 user=self._cfg["username"],
                 password=self._cfg["password"],
                 raise_exception=True,
             )
+        except Exception as exc:
+            status, safe_error = self._classify_login_failure(exc)
+            with self._lock:
+                self._connected = False
+                self._status = status
+                self._error = safe_error
+            return
+
+        try:
             with self._lock:
                 self._hb = hb
             hb.online.connect()
@@ -414,6 +444,12 @@ class BmbBridgeState(BaseBmbBridgeState):
             self._connect_once()
             with self._lock:
                 connected = self._connected
+                status = self._status
+            if status == BMB_STANDBY_2FA_STATUS:
+                # 2FA interactivo requerido (SMS/App): se detienen los reintentos
+                # automáticos para no bloquear la cuenta con intentos fallidos.
+                # IOL_REST_V2 + Primary DLR quedan como fuentes activas.
+                break
             failed_attempts = 0 if connected else failed_attempts + 1
             while connected and not self._stop_event.is_set():
                 if self._stop_event.wait(1.0):
@@ -441,7 +477,7 @@ class BmbBridgeState(BaseBmbBridgeState):
             book = self._order_books.get("GGAL")
             connected_l2 = bool(
                 self._connected
-                and self._status not in {"ERROR", "DISCONNECTED"}
+                and self._status not in {"ERROR", "DISCONNECTED", BMB_STANDBY_2FA_STATUS}
                 and book
                 and book["bids"]
                 and book["asks"]

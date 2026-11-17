@@ -6,9 +6,12 @@ import {
   emptyFeedTelemetrySnapshot,
   getArFeedSessionMode,
   getUsFeedSessionMode,
+  isBmbProviderReconnectable,
   isMassiveWsSocketLive,
+  resolveBmbProviderState,
   type FeedTelemetrySnapshot,
   type FeedsHealthMonitorDeps,
+  type BmbFeedHealthSource,
   type MassiveWsFeedHealthSource,
 } from '../src/server/feedsHealthMonitor.js';
 import { parseFeedsHealth, parseGgalDualChart, renderFeedsHealthTable } from '../tools/check_live_feeds.js';
@@ -69,12 +72,25 @@ interface FixtureMassiveWsLivenessCase {
   readonly expectedState: 'CONNECTED' | 'ARMED_OUT_OF_SESSION' | 'DEGRADED' | 'NOT_CONFIGURED';
 }
 
+interface FixtureBmbStandbyCase {
+  readonly name: string;
+  readonly configured: boolean;
+  readonly connected: boolean;
+  readonly sessionMode: 'IN_SESSION' | 'OUT_OF_SESSION';
+  readonly healthStatus: string;
+  readonly expectedState: 'CONNECTED' | 'ARMED_OUT_OF_SESSION' | 'DEGRADED' | 'NOT_CONFIGURED';
+  readonly expectedReconnectable: boolean;
+}
+
 interface FixtureRoot {
   readonly telemetry: readonly FixtureTelemetryCase[];
   readonly state: readonly FixtureStateCase[];
   readonly sessions: readonly FixtureSessionCase[];
   readonly age: readonly FixtureAgeCase[];
   readonly massiveWsLiveness: readonly FixtureMassiveWsLivenessCase[];
+  readonly bmbStandby2fa: {
+    readonly cases: readonly FixtureBmbStandbyCase[];
+  };
 }
 
 const fixture = JSON.parse(
@@ -270,6 +286,67 @@ describe('Pieza 33 hotfix — liveness MASSIVE_WS_STOCKS (referencia Python inde
   }
 });
 
+describe('Pieza 33 hotfix — BMB STANDBY_2FA (referencia Python independiente)', () => {
+  const bmbFixture = JSON.parse(
+    readFileSync(new URL('../fixtures/bmb_2fa_standby.json', import.meta.url), 'utf-8'),
+  ) as { standby2faMessage: string };
+
+  for (const caseItem of fixture.bmbStandby2fa.cases) {
+    it(`resolveBmbProviderState ${caseItem.name} => ${caseItem.expectedState}`, () => {
+      expect(
+        resolveBmbProviderState({
+          configured: caseItem.configured,
+          connected: caseItem.connected,
+          sessionMode: caseItem.sessionMode,
+          healthStatus: caseItem.healthStatus,
+        }),
+      ).toBe(caseItem.expectedState);
+      expect(isBmbProviderReconnectable(caseItem.healthStatus)).toBe(caseItem.expectedReconnectable);
+    });
+  }
+
+  it('proveedor BMB con STANDBY_2FA: DEGRADED suave, no reconectable y mensaje informativo fijo', () => {
+    const provider = createMonitor({
+      nowMs: Date.UTC(2026, 10, 16, 15, 0, 0), // lunes 12:00 ART → IN_SESSION
+      bmb: {
+        configured: true,
+        healthStatus: 'STANDBY_2FA',
+        connected: false,
+        lastError: bmbFixture.standby2faMessage,
+      },
+    })
+      .getSnapshot()
+      .providers.find((item) => item.id === 'BMB_HOMEBROKER_L2');
+    expect(provider?.state).toBe('DEGRADED');
+    expect(provider?.reconnectable).toBe(false);
+    expect(provider?.connected).toBe(false);
+    expect(provider?.bmb?.status).toBe('STANDBY_2FA');
+    expect(provider?.lastError).toBe(bmbFixture.standby2faMessage);
+  });
+
+  it('proveedor BMB CONNECTED_L2 sigue siendo reconectable', () => {
+    const provider = createMonitor({
+      nowMs: Date.UTC(2026, 10, 16, 15, 0, 0),
+      bmb: { configured: true, healthStatus: 'CONNECTED_L2', connected: true },
+    })
+      .getSnapshot()
+      .providers.find((item) => item.id === 'BMB_HOMEBROKER_L2');
+    expect(provider?.state).toBe('CONNECTED');
+    expect(provider?.reconnectable).toBe(true);
+  });
+
+  it('STANDBY_2FA fuera de sesión también es DEGRADED informativo, sin ARMED', () => {
+    const provider = createMonitor({
+      nowMs: Date.UTC(2026, 10, 15, 21, 0, 0), // domingo 18:00 ART → OUT_OF_SESSION
+      bmb: { configured: true, healthStatus: 'STANDBY_2FA', connected: false },
+    })
+      .getSnapshot()
+      .providers.find((item) => item.id === 'BMB_HOMEBROKER_L2');
+    expect(provider?.state).toBe('DEGRADED');
+    expect(provider?.sessionMode).toBe('OUT_OF_SESSION');
+  });
+});
+
 describe('Pieza 33 — parser/render del CLI', () => {
   it('parsea y renderiza el snapshot de salud sin inventar valores', () => {
     const raw = {
@@ -369,6 +446,9 @@ interface MonitorOverrides {
   readonly massiveWs?: Partial<MassiveWsFeedHealthSource> & {
     readonly telemetry?: FeedTelemetrySnapshot;
   };
+  readonly bmb?: Partial<BmbFeedHealthSource> & {
+    readonly telemetry?: FeedTelemetrySnapshot;
+  };
   readonly secrets?: readonly string[];
   readonly reconnectMassiveWsError?: string;
   readonly nowMs?: number;
@@ -441,6 +521,7 @@ function createMonitor(overrides: MonitorOverrides = {}): FeedsHealthMonitor {
       optionCount: 0,
       lastError: null,
       telemetry: emptyFeedTelemetrySnapshot(),
+      ...overrides.bmb,
     }),
     getIol: () => ({
       configured: false,

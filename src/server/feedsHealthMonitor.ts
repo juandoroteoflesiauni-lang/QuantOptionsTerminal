@@ -441,6 +441,42 @@ function resolveState(input: {
   return 'DEGRADED';
 }
 
+/**
+ * Estado explícito del bridge Python BMB cuando el login requiere verificación
+ * en dos pasos interactiva (SMS/App). Es informativo: no hay reintento automático
+ * (evita bloquear la cuenta por intentos fallidos) y IOL_REST_V2 + Primary DLR
+ * quedan como fuentes activas.
+ */
+export const BMB_STANDBY_2FA_STATUS = 'STANDBY_2FA' as const;
+
+export function isBmbStandby2faStatus(status: string): boolean {
+  return status === BMB_STANDBY_2FA_STATUS;
+}
+
+/**
+ * Máquina de estados del proveedor BMB_HOMEBROKER_L2. `STANDBY_2FA` se
+ * reconoce como estado informativo suave: DEGRADED en cualquier modo de sesión
+ * (el feed no puede conectarse hasta que el usuario complete el 2FA
+ * interactivo), sin degradar a ERROR ni saturar logs con reintentos.
+ */
+export function resolveBmbProviderState(input: {
+  readonly configured: boolean;
+  readonly connected: boolean | null;
+  readonly sessionMode: FeedSessionMode;
+  readonly healthStatus: string;
+}): FeedProviderState {
+  if (!input.configured) return 'NOT_CONFIGURED';
+  if (input.connected === true) return 'CONNECTED';
+  if (isBmbStandby2faStatus(input.healthStatus)) return 'DEGRADED';
+  if (input.sessionMode === 'OUT_OF_SESSION') return 'ARMED_OUT_OF_SESSION';
+  return 'DEGRADED';
+}
+
+/** El 2FA interactivo no se reconecta automáticamente: evitar bucles de login. */
+export function isBmbProviderReconnectable(healthStatus: string): boolean {
+  return !isBmbStandby2faStatus(healthStatus);
+}
+
 /** Edad máxima del último mensaje recibido para considerar vivo el socket Massive (ms). */
 export const MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS = 5_000;
 
@@ -813,9 +849,15 @@ export class FeedsHealthMonitor {
         lastError: bmb.lastError,
         activeSymbolCount: bmb.orderBookCount,
         subscribedSymbols: [],
-        reconnectable: true,
+        reconnectable: isBmbProviderReconnectable(bmb.healthStatus),
         nowMs,
         secrets: this.secrets,
+      }),
+      state: resolveBmbProviderState({
+        configured: bmb.configured,
+        connected: bmb.connected,
+        sessionMode: arSession,
+        healthStatus: bmb.healthStatus,
       }),
       bmb: {
         status: bmb.healthStatus,

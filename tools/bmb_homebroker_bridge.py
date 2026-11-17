@@ -6,11 +6,20 @@ and BYMA options (`on_options`) on `127.0.0.1:8788` (configurable via env).
 
 Zero Silent Fallbacks & Security Rules:
 - Reads credentials exclusively from `os.environ` (`BMB_BROKER_ID`, `BMB_DNI`,
-  `BMB_USERNAME`, `BMB_PASSWORD`, `BMB_ACCOUNT`).
+  `BMB_USERNAME`/`BMB_USER`, `BMB_PASSWORD`, `BMB_ACCOUNT`).
+- `BMB_DNI` is cleaned to digits only (`re.sub(r"\\D", "", dni)`); `BMB_USER`
+  and `BMB_PASSWORD` are read from `os.environ` without content alterations.
 - Never logs or returns `BMB_PASSWORD`, `BMB_DNI`, or `BMB_USERNAME` in HTTP
   responses or logs; scrubs sensitive tokens from all error messages.
 - If `pyhomebroker` is not installed, degrades cleanly with `MISSING_DEPENDENCY`.
 - If `BMB_PASSWORD` is empty, degrades cleanly with `DISABLED_NO_PASSWORD`.
+- A pyhomebroker login failure is classified explicitly: a two-factor challenge
+  (markers `TwoFactor`, `VerifyCode`, `OTP`, `2FA` in the exception message or
+  the requests response URL) or a failure after the DNI/user format validated
+  yields `STANDBY_2FA` (interactive SMS/App login required; no automatic retry
+  loops that could lock the account). Only the exception message and the
+  response URL/status are inspected; credentials and response bodies are never
+  read, logged or returned.
 """
 
 from __future__ import annotations
@@ -42,6 +51,62 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 DEFAULT_BROKER_ID = 153
 DEFAULT_LEADERS = ("GGAL", "YPFD", "PAMP", "BMA", "AL30", "GD30")
+
+# Explicit classification of a pyhomebroker login failure. Only the exception
+# message and the requests response URL/status are inspected (never printed).
+BMB_STANDBY_2FA_STATUS = "STANDBY_2FA"
+BMB_STANDBY_2FA_MESSAGE = (
+    "BMB requiere 2FA interactivo (SMS/App); usando IOL_REST_V2 + Primary DLR como fuente activa"
+)
+BMB_TWO_FACTOR_MARKERS = ("twofactor", "verifycode", "verifyotp", "otp", "2fa")
+
+
+def clean_bmb_dni(raw: str) -> str:
+    """`BMB_DNI` llega con puntos/espacios: se reduce a dígitos (en memoria)."""
+    return re.sub(r"\D", "", raw or "")
+
+
+def bmb_login_format_is_valid(dni: str, username: str) -> bool:
+    """Puerta de formato: DNI ya limpio debe ser dígitos no vacíos y usuario no vacío."""
+    return bool(dni) and bool(username) and dni.isdigit()
+
+
+def bmb_login_failure_inputs(exc: BaseException) -> tuple[str, str, int | None]:
+    """Inspecciona SOLO el mensaje de la excepción y la URL/status HTTP de la
+    respuesta `requests` (si existe). Nunca imprime ni devuelve datos sensibles."""
+    message = str(exc)
+    response = getattr(exc, "response", None)
+    url = ""
+    status: int | None = None
+    if response is not None:
+        url = str(getattr(response, "url", "") or "")
+        raw_status = getattr(response, "status_code", None)
+        if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+            status = raw_status
+    return message, url, status
+
+
+def bmb_text_indicates_two_factor(message: str, response_url: str) -> bool:
+    """Marcadores de verificación en dos pasos, tolerando mayúsculas y separadores."""
+    compact = re.sub(r"[\s_\-/.]", "", f"{message} {response_url}").lower()
+    return any(marker in compact for marker in BMB_TWO_FACTOR_MARKERS)
+
+
+def classify_bmb_login_failure(
+    message: str,
+    response_url: str,
+    response_status: int | None,
+    dni: str,
+    username: str,
+) -> str:
+    """`STANDBY_2FA` si la respuesta apunta a un desafío 2FA o si el login falla
+    tras validar el formato de DNI/usuario; `ERROR` en cualquier otro caso.
+    `response_status` y `response_url` se inspeccionan pero nunca se almacenan."""
+    if bmb_text_indicates_two_factor(message, response_url):
+        return BMB_STANDBY_2FA_STATUS
+    if bmb_login_format_is_valid(dni, username):
+        return BMB_STANDBY_2FA_STATUS
+    return "ERROR"
 
 
 def redact_secrets(text: str, secrets: tuple[str, ...]) -> str:
@@ -125,8 +190,11 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
         broker_id = int(raw_broker)
     except ValueError:
         broker_id = DEFAULT_BROKER_ID
-    dni = (environ.get("BMB_DNI") or "").strip()
-    username = (environ.get("BMB_USERNAME") or "").strip()
+    raw_dni = environ.get("BMB_DNI") or ""
+    # DNI se limpia de puntos/espacios (solo dígitos) antes de tocar la red.
+    dni = clean_bmb_dni(raw_dni)
+    # BMB_USER es alias canónico de BMB_USERNAME; el valor se lee sin alteraciones.
+    username = (environ.get("BMB_USERNAME") or environ.get("BMB_USER") or "").strip()
     password = (environ.get("BMB_PASSWORD") or "").strip()
     account = (environ.get("BMB_ACCOUNT") or "").strip()
     host = (environ.get("BMB_BRIDGE_HOST") or DEFAULT_HOST).strip() or DEFAULT_HOST
@@ -139,7 +207,11 @@ def read_bmb_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> dic
         s.strip().upper() for s in leaders_raw.split(",") if s.strip()
     ) if leaders_raw else DEFAULT_LEADERS
 
-    secrets = tuple(s for s in (password, dni, username) if s)
+    secrets = tuple(
+        dict.fromkeys(
+            s for s in (password, dni, username, account, raw_dni) if s
+        )
+    )
     return {
         "broker_id": broker_id,
         "dni": dni,
@@ -289,7 +361,7 @@ class BmbBridgeState:
         msg = redact_secrets(str(error), self._cfg["secrets"])
         with self._lock:
             self._error = msg
-            if not self._connected:
+            if not self._connected and self._status != BMB_STANDBY_2FA_STATUS:
                 self._status = "ERROR"
 
     def _on_open(self, _online: Any) -> None:
@@ -303,6 +375,24 @@ class BmbBridgeState:
             self._connected = False
             if self._status == "READY":
                 self._status = "DISCONNECTED"
+
+    def _classify_login_failure(self, exc: BaseException) -> tuple[str, str]:
+        """Clasifica un fallo de login sin exponer datos: inspecciona el mensaje
+        de la excepción y la URL/status HTTP de la sesión `requests`. Si la
+        respuesta apunta a un desafío 2FA, o el login falla tras validar el
+        formato de DNI/usuario, el estado es `STANDBY_2FA` con el mensaje
+        informativo fijo (nunca datos sensibles ni la URL cruda)."""
+        message, response_url, response_status = bmb_login_failure_inputs(exc)
+        classification = classify_bmb_login_failure(
+            message,
+            response_url,
+            response_status,
+            self._cfg["dni"],
+            self._cfg["username"],
+        )
+        if classification == BMB_STANDBY_2FA_STATUS:
+            return BMB_STANDBY_2FA_STATUS, BMB_STANDBY_2FA_MESSAGE
+        return "ERROR", redact_secrets(f"BMB login error: {message}", self._cfg["secrets"])
 
     def start(self) -> None:
         if not self._cfg["password"] or not PYHOMEBROKER_AVAILABLE or HomeBroker is None:
@@ -326,12 +416,29 @@ class BmbBridgeState:
                 on_error=self._on_error,
                 on_close=self._on_close,
             )
+        except Exception as exc:
+            with self._lock:
+                self._connected = False
+                self._status = "ERROR"
+                self._error = redact_secrets(f"BMB connect error: {exc}", self._cfg["secrets"])
+            return
+
+        try:
             hb.auth.login(
                 dni=self._cfg["dni"],
                 user=self._cfg["username"],
                 password=self._cfg["password"],
                 raise_exception=True,
             )
+        except Exception as exc:
+            status, safe_error = self._classify_login_failure(exc)
+            with self._lock:
+                self._connected = False
+                self._status = status
+                self._error = safe_error
+            return
+
+        try:
             hb.online.connect()
             hb.online.subscribe_repos()
             hb.online.subscribe_options()

@@ -1,0 +1,153 @@
+{
+  "classification": [
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "Session cannot be created. Check the entered information and try again.",
+      "name": "redirect_url_twofactor",
+      "responseUrl": "https://bullmarket brokers.invalid/Login/TwoFactor?step=verify",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "HTTP 500 on POST",
+      "name": "redirect_url_verifycode",
+      "responseUrl": "https://homebroker.invalid/VerifyCode",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "Se requiere código OTP para continuar",
+      "name": "message_otp_marker",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "Account requires 2FA confirmation",
+      "name": "message_2fa_marker",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "Two-Factor verification pending",
+      "name": "message_two_factor_with_spaces_and_dashes",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "TWOFACTOR challenge",
+      "name": "marker_case_insensitive",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "Session cannot be created. Check the entered information and try again.",
+      "name": "generic_login_failure_after_valid_format",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "STANDBY_2FA",
+      "message": "500 Server Error",
+      "name": "http_500_after_valid_format",
+      "responseUrl": "https://homebroker.invalid/Login/IngresarModal",
+      "username": "trader_user"
+    },
+    {
+      "dni": "",
+      "expected": "ERROR",
+      "message": "Session cannot be created. Check the entered information and try again.",
+      "name": "missing_dni_is_error",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "abc",
+      "expected": "ERROR",
+      "message": "Session cannot be created. Check the entered information and try again.",
+      "name": "non_digit_dni_is_error",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": "trader_user"
+    },
+    {
+      "dni": "12345678",
+      "expected": "ERROR",
+      "message": "Session cannot be created. Check the entered information and try again.",
+      "name": "missing_username_is_error",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": ""
+    },
+    {
+      "dni": "",
+      "expected": "ERROR",
+      "message": "connection refused",
+      "name": "no_markers_invalid_format_error",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar",
+      "username": ""
+    }
+  ],
+  "dniCleaning": [
+    {
+      "expected": "12345678",
+      "name": "dots",
+      "raw": "12.345.678"
+    },
+    {
+      "expected": "12345678",
+      "name": "spaces",
+      "raw": " 12 345 678 "
+    },
+    {
+      "expected": "12345678",
+      "name": "dots_and_spaces",
+      "raw": " 12. 345. 678 "
+    },
+    {
+      "expected": "12345678",
+      "name": "already_clean",
+      "raw": "12345678"
+    },
+    {
+      "expected": "",
+      "name": "empty",
+      "raw": ""
+    },
+    {
+      "expected": "",
+      "name": "only_separators",
+      "raw": " . - . "
+    }
+  ],
+  "markerNegatives": [
+    {
+      "expected": false,
+      "message": "Session cannot be created. Check the entered information and try again.",
+      "name": "plain_session_exception",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar"
+    },
+    {
+      "expected": false,
+      "message": "500 Server Error: Internal Server Error",
+      "name": "http_status_only",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar"
+    },
+    {
+      "expected": false,
+      "message": "connection reset by peer",
+      "name": "unrelated_words_no_markers",
+      "responseUrl": "https://homebroker.invalid/Login/Ingresar"
+    }
+  ],
+  "standby2faMessage": "BMB requiere 2FA interactivo (SMS/App); usando IOL_REST_V2 + Primary DLR como fuente activa"
+}

@@ -311,6 +311,56 @@ def main() -> None:
     ]
     fixture["state"] = state_cases
 
+    # BMB STANDBY_2FA (hotfix producción): el estado `STANDBY_2FA` del bridge
+    # BMB_HOMEBROKER_L2 se reconoce como estado informativo suave (DEGRADED) en
+    # cualquier modo de sesión; no es reconectable automáticamente para evitar
+    # bucles de login que podrían bloquear la cuenta. La regla se re-implementa
+    # aquí desde cero como referencia independiente.
+    BMB_STANDBY_2FA_STATUS = "STANDBY_2FA"
+
+    def bmb_provider_state_reference(
+        configured: bool,
+        connected: bool | None,
+        session_mode: str,
+        health_status: str,
+    ) -> str:
+        if not configured:
+            return "NOT_CONFIGURED"
+        if connected is True:
+            return "CONNECTED"
+        if health_status == BMB_STANDBY_2FA_STATUS:
+            return "DEGRADED"
+        if session_mode == "OUT_OF_SESSION":
+            return "ARMED_OUT_OF_SESSION"
+        return "DEGRADED"
+
+    def bmb_provider_reconnectable_reference(health_status: str) -> bool:
+        return health_status != BMB_STANDBY_2FA_STATUS
+
+    bmb_specs = [
+        ("standby_2fa_in_session", True, False, "IN_SESSION", BMB_STANDBY_2FA_STATUS),
+        ("standby_2fa_out_of_session", True, False, "OUT_OF_SESSION", BMB_STANDBY_2FA_STATUS),
+        ("standby_2fa_not_configured", False, False, "IN_SESSION", BMB_STANDBY_2FA_STATUS),
+        ("standby_2fa_connected_wins", True, True, "IN_SESSION", BMB_STANDBY_2FA_STATUS),
+        ("error_status_in_session", True, False, "IN_SESSION", "ERROR"),
+        ("error_status_out_of_session", True, False, "OUT_OF_SESSION", "ERROR"),
+        ("disabled_no_password_in_session", True, False, "IN_SESSION", "DISABLED_NO_PASSWORD"),
+    ]
+    fixture["bmbStandby2fa"] = {
+        "cases": [
+            {
+                "name": name,
+                "configured": configured,
+                "connected": connected,
+                "sessionMode": session_mode,
+                "healthStatus": health_status,
+                "expectedState": bmb_provider_state_reference(configured, connected, session_mode, health_status),
+                "expectedReconnectable": bmb_provider_reconnectable_reference(health_status),
+            }
+            for name, configured, connected, session_mode, health_status in bmb_specs
+        ]
+    }
+
     # Liveness MASSIVE_WS_STOCKS (hotfix producción): el flujo real de mensajes
     # manda sobre la transición momentánea del estado del cliente; el proveedor
     # no se degrada mientras el último mensaje tenga menos de 5 s de edad.

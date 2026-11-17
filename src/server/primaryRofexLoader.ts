@@ -279,6 +279,7 @@ export interface BmbConnectorHealthDto {
     | 'READY'
     | 'CONNECTED_L2'
     | 'OUT_OF_SESSION'
+    | 'STANDBY_2FA'
     | 'MISSING_DEPENDENCY'
     | 'DISABLED_NO_PASSWORD'
     | 'CONNECTING'
@@ -2371,6 +2372,7 @@ export class BmbBridgeClient {
               'READY',
               'CONNECTED_L2',
               'OUT_OF_SESSION',
+              'STANDBY_2FA',
               'MISSING_DEPENDENCY',
               'DISABLED_NO_PASSWORD',
               'CONNECTING',

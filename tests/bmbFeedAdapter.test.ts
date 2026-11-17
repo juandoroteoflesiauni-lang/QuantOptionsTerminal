@@ -358,4 +358,38 @@ describe('BMB feed adapter independent reference parity', () => {
     }
     expect(snapshot.health.error).not.toContain(ENV.BMB_COMITENTE);
   });
+
+  it('surfaces bridge-reported STANDBY_2FA as an explicit non-connected status', async () => {
+    const standbyMessage =
+      'BMB requiere 2FA interactivo (SMS/App); usando IOL_REST_V2 + Primary DLR como fuente activa';
+    const adapter = new BmbFeedAdapter({
+      env: ENV,
+      manageProcess: false,
+      nowMsFn: () => Date.UTC(2026, 10, 16, 15, 0, 0),
+      fetchFn: () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            status: 'STANDBY_2FA',
+            brokerId: 153,
+            accountLabel: null,
+            pyhomebrokerInstalled: true,
+            passwordConfigured: true,
+            asOfUtcSec: null,
+            error: standbyMessage,
+            cauciones: [],
+            orderBooksBySymbol: {},
+            options: [],
+          }),
+          headers: {},
+        }),
+    });
+    const snapshot = await adapter.getSnapshot();
+    expect(snapshot.health.status).toBe('STANDBY_2FA');
+    expect(snapshot.health.connected).toBe(false);
+    expect(snapshot.health.error).toBe(standbyMessage);
+    expect(adapter.getSafeHealthStatus().status).toBe('STANDBY_2FA');
+    adapter.stop();
+  });
 });
