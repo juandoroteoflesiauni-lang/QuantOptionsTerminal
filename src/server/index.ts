@@ -8,6 +8,8 @@
  *  - `DISABLE_WS=1` (desactiva conexión WebSocket saliente a Massive si se requiere modo REST-only)
  */
 
+import 'dotenv/config';
+
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';

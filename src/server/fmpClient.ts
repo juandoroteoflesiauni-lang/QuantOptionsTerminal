@@ -12,6 +12,8 @@
  *   válidas vacías como si fueran errores.
  */
 
+import 'dotenv/config';
+
 import type { Bar } from '../core/types.js';
 import type { FetchFn, FetchResponse, Timeframe } from '../data/types.js';
 import { etWallTimeToUtc } from '../data/alignment.js';
@@ -19,6 +21,18 @@ import { getMarketParts } from '../core/sessions.js';
 import { redactSecrets } from './runtimeCache.js';
 
 export const FMP_API_KEY_ENV_NAME = 'FMP_API_KEY';
+/** Pieza 41.1: aliases por rol. `FMP_API_KEY` es el principal. */
+export const FMP_KEY_QUOTES_ENV_NAME = 'FMP_KEY_QUOTES';
+export const FMP_KEY_MARKET_ENV_NAME = 'FMP_KEY_MARKET';
+export const FMP_KEY_ETF_ENV_NAME = 'FMP_KEY_ETF';
+export const FMP_KEY_MACRO_ENV_NAME = 'FMP_KEY_MACRO';
+export const FMP_KEY_ENV_NAMES = [
+  FMP_API_KEY_ENV_NAME,
+  FMP_KEY_QUOTES_ENV_NAME,
+  FMP_KEY_MARKET_ENV_NAME,
+  FMP_KEY_ETF_ENV_NAME,
+  FMP_KEY_MACRO_ENV_NAME,
+] as const;
 export const FMP_STABLE_BASE_URL = 'https://financialmodelingprep.com';
 export const FMP_LEGACY_BASE_URL = 'https://financialmodelingprep.com';
 
@@ -28,8 +42,19 @@ export type FmpEndpoint = 'HISTORICAL_CHART' | 'HISTORICAL_PRICE_EOD' | 'BATCH_Q
 
 export interface FmpConfig {
   readonly apiKey: string | null;
+  readonly quotesApiKey: string | null;
+  readonly marketApiKey: string | null;
+  readonly etfApiKey: string | null;
+  readonly macroApiKey: string | null;
   readonly configured: boolean;
   readonly baseUrl: string;
+}
+
+export type FmpKeyRole = 'PRIMARY' | 'QUOTES' | 'MARKET' | 'ETF' | 'MACRO';
+
+export interface FmpKeySelection {
+  readonly key: string;
+  readonly envName: FmpKeyRole;
 }
 
 export interface FmpHistoricalRequest {
@@ -48,6 +73,7 @@ export interface FmpHistoricalResult {
   readonly rows: number;
   readonly discarded: number;
   readonly legacyFallbackUsed: boolean;
+  readonly keyEnvName: FmpKeyRole;
   readonly fromUtcSec: number | null;
   readonly toUtcSec: number | null;
 }
@@ -76,6 +102,7 @@ export interface FmpBatchQuotesResult {
   readonly httpStatus: number | null;
   readonly rows: number;
   readonly discarded: number;
+  readonly keyEnvName: FmpKeyRole;
 }
 
 export interface FmpHttpResult {
@@ -87,7 +114,10 @@ export interface FmpHttpResult {
 export type FmpHttpFn = (url: string) => Promise<FmpHttpResult>;
 
 export interface FmpClientDeps {
-  readonly config: FmpConfig;
+  /** Configuración estática (tests/harness). Si falta, se resuelve `process.env`. */
+  readonly config?: FmpConfig;
+  /** Resolución dinámica por request; gana sobre `config`. */
+  readonly resolveConfigFn?: () => FmpConfig;
   readonly fetchFn?: FmpHttpFn;
   readonly nowMsFn?: () => number;
   readonly secrets?: readonly string[];
@@ -99,13 +129,30 @@ export interface FmpClientDeps {
   }) => void;
 }
 
-export function loadFmpConfigFromEnv(env: NodeJS.ProcessEnv = process.env): FmpConfig {
-  const apiKey = (env[FMP_API_KEY_ENV_NAME] ?? '').trim();
+export function resolveFmpConfig(env: NodeJS.ProcessEnv = process.env): FmpConfig {
+  const readKey = (name: string): string | null => {
+    const value = (env[name] ?? '').trim();
+    return value === '' ? null : value;
+  };
+  const apiKey = readKey(FMP_API_KEY_ENV_NAME);
+  const quotesApiKey = readKey(FMP_KEY_QUOTES_ENV_NAME);
+  const marketApiKey = readKey(FMP_KEY_MARKET_ENV_NAME);
+  const etfApiKey = readKey(FMP_KEY_ETF_ENV_NAME);
+  const macroApiKey = readKey(FMP_KEY_MACRO_ENV_NAME);
   return {
-    apiKey: apiKey === '' ? null : apiKey,
-    configured: apiKey !== '',
+    apiKey,
+    quotesApiKey,
+    marketApiKey,
+    etfApiKey,
+    macroApiKey,
+    configured: apiKey !== null || quotesApiKey !== null || marketApiKey !== null || etfApiKey !== null || macroApiKey !== null,
     baseUrl: FMP_STABLE_BASE_URL,
   };
+}
+
+/** Alias histórico de la Pieza 41; siempre lee `process.env` en el call-site. */
+export function loadFmpConfigFromEnv(env: NodeJS.ProcessEnv = process.env): FmpConfig {
+  return resolveFmpConfig(env);
 }
 
 const FMP_INTRADAY_PATH_BY_TIMEFRAME: Readonly<Record<FmpIntradayTimeframe, string>> = {
@@ -341,23 +388,51 @@ export function createDefaultFmpHttpFn(timeoutMs = 12_000): FmpHttpFn {
 }
 
 export class FmpEnterpriseClient {
-  private readonly config: FmpConfig;
+  private readonly configOverride: FmpConfig | null;
+  private readonly resolveConfigFn: (() => FmpConfig) | null;
   private readonly fetchFn: FmpHttpFn;
   private readonly nowMsFn: () => number;
-  private readonly secrets: readonly string[];
+  private readonly baseSecrets: readonly string[];
   private lastError: string | null = null;
   private lastSuccessAtMs: number | null = null;
   private requests = 0;
   private readonly onResponse: FmpClientDeps['onResponse'];
 
   public constructor(deps: FmpClientDeps) {
-    this.config = deps.config;
+    this.configOverride = deps.config ?? null;
+    this.resolveConfigFn = deps.resolveConfigFn ?? null;
     this.fetchFn = deps.fetchFn ?? createDefaultFmpHttpFn();
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
-    const secrets = [...(deps.secrets ?? [])];
-    if (this.config.apiKey !== null) secrets.push(this.config.apiKey);
-    this.secrets = secrets;
+    this.baseSecrets = [...(deps.secrets ?? [])];
     this.onResponse = deps.onResponse;
+  }
+
+  private effectiveConfig(): FmpConfig {
+    if (this.resolveConfigFn !== null) return this.resolveConfigFn();
+    if (this.configOverride !== null) return this.configOverride;
+    return resolveFmpConfig();
+  }
+
+  private apiKeyFor(endpoint: 'MARKET' | 'QUOTES'): FmpKeySelection | null {
+    const config = this.effectiveConfig();
+    if (endpoint === 'QUOTES') {
+      if (config.quotesApiKey !== null) return { key: config.quotesApiKey, envName: 'QUOTES' };
+      if (config.apiKey !== null) return { key: config.apiKey, envName: 'PRIMARY' };
+      return null;
+    }
+    if (config.marketApiKey !== null) return { key: config.marketApiKey, envName: 'MARKET' };
+    if (config.apiKey !== null) return { key: config.apiKey, envName: 'PRIMARY' };
+    return null;
+  }
+
+  private currentSecrets(): readonly string[] {
+    const config = this.effectiveConfig();
+    return [
+      ...this.baseSecrets,
+      ...[config.apiKey, config.quotesApiKey, config.marketApiKey, config.etfApiKey, config.macroApiKey].filter(
+        (key): key is string => key !== null,
+      ),
+    ];
   }
 
   public getDiagnostics(): {
@@ -367,10 +442,10 @@ export class FmpEnterpriseClient {
     readonly lastError: string | null;
   } {
     return {
-      configured: this.config.configured,
+      configured: this.effectiveConfig().configured,
       requests: this.requests,
       lastSuccessAtMs: this.lastSuccessAtMs,
-      lastError: this.lastError === null ? null : redactSecrets(this.lastError, this.secrets),
+      lastError: this.lastError === null ? null : redactSecrets(this.lastError, this.currentSecrets()),
     };
   }
 
@@ -385,17 +460,19 @@ export class FmpEnterpriseClient {
     } catch (err: unknown) {
       this.onResponse?.({ httpStatus: null, rows: 0, latencyMs: this.nowMsFn() - startedAtMs });
       const raw = err instanceof Error ? err.message : String(err);
-      throw new Error(redactSecrets(`FMP request failed: ${raw}`, this.secrets));
+      throw new Error(redactSecrets(`FMP request failed: ${raw}`, this.currentSecrets()));
     }
   }
 
   public async fetchHistorical(request: FmpHistoricalRequest): Promise<FmpHistoricalResult> {
-    if (!this.config.configured || this.config.apiKey === null) {
-      throw new Error('FMP is not configured: FMP_API_KEY missing');
+    const config = this.effectiveConfig();
+    const keySelection = this.apiKeyFor('MARKET');
+    if (!config.configured || keySelection === null) {
+      throw new Error('FMP market data is not configured: FMP_KEY_MARKET / FMP_API_KEY missing');
     }
     const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
     const path = buildFmpHistoricalPath(request);
-    let response = await this.fetchRedacted(buildAuthUrl(path, this.config.apiKey));
+    let response = await this.fetchRedacted(buildAuthUrl(path, keySelection.key));
     let source: FmpSource = 'FMP_STABLE';
     let legacyFallbackUsed = false;
     if (!response.ok) {
@@ -405,7 +482,7 @@ export class FmpEnterpriseClient {
       const symbol = cleanSymbol(request.symbol);
       const pathName = fmpIntradayPath(request.timeframe);
       if (pathName === '') throw new Error(`FMP chart HTTP ${String(response.status)}`);
-      response = await this.fetchRedacted(buildLegacyChartUrl(symbol, pathName, this.config.apiKey));
+      response = await this.fetchRedacted(buildLegacyChartUrl(symbol, pathName, keySelection.key));
       source = 'FMP_LEGACY';
       legacyFallbackUsed = true;
       if (!response.ok) {
@@ -429,20 +506,23 @@ export class FmpEnterpriseClient {
       rows: normalized.bars.length,
       discarded: normalized.discarded,
       legacyFallbackUsed,
+      keyEnvName: keySelection.envName,
       fromUtcSec: request.fromUtcSec ?? null,
       toUtcSec: request.toUtcSec ?? null,
     };
   }
 
   public async fetchBatchQuotes(symbols: readonly string[]): Promise<FmpBatchQuotesResult> {
-    if (!this.config.configured || this.config.apiKey === null) {
-      throw new Error('FMP is not configured: FMP_API_KEY missing');
+    const config = this.effectiveConfig();
+    const keySelection = this.apiKeyFor('QUOTES');
+    if (!config.configured || keySelection === null) {
+      throw new Error('FMP quotes are not configured: FMP_KEY_QUOTES / FMP_API_KEY missing');
     }
     const clean = [...new Set(symbols.map(cleanSymbol).filter((symbol) => symbol !== ''))];
     if (clean.length === 0) throw new Error('FMP batch quote requires symbols');
     const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
     const query = new URLSearchParams({ symbols: clean.join(',') });
-    const url = buildAuthUrl(`/stable/batch-quote?${query.toString()}`, this.config.apiKey);
+    const url = buildAuthUrl(`/stable/batch-quote?${query.toString()}`, keySelection.key);
     const response = await this.fetchRedacted(url);
     if (!response.ok) throw new Error(`FMP batch quote HTTP ${String(response.status)}`);
     let parsed: unknown;
@@ -461,6 +541,7 @@ export class FmpEnterpriseClient {
       httpStatus: response.status,
       rows: normalized.quotes.length,
       discarded: normalized.discarded,
+      keyEnvName: keySelection.envName,
     };
   }
 

@@ -301,6 +301,9 @@ export interface MassiveRestFeedDetails {
 export interface TradierFeedDetails {
   readonly sessionCreated: boolean;
   readonly reconnectAttempts: number;
+  readonly environment: 'LIVE' | 'SANDBOX';
+  readonly restBaseUrl: string;
+  readonly wsBaseUrl: string;
 }
 
 export interface OratsCircuitBreakerDetails {
@@ -621,6 +624,10 @@ export interface TradierFeedHealthSource {
   readonly subscribedSymbols: readonly string[];
   readonly lastError: string | null;
   readonly telemetry: FeedTelemetrySnapshot;
+  readonly apiEnv: 'prod' | 'sandbox';
+  readonly environment: 'LIVE' | 'SANDBOX';
+  readonly restBaseUrl?: string;
+  readonly wsBaseUrl?: string;
 }
 
 export interface FmpEnterpriseFeedHealthSource {
@@ -836,6 +843,9 @@ export class FeedsHealthMonitor {
       tradier: {
         sessionCreated: tradier.sessionCreated,
         reconnectAttempts: tradier.reconnectAttempts,
+        environment: tradier.environment,
+        restBaseUrl: tradier.restBaseUrl ?? '',
+        wsBaseUrl: tradier.wsBaseUrl ?? '',
       },
     };
 

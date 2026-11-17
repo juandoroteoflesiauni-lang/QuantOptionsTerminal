@@ -501,6 +501,8 @@ function createMonitor(overrides: MonitorOverrides = {}): FeedsHealthMonitor {
       subscribedSymbols: [],
       lastError: null,
       telemetry: emptyFeedTelemetrySnapshot(),
+      apiEnv: 'prod' as const,
+      environment: 'LIVE' as const,
     }),
     getOrats: () => ({
       configured: false,

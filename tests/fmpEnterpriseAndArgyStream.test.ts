@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   FmpEnterpriseClient,
   loadFmpConfigFromEnv,
+  resolveFmpConfig,
   parseFmpBatchQuotes,
   parseFmpEtDateTimeToUtcSec,
   parseFmpHistoricalBars,
@@ -21,6 +22,7 @@ import {
   parseTradierTimesales,
   TRADIER_CORE_US_SYMBOLS,
 } from '../src/server/tradierStream.js';
+import { resolveTradierConfig } from '../src/server/tradierAdapter.js';
 import { resolveMassiveStocksMode } from '../src/server/massiveStocksStream.js';
 import {
   BYMA_L2_FIXED_INCOME_TICKERS,
@@ -87,6 +89,48 @@ interface ReferenceFixture {
   readonly massiveStocksMode: {
     readonly cases: readonly { readonly env: Readonly<Record<string, string>>; readonly expected: string }[];
   };
+  readonly fmpKeyResolution: {
+    readonly empty: {
+      readonly configured: boolean;
+      readonly apiKey: null;
+      readonly quotesApiKey: null;
+      readonly marketApiKey: null;
+    };
+    readonly primaryOnly: {
+      readonly env: Readonly<Record<string, string>>;
+      readonly configured: boolean;
+      readonly apiKey: string;
+      readonly quotesApiKey: null;
+      readonly marketApiKey: null;
+    };
+    readonly dedicated: {
+      readonly env: Readonly<Record<string, string>>;
+      readonly configured: boolean;
+      readonly apiKey: string;
+      readonly quotesApiKey: string;
+      readonly marketApiKey: string;
+    };
+    readonly quotesOnly: {
+      readonly env: Readonly<Record<string, string>>;
+      readonly configured: boolean;
+      readonly quotesEndpoint: 'QUOTES';
+      readonly marketEndpoint: null;
+    };
+    readonly marketOnly: {
+      readonly env: Readonly<Record<string, string>>;
+      readonly configured: boolean;
+      readonly quotesEndpoint: null;
+      readonly marketEndpoint: 'MARKET';
+    };
+  };
+  readonly tradierTokenResolution: readonly {
+    readonly env: Readonly<Record<string, string>>;
+    readonly configured: boolean;
+    readonly apiEnv: 'prod' | 'sandbox';
+    readonly environment: 'LIVE' | 'SANDBOX';
+    readonly restBaseUrl: string;
+    readonly wsBaseUrl: string;
+  }[];
   readonly primarySelection: {
     readonly instruments: readonly { readonly marketId: string; readonly symbol: string }[];
     readonly expectedSymbols: readonly string[];
@@ -201,11 +245,75 @@ describe('Pieza 41 — FMP Enterprise intradiario/EOD y batch-quote', () => {
     }
   });
 
+  it('resuelve FMP dinámicamente y usa claves dedicadas por endpoint', async () => {
+    const empty = resolveFmpConfig({});
+    expect(empty.configured).toBe(fixture.fmpKeyResolution.empty.configured);
+    expect(empty.apiKey).toBeNull();
+    expect(empty.quotesApiKey).toBeNull();
+    expect(empty.marketApiKey).toBeNull();
+
+    const primary = resolveFmpConfig(fixture.fmpKeyResolution.primaryOnly.env);
+    expect(primary.configured).toBe(fixture.fmpKeyResolution.primaryOnly.configured);
+    expect(primary.apiKey).toBe(fixture.fmpKeyResolution.primaryOnly.apiKey);
+    expect(primary.quotesApiKey).toBeNull();
+    expect(primary.marketApiKey).toBeNull();
+
+    const dedicated = resolveFmpConfig(fixture.fmpKeyResolution.dedicated.env);
+    expect(dedicated.configured).toBe(true);
+    expect(dedicated.apiKey).toBe(fixture.fmpKeyResolution.dedicated.apiKey);
+    expect(dedicated.quotesApiKey).toBe(fixture.fmpKeyResolution.dedicated.quotesApiKey);
+    expect(dedicated.marketApiKey).toBe(fixture.fmpKeyResolution.dedicated.marketApiKey);
+
+    const urls: string[] = [];
+    const client = new FmpEnterpriseClient({
+      config: dedicated,
+      fetchFn: async (url) => {
+        urls.push(url);
+        await Promise.resolve();
+        if (url.includes('/batch-quote')) {
+          return { ok: true, status: 200, text: JSON.stringify([{ symbol: 'AAPL', price: 100, previousClose: 99, volume: 1, timestamp: 1 }]) };
+        }
+        return { ok: true, status: 200, text: JSON.stringify([{ date: '2026-07-30 13:16:00', open: 10, high: 10.5, low: 9.9, close: 10.4, volume: 100 }]) };
+      },
+      nowMsFn: () => 1_700_000_000_000,
+    });
+    const quotes = await client.fetchBatchQuotes(['AAPL']);
+    expect(quotes.keyEnvName).toBe('QUOTES');
+    expect(urls.at(-1)).toContain('apikey=fmp-quotes');
+    const bars = await client.fetchHistorical({ symbol: 'AAPL', timeframe: '5m' });
+    expect(bars.keyEnvName).toBe('MARKET');
+    expect(urls.at(-1)).toContain('apikey=fmp-market');
+
+    const quotesOnly = new FmpEnterpriseClient({ config: resolveFmpConfig(fixture.fmpKeyResolution.quotesOnly.env) });
+    await expect(quotesOnly.fetchHistorical({ symbol: 'AAPL', timeframe: '5m' })).rejects.toThrow('market data is not configured');
+    const marketOnly = new FmpEnterpriseClient({ config: resolveFmpConfig(fixture.fmpKeyResolution.marketOnly.env) });
+    await expect(marketOnly.fetchBatchQuotes(['AAPL'])).rejects.toThrow('quotes are not configured');
+  });
+
+  it('lee process.env en cada request mediante resolveConfigFn', async () => {
+    let env: Record<string, string> = { FMP_API_KEY: 'fmp-before' };
+    const urls: string[] = [];
+    const client = new FmpEnterpriseClient({
+      resolveConfigFn: () => resolveFmpConfig(env),
+      fetchFn: async (url) => {
+        urls.push(url);
+        await Promise.resolve();
+        return { ok: true, status: 200, text: JSON.stringify([{ symbol: 'AAPL', price: 100, previousClose: 99, volume: 1, timestamp: 1 }]) };
+      },
+      nowMsFn: () => 1_700_000_000_000,
+    });
+    await client.fetchBatchQuotes(['AAPL']);
+    expect(urls.at(-1)).toContain('apikey=fmp-before');
+    env = { FMP_KEY_QUOTES: 'fmp-after' };
+    await client.fetchBatchQuotes(['AAPL']);
+    expect(urls.at(-1)).toContain('apikey=fmp-after');
+  });
+
   it('usa fallback legacy explícito solo ante fallo stable y redacta la key en errores', async () => {
     const urls: string[] = [];
     let call = 0;
     const client = new FmpEnterpriseClient({
-      config: { apiKey: 'fmp-test-secret', configured: true, baseUrl: 'https://financialmodelingprep.com' },
+      config: loadFmpConfigFromEnv({ FMP_API_KEY: 'fmp-test-secret' }),
       fetchFn: async (url) => {
         urls.push(url);
         call += 1;
@@ -227,7 +335,7 @@ describe('Pieza 41 — FMP Enterprise intradiario/EOD y batch-quote', () => {
     expect(urls.some((url) => url.includes('/api/v3/historical-chart/5min/GGAL'))).toBe(true);
     expect(client.getDiagnostics().lastError).toBeNull();
     const failingClient = new FmpEnterpriseClient({
-      config: { apiKey: 'fmp-test-secret', configured: true, baseUrl: 'https://financialmodelingprep.com' },
+      config: loadFmpConfigFromEnv({ FMP_API_KEY: 'fmp-test-secret' }),
       fetchFn: async () => {
         await Promise.resolve();
         return { ok: false, status: 502, text: '' };
@@ -248,6 +356,35 @@ describe('Pieza 41 — Tradier stream e histórico REST', () => {
     const required = ['SPY', 'QQQ', 'IWM', 'DIA', 'VIXY', 'GGAL', 'YPF', 'BMA', 'PAM', 'BBAR', 'SUPV', 'TGS', 'CEPU', 'CRESY', 'EDN', 'LOMA', 'MELI', 'NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'TSLA', 'GOOGL', 'KO', 'EWZ', 'IBIT'];
     expect([...TRADIER_CORE_US_SYMBOLS].sort()).toEqual([...required].sort());
     expect(TRADIER_CORE_US_SYMBOLS.some((symbol) => symbol.startsWith('I:'))).toBe(false);
+  });
+
+  it('resuelve aliases Tradier Live/Sandbox y URLs correspondientes', () => {
+    expect(resolveTradierConfig({}, 'tests/.env-not-present').configured).toBe(false);
+    for (const caseItem of fixture.tradierTokenResolution) {
+      const config = resolveTradierConfig(caseItem.env, 'tests/.env-not-present');
+      expect(config.configured).toBe(caseItem.configured);
+      expect(config.apiEnv).toBe(caseItem.apiEnv);
+      expect(config.restBaseUrl).toBe(caseItem.restBaseUrl);
+      expect(config.wsBaseUrl).toBe(caseItem.wsBaseUrl);
+      expect(config.apiEnv === 'sandbox' ? 'SANDBOX' : 'LIVE').toBe(caseItem.environment);
+    }
+  });
+
+  it('reporta el entorno Tradier en estado live sin exponer token', () => {
+    const runtime = new MarketRuntime({
+      tradierConfig: resolveTradierConfig({ TRADIER_SANDBOX_TOKEN: 'tradier-test-token' }, 'tests/.env-not-present'),
+      nowMsFn: () => 1_700_000_000_000,
+    });
+    const status = runtime.getTradierLiveStatus();
+    expect(status.configured).toBe(true);
+    expect(status.apiEnv).toBe('sandbox');
+    expect(status.environment).toBe('SANDBOX');
+    expect(status.restBaseUrl).toBe('https://sandbox.tradier.com/v1');
+    expect(status.wsBaseUrl).toBe('wss://sandbox.tradier.com/v1/markets/events');
+    const health = runtime.getTradierFeedHealth();
+    expect(health.environment).toBe('SANDBOX');
+    expect(JSON.stringify(status)).not.toContain('tradier-test-token');
+    expect(JSON.stringify(health)).not.toContain('tradier-test-token');
   });
 
   it('agrega 15m a 1h/4h por muro ET y no inventa volumen/vw', () => {
@@ -304,7 +441,7 @@ describe('Pieza 41 — Massive standby STANDBY_TRADIER_FMP_PRIMARY', () => {
         stocksMode: 'STANDBY_TRADIER_FMP_PRIMARY',
       }),
       getMassiveRest: () => ({ configured: true, poolSize: 1, slots: [], lastSlotIndex: 0, roundRobinRequests: 0, telemetry: { ...EMPTY_TELEMETRY } }),
-      getTradier: () => ({ configured: true, connected: true, sessionCreated: true, reconnectAttempts: 0, subscribedSymbols: [...TRADIER_CORE_US_SYMBOLS], lastError: null, telemetry: { ...EMPTY_TELEMETRY } }),
+      getTradier: () => ({ configured: true, connected: true, sessionCreated: true, reconnectAttempts: 0, subscribedSymbols: [...TRADIER_CORE_US_SYMBOLS], lastError: null, telemetry: { ...EMPTY_TELEMETRY }, apiEnv: 'prod' as const, environment: 'LIVE' as const }),
       getFmp: () => ({ configured: true, lastSuccessAtMs: 1, lastError: null, requestCount: 1, quoteCount: 1, subscribedSymbols: ['AAPL'], telemetry: { ...EMPTY_TELEMETRY } }),
       getOrats: () => ({ configured: true, connected: true, lastFetchAtUtcSec: 1, lastStatus: 'OK', planTier: null, quotaRemaining: null, quotaLimit: null, quotaResetAtUtcSec: null, circuitBreaker: { state: 'CLOSED', consecutiveFailures: 0, openedAtMs: null }, telemetry: { ...EMPTY_TELEMETRY } }),
       getPrimary: () => ({ configured: true, authenticated: true, wsConnected: true, tokenValidUntilUtcSec: null, tokenRenewCount: 0, wsEnvironment: 'PRIMARY_ECO_XOMS_WS', dlrSubscribedCount: 0, liveDlrCount: 0, liveDlrLastUpdateUtcSec: null, lastError: null, telemetry: { ...EMPTY_TELEMETRY } }),

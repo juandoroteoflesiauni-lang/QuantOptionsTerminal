@@ -18,6 +18,7 @@ import { getMarketParts } from '../core/sessions.js';
 import { redactSecrets } from './runtimeCache.js';
 import {
   createDefaultTradierHttpFn,
+  resolveTradierConfig,
   TradierLiveManager,
   type TradierConfig,
   type TradierHttpFn,
@@ -221,29 +222,39 @@ export function parseTradierDailyHistory(raw: unknown): { readonly bars: readonl
 }
 
 export class TradierHistoricalClient {
-  private readonly config: TradierConfig;
+  private readonly configOverride: TradierConfig | null;
+  private readonly resolveConfigFn: (() => TradierConfig) | null;
   private readonly httpFn: TradierHttpFn;
   private readonly nowMsFn: () => number;
   private readonly secrets: readonly string[];
 
   public constructor(deps: {
-    readonly config: TradierConfig;
+    readonly config?: TradierConfig;
+    readonly resolveConfigFn?: () => TradierConfig;
     readonly httpFn?: TradierHttpFn;
     readonly nowMsFn?: () => number;
     readonly secrets?: readonly string[];
   }) {
-    this.config = deps.config;
+    this.configOverride = deps.config ?? null;
+    this.resolveConfigFn = deps.resolveConfigFn ?? null;
     this.httpFn = deps.httpFn ?? createDefaultTradierHttpFn();
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
     const secrets = [...(deps.secrets ?? [])];
-    if (this.config.accessToken !== null) secrets.push(this.config.accessToken);
     this.secrets = secrets;
   }
 
+  private effectiveConfig(): TradierConfig {
+    if (this.resolveConfigFn !== null) return this.resolveConfigFn();
+    if (this.configOverride !== null) return this.configOverride;
+    return resolveTradierConfig();
+  }
+
   public async fetchHistoricalBars(request: TradierHistoricalRequest): Promise<TradierHistoricalResult> {
-    if (!this.config.configured || this.config.accessToken === null) {
+    const config = this.effectiveConfig();
+    if (!config.configured || config.accessToken === null) {
       throw new Error('Tradier is not configured');
     }
+    const currentSecrets = [...this.secrets, config.accessToken];
     const symbol = request.symbol.trim().toUpperCase();
     const interval = tradierInterval(request.timeframe);
     if (symbol === '' || !Number.isFinite(request.fromUtcSec) || !Number.isFinite(request.toUtcSec)) {
@@ -251,15 +262,15 @@ export class TradierHistoricalClient {
     }
     const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
     const headers = {
-      Authorization: `Bearer ${this.config.accessToken}`,
+      Authorization: `Bearer ${config.accessToken}`,
       Accept: 'application/json',
     };
     const start = etDateKey(request.fromUtcSec);
     const end = etDateKey(request.toUtcSec);
     if (interval === 'daily') {
-      const url = `${this.config.restBaseUrl}/markets/history?symbol=${encodeURIComponent(symbol)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&granularity=daily`;
+      const url = `${config.restBaseUrl}/markets/history?symbol=${encodeURIComponent(symbol)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&granularity=daily`;
       const response = await this.httpFn(url, { method: 'GET', headers });
-      if (!response.ok) throw new Error(redactSecrets(`Tradier history HTTP ${String(response.status)}`, this.secrets));
+      if (!response.ok) throw new Error(redactSecrets(`Tradier history HTTP ${String(response.status)}`, currentSecrets));
       const normalized = parseTradierDailyHistory(JSON.parse(response.text) as unknown);
       return {
         bars: normalized.bars,
@@ -270,9 +281,9 @@ export class TradierHistoricalClient {
         discarded: normalized.discarded,
       };
     }
-    const url = `${this.config.restBaseUrl}/markets/timesales?symbol=${encodeURIComponent(symbol)}&interval=${interval}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&session_filter=all`;
+    const url = `${config.restBaseUrl}/markets/timesales?symbol=${encodeURIComponent(symbol)}&interval=${interval}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&session_filter=all`;
     const response = await this.httpFn(url, { method: 'GET', headers });
-    if (!response.ok) throw new Error(redactSecrets(`Tradier timesales HTTP ${String(response.status)}`, this.secrets));
+    if (!response.ok) throw new Error(redactSecrets(`Tradier timesales HTTP ${String(response.status)}`, currentSecrets));
     const normalized = parseTradierTimesales(JSON.parse(response.text) as unknown);
     return {
       bars: aggregateTradierBars(normalized.bars, request.timeframe),

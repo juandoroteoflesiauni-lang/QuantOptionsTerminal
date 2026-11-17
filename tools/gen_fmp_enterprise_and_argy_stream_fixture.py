@@ -144,13 +144,35 @@ def main() -> None:
             "cases": [
                 {"env": {"MASSIVE_API_KEY": "mk"}, "expected": "MASSIVE_STOCKS_ENABLED"},
                 {"env": {"FMP_API_KEY": "fk"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
+                {"env": {"FMP_KEY_QUOTES": "fq"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
+                {"env": {"FMP_KEY_MARKET": "fm"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
+                {"env": {"TRADIER_API_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
+                {"env": {"TRADIER_LIVE_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
                 {"env": {"TRADIER_ACCESS_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
                 {"env": {"TRADIER_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
-                {"env": {"TRADIER_API_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
+                {"env": {"TRADIER_SANDBOX_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
+                {"env": {"TRADIER_SANDBOX_API_TOKEN": "t"}, "expected": "STANDBY_TRADIER_FMP_PRIMARY"},
                 {"env": {"FMP_API_KEY": "fk", "MASSIVE_STOCKS_WS_ENABLED": "true"}, "expected": "MASSIVE_STOCKS_ENABLED"},
                 {"env": {"MASSIVE_STOCKS_WS_ENABLED": "TRUE"}, "expected": "MASSIVE_STOCKS_ENABLED"},
             ]
         },
+        "fmpKeyResolution": {
+            "empty": {"configured": False, "apiKey": None, "quotesApiKey": None, "marketApiKey": None},
+            "primaryOnly": {"env": {"FMP_API_KEY": "fmp-primary"}, "configured": True, "apiKey": "fmp-primary", "quotesApiKey": None, "marketApiKey": None},
+            "dedicated": {"env": {"FMP_API_KEY": "fmp-primary", "FMP_KEY_QUOTES": "fmp-quotes", "FMP_KEY_MARKET": "fmp-market"}, "configured": True, "apiKey": "fmp-primary", "quotesApiKey": "fmp-quotes", "marketApiKey": "fmp-market"},
+            "quotesOnly": {"env": {"FMP_KEY_QUOTES": "fmp-quotes"}, "configured": True, "quotesEndpoint": "QUOTES", "marketEndpoint": None},
+            "marketOnly": {"env": {"FMP_KEY_MARKET": "fmp-market"}, "configured": True, "quotesEndpoint": None, "marketEndpoint": "MARKET"},
+        },
+        "tradierTokenResolution": [
+            {"env": {"TRADIER_API_TOKEN": "live-token"}, "configured": True, "apiEnv": "prod", "environment": "LIVE", "restBaseUrl": "https://api.tradier.com/v1", "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_LIVE_TOKEN": "live-token"}, "configured": True, "apiEnv": "prod", "environment": "LIVE", "restBaseUrl": "https://api.tradier.com/v1", "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_ACCESS_TOKEN": "legacy-live"}, "configured": True, "apiEnv": "prod", "environment": "LIVE", "restBaseUrl": "https://api.tradier.com/v1", "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_TOKEN": "legacy-live"}, "configured": True, "apiEnv": "prod", "environment": "LIVE", "restBaseUrl": "https://api.tradier.com/v1", "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_SANDBOX_TOKEN": "sandbox-token"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_SANDBOX_API_TOKEN": "sandbox-token"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_API_TOKEN": "live-token", "TRADIER_ENV": "sandbox"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
+            {"env": {"TRADIER_SANDBOX_TOKEN": "sandbox-token", "TRADIER_ENV": "prod"}, "configured": True, "apiEnv": "sandbox", "environment": "SANDBOX", "restBaseUrl": "https://sandbox.tradier.com/v1", "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"},
+        ],
         "primarySelection": {
             "instruments": [
                 {"marketId": "MERV", "symbol": "MERV - XMEV - GGAL - 24HS"},

@@ -267,7 +267,7 @@ import {
 import {
   fetchTradierOptionChain,
   fetchTradierQuotes,
-  loadTradierConfigFromEnv,
+  resolveTradierConfig,
   overlayTradierChainOnCanonicalContracts,
   TRADIER_PROD_REST_BASE,
   TRADIER_WS_BASE,
@@ -279,7 +279,7 @@ import {
   type TradierQuotesResult,
   type TradierStreamTick,
 } from './tradierAdapter.js';
-import { fetchAsFmpHttpFn, FmpEnterpriseClient, loadFmpConfigFromEnv, type FmpConfig } from './fmpClient.js';
+import { fetchAsFmpHttpFn, FmpEnterpriseClient, loadFmpConfigFromEnv, resolveFmpConfig, type FmpConfig } from './fmpClient.js';
 import { TradierHistoricalClient, TradierStocksStream, TRADIER_CORE_US_SYMBOLS } from './tradierStream.js';
 import { resolveMassiveStocksMode } from './massiveStocksStream.js';
 
@@ -401,6 +401,10 @@ export interface UsTradierProviderStatus {
   readonly lastTickAtUtcSec: number | null;
   readonly lastError: string | null;
   readonly activeRole: 'LIVE_STREAM' | 'STANDBY';
+  readonly apiEnv: 'prod' | 'sandbox';
+  readonly environment: 'LIVE' | 'SANDBOX';
+  readonly restBaseUrl: string;
+  readonly wsBaseUrl: string;
 }
 
 export interface UsProvidersStatus {
@@ -3553,7 +3557,8 @@ export class MarketRuntime {
    * entorno (tests/harness); `null` => delega al pool multi-key (Pieza 32).
    */
   private readonly depsApiKey: string | null;
-  private readonly tradierConfig: TradierConfig;
+  private readonly tradierConfigOverride: TradierConfig | null;
+  private readonly tradierHistoricalBarsRequested: boolean;
   private tradierManager: TradierLiveManager | null;
   private readonly tradierChainFetchFn: typeof fetchTradierOptionChain;
   private readonly tradierQuotesFetchFn: typeof fetchTradierQuotes;
@@ -3570,7 +3575,7 @@ export class MarketRuntime {
   >();
   private readonly tradierChainInFlight = new Map<string, Promise<TradierOptionChainResult>>();
   private readonly tradierQuoteTicks = new Map<string, MarketTickQuote>();
-  private readonly fmpConfig: FmpConfig;
+  private readonly fmpConfigOverride: FmpConfig | null;
   private readonly fmpClient: FmpEnterpriseClient;
   private fmpBatchTimer: ReturnType<typeof setTimeout> | null = null;
   private fmpBatchRunning = false;
@@ -3578,11 +3583,40 @@ export class MarketRuntime {
   private readonly fmpTelemetry = new RollingFeedTelemetry({ latencyKind: 'HTTP_ROUND_TRIP' });
   private readonly tradierHistoricalClient: TradierHistoricalClient | null;
   private tradierStocksStream: TradierStocksStream | null = null;
-  private readonly massiveStocksMode: ReturnType<typeof resolveMassiveStocksMode>;
-  private readonly fmpHistoricalProviderEnabled: boolean;
-  private readonly tradierHistoricalProviderEnabled: boolean;
-  /** Pieza 41: cualquier inyección de transporte/loaders es harness offline. */
+  private readonly massiveStocksModeOverride: ReturnType<typeof resolveMassiveStocksMode> | null;
   private readonly injectedMarketHarness: boolean;
+
+  private get fmpConfig(): FmpConfig {
+    if (this.fmpConfigOverride !== null) return this.fmpConfigOverride;
+    return this.injectedMarketHarness ? loadFmpConfigFromEnv({}) : resolveFmpConfig();
+  }
+
+  private get fmpHistoricalProviderEnabled(): boolean {
+    return this.fmpConfig.configured && (!this.injectedMarketHarness || this.fmpConfigOverride !== null);
+  }
+
+  private get tradierConfig(): TradierConfig {
+    if (this.tradierConfigOverride !== null) return this.tradierConfigOverride;
+    return this.injectedMarketHarness
+      ? {
+          accessToken: null,
+          tokenEnvName: null,
+          apiEnv: 'prod',
+          restBaseUrl: TRADIER_PROD_REST_BASE,
+          wsBaseUrl: TRADIER_WS_BASE,
+          configured: false,
+        }
+      : resolveTradierConfig();
+  }
+
+  private get tradierHistoricalProviderEnabled(): boolean {
+    return this.tradierConfig.configured && (!this.injectedMarketHarness || this.tradierHistoricalBarsRequested);
+  }
+
+  private get massiveStocksMode(): ReturnType<typeof resolveMassiveStocksMode> {
+    if (this.massiveStocksModeOverride !== null) return this.massiveStocksModeOverride;
+    return this.injectedMarketHarness ? 'MASSIVE_STOCKS_ENABLED' : resolveMassiveStocksMode();
+  }
 
   private readonly snapshotCache: SingleFlightRuntimeCache<TerminalSnapshotResponse>;
   private readonly barsCache: SingleFlightRuntimeCache<TerminalBarsResponse>;
@@ -4078,48 +4112,44 @@ export class MarketRuntime {
     if (this.apiKey !== '') {
       secretSet.add(this.apiKey);
     }
-    // Pieza 32: en modo fetch simulado (tests) Tradier queda explícitamente no
-    // configurado salvo inyección directa, para no golpear la red real.
+    // Pieza 32/41.1: en harness Tradier/FMP quedan explícitamente vacíos salvo
+    // inyección directa, para no golpear la red real ni depender del orden dotenv.
     const isMockFetch = deps.fetchFn !== undefined;
     this.injectedMarketHarness =
       isMockFetch ||
       deps.loadBarsFn !== undefined ||
       deps.createWsClientFn !== undefined ||
       deps.apiKey !== undefined;
-    this.tradierConfig =
-      deps.tradierConfig ??
-      (this.injectedMarketHarness
-        ? {
-            accessToken: null,
-            tokenEnvName: null,
-            apiEnv: 'prod' as const,
-            restBaseUrl: TRADIER_PROD_REST_BASE,
-            wsBaseUrl: TRADIER_WS_BASE,
-            configured: false,
-          }
-        : loadTradierConfigFromEnv());
+    this.tradierConfigOverride = deps.tradierConfig ?? null;
     if (this.tradierConfig.accessToken !== null) {
       secretSet.add(this.tradierConfig.accessToken);
     }
-    // Pieza 41: en tests sin inyección explícita el entorno real no alimenta
-    // FMP ni cambia el modo Massive; así los harness históricos siguen offline.
-    this.fmpConfig = deps.fmpConfig ?? (this.injectedMarketHarness ? loadFmpConfigFromEnv({}) : loadFmpConfigFromEnv());
-    if (this.fmpConfig.apiKey !== null) secretSet.add(this.fmpConfig.apiKey);
-    this.massiveStocksMode =
-      deps.massiveStocksMode ??
-      (this.injectedMarketHarness ? 'MASSIVE_STOCKS_ENABLED' : resolveMassiveStocksMode());
-    // Los proveedores históricos alternativos se activan en harness solo si el
-    // caller los inyecta explícitamente; así los tests legacy no cambian de red.
-    this.fmpHistoricalProviderEnabled =
-      this.fmpConfig.configured && (!this.injectedMarketHarness || deps.fmpConfig !== undefined);
-    this.tradierHistoricalProviderEnabled =
-      this.tradierConfig.configured && (!this.injectedMarketHarness || deps.tradierHistoricalBars === true);
+    this.fmpConfigOverride = deps.fmpConfig ?? null;
+    for (const fmpKey of [
+      this.fmpConfig.apiKey,
+      this.fmpConfig.quotesApiKey,
+      this.fmpConfig.marketApiKey,
+      this.fmpConfig.etfApiKey,
+      this.fmpConfig.macroApiKey,
+    ]) {
+      if (fmpKey !== null) secretSet.add(fmpKey);
+    }
+    this.massiveStocksModeOverride = deps.massiveStocksMode ?? null;
+    this.tradierHistoricalBarsRequested = deps.tradierHistoricalBars === true;
     this.tradierManager = deps.tradierManager ?? null;
     this.tradierChainFetchFn = deps.tradierChainFetchFn ?? fetchTradierOptionChain;
     this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
     this.secrets = [...secretSet];
+    const harnessFmpConfig = loadFmpConfigFromEnv({});
     this.fmpClient = new FmpEnterpriseClient({
-      config: this.fmpConfig,
+      config: this.fmpConfigOverride ?? harnessFmpConfig,
+      ...(this.fmpConfigOverride === null
+        ? {
+            resolveConfigFn: this.injectedMarketHarness
+              ? (): FmpConfig => harnessFmpConfig
+              : (): FmpConfig => resolveFmpConfig(),
+          }
+        : {}),
       ...(deps.fetchFn === undefined ? {} : { fetchFn: fetchAsFmpHttpFn(deps.fetchFn) }),
       ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
       secrets: this.secrets,
@@ -4132,7 +4162,7 @@ export class MarketRuntime {
       },
     });
     this.tradierHistoricalClient = new TradierHistoricalClient({
-      config: this.tradierConfig,
+      resolveConfigFn: (): TradierConfig => this.tradierConfig,
       ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
       secrets: this.secrets,
     });
@@ -5195,6 +5225,10 @@ export class MarketRuntime {
         lastTickAtUtcSec: null,
         lastError: null,
         activeRole: 'STANDBY',
+        apiEnv: this.tradierConfig.apiEnv,
+        environment: this.tradierConfig.apiEnv === 'sandbox' ? ('SANDBOX' as const) : ('LIVE' as const),
+        restBaseUrl: this.tradierConfig.restBaseUrl,
+        wsBaseUrl: this.tradierConfig.wsBaseUrl,
       };
     }
     return {
@@ -5206,6 +5240,10 @@ export class MarketRuntime {
       lastTickAtUtcSec: status.lastTickAtUtcSec,
       lastError: status.lastError,
       activeRole: status.activeRole,
+      apiEnv: status.apiEnv,
+      environment: status.environment,
+      restBaseUrl: status.restBaseUrl,
+      wsBaseUrl: status.wsBaseUrl,
     };
   }
 
@@ -5314,6 +5352,10 @@ export class MarketRuntime {
       reconnectAttempts: status?.reconnectAttempts ?? 0,
       subscribedSymbols: status?.subscribedSymbols ?? [],
       lastError: status?.lastError ?? null,
+      apiEnv: this.tradierConfig.apiEnv,
+      environment: this.tradierConfig.apiEnv === 'sandbox' ? ('SANDBOX' as const) : ('LIVE' as const),
+      restBaseUrl: this.tradierConfig.restBaseUrl,
+      wsBaseUrl: this.tradierConfig.wsBaseUrl,
       telemetry:
         this.tradierStocksStream?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
         this.tradierManager?.getFeedTelemetrySnapshot(this.nowMsFn()) ??

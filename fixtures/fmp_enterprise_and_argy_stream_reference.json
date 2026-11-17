@@ -334,6 +334,30 @@
       },
       {
         "env": {
+          "FMP_KEY_QUOTES": "fq"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "FMP_KEY_MARKET": "fm"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "TRADIER_API_TOKEN": "t"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "TRADIER_LIVE_TOKEN": "t"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
           "TRADIER_ACCESS_TOKEN": "t"
         },
         "expected": "STANDBY_TRADIER_FMP_PRIMARY"
@@ -346,7 +370,13 @@
       },
       {
         "env": {
-          "TRADIER_API_TOKEN": "t"
+          "TRADIER_SANDBOX_TOKEN": "t"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "TRADIER_SANDBOX_API_TOKEN": "t"
         },
         "expected": "STANDBY_TRADIER_FMP_PRIMARY"
       },
@@ -365,6 +395,134 @@
       }
     ]
   },
+  "fmpKeyResolution": {
+    "empty": {
+      "configured": false,
+      "apiKey": null,
+      "quotesApiKey": null,
+      "marketApiKey": null
+    },
+    "primaryOnly": {
+      "env": {
+        "FMP_API_KEY": "fmp-primary"
+      },
+      "configured": true,
+      "apiKey": "fmp-primary",
+      "quotesApiKey": null,
+      "marketApiKey": null
+    },
+    "dedicated": {
+      "env": {
+        "FMP_API_KEY": "fmp-primary",
+        "FMP_KEY_QUOTES": "fmp-quotes",
+        "FMP_KEY_MARKET": "fmp-market"
+      },
+      "configured": true,
+      "apiKey": "fmp-primary",
+      "quotesApiKey": "fmp-quotes",
+      "marketApiKey": "fmp-market"
+    },
+    "quotesOnly": {
+      "env": {
+        "FMP_KEY_QUOTES": "fmp-quotes"
+      },
+      "configured": true,
+      "quotesEndpoint": "QUOTES",
+      "marketEndpoint": null
+    },
+    "marketOnly": {
+      "env": {
+        "FMP_KEY_MARKET": "fmp-market"
+      },
+      "configured": true,
+      "quotesEndpoint": null,
+      "marketEndpoint": "MARKET"
+    }
+  },
+  "tradierTokenResolution": [
+    {
+      "env": {
+        "TRADIER_API_TOKEN": "live-token"
+      },
+      "configured": true,
+      "apiEnv": "prod",
+      "environment": "LIVE",
+      "restBaseUrl": "https://api.tradier.com/v1",
+      "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_LIVE_TOKEN": "live-token"
+      },
+      "configured": true,
+      "apiEnv": "prod",
+      "environment": "LIVE",
+      "restBaseUrl": "https://api.tradier.com/v1",
+      "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_ACCESS_TOKEN": "legacy-live"
+      },
+      "configured": true,
+      "apiEnv": "prod",
+      "environment": "LIVE",
+      "restBaseUrl": "https://api.tradier.com/v1",
+      "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_TOKEN": "legacy-live"
+      },
+      "configured": true,
+      "apiEnv": "prod",
+      "environment": "LIVE",
+      "restBaseUrl": "https://api.tradier.com/v1",
+      "wsBaseUrl": "wss://ws.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_SANDBOX_TOKEN": "sandbox-token"
+      },
+      "configured": true,
+      "apiEnv": "sandbox",
+      "environment": "SANDBOX",
+      "restBaseUrl": "https://sandbox.tradier.com/v1",
+      "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_SANDBOX_API_TOKEN": "sandbox-token"
+      },
+      "configured": true,
+      "apiEnv": "sandbox",
+      "environment": "SANDBOX",
+      "restBaseUrl": "https://sandbox.tradier.com/v1",
+      "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_API_TOKEN": "live-token",
+        "TRADIER_ENV": "sandbox"
+      },
+      "configured": true,
+      "apiEnv": "sandbox",
+      "environment": "SANDBOX",
+      "restBaseUrl": "https://sandbox.tradier.com/v1",
+      "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"
+    },
+    {
+      "env": {
+        "TRADIER_SANDBOX_TOKEN": "sandbox-token",
+        "TRADIER_ENV": "prod"
+      },
+      "configured": true,
+      "apiEnv": "sandbox",
+      "environment": "SANDBOX",
+      "restBaseUrl": "https://sandbox.tradier.com/v1",
+      "wsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events"
+    }
+  ],
   "primarySelection": {
     "instruments": [
       {

@@ -49,6 +49,9 @@ interface MassiveRestFeedDetails {
 interface TradierFeedDetails {
   readonly sessionCreated: boolean;
   readonly reconnectAttempts: number;
+  readonly environment: 'LIVE' | 'SANDBOX';
+  readonly restBaseUrl: string;
+  readonly wsBaseUrl: string;
 }
 
 interface OratsCircuitBreakerDetails {
@@ -458,6 +461,12 @@ function primaryApiHost(apiUrl: string): string {
   return apiUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '') || '—';
 }
 
+/** Host REST Tradier (p. ej. `api.tradier.com/v1`), sin protocolo ni credenciales. */
+function tradierHost(restBaseUrl: string): string {
+  if (typeof restBaseUrl !== 'string' || restBaseUrl.trim() === '') return '—';
+  return restBaseUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '') || '—';
+}
+
 function stateStyles(state: FeedProviderState): { readonly bg: string; readonly text: string; readonly border: string } {
   if (state === 'CONNECTED') {
     return { bg: 'bg-[#0D221E]', text: 'text-[#22C55E]', border: 'border-[#164E3F]' };
@@ -542,6 +551,7 @@ const ProviderCard: React.FC<{
       {provider.tradier !== undefined && (
         <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
           <DetailRow label="Sesión creada" value={provider.tradier.sessionCreated ? 'SÍ' : 'NO'} />
+          <DetailRow label="Entorno / REST" value={`${provider.tradier.environment} · ${tradierHost(provider.tradier.restBaseUrl)}`} />
           <DetailRow label="Reconnects" value={formatCount(provider.tradier.reconnectAttempts)} />
         </div>
       )}

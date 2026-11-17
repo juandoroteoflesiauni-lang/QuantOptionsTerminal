@@ -655,8 +655,12 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'BMB_COMITENTE',
     'BMB_SESSION_COOKIE',
     'BMB_HUB_TOKEN',
-    // Pieza 41: proveedores US y aliases canónicos/compatibles.
+    // Pieza 41.1: proveedores US y aliases canónicos/compatibles.
     'FMP_API_KEY',
+    'FMP_KEY_QUOTES',
+    'FMP_KEY_MARKET',
+    'FMP_KEY_ETF',
+    'FMP_KEY_MACRO',
     'MASSIVE_API_KEY',
     'MASSIVE_WS_STOCKS_KEY',
     'MASSIVE_REST_KEY',
@@ -664,6 +668,9 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'TRADIER_ACCESS_TOKEN',
     'TRADIER_TOKEN',
     'TRADIER_API_TOKEN',
+    'TRADIER_LIVE_TOKEN',
+    'TRADIER_SANDBOX_TOKEN',
+    'TRADIER_SANDBOX_API_TOKEN',
     'ORATS_API_TOKEN',
     'ORATS_API_KEY',
     'IOL_USERNAME',

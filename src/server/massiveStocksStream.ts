@@ -40,9 +40,16 @@ export type MassiveStocksMode = 'MASSIVE_STOCKS_ENABLED' | 'STANDBY_TRADIER_FMP_
 
 const MASSIVE_STOCKS_STANDBY_TRIGGER_ENV_NAMES = [
   'FMP_API_KEY',
+  'FMP_KEY_QUOTES',
+  'FMP_KEY_MARKET',
+  'FMP_KEY_ETF',
+  'FMP_KEY_MACRO',
+  'TRADIER_API_TOKEN',
+  'TRADIER_LIVE_TOKEN',
   'TRADIER_ACCESS_TOKEN',
   'TRADIER_TOKEN',
-  'TRADIER_API_TOKEN',
+  'TRADIER_SANDBOX_TOKEN',
+  'TRADIER_SANDBOX_API_TOKEN',
 ] as const;
 
 export function resolveMassiveStocksMode(env: NodeJS.ProcessEnv = process.env): MassiveStocksMode {

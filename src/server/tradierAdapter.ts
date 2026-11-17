@@ -24,6 +24,8 @@
  * redactan con el conjunto de secretos del caller.
  */
 
+import 'dotenv/config';
+
 import { WebSocket } from 'ws';
 import type {
   OptionDaySummary,
@@ -53,13 +55,27 @@ export type TradierApiEnv = 'prod' | 'sandbox';
 export const TRADIER_PROD_REST_BASE = 'https://api.tradier.com/v1';
 export const TRADIER_SANDBOX_REST_BASE = 'https://sandbox.tradier.com/v1';
 export const TRADIER_WS_BASE = 'wss://ws.tradier.com/v1/markets/events';
+export const TRADIER_SANDBOX_WS_BASE = 'wss://sandbox.tradier.com/v1/markets/events';
 
 /**
- * Nombres de variable aceptados para el token. `TRADIER_ACCESS_TOKEN` es el
- * nombre canónico (SPEC Pieza 32); `TRADIER_TOKEN` es el alias ya presente en
- * `.env`. La provenance expone el nombre efectivamente usado.
+ * Pieza 41.1: aliases dinámicos. Los alias Sandbox seleccionan el entorno
+ * Sandbox aunque `TRADIER_ENV` no esté presente; un `TRADIER_ENV=sandbox`
+ * explícito sigue siendo válido con un token Live.
  */
-export const TRADIER_TOKEN_ENV_NAMES = ['TRADIER_ACCESS_TOKEN', 'TRADIER_TOKEN'] as const;
+export const TRADIER_LIVE_TOKEN_ENV_NAMES = [
+  'TRADIER_API_TOKEN',
+  'TRADIER_LIVE_TOKEN',
+  'TRADIER_ACCESS_TOKEN',
+  'TRADIER_TOKEN',
+] as const;
+export const TRADIER_SANDBOX_TOKEN_ENV_NAMES = [
+  'TRADIER_SANDBOX_TOKEN',
+  'TRADIER_SANDBOX_API_TOKEN',
+] as const;
+export const TRADIER_TOKEN_ENV_NAMES = [
+  ...TRADIER_LIVE_TOKEN_ENV_NAMES,
+  ...TRADIER_SANDBOX_TOKEN_ENV_NAMES,
+] as const;
 export const TRADIER_ENV_ENV_NAME = 'TRADIER_ENV';
 
 export interface TradierConfig {
@@ -73,31 +89,52 @@ export interface TradierConfig {
   readonly configured: boolean;
 }
 
-export function loadTradierConfigFromEnv(
+export function resolveTradierConfig(
   env?: NodeJS.ProcessEnv,
   envFilePath?: string,
 ): TradierConfig {
   const source: MassiveEnvSource = readMassiveEnvSource(env, envFilePath);
   let accessToken: string | null = null;
   let tokenEnvName: string | null = null;
-  for (const name of TRADIER_TOKEN_ENV_NAMES) {
+  let tokenIsSandbox = false;
+  for (const name of TRADIER_LIVE_TOKEN_ENV_NAMES) {
     const value = resolveMassiveEnvValue(source, name);
     if (value !== '') {
       accessToken = value;
       tokenEnvName = name;
+      tokenIsSandbox = false;
       break;
     }
   }
+  if (accessToken === null) {
+    for (const name of TRADIER_SANDBOX_TOKEN_ENV_NAMES) {
+      const value = resolveMassiveEnvValue(source, name);
+      if (value !== '') {
+        accessToken = value;
+        tokenEnvName = name;
+        tokenIsSandbox = true;
+        break;
+      }
+    }
+  }
   const envRaw = resolveMassiveEnvValue(source, TRADIER_ENV_ENV_NAME).toLowerCase();
-  const apiEnv: TradierApiEnv = envRaw === 'sandbox' ? 'sandbox' : 'prod';
+  const apiEnv: TradierApiEnv = tokenIsSandbox || envRaw === 'sandbox' ? 'sandbox' : 'prod';
   return {
     accessToken,
     tokenEnvName,
     apiEnv,
     restBaseUrl: apiEnv === 'sandbox' ? TRADIER_SANDBOX_REST_BASE : TRADIER_PROD_REST_BASE,
-    wsBaseUrl: TRADIER_WS_BASE,
+    wsBaseUrl: apiEnv === 'sandbox' ? TRADIER_SANDBOX_WS_BASE : TRADIER_WS_BASE,
     configured: accessToken !== null,
   };
+}
+
+/** Alias histórico de la Pieza 32; lee el entorno dinámicamente en el call-site. */
+export function loadTradierConfigFromEnv(
+  env?: NodeJS.ProcessEnv,
+  envFilePath?: string,
+): TradierConfig {
+  return resolveTradierConfig(env, envFilePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +185,7 @@ export interface TradierClientDeps {
 
 export class TradierNotConfiguredError extends Error {
   public constructor() {
-    super('Tradier is not configured: TRADIER_ACCESS_TOKEN (or TRADIER_TOKEN alias) missing');
+    super('Tradier is not configured: TRADIER_API_TOKEN / TRADIER_SANDBOX_TOKEN (or legacy aliases) missing');
     this.name = 'TradierNotConfiguredError';
   }
 }
@@ -916,6 +953,10 @@ export interface TradierStreamStatus {
   readonly lastError: string | null;
   readonly reconnectAttempts: number;
   readonly activeRole: 'LIVE_STREAM' | 'STANDBY';
+  readonly apiEnv: TradierApiEnv;
+  readonly environment: 'LIVE' | 'SANDBOX';
+  readonly restBaseUrl: string;
+  readonly wsBaseUrl: string;
 }
 
 export interface TradierLiveQuoteState {
@@ -1054,6 +1095,10 @@ export class TradierLiveManager {
       reconnectAttempts: this.reconnectAttempts,
       activeRole:
         this.config.configured && this.state === 'CONNECTED' ? 'LIVE_STREAM' : 'STANDBY',
+      apiEnv: this.config.apiEnv,
+      environment: this.config.apiEnv === 'sandbox' ? 'SANDBOX' : 'LIVE',
+      restBaseUrl: this.config.restBaseUrl,
+      wsBaseUrl: this.config.wsBaseUrl,
     };
   }
 
