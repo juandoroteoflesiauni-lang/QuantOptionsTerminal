@@ -19,6 +19,15 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { AlertTriangle, Layers, RefreshCw } from 'lucide-react';
+import { projectLiveEma } from '../../../../src/core/ema';
+import {
+  appendLiveTapeTick,
+  projectLiveCandle,
+  projectLiveCvd,
+  projectLiveSessionVwap,
+  type LiveChartBar,
+  type LiveTapeTick,
+} from '../../../../src/core/realtimePropagation';
 import type {
   GgalAvwapAnchorMode,
   GgalDualChartCoordMode,
@@ -40,6 +49,7 @@ import {
   getMarketLiveQuote,
   useLivePriceFlash,
   useMarketLiveStream,
+  type MarketLiveQuote,
 } from '../../api/useMarketLiveStream';
 
 export interface GgalDualChartViewProps {
@@ -451,6 +461,25 @@ function formatTimestamp(utcSec: number | null | undefined): string {
     timeZone: BYMA_MARKET_TZ,
     hour12: false,
   });
+}
+
+function resolveBarSeconds(timeframe: GgalDualChartTimeframe): number {
+  switch (timeframe) {
+    case '1m':
+      return 60;
+    case '5m':
+      return 300;
+    case '15m':
+      return 900;
+    case '1H':
+      return 3_600;
+    case '4H':
+      return 14_400;
+    case '1D':
+      return 86_400;
+    default:
+      return 60;
+  }
 }
 
 function resolveConeLabel(
@@ -1032,6 +1061,16 @@ export function GgalDualChartView({
         : null;
   const liveClock = getMarketLiveClock(liveStream);
   const liveSpotFlash = useLivePriceFlash(liveDisplaySpot);
+  const lastBarRef = useRef<LiveChartBar | null>(null);
+  const closedBarsRef = useRef<readonly LiveChartBar[]>([]);
+  const emaBaselinesRef = useRef<{ readonly 9: number; readonly 21: number; readonly 50: number; readonly 200: number } | null>(null);
+  const emaSeriesRefs = useRef<Partial<Record<9 | 21 | 50 | 200, ISeriesApi<'Line'>>>>({});
+  const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const cvdSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const lastCvdRef = useRef<number | null>(null);
+  const tapeRef = useRef<readonly LiveTapeTick[]>([]);
+  const previousArQuoteRef = useRef<MarketLiveQuote | null>(null);
+  const previousUsQuoteRef = useRef<MarketLiveQuote | null>(null);
   const [subPaneMode, setSubPaneMode] = useState<GgalSubPaneIndicatorMode>('CVD_LEE_READY');
   const [greekMode, setGreekMode] = useState<GgalGreekProfileMode>('SIGNED_GEX');
   const [toggles, setToggles] = useState<OverlayToggleState>({
@@ -1221,6 +1260,9 @@ export function GgalDualChartView({
       subChart.removeSeries(series);
     }
     subSeriesRef.current = [];
+    emaSeriesRefs.current = {};
+    vwapSeriesRef.current = null;
+    cvdSeriesRef.current = null;
 
     for (const priceLine of priceLinesRef.current) {
       candleSeries.removePriceLine(priceLine);
@@ -1233,6 +1275,9 @@ export function GgalDualChartView({
     if (payload === null || payload.status !== 'OPERATIONAL' || bars.length === 0) {
       candleSeries.setData([]);
       lastFitKeyRef.current = null;
+      lastBarRef.current = null;
+      closedBarsRef.current = [];
+      emaBaselinesRef.current = null;
       return;
     }
 
@@ -1245,14 +1290,23 @@ export function GgalDualChartView({
         close: bar.close,
       })),
     );
+    const lastBar = bars[bars.length - 1];
+    lastBarRef.current = lastBar ?? null;
+    closedBarsRef.current = bars.slice(0, Math.max(0, bars.length - 1));
+    emaBaselinesRef.current = {
+      9: payload.ema9 !== undefined && payload.ema9.length > 1 ? (payload.ema9[payload.ema9.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      21: payload.ema21 !== undefined && payload.ema21.length > 1 ? (payload.ema21[payload.ema21.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      50: payload.ema50 !== undefined && payload.ema50.length > 1 ? (payload.ema50[payload.ema50.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      200: payload.ema200 !== undefined && payload.ema200.length > 1 ? (payload.ema200[payload.ema200.length - 2]?.value ?? Number.NaN) : Number.NaN,
+    };
 
     const addLineOverlay = (
       pts: readonly { readonly timeSec: number; readonly value: number }[] | undefined,
       color: string,
       width: number,
       lineStyle: LineStyle = LineStyle.Solid,
-    ) => {
-      if (pts === undefined || pts.length === 0) return;
+    ): ISeriesApi<'Line'> | null => {
+      if (pts === undefined || pts.length === 0) return null;
       const line = mainChart.addSeries(LineSeries, {
         color,
         lineWidth: asLineWidth(width),
@@ -1265,13 +1319,18 @@ export function GgalDualChartView({
         pts.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.value })),
       );
       overlaySeriesRef.current.push(line);
+      return line;
     };
 
     if (toggles.showEmas) {
-      addLineOverlay(payload.ema9, INDICATOR_COLORS.ema9, 1.25);
-      addLineOverlay(payload.ema21, INDICATOR_COLORS.ema21, 1.25);
-      addLineOverlay(payload.ema50, INDICATOR_COLORS.ema50, 1.5);
-      addLineOverlay(payload.ema200, INDICATOR_COLORS.ema200, 2);
+      const ema9Series = addLineOverlay(payload.ema9, INDICATOR_COLORS.ema9, 1.25);
+      if (ema9Series !== null) emaSeriesRefs.current[9] = ema9Series;
+      const ema21Series = addLineOverlay(payload.ema21, INDICATOR_COLORS.ema21, 1.25);
+      if (ema21Series !== null) emaSeriesRefs.current[21] = ema21Series;
+      const ema50Series = addLineOverlay(payload.ema50, INDICATOR_COLORS.ema50, 1.5);
+      if (ema50Series !== null) emaSeriesRefs.current[50] = ema50Series;
+      const ema200Series = addLineOverlay(payload.ema200, INDICATOR_COLORS.ema200, 2);
+      if (ema200Series !== null) emaSeriesRefs.current[200] = ema200Series;
     }
 
     if (
@@ -1314,7 +1373,8 @@ export function GgalDualChartView({
       const marketTz =
         payload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
       const vwapSeries = computeSessionVwapSeries(bars, marketTz);
-      addLineOverlay(vwapSeries, INDICATOR_COLORS.sessionVwap, 1.5);
+      const vwapLine = addLineOverlay(vwapSeries, INDICATOR_COLORS.sessionVwap, 1.5);
+      if (vwapLine !== null) vwapSeriesRef.current = vwapLine;
     }
 
     const addWallLine = (price: number | null | undefined, color: string, title: string) => {
@@ -1352,6 +1412,10 @@ export function GgalDualChartView({
         })),
       );
       subSeriesRef.current.push(series);
+      cvdSeriesRef.current = series;
+      const lastCvdPoint = subPaneSeries[subPaneSeries.length - 1];
+      lastCvdRef.current = lastCvdPoint !== undefined && Number.isFinite(lastCvdPoint.cvdLeeReady) ? lastCvdPoint.cvdLeeReady : null;
+      tapeRef.current = [];
     } else if (subPaneMode === 'CCL_BRECHA_PCT') {
       const series = subChart.addSeries(LineSeries, { color: '#38BDF8', lineWidth: 2 });
       series.setData(
@@ -1404,6 +1468,113 @@ export function GgalDualChartView({
       mainChart.timeScale().fitContent();
     }
   }, [payload, toggles, subPaneMode, levelVisibility, coneLabel]);
+
+  // Live tick projection: updates the forming candle, EMAs, session VWAP and CVD
+  // without rebuilding the historical series or refitting the time scale.
+  useEffect(() => {
+    const activeQuote = coordMode === 'USD_ADR_NASDAQ' ? liveUsGgal : liveArGgal;
+    const previousQuote = coordMode === 'USD_ADR_NASDAQ' ? previousUsQuoteRef.current : previousArQuoteRef.current;
+    const activePrice = coordMode === 'ARS_BYMA'
+      ? liveArGgal?.price ?? null
+      : coordMode === 'USD_ADR_NASDAQ'
+        ? liveUsGgal?.price ?? null
+        : liveArGgal !== null && liveUsGgal !== null && liveUsGgal.price > 0
+          ? (liveArGgal.price * 10) / liveUsGgal.price
+          : null;
+    const activeTimeSec = activeQuote?.asOfUtcSec ?? null;
+    if (activePrice === null || activeTimeSec === null || !Number.isFinite(activePrice) || !Number.isInteger(activeTimeSec)) {
+      previousArQuoteRef.current = liveArGgal;
+      previousUsQuoteRef.current = liveUsGgal;
+      return;
+    }
+    const bar = lastBarRef.current;
+    if (bar === null) {
+      previousArQuoteRef.current = liveArGgal;
+      previousUsQuoteRef.current = liveUsGgal;
+      return;
+    }
+    const volumeDelta =
+      activeQuote !== null &&
+      previousQuote !== null &&
+      activeQuote.volume !== null &&
+      previousQuote.volume !== null
+        ? Math.max(0, activeQuote.volume - previousQuote.volume)
+        : 0;
+    const projectedBar = projectLiveCandle(
+      bar,
+      { price: activePrice, timeSec: activeTimeSec, volumeDelta },
+      resolveBarSeconds(timeframe),
+    );
+    if (projectedBar === null) {
+      previousArQuoteRef.current = liveArGgal;
+      previousUsQuoteRef.current = liveUsGgal;
+      return;
+    }
+    if (projectedBar.timeSec !== bar.timeSec) {
+      closedBarsRef.current = [...closedBarsRef.current, bar];
+    }
+    lastBarRef.current = projectedBar;
+    candleSeriesRef.current?.update({
+      time: projectedBar.timeSec as UTCTimestamp,
+      open: projectedBar.open,
+      high: projectedBar.high,
+      low: projectedBar.low,
+      close: projectedBar.close,
+    });
+
+    const baselines = emaBaselinesRef.current;
+    if (baselines !== null) {
+      const ema9 = projectLiveEma(baselines[9], activePrice, 9);
+      if (Number.isFinite(ema9) && emaSeriesRefs.current[9] !== undefined) {
+        emaSeriesRefs.current[9]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema9 });
+      }
+      const ema21 = projectLiveEma(baselines[21], activePrice, 21);
+      if (Number.isFinite(ema21) && emaSeriesRefs.current[21] !== undefined) {
+        emaSeriesRefs.current[21]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema21 });
+      }
+      const ema50 = projectLiveEma(baselines[50], activePrice, 50);
+      if (Number.isFinite(ema50) && emaSeriesRefs.current[50] !== undefined) {
+        emaSeriesRefs.current[50]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema50 });
+      }
+      const ema200 = projectLiveEma(baselines[200], activePrice, 200);
+      if (Number.isFinite(ema200) && emaSeriesRefs.current[200] !== undefined) {
+        emaSeriesRefs.current[200]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema200 });
+      }
+    }
+
+    if (vwapSeriesRef.current !== null) {
+      const marketTz = coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+      const vwapPoint = projectLiveSessionVwap(closedBarsRef.current, projectedBar, marketTz);
+      if (vwapPoint !== null) {
+        vwapSeriesRef.current.update({ time: vwapPoint.timeSec as UTCTimestamp, value: vwapPoint.value });
+      }
+    }
+
+    if (activeQuote !== null && previousQuote !== null && activeQuote.asOfUtcSec !== null) {
+      const tapeTick: LiveTapeTick = {
+        market: activeQuote.market,
+        symbol: activeQuote.symbol,
+        price: activeQuote.price,
+        size:
+          activeQuote.volume !== null && previousQuote.volume !== null
+            ? Math.max(0, activeQuote.volume - previousQuote.volume)
+            : null,
+        side: activeQuote.direction === 'down' ? 'SELL' : 'BUY',
+        timeSec: activeQuote.asOfUtcSec,
+      };
+      tapeRef.current = appendLiveTapeTick(tapeRef.current, tapeTick);
+    }
+
+    if (subPaneMode === 'CVD_LEE_READY' && cvdSeriesRef.current !== null && lastCvdRef.current !== null) {
+      const projectedCvd = projectLiveCvd(lastCvdRef.current, tapeRef.current);
+      if (Number.isFinite(projectedCvd)) {
+        cvdSeriesRef.current.update({ time: projectedBar.timeSec as UTCTimestamp, value: projectedCvd });
+      }
+    }
+
+    previousArQuoteRef.current = liveArGgal;
+    previousUsQuoteRef.current = liveUsGgal;
+  }, [liveArGgal?.revision, liveUsGgal?.revision, coordMode, timeframe, subPaneMode]);
 
   const confluenceAlerts = useMemo(
     () => (payload?.status === 'OPERATIONAL' ? (payload.confluenceAlerts ?? []) : []),

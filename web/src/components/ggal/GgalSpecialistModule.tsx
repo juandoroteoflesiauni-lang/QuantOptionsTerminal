@@ -57,7 +57,9 @@ import type { OrderTicketPreset } from '../Overlays';
 import { GgalDualChartView } from './GgalDualChartView';
 import {
   getMarketLiveClock,
+  getMarketLiveFx,
   getMarketLiveQuote,
+  pushLiveOrderBook,
   useLivePriceFlash,
   useMarketLiveStream,
 } from '../../api/useMarketLiveStream';
@@ -217,6 +219,7 @@ export const GgalSpecialistModule: React.FC<{
   const liveStream = useMarketLiveStream();
   const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
   const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
+  const liveFx = getMarketLiveFx(liveStream);
   const liveClock = getMarketLiveClock(liveStream);
   const arFlash = useLivePriceFlash(liveArGgal?.price ?? null);
   const usFlash = useLivePriceFlash(liveUsGgal?.price ?? null);
@@ -320,6 +323,28 @@ export const GgalSpecialistModule: React.FC<{
       const res = await fetchGgalMicrostructure({ forceRefresh, signal: ctrl.signal });
       if (!ctrl.signal.aborted) {
         setMicroData(res);
+        if (res.l2Ladder.available) {
+          pushLiveOrderBook({
+            symbol: res.l2Ladder.symbol,
+            bids: res.l2Ladder.bids.map((level) => ({
+              price: level.price,
+              size: level.size,
+              orderCount: level.orderCount,
+            })),
+            asks: res.l2Ladder.asks.map((level) => ({
+              price: level.price,
+              size: level.size,
+              orderCount: level.orderCount,
+            })),
+            microprice:
+              res.microstructure.status === 'OPERATIONAL' ? res.microstructure.micropriceMultiLevel : null,
+            micropriceL1:
+              res.microstructure.status === 'OPERATIONAL' ? res.microstructure.micropriceL1 : null,
+            vpin: res.microstructure.status === 'OPERATIONAL' ? res.microstructure.vpin.vpin : null,
+            asOfUtcSec: res.l2Ladder.asOfUtcSec,
+            source: res.l2Ladder.activeProvider ?? 'UNKNOWN',
+          });
+        }
       }
     } catch (err: unknown) {
       if (!ctrl.signal.aborted) {
@@ -1202,9 +1227,9 @@ export const GgalSpecialistModule: React.FC<{
             </div>
             <KPICard
               title="CCL GGAL vs. Soberanos"
-              heroValue={fmtCurrency(parityData.result.ccl.cclGgal24h, '$ ', 2)}
+              heroValue={fmtCurrency(liveFx?.cclImplicitGgal ?? parityData.result.ccl.cclGgal24h, '$ ', 2)}
               badge="BMA/BYMA"
-              subtitle={`Benchmark AL30/GD30: ${fmtCurrency(parityData.result.ccl.cclSovereignBenchmark, '$ ', 2)} · Spread: ${fmtNum(parityData.result.ccl.spreadLogBps, 1)} pb`}
+              subtitle={`Benchmark AL30/GD30: ${fmtCurrency(liveFx?.cclMedian ?? parityData.result.ccl.cclSovereignBenchmark, '$ ', 2)} · Spread: ${fmtNum(parityData.result.ccl.spreadLogBps, 1)} pb`}
               helpText="Contado con Liquidación implícito en GGAL ajustado por diferencial T+1 ARS vs T+1 US frente al promedio ponderado AL30/GD30."
             />
             <KPICard

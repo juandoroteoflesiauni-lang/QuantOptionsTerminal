@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { appendLiveTapeTick, type LiveFxSnapshot, type LiveTapeTick } from '../../../src/core/realtimePropagation';
 import { refreshBackendHealth } from '../data/liveRuntimeBridge';
 
 export type LiveStreamMarket = 'AR' | 'US';
@@ -37,6 +38,23 @@ export interface MarketLiveCaucion {
   readonly referenceInstrument: string;
 }
 
+export interface MarketLiveOrderBookLevel {
+  readonly price: number;
+  readonly size: number;
+  readonly orderCount: number | null;
+}
+
+export interface MarketLiveOrderBook {
+  readonly symbol: string;
+  readonly bids: readonly MarketLiveOrderBookLevel[];
+  readonly asks: readonly MarketLiveOrderBookLevel[];
+  readonly microprice: number | null;
+  readonly micropriceL1: number | null;
+  readonly vpin: number | null;
+  readonly asOfUtcSec: number | null;
+  readonly source: string;
+}
+
 export interface MarketLiveFuture {
   readonly contract: string;
   readonly category: 'OUTRIGHT' | 'MINI' | 'SPREAD' | 'OPTION' | 'SPOT' | 'OTHER';
@@ -71,7 +89,10 @@ export interface MarketLiveStreamState {
   readonly status: 'CONNECTING' | 'LIVE' | 'RECONNECTING';
   readonly transport: LiveStreamTransport | null;
   readonly isLive: boolean;
-  readonly quotes: Readonly<Record<string, MarketLiveQuote>>;
+  readonly quotesBySymbol: Readonly<Record<string, MarketLiveQuote>>;
+  readonly liveFx: LiveFxSnapshot | null;
+  readonly liveOrderBook: MarketLiveOrderBook | null;
+  readonly liveTape: readonly LiveTapeTick[];
   readonly cclMedian: number | null;
   readonly mepMedian: number | null;
   readonly arSourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
@@ -92,6 +113,9 @@ interface MarketTickBatchWire {
   readonly serverTimeSec?: unknown;
   readonly quotes?: unknown;
   readonly removed?: unknown;
+  readonly liveFx?: unknown;
+  readonly liveOrderBook?: unknown;
+  readonly tape?: unknown;
   readonly cclMedian?: unknown;
   readonly mepMedian?: unknown;
   readonly arSourceMode?: unknown;
@@ -114,7 +138,10 @@ let state: MarketLiveStreamState = {
   status: 'CONNECTING',
   transport: null,
   isLive: false,
-  quotes: {},
+  quotesBySymbol: {},
+  liveFx: null,
+  liveOrderBook: null,
+  liveTape: [],
   cclMedian: null,
   mepMedian: null,
   arSourceMode: 'NO_DATA',
@@ -201,13 +228,42 @@ export function useLivePriceFlash(value: number | null): 'up' | 'down' | null {
   return flash?.direction ?? null;
 }
 
+export function useThrottledLiveValue<T>(value: T, intervalMs = 1_000): T {
+  const [throttled, setThrottled] = useState<T>(value);
+  const lastUpdateAtMsRef = useRef<number>(0);
+  useEffect(() => {
+    const now = Date.now();
+    const elapsedMs = now - lastUpdateAtMsRef.current;
+    if (elapsedMs >= intervalMs) {
+      lastUpdateAtMsRef.current = now;
+      setThrottled(value);
+      return;
+    }
+    const timer = setTimeout(() => {
+      lastUpdateAtMsRef.current = Date.now();
+      setThrottled(value);
+    }, intervalMs - elapsedMs);
+    return () => clearTimeout(timer);
+  }, [value, intervalMs]);
+  return throttled;
+}
+
 export function getMarketLiveQuote(
   snapshot: MarketLiveStreamState,
   market: LiveStreamMarket,
   symbol: string,
 ): MarketLiveQuote | null {
   if (!isMarketLiveStreamFresh(snapshot)) return null;
-  return snapshot.quotes[liveQuoteKey(market, symbol)] ?? null;
+  return snapshot.quotesBySymbol[liveQuoteKey(market, symbol)] ?? null;
+}
+
+export function pushLiveOrderBook(snapshot: MarketLiveOrderBook): void {
+  notify({ ...state, version: state.version + 1, liveOrderBook: snapshot });
+}
+
+export function getMarketLiveFx(snapshot: MarketLiveStreamState): LiveFxSnapshot | null {
+  if (!isMarketLiveStreamFresh(snapshot)) return null;
+  return snapshot.liveFx;
 }
 
 function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = false): MarketLiveQuote | null {
@@ -262,6 +318,96 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
     direction,
     revision: changed || previous === null ? (previous?.revision ?? 0) + 1 : previous.revision,
   };
+}
+
+function parseLiveFx(raw: unknown): LiveFxSnapshot | null {
+  if (!isRecord(raw)) return null;
+  const mepMedian = finitePositive(raw['mepMedian']);
+  const cclMedian = finitePositive(raw['cclMedian']);
+  const cclImplicitGgal = finitePositive(raw['cclImplicitGgal']);
+  const canjePctRaw = raw['canjePct'];
+  const canjePct = typeof canjePctRaw === 'number' && Number.isFinite(canjePctRaw) ? canjePctRaw : null;
+  if (mepMedian === null && cclMedian === null && cclImplicitGgal === null && canjePct === null) {
+    return null;
+  }
+  return { mepMedian, cclMedian, cclImplicitGgal, canjePct };
+}
+
+function parseOrderBook(raw: unknown): MarketLiveOrderBook | null {
+  if (!isRecord(raw) || typeof raw['symbol'] !== 'string' || raw['symbol'].trim() === '') return null;
+  const parseLevels = (value: unknown): MarketLiveOrderBookLevel[] => {
+    if (!Array.isArray(value)) return [];
+    const levels: MarketLiveOrderBookLevel[] = [];
+    for (const levelRaw of value) {
+      if (!isRecord(levelRaw)) continue;
+      const price = finitePositive(levelRaw['price']);
+      const sizeRaw = levelRaw['size'];
+      const size = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) && sizeRaw >= 0 ? sizeRaw : null;
+      if (price === null || size === null) continue;
+      const orderCountRaw = levelRaw['orderCount'];
+      const orderCount =
+        typeof orderCountRaw === 'number' && Number.isInteger(orderCountRaw) && orderCountRaw >= 0
+          ? orderCountRaw
+          : null;
+      levels.push({ price, size, orderCount });
+    }
+    return levels;
+  };
+  const micropriceRaw = raw['microprice'];
+  const micropriceL1Raw = raw['micropriceL1'];
+  const vpinRaw = raw['vpin'];
+  return {
+    symbol: raw['symbol'].trim().toUpperCase(),
+    bids: parseLevels(raw['bids']),
+    asks: parseLevels(raw['asks']),
+    microprice: typeof micropriceRaw === 'number' && Number.isFinite(micropriceRaw) ? micropriceRaw : null,
+    micropriceL1: typeof micropriceL1Raw === 'number' && Number.isFinite(micropriceL1Raw) ? micropriceL1Raw : null,
+    vpin: typeof vpinRaw === 'number' && Number.isFinite(vpinRaw) ? vpinRaw : null,
+    asOfUtcSec: finitePositive(raw['asOfUtcSec']),
+    source: typeof raw['source'] === 'string' && raw['source'].trim() !== '' ? raw['source'].trim() : 'UNKNOWN',
+  };
+}
+
+function parseTape(raw: unknown): readonly LiveTapeTick[] {
+  if (!Array.isArray(raw)) return [];
+  const tape: LiveTapeTick[] = [];
+  for (const tickRaw of raw) {
+    if (!isRecord(tickRaw)) continue;
+    const market = tickRaw['market'];
+    const symbolRaw = tickRaw['symbol'];
+    const price = finitePositive(tickRaw['price']);
+    const timeSec = finitePositive(tickRaw['timeSec']);
+    if ((market !== 'AR' && market !== 'US') || typeof symbolRaw !== 'string' || symbolRaw.trim() === '' || price === null || timeSec === null) continue;
+    const sizeRaw = tickRaw['size'];
+    const size = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) && sizeRaw >= 0 ? sizeRaw : null;
+    const sideRaw = tickRaw['side'];
+    const side = sideRaw === 'BUY' || sideRaw === 'SELL' ? sideRaw : null;
+    tape.push({ market, symbol: symbolRaw.trim().toUpperCase(), price, size, side, timeSec });
+  }
+  return tape;
+}
+
+function deriveTapeTickFromQuote(
+  quote: MarketLiveQuote,
+  previous: MarketLiveQuote | null,
+): LiveTapeTick | null {
+  if (quote.direction === null || quote.asOfUtcSec === null) return null;
+  const size =
+    previous !== null && quote.volume !== null && previous.volume !== null
+      ? Math.max(0, quote.volume - previous.volume)
+      : null;
+  return {
+    market: quote.market,
+    symbol: quote.symbol,
+    price: quote.price,
+    size,
+    side: quote.direction === 'up' ? 'BUY' : 'SELL',
+    timeSec: quote.asOfUtcSec,
+  };
+}
+
+function pushTapeTick(tape: readonly LiveTapeTick[], tick: LiveTapeTick): readonly LiveTapeTick[] {
+  return appendLiveTapeTick(tape, tick);
 }
 
 function parseCaucion(raw: unknown): MarketLiveCaucion | null {
@@ -369,7 +515,7 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
       ? batch.usSourceMode
       : state.usSourceMode;
-  const previousQuotes = state.quotes;
+  const previousQuotes = state.quotesBySymbol;
   const nextQuotes: Record<string, MarketLiveQuote> = {};
   let changedTicks = 0;
   for (const raw of batch.quotes) {
@@ -397,6 +543,18 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
       : batch.futuresSource === 'PRIMARY_WS' || batch.futuresSource === 'PRIMARY_REST'
         ? batch.futuresSource
         : state.futuresSource;
+  const parsedLiveFx = parseLiveFx(batch.liveFx);
+  const liveFx = parsedLiveFx ?? state.liveFx;
+  const parsedOrderBook = parseOrderBook(batch.liveOrderBook);
+  const liveOrderBook = parsedOrderBook ?? state.liveOrderBook;
+  let liveTape = Array.isArray(batch.tape) ? parseTape(batch.tape) : state.liveTape;
+  for (const [key, parsedQuote] of Object.entries(nextQuotes)) {
+    const previousQuote = previousQuotes[key] ?? null;
+    const tapeTick = deriveTapeTickFromQuote(parsedQuote, previousQuote);
+    if (tapeTick !== null) {
+      liveTape = pushTapeTick(liveTape, tapeTick);
+    }
+  }
 
   notify({
     ...state,
@@ -404,7 +562,10 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     status: 'LIVE',
     transport,
     isLive: true,
-    quotes: nextQuotes,
+    quotesBySymbol: nextQuotes,
+    liveFx,
+    liveOrderBook,
+    liveTape,
     cclMedian: arSourceMode === 'NO_DATA' ? null : batch.cclMedian === null ? null : finitePositive(batch.cclMedian) ?? state.cclMedian,
     mepMedian: arSourceMode === 'NO_DATA' ? null : batch.mepMedian === null ? null : finitePositive(batch.mepMedian) ?? state.mepMedian,
     arSourceMode,
@@ -438,7 +599,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
       ? batch.usSourceMode
       : state.usSourceMode;
-  const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotes };
+  const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotesBySymbol };
   if (arSourceMode === 'NO_DATA' || usSourceMode === 'NO_DATA') {
     for (const [key, quote] of Object.entries(nextQuotes)) {
       if ((quote.market === 'AR' && arSourceMode === 'NO_DATA') || (quote.market === 'US' && usSourceMode === 'NO_DATA')) {
@@ -476,6 +637,18 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
       : batch.futuresSource === 'PRIMARY_WS' || batch.futuresSource === 'PRIMARY_REST'
         ? batch.futuresSource
         : state.futuresSource;
+  const parsedLiveFx = parseLiveFx(batch.liveFx);
+  const liveFx = parsedLiveFx ?? state.liveFx;
+  const parsedOrderBook = parseOrderBook(batch.liveOrderBook);
+  const liveOrderBook = parsedOrderBook ?? state.liveOrderBook;
+  let liveTape = Array.isArray(batch.tape) ? parseTape(batch.tape) : state.liveTape;
+  for (const [key, parsedQuote] of Object.entries(nextQuotes)) {
+    const previousQuote = state.quotesBySymbol[key] ?? null;
+    const tapeTick = deriveTapeTickFromQuote(parsedQuote, previousQuote);
+    if (tapeTick !== null) {
+      liveTape = pushTapeTick(liveTape, tapeTick);
+    }
+  }
   lastDeltaRevision = revision;
   notify({
     ...state,
@@ -483,7 +656,10 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     status: 'LIVE',
     transport,
     isLive: true,
-    quotes: nextQuotes,
+    quotesBySymbol: nextQuotes,
+    liveFx,
+    liveOrderBook,
+    liveTape,
     cclMedian: arSourceMode === 'NO_DATA' ? null : batch.cclMedian === null ? null : finitePositive(batch.cclMedian) ?? state.cclMedian,
     mepMedian: arSourceMode === 'NO_DATA' ? null : batch.mepMedian === null ? null : finitePositive(batch.mepMedian) ?? state.mepMedian,
     arSourceMode,
@@ -508,9 +684,9 @@ function clearPendingLegacy(): void {
 function flushLegacyQuotes(): void {
   legacyFlushTimer = null;
   if (pendingLegacyQuotes.size === 0 || managerCount === 0) return;
-  const quotes = { ...state.quotes };
+  const nextQuotes = { ...state.quotesBySymbol };
   pendingLegacyQuotes.forEach((quote, key) => {
-    quotes[key] = quote;
+    nextQuotes[key] = quote;
   });
   pendingLegacyQuotes.clear();
   notify({
@@ -520,7 +696,7 @@ function flushLegacyQuotes(): void {
     transport: 'WS',
     isLive: true,
     usSourceMode: 'MASSIVE_WS',
-    quotes,
+    quotesBySymbol: nextQuotes,
     lastReceivedAtMs: Date.now(),
   });
 }
@@ -534,7 +710,7 @@ function applyLegacyStockEvent(raw: unknown): void {
   if (!isRecord(raw) || raw['cluster'] !== 'stocks' || typeof raw['symbol'] !== 'string') return;
   const symbol = raw['symbol'].trim().toUpperCase();
   const key = liveQuoteKey('US', symbol);
-  const previous = pendingLegacyQuotes.get(key) ?? state.quotes[key] ?? null;
+  const previous = pendingLegacyQuotes.get(key) ?? state.quotesBySymbol[key] ?? null;
   const type = raw['type'];
   let price: number | null = null;
   let asOfUtcSec: number | null = null;

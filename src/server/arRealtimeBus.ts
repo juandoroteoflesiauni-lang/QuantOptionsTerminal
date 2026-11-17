@@ -23,6 +23,8 @@ export class ArRealtimeBus {
   private readonly iolClient: IolFeedAdapter;
   private readonly primaryClient: PrimaryRofexClient | null;
   private readonly nowMsFn: () => number;
+  private readonly injectedQuotes = new Map<string, MarketTickQuote>();
+  private readonly injectedFutures = new Map<string, PrimaryDlrContractDto>();
 
   public constructor(deps: ArRealtimeBusDeps) {
     this.bmbClient = deps.bmbClient;
@@ -39,6 +41,25 @@ export class ArRealtimeBus {
   public stop(): void {
     this.bmbClient?.stop();
     this.iolClient.stop();
+  }
+
+  /** Explicit ingestion point for normalized AR ticks (test harnesses and adapters). */
+  public ingestQuotes(quotes: readonly MarketTickQuote[]): void {
+    for (const quote of quotes) {
+      if (quote.market !== 'AR' || typeof quote.symbol !== 'string' || quote.symbol.trim() === '') continue;
+      if (!Number.isFinite(quote.price) || quote.price <= 0) continue;
+      const symbol = quote.symbol.trim().toUpperCase();
+      this.injectedQuotes.set(symbol, { ...quote, symbol });
+    }
+  }
+
+  /** Explicit ingestion point for normalized DLR futures derived from real WS ticks. */
+  public ingestFutures(futures: readonly PrimaryDlrContractDto[]): void {
+    for (const contract of futures) {
+      if (typeof contract.contract !== 'string' || contract.contract.trim() === '') continue;
+      const key = contract.contract.trim().toUpperCase();
+      this.injectedFutures.set(key, { ...contract, contract: key });
+    }
   }
 
   public getQuotes(): readonly MarketTickQuote[] {
@@ -89,6 +110,9 @@ export class ArRealtimeBus {
         });
       }
     }
+    for (const quote of this.injectedQuotes.values()) {
+      bySymbol.set(quote.symbol, quote);
+    }
     return [...bySymbol.values()].map((quote) => ({ ...quote }));
   }
 
@@ -98,7 +122,16 @@ export class ArRealtimeBus {
 
   /** DLR/* futures derived from the last Primary WS `Md` ticks (empty until first tick). */
   public getFutures(): readonly PrimaryDlrContractDto[] {
-    return this.primaryClient?.getLiveDlrFutures() ?? [];
+    const byContract = new Map<string, PrimaryDlrContractDto>();
+    for (const contract of this.injectedFutures.values()) {
+      byContract.set(contract.contract, contract);
+    }
+    for (const contract of this.primaryClient?.getLiveDlrFutures() ?? []) {
+      if (!byContract.has(contract.contract)) {
+        byContract.set(contract.contract, contract);
+      }
+    }
+    return [...byContract.values()];
   }
 
   public getBmbSnapshot(): ReturnType<BmbFeedAdapter['getCachedSnapshot']> {

@@ -32,6 +32,7 @@ import {
   getMarketLiveQuote,
   useLivePriceFlash,
   useMarketLiveStream,
+  useThrottledLiveValue,
 } from '../api/useMarketLiveStream';
 import {
   HelpTooltip,
@@ -665,10 +666,13 @@ export const OptionsModule: React.FC<{
     liveMarket.overview?.cedears.find((s) => s.ticker === upperUnderlying);
 
   const stockName = overviewStock?.name ?? catalogStock?.name ?? upperUnderlying;
-  const displaySpot = liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
   const displayDeltaPct = overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
   const usUnderlying = ['SPY', 'QQQ', 'I:SPX', 'NVDA', 'AAPL', 'MSFT'].includes(upperUnderlying);
   const liveUnderlyingQuote = getMarketLiveQuote(liveStream, usUnderlying ? 'US' : 'AR', upperUnderlying);
+  const throttledLivePrice = useThrottledLiveValue(liveUnderlyingQuote?.price ?? Number.NaN, 1_000);
+  const displaySpot = Number.isFinite(throttledLivePrice)
+    ? throttledLivePrice
+    : liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
   const headerSpot = liveUnderlyingQuote?.price ?? displaySpot;
   const headerDeltaPct = liveUnderlyingQuote?.changePct ?? displayDeltaPct;
   const headerFlash = useLivePriceFlash(liveUnderlyingQuote?.price ?? null);

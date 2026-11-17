@@ -1,0 +1,3386 @@
+{
+  "candle": {
+    "bar": {
+      "close": 100.5,
+      "high": 101.0,
+      "low": 99.0,
+      "open": 100.0,
+      "timeSec": 1794580680,
+      "volume": 500.0
+    },
+    "expectedNewBucket": {
+      "close": 102.0,
+      "high": 102.0,
+      "low": 102.0,
+      "open": 102.0,
+      "timeSec": 1794580740,
+      "volume": 20.0
+    },
+    "expectedSameBucket": {
+      "close": 101.7,
+      "high": 101.7,
+      "low": 99.0,
+      "open": 100.0,
+      "timeSec": 1794580680,
+      "volume": 530.0
+    },
+    "newBucketBarSeconds": 60,
+    "newBucketTick": {
+      "price": 102.0,
+      "timeSec": 1794580740,
+      "volumeDelta": 20.0
+    },
+    "sameBucketBarSeconds": 60,
+    "sameBucketTick": {
+      "price": 101.7,
+      "timeSec": 1794580700,
+      "volumeDelta": 30.0
+    }
+  },
+  "cvd": {
+    "expected": 268.0,
+    "lastCvd": 250.0,
+    "ticks": [
+      {
+        "market": "AR",
+        "price": 1000.1,
+        "side": "BUY",
+        "size": 30.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580680
+      },
+      {
+        "market": "AR",
+        "price": 999.8,
+        "side": "SELL",
+        "size": 12.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580681
+      },
+      {
+        "market": "US",
+        "price": 20.1,
+        "side": null,
+        "size": 8.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580682
+      }
+    ]
+  },
+  "fx": {
+    "expected": {
+      "canjePct": 12.5,
+      "cclImplicitGgal": 500.0,
+      "cclMedian": 22.5,
+      "mepMedian": 20.0
+    },
+    "quotes": [
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 1000.0,
+        "symbol": "AL30",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 50.0,
+        "symbol": "AL30D",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 45.0,
+        "symbol": "AL30C",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 900.0,
+        "symbol": "GD30",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 45.0,
+        "symbol": "GD30D",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 40.0,
+        "symbol": "GD30C",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "AR",
+        "price": 1000.0,
+        "symbol": "GGAL",
+        "volume": null
+      },
+      {
+        "asOfUtcSec": 1794580680,
+        "market": "US",
+        "price": 20.0,
+        "symbol": "GGAL",
+        "volume": null
+      }
+    ]
+  },
+  "meta": {
+    "precisionTolerance": 1e-12
+  },
+  "sessionVwap": {
+    "closedBars": [
+      {
+        "close": 100.0,
+        "high": 100.5,
+        "low": 99.0,
+        "open": 99.5,
+        "timeSec": 1794580320,
+        "volume": 400.0
+      },
+      {
+        "close": 100.4,
+        "high": 100.8,
+        "low": 99.4,
+        "open": 100.0,
+        "timeSec": 1794580380,
+        "volume": 350.0
+      }
+    ],
+    "expected": {
+      "timeSec": 1794580680,
+      "value": 100.07279693486589
+    },
+    "formingBar": {
+      "close": 100.7,
+      "high": 101.0,
+      "low": 99.8,
+      "open": 100.4,
+      "timeSec": 1794580680,
+      "volume": 120.0
+    },
+    "marketTz": "America/New_York"
+  },
+  "tapeAppend": {
+    "before": [
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      }
+    ],
+    "expected": [
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.0,
+        "side": "BUY",
+        "size": 5.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580679
+      },
+      {
+        "market": "AR",
+        "price": 1000.2,
+        "side": "BUY",
+        "size": 7.0,
+        "symbol": "GGAL",
+        "timeSec": 1794580680
+      }
+    ],
+    "tick": {
+      "market": "AR",
+      "price": 1000.2,
+      "side": "BUY",
+      "size": 7.0,
+      "symbol": "GGAL",
+      "timeSec": 1794580680
+    }
+  }
+}

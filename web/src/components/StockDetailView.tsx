@@ -56,6 +56,7 @@ import {
   getMarketLiveQuote,
   useLivePriceFlash,
   useMarketLiveStream,
+  useThrottledLiveValue,
 } from '../api/useMarketLiveStream';
 
 const TIMEFRAMES: readonly { readonly id: TerminalTimeframe; readonly label: string }[] = [
@@ -181,6 +182,7 @@ export const StockDetailView: React.FC<{
   const liveQuote = getMarketLiveQuote(liveStream, isArMarket ? 'AR' : 'US', cleanTicker);
   const liveClock = getMarketLiveClock(liveStream);
   const liveHeaderFlash = useLivePriceFlash(liveQuote?.price ?? null);
+  const throttledLivePrice = useThrottledLiveValue(liveQuote?.price ?? Number.NaN, 1_000);
 
   // Carga de datos con cancelación AbortController al cambiar ticker o temporalidad
   useEffect(() => {
@@ -284,7 +286,9 @@ export const StockDetailView: React.FC<{
         stockDetail?.historicalBars && stockDetail.historicalBars.length > 0
           ? stockDetail.historicalBars[stockDetail.historicalBars.length - 1]?.close ?? null
           : null;
-      const spot = normalizeFiniteOrNull(ovStock?.last ?? bond?.priceArs ?? lastDailyClose);
+      const spot = Number.isFinite(throttledLivePrice)
+        ? throttledLivePrice
+        : normalizeFiniteOrNull(ovStock?.last ?? bond?.priceArs ?? lastDailyClose);
       const prevClose = normalizeFiniteOrNull(ovStock?.prevClose);
       const changePct = normalizeFiniteOrNull(ovStock?.deltaPct ?? bond?.deltaPct);
 
@@ -369,7 +373,9 @@ export const StockDetailView: React.FC<{
       (usBarsResp?.bars?.length
         ? usBarsResp.bars[usBarsResp.bars.length - 1]?.close ?? null
         : null);
-    const spot = normalizeFiniteOrNull(snapSpot);
+    const spot = Number.isFinite(throttledLivePrice)
+      ? throttledLivePrice
+      : normalizeFiniteOrNull(snapSpot);
 
     const matchedCedear = runtime.overview?.cedears.find((c) => {
       const targetUs = c.adrTicker?.replace(/ US$/i, '').trim().toUpperCase();
@@ -432,7 +438,7 @@ export const StockDetailView: React.FC<{
       cedearArsPrice: cedPrice,
       cedearCclMismatchPct: cclMismatchPct,
     };
-  }, [isArMarket, cleanTicker, stockDetail, runtime.overview, runtime.monitoring, runtime.feedStatus, usSnap, usBarsResp, timeframe]);
+  }, [isArMarket, cleanTicker, stockDetail, runtime.overview, runtime.monitoring, runtime.feedStatus, usSnap, usBarsResp, timeframe, throttledLivePrice]);
 
   // 2) Construcción de series OHLCV, EMAs, VWAP, AVWAP, Benchmark RS y IV/RV
   const chartBundle: StockChartSeriesBundle = useMemo(() => {

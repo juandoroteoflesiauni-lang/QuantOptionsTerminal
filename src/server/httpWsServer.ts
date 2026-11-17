@@ -45,6 +45,7 @@ import type {
   GgalDualChartTimeframe,
 } from '../core/ggal/institutionalContracts.js';
 import { toErrorMessage } from '../data/normalizeShared.js';
+import { computeLiveFxFromQuotes } from '../core/realtimePropagation.js';
 import {
   ArgentinaMarketRuntime,
   type ArMonitoringResponse,
@@ -319,14 +320,17 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const buildMarketTickBatch = () => {
     marketTickSequence += 1;
     const ar = arRuntime.getLiveArMarketSnapshot();
+    const quotes = [...runtime.getLiveUsQuotes(), ...ar.quotes];
+    const liveFx = computeLiveFxFromQuotes(quotes);
     return {
       type: 'MARKET_TICK_BATCH' as const,
       sequence: marketTickSequence,
       deltaRevision,
       serverTimeSec: Math.floor(Date.now() / 1_000),
-      quotes: [...runtime.getLiveUsQuotes(), ...ar.quotes],
-      cclMedian: ar.overview?.cclMedian ?? ar.monitoring?.cclMedian ?? null,
-      mepMedian: ar.overview?.mepMedian ?? ar.monitoring?.mepMedian ?? null,
+      quotes,
+      liveFx,
+      cclMedian: liveFx.cclMedian ?? ar.overview?.cclMedian ?? ar.monitoring?.cclMedian ?? null,
+      mepMedian: liveFx.mepMedian ?? ar.overview?.mepMedian ?? ar.monitoring?.mepMedian ?? null,
       arSourceMode: ar.sourceMode,
       usSourceMode: runtime.getUsLiveSourceMode(),
       arFeedStatus: ar.overview?.feedStatus ?? ar.monitoring?.feedStatus ?? 'NO_DATA',
@@ -1134,7 +1138,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
       marketTickTimer = setInterval(() => {
         broadcastTickDelta();
-      }, 1_500);
+      }, 100);
       marketTickTimer.unref();
 
       feedsHealthTimer = setInterval(() => {
