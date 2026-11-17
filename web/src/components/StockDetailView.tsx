@@ -306,6 +306,8 @@ export const StockDetailView: React.FC<{
   });
 
   const [usBarsByKey, setUsBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
+  // Pieza 38: velas reales ARS de /api/bars?market=AR para tickers argentinos.
+  const [arBarsByKey, setArBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
   const [loading, setLoading] = useState(false);
   const mainLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
   const lowerLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
@@ -344,8 +346,25 @@ export const StockDetailView: React.FC<{
     const load = async (): Promise<void> => {
       try {
         if (isArMarket) {
-          const detail = await requestStockDetail(cleanTicker, false, timeframe, controller.signal);
+          // Pieza 38: /api/bars?market=AR devuelve el histórico real en ARS
+          // (hasta 1.250 ruedas, 1D) en paralelo con el detalle AR.
+          const [detail, arBarsRes] = await Promise.all([
+            requestStockDetail(cleanTicker, false, timeframe, controller.signal),
+            timeframe === '1D'
+              ? requestTerminalBars(cleanTicker, timeframe, {
+                  visibleBars: 1_250,
+                  market: 'AR',
+                  signal: controller.signal,
+                })
+              : Promise.resolve(null),
+          ]);
           if (controller.signal.aborted) return;
+          if (arBarsRes) {
+            setArBarsByKey((prev) => ({
+              ...prev,
+              [`${cleanTicker}:${timeframe}`]: arBarsRes,
+            }));
+          }
           if (AR_BYMA_OPTIONS_ELIGIBLE.has(cleanTicker) || (detail?.relatedOptionsCount ?? 0) > 0) {
             await requestOptionsChain(cleanTicker);
           }
@@ -545,6 +564,8 @@ export const StockDetailView: React.FC<{
   const arOptions = isArMarket ? runtime.optionsByUnderlying[cleanTicker] : undefined;
   const usSnap = !isArMarket ? runtime.usSnapshotsBySymbol[cleanTicker] : undefined;
   const usBarsResp = !isArMarket ? usBarsByKey[`${cleanTicker}:${timeframe}`] : undefined;
+  // Pieza 38: velas reales ARS servidas por /api/bars?market=AR (primario en 1D).
+  const arBarsResp = isArMarket ? arBarsByKey[`${cleanTicker}:${timeframe}`] : undefined;
 
   const contextInfo: StockContextBannerInfo = useMemo(() => {
     const cclMed = normalizeFiniteOrNull(runtime.overview?.cclMedian);
@@ -692,8 +713,16 @@ export const StockDetailView: React.FC<{
     let ivAtmPct: number | null = null;
 
     if (isArMarket) {
-      if (timeframe === '1D') rawBars = stockDetail?.historicalBars ?? [];
-      else if (stockDetail?.adrBars && stockDetail.adrBars.bars.length > 0) rawBars = stockDetail.adrBars.bars;
+      // Pieza 38: 1D prioriza el histórico real ARS de /api/bars?market=AR
+      // (hasta 1.250 ruedas); `historicalBars` del detalle AR queda como
+      // respaldo si la petición de velas no respondió aún. El intradiario AR
+      // sigue viniendo convertido desde el ADR US (MASSIVE_ADR_CONVERTED).
+      if (timeframe === '1D') {
+        rawBars =
+          arBarsResp !== undefined && arBarsResp.bars.length > 0
+            ? arBarsResp.bars
+            : (stockDetail?.historicalBars ?? []);
+      } else if (stockDetail?.adrBars && stockDetail.adrBars.bars.length > 0) rawBars = stockDetail.adrBars.bars;
       else intradayUnavailableReason = `Sin feed intradiario BYMA para ${cleanTicker} (${timeframe}) — disponible en 1D`;
       benchBars1d = dedupAndSortBars(stockDetail?.benchmarkBars1d ?? []);
       const frontExpiry = arOptions?.expiries.find((expiry) => expiry.ivAtm !== null && expiry.ivAtm > 0) ?? arOptions?.expiries[0];
@@ -756,7 +785,7 @@ export const StockDetailView: React.FC<{
       barsAvailable: bars.length > 0 && intradayUnavailableReason === null,
       intradayUnavailableReason,
     };
-  }, [arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, isArMarket, stockDetail, timeframe, usBarsResp, usSnap]);
+  }, [arBarsResp, arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, isArMarket, stockDetail, timeframe, usBarsResp, usSnap]);
 
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];

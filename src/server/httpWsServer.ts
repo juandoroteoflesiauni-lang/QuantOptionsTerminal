@@ -48,6 +48,7 @@ import { toErrorMessage } from '../data/normalizeShared.js';
 import { computeLiveFxFromQuotes } from '../core/realtimePropagation.js';
 import {
   ArgentinaMarketRuntime,
+  resolveArDefaultTerminalMarket,
   type ArMonitoringResponse,
 } from './argentinaMarketLoader.js';
 import { collectArFeedSecrets } from './arFeedRouter.js';
@@ -527,9 +528,31 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       if (pathname === '/api/bars') {
         const symbol = params.get('symbol') ?? 'SPY';
         const timeframe = params.get('timeframe') ?? '5m';
+        const marketRaw = (params.get('market') ?? '').trim().toUpperCase();
+        if (marketRaw !== '' && marketRaw !== 'US' && marketRaw !== 'AR') {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            `Unsupported market "${marketRaw}". Expected one of: US, AR`,
+            secrets,
+            400,
+          );
+        }
         const visibleBars = parseOptionalPositiveInt(params.get('visibleBars'), 'visibleBars', secrets);
         const rthOnly = parseBooleanFlag(params.get('rthOnly'));
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        // Pieza 38: los locales BYMA (Panel Líder / Panel General + soberanos) y
+        // todo `market=AR` explícito resuelven al histórico real en ARS de
+        // argentinaMarketLoader (Data912). Los CEDEARs colisionan con el ticker
+        // US del subyacente (NVDA CEDEAR ARS vs NVDA stock USD, SPEC punto 10):
+        // sin `market=AR` siguen siendo US.
+        if (marketRaw === 'AR' || (marketRaw === '' && resolveArDefaultTerminalMarket(symbol) === 'AR')) {
+          const arBars = await arRuntime.getArTerminalBars(symbol, timeframe, {
+            ...(visibleBars === undefined ? {} : { visibleBars }),
+            forceRefresh,
+          });
+          sendJson(res, 200, arBars);
+          return;
+        }
         const bars = await runtime.getBars(symbol, timeframe, {
           ...(visibleBars === undefined ? {} : { visibleBars }),
           rthOnly,

@@ -8,11 +8,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { Bar } from '../src/core/types.js';
 import type { FetchFn } from '../src/data/types.js';
 import { ArgentinaMarketRuntime } from '../src/server/argentinaMarketLoader.js';
 import { MarketRuntime, US_PANEL_TICKERS } from '../src/server/marketRuntime.js';
+import { createHttpWsServer, type HttpWsServerHandle } from '../src/server/httpWsServer.js';
 import { extractInvalidTradierSymbol } from '../src/server/tradierAdapter.js';
 import {
   computeAnchoredVwapPure,
@@ -672,5 +673,199 @@ describe('Pieza 37 — deep history, AR indicators and Tradier symbol prune', ()
     expect(US_PANEL_TICKERS).toContain('AI');
     expect(US_PANEL_TICKERS).toContain('PLTR');
     expect(US_PANEL_TICKERS).toHaveLength(162);
+  });
+});
+
+describe('Pieza 38 — /api/bars enruta velas reales ARS (Panel Líder / CEDEARs)', () => {
+  const activeServers: HttpWsServerHandle[] = [];
+  afterAll(async () => {
+    for (const server of activeServers) {
+      await server.stop();
+    }
+  });
+
+  function makeArDailyBars(count: number, endSec = 1_790_000_000): Bar[] {
+    return Array.from({ length: count }, (_, idx) => {
+      const time = endSec - (count - 1 - idx) * 86_400;
+      const base = 100 + idx * 0.05 + Math.sin(idx / 13) * 1.5;
+      return {
+        time,
+        open: base - 0.4,
+        high: base + 0.8,
+        low: base - 0.8,
+        close: base,
+        volume: 1_000 + idx,
+        vw: base,
+      };
+    });
+  }
+
+  function toData912Rows(bars: readonly Bar[]): string {
+    return JSON.stringify(
+      bars.map((bar) => ({
+        date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+        o: bar.open,
+        h: bar.high,
+        l: bar.low,
+        c: bar.close,
+        v: bar.volume,
+      })),
+    );
+  }
+
+  function makeOfflineUsRuntime(): MarketRuntime {
+    type MrDeps = NonNullable<ConstructorParameters<typeof MarketRuntime>[0]>;
+    const usDailyBars = makeArDailyBars(400);
+    return new MarketRuntime({
+      apiKey: 'pieza38-us-stub-key',
+      enableWs: false,
+      nowMsFn: () => 1_790_000_500_000,
+      loadBarsFn: ((req: { readonly timeframe?: string; readonly visibleBars?: number }) =>
+        Promise.resolve({
+          bars: (req.timeframe === '1D' ? usDailyBars : []).slice(-(req.visibleBars ?? 400)),
+          visibleStart: 0,
+          report: { provider: 'massive', fetchedPages: 1, barsCount: req.timeframe === '1D' ? 400 : 0, providerError: null },
+        })) as unknown as NonNullable<MrDeps['loadBarsFn']>,
+    });
+  }
+
+  async function startServerWithArHistory(
+    ggalBars: readonly Bar[],
+    nvdaCedearBars: readonly Bar[],
+  ): Promise<string> {
+    const mockFetch: FetchFn = (url) => {
+      if (url.includes('/historical/stocks/GGAL')) {
+        return Promise.resolve({ ok: true, status: 200, headers: {}, text: toData912Rows(ggalBars) });
+      }
+      if (url.includes('/historical/cedears/NVDA')) {
+        return Promise.resolve({ ok: true, status: 200, headers: {}, text: toData912Rows(nvdaCedearBars) });
+      }
+      // Todos los demás endpoints responden vacío: el path de velas ARS sólo
+      // consulta /historical/{kind}/{ticker} (caché single-flight).
+      return Promise.resolve({ ok: true, status: 200, headers: {}, text: '[]' });
+    };
+    const arRuntime = new ArgentinaMarketRuntime({
+      fetchFn: mockFetch,
+      minData912IntervalMs: 0,
+      nowMsFn: () => 1_790_000_500_000,
+    });
+    const server = createHttpWsServer({
+      runtime: makeOfflineUsRuntime(),
+      arRuntime,
+      host: '127.0.0.1',
+      port: 0,
+      startRuntimeWs: false,
+      enableBackgroundWarmup: false,
+    });
+    activeServers.push(server);
+    const { host, port } = await server.start();
+    return `http://${host}:${String(port)}`;
+  }
+
+  interface BarsHttpResult {
+    readonly status: number;
+    readonly body: Record<string, unknown>;
+  }
+
+  async function fetchBars(base: string, query: string): Promise<BarsHttpResult> {
+    const res = await fetch(`${base}/api/bars?${query}`);
+    const body = (await res.json()) as Record<string, unknown>;
+    return { status: res.status, body };
+  }
+
+  function lastOf(series: unknown): unknown {
+    const arr = series as readonly unknown[] | undefined;
+    const last = arr?.at(-1);
+    return last === undefined ? null : last;
+  }
+
+  it('serves GGAL &market=AR 1D with real ARS bars, ema200 and avwap populated (never empty)', async () => {
+    const ggalBars = makeArDailyBars(1_250);
+    const base = await startServerWithArHistory(ggalBars, makeArDailyBars(1_100, 1_790_000_000 - 5 * 86_400));
+
+    const res = await fetchBars(base, 'symbol=GGAL&market=AR&timeframe=1D');
+    expect(res.status).toBe(200);
+    expect(res.body['market']).toBe('AR');
+    expect(res.body['currency']).toBe('ARS');
+    expect(res.body['symbol']).toBe('GGAL');
+    expect(res.body['timeframe']).toBe('1D');
+    const bars = res.body['bars'] as readonly Record<string, unknown>[];
+    expect(bars.length).toBeGreaterThanOrEqual(1_000);
+    expect(bars.at(-1)?.['close']).toBeCloseTo(ggalBars.at(-1)?.close ?? Number.NaN, 9);
+    const overlays = res.body['overlays'] as Record<string, unknown>;
+    expect(lastOf(overlays['ema200'])).not.toBeNull();
+    expect(lastOf(overlays['ema9'])).not.toBeNull();
+    expect(lastOf(overlays['avwap'])).not.toBeNull();
+    expect(lastOf(overlays['avwapUpper1'])).not.toBeNull();
+    expect(lastOf(overlays['avwapLower1'])).not.toBeNull();
+    expect(lastOf(overlays['avwapUpper2'])).not.toBeNull();
+    expect(lastOf(overlays['avwapLower2'])).not.toBeNull();
+    // VWAP de sesión no calculable sobre velas diarias EOD => null explícito.
+    expect(overlays['sessionVwapSupported']).toBe(false);
+    expect(lastOf(overlays['sessionVwap'])).toBeNull();
+
+    // Sin `market`: el local BYMA GGAL resuelve a AR por defecto (SPEC punto 10).
+    const defaultMarket = await fetchBars(base, 'symbol=GGAL&timeframe=1D');
+    expect(defaultMarket.status).toBe(200);
+    expect(defaultMarket.body['currency']).toBe('ARS');
+
+    // Ventana visible recortada: los indicadores se calculan sobre el historial
+    // completo y se rebanan al final, ema200/avwap siguen poblados.
+    const windowed = await fetchBars(base, 'symbol=GGAL&market=AR&timeframe=1D&visibleBars=250');
+    expect(windowed.status).toBe(200);
+    expect((windowed.body['bars'] as readonly unknown[]).length).toBe(250);
+    const windowedOverlays = windowed.body['overlays'] as Record<string, unknown>;
+    expect(lastOf(windowedOverlays['ema200'])).not.toBeNull();
+    expect(lastOf(windowedOverlays['avwap'])).not.toBeNull();
+  });
+
+  it('serves NVDA CEDEAR &market=AR in ARS and keeps plain NVDA unambiguous on the US route', async () => {
+    const nvdaCedearBars = makeArDailyBars(1_100, 1_790_000_000 - 5 * 86_400);
+    const base = await startServerWithArHistory(makeArDailyBars(1_250), nvdaCedearBars);
+
+    const arRes = await fetchBars(base, 'symbol=NVDA&market=AR&timeframe=1D');
+    expect(arRes.status).toBe(200);
+    expect(arRes.body['market']).toBe('AR');
+    expect(arRes.body['currency']).toBe('ARS');
+    const arBars = arRes.body['bars'] as readonly Record<string, unknown>[];
+    expect(arBars.length).toBeGreaterThanOrEqual(1_000);
+    expect(arBars.at(-1)?.['close']).toBeCloseTo(nvdaCedearBars.at(-1)?.close ?? Number.NaN, 9);
+    const arOverlays = arRes.body['overlays'] as Record<string, unknown>;
+    expect(lastOf(arOverlays['ema200'])).not.toBeNull();
+    expect(lastOf(arOverlays['avwap'])).not.toBeNull();
+
+    // Ambigüedad resuelta por parámetro: NVDA sin market sigue siendo el stock
+    // US en USD (payload US sin campos market/currency).
+    const usRes = await fetchBars(base, 'symbol=NVDA&timeframe=1D&visibleBars=250');
+    expect(usRes.status).toBe(200);
+    expect(usRes.body['symbol']).toBe('NVDA');
+    expect(usRes.body['market']).toBeUndefined();
+    expect(usRes.body['currency']).toBeUndefined();
+    expect((usRes.body['bars'] as readonly unknown[]).length).toBe(250);
+    expect((usRes.body['bars'] as readonly Record<string, unknown>[]).at(-1)?.['close']).not.toBe(
+      nvdaCedearBars.at(-1)?.close,
+    );
+
+    // market=US explícito también resuelve US.
+    const usExplicit = await fetchBars(base, 'symbol=NVDA&market=US&timeframe=1D&visibleBars=100');
+    expect(usExplicit.status).toBe(200);
+    expect(usExplicit.body['currency']).toBeUndefined();
+  });
+
+  it('responds 503 NO_BARS_DATA honestly when AR history is missing or intraday is requested', async () => {
+    const base = await startServerWithArHistory(makeArDailyBars(1_250), makeArDailyBars(1_100));
+
+    const missing = await fetchBars(base, 'symbol=PAMP&market=AR&timeframe=1D');
+    expect(missing.status).toBe(503);
+    expect(missing.body['reason']).toBe('NO_BARS_DATA');
+
+    const intraday = await fetchBars(base, 'symbol=GGAL&market=AR&timeframe=5m');
+    expect(intraday.status).toBe(503);
+    expect(intraday.body['reason']).toBe('NO_BARS_DATA');
+    expect(String(intraday.body['detail'])).toContain('disponible en 1D');
+
+    const invalidMarket = await fetchBars(base, 'symbol=GGAL&market=MERVAL&timeframe=1D');
+    expect(invalidMarket.status).toBe(400);
+    expect(invalidMarket.body['reason']).toBe('INVALID_PARAMETER');
   });
 });

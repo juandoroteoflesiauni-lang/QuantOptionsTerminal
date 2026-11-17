@@ -34,6 +34,7 @@
 
 import { calculateEma, computeEmaSuite } from '../core/ema.js';
 import {
+  computeHmaSeries,
   computeSmaSeries,
   evaluateMtfStructure,
 } from '../core/microstructure/mtfStructure.js';
@@ -136,6 +137,7 @@ import {
 } from '../core/terminal/structureOptimizer.js';
 import type { Bar } from '../core/types.js';
 import type { FetchResponse, Timeframe } from '../data/types.js';
+import { assertJsonSafeSerialized } from '../core/terminal/serializer.js';
 import {
   BmbBridgeClient,
   collectBrokerSecretsFromEnv,
@@ -158,11 +160,14 @@ import {
   DEFAULT_RELATIONS_US_TICKERS,
   getSharedMarketRuntime,
   MarketRuntime,
+  parseTimeframe,
+  RuntimeNoDataError,
   US_EQUITY_META_MAP,
   US_LIQUID_OPTION_UNDERLYINGS,
   type CachedDailyBarsResult,
   type EquityPanelAnalyticsDto,
   type EquityPanelRowDto,
+  type TerminalBarsResponse,
   type TerminalSnapshotResponse,
 } from './marketRuntime.js';
 import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
@@ -477,6 +482,17 @@ export interface ArHistoricalBarDto {
   readonly dailyReturnPct: number | null;
 }
 
+/**
+ * Pieza 38: DTO completo de velas reales en ARS para `GET /api/bars` cuando el
+ * símbolo pertenece al universo argentino. Misma forma que
+ * `TerminalBarsResponse` (US) con campos aditivos `market`/`currency` para
+ * desambiguar NVDA CEDEAR (ARS) vs NVDA US (USD) en el cliente.
+ */
+export type ArTerminalBarsResponse = TerminalBarsResponse & {
+  readonly market: 'AR';
+  readonly currency: 'ARS';
+};
+
 export type JsonSafe<T> = T extends number
   ? number | null
   : T extends readonly (infer U)[]
@@ -646,6 +662,89 @@ function buildArStockDetailOverlays(
     avwapAnchorAvailable: anchorBarIndex >= 0,
     avwapAnchorMode: 'MONTH_START',
     avwapAnchorUtcSec: anchorTimeSec,
+  };
+}
+
+/**
+ * Pieza 38: payload completo de velas reales ARS para `GET /api/bars`
+ * (`symbol` del universo argentino, timeframe `1D`).
+ *
+ * Indicadores con paridad de semántica con la ruta US de `MarketRuntime.computeBars`:
+ * - `computeEmaSuite` (ema9/21/50/200) y SMA/HMA sobre el historial completo;
+ * - `sessionVwap` no calculable sobre velas diarias EOD => `null` explícito
+ *   (la UI muestra "—", cero fallbacks silenciosos);
+ * - AVWAP anclado al inicio del mes corriente en el calendario BYMA (ART),
+ *   misma semántica que `buildArStockDetailOverlays` para `/api/ar/stock`;
+ * - `sessionCvd` no calculable sin tick side (velas diarias) => `null`.
+ */
+function computeArTerminalBarsPayload(
+  symbol: string,
+  timeframe: Timeframe,
+  bars: readonly Bar[],
+  nowSec: number,
+): ArTerminalBarsResponse {
+  const closes = bars.map((bar) => bar.close);
+  const emaSuite = computeEmaSuite(closes);
+  const sma50 = computeSmaSeries(closes, 50);
+  const sma200 = computeSmaSeries(closes, 200);
+  const hma55 = computeHmaSeries(closes, 55);
+  const rsi14 = computeWilderRsiSeries(closes, 14);
+
+  const lastBar = bars[bars.length - 1];
+  const sessionDateKeys = bars.map((bar) => getSessionDateKey(bar.time, BYMA_MARKET_TZ));
+  const monthKey = lastBar === undefined ? null : (sessionDateKeys.at(-1)?.slice(0, 7) ?? null);
+  const anchorIndex = monthKey === null ? -1 : sessionDateKeys.findIndex((dateKey) => dateKey.slice(0, 7) === monthKey);
+  const anchorTimeSec = anchorIndex >= 0 ? (bars[anchorIndex]?.time ?? null) : null;
+  const avwapPoints =
+    anchorTimeSec === null ? [] : computeAnchoredVwapSeries(barsToGgalChartPoints(bars), anchorTimeSec);
+  // Los puntos AVWAP empiezan en el ancla: la alineación por `time` deja
+  // `null` en las velas previas (longitud == bars.length, sin doble conteo).
+  const avwapBands = alignBandPointsToBars(bars, avwapPoints);
+
+  return {
+    status: 'OK',
+    symbol,
+    timeframe,
+    barSeconds: 86_400,
+    rthOnly: false,
+    asOfUtcSec: nowSec,
+    visibleStartIndex: 0,
+    bars: bars.map((bar) => ({
+      time: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+      vw: sanitizeFinite(bar.vw),
+    })),
+    formingBar: null,
+    overlays: {
+      ema9: sanitizeIndicatorSeries(emaSuite[9]),
+      ema21: sanitizeIndicatorSeries(emaSuite[21]),
+      ema50: sanitizeIndicatorSeries(emaSuite[50]),
+      ema200: sanitizeIndicatorSeries(emaSuite[200]),
+      sma50: sma50.map((value) => sanitizeFinite(value)),
+      sma200: sma200.map((value) => sanitizeFinite(value)),
+      hma55: hma55.map((value) => sanitizeFinite(value)),
+      sessionVwap: bars.map(() => null),
+      sessionVwapSupported: false,
+      avwap: avwapBands.avwap,
+      avwapUpper1: avwapBands.upper1,
+      avwapLower1: avwapBands.lower1,
+      avwapUpper2: avwapBands.upper2,
+      avwapLower2: avwapBands.lower2,
+    },
+    subPanes: {
+      rsi14: rsi14.map((value) => sanitizeFinite(value)),
+      sessionCvd: bars.map(() => null),
+      deltaMode: null,
+    },
+    zones: null,
+    keyLevels: [],
+    markers: [],
+    market: 'AR',
+    currency: 'ARS',
   };
 }
 
@@ -1493,6 +1592,24 @@ const SOVEREIGN_BONDS: readonly SovereignBondSpec[] = [
     ],
   },
 ];
+
+/**
+ * Pieza 38: mercado por defecto de un ticker para `GET /api/bars` sin el
+ * parámetro `market` explícito. Los locales BYMA (Panel Líder / Panel General
+ * en `AR_STOCK_META`) y los soberanos (AL30/GD30/... con sus variantes D/C)
+ * resuelven a `'AR'`; los CEDEARs NO resuelven por defecto porque su ticker
+ * colisiona con el subyacente US (NVDA CEDEAR en ARS vs NVDA stock en USD,
+ * SPEC punto 10) y exigen `market=AR` explícito. `null` => ruta US.
+ */
+export function resolveArDefaultTerminalMarket(rawSymbol: string): 'AR' | null {
+  const upper = rawSymbol.trim().toUpperCase();
+  if (upper === '') return null;
+  const isBond = SOVEREIGN_BONDS.some(
+    (bond) => bond.baseTicker === upper || `${bond.baseTicker}D` === upper || `${bond.baseTicker}C` === upper,
+  );
+  if (isBond) return 'AR';
+  return STOCK_META_MAP.has(upper) ? 'AR' : null;
+}
 
 function sanitizeFinite(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -6692,6 +6809,101 @@ export class ArgentinaMarketRuntime {
     });
   }
 
+  /**
+   * Pieza 38: clasifica un ticker AR para elegir el histórico de Data912.
+   * Misma regla que `getStockDetail`: soberanos (con variantes D/C) => bonds,
+   * CEDEARs (que no sean también locales BYMA) => cedears, resto => stocks.
+   */
+  private resolveArHistoryKind(symbol: string): 'stocks' | 'cedears' | 'bonds' {
+    const isBond = SOVEREIGN_BONDS.some(
+      (b) => b.baseTicker === symbol || `${b.baseTicker}D` === symbol || `${b.baseTicker}C` === symbol,
+    );
+    const isCedear = symbol in CEDEAR_RATIOS && !STOCK_META_MAP.has(symbol);
+    return isBond ? 'bonds' : isCedear ? 'cedears' : 'stocks';
+  }
+
+  /**
+   * Pieza 38: velas reales en ARS para `GET /api/bars` con símbolo del
+   * universo argentino (Panel Líder, Panel General, CEDEARs, soberanos).
+   *
+   * Fuente: histórico Data912 (`/historical/{stocks|cedears|bonds}/{ticker}`,
+   * la misma fuente que `getStockDetail` usa para GGAL y los paneles AR),
+   * resuelto con caché single-flight y recortado a las últimas 1.250 ruedas.
+   * Sólo `1D`: el histórico Data912 es diario; el intradiario AR sigue
+   * disponible vía `adrBars` en `getStockDetail` y un timeframe intradiario
+   * aquí responde `NO_BARS_DATA` (sin fallbacks silenciosos).
+   */
+  public async getArTerminalBars(
+    rawSymbol: string,
+    rawTimeframe: string,
+    options: { readonly visibleBars?: number; readonly forceRefresh?: boolean } = {},
+  ): Promise<ArTerminalBarsResponse> {
+    const symbol = rawSymbol.trim().toUpperCase();
+    if (symbol === '' || !/^[A-Z0-9.:_-]{1,24}$/.test(symbol)) {
+      throw new RuntimeNoDataError('INVALID_SYMBOL', `Invalid AR ticker "${rawSymbol}"`, this.secrets, 400);
+    }
+    const timeframe = parseTimeframe(rawTimeframe, this.secrets);
+    if (timeframe !== '1D') {
+      throw new RuntimeNoDataError(
+        'NO_BARS_DATA',
+        `Sin histórico intradiario BYMA para ${symbol} (${timeframe}) — disponible en 1D`,
+        this.secrets,
+        503,
+      );
+    }
+    const forceRefresh = options.forceRefresh ?? false;
+    const kind = this.resolveArHistoryKind(symbol);
+    const history = kind === 'cedears'
+      ? await this.getCedearHistoryWithAlias(symbol, forceRefresh)
+      : await this.getData912History(kind, symbol, forceRefresh);
+    const bars = history.bars.slice(-1_250);
+    if (bars.length === 0) {
+      throw new RuntimeNoDataError(
+        'NO_BARS_DATA',
+        history.error !== null && history.error !== ''
+          ? history.error
+          : `No AR history available for ${symbol} (${kind})`,
+        this.secrets,
+        503,
+      );
+    }
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const visibleBars = Math.min(Math.max(options.visibleBars ?? 1_250, 20), 1_250);
+    const full = computeArTerminalBarsPayload(symbol, timeframe, bars, nowSec);
+    assertJsonSafeSerialized(full);
+    const startSlice = Math.max(0, bars.length - visibleBars);
+    if (startSlice === 0) return full;
+    const fullOverlays = full.overlays;
+    const sliced: ArTerminalBarsResponse = {
+      ...full,
+      visibleStartIndex: 0,
+      bars: full.bars.slice(startSlice),
+      overlays: {
+        ...(fullOverlays.ema9 === undefined ? {} : { ema9: fullOverlays.ema9.slice(startSlice) }),
+        ema21: fullOverlays.ema21.slice(startSlice),
+        ...(fullOverlays.ema50 === undefined ? {} : { ema50: fullOverlays.ema50.slice(startSlice) }),
+        ...(fullOverlays.ema200 === undefined ? {} : { ema200: fullOverlays.ema200.slice(startSlice) }),
+        sma50: fullOverlays.sma50.slice(startSlice),
+        sma200: fullOverlays.sma200.slice(startSlice),
+        hma55: fullOverlays.hma55.slice(startSlice),
+        sessionVwap: fullOverlays.sessionVwap.slice(startSlice),
+        sessionVwapSupported: fullOverlays.sessionVwapSupported,
+        avwap: fullOverlays.avwap.slice(startSlice),
+        avwapUpper1: fullOverlays.avwapUpper1.slice(startSlice),
+        avwapLower1: fullOverlays.avwapLower1.slice(startSlice),
+        avwapUpper2: fullOverlays.avwapUpper2.slice(startSlice),
+        avwapLower2: fullOverlays.avwapLower2.slice(startSlice),
+      },
+      subPanes: {
+        rsi14: full.subPanes.rsi14.slice(startSlice),
+        sessionCvd: full.subPanes.sessionCvd.slice(startSlice),
+        deltaMode: full.subPanes.deltaMode,
+      },
+    };
+    assertJsonSafeSerialized(sliced);
+    return sliced;
+  }
+
   public async getStockDetail(
     rawSymbol: string,
     forceRefresh = false,
@@ -6707,9 +6919,9 @@ export class ArgentinaMarketRuntime {
       }
     }
     const nowSec = Math.floor(nowMs / 1_000);
-    const isBond = SOVEREIGN_BONDS.some((b) => b.baseTicker === symbol || `${b.baseTicker}D` === symbol || `${b.baseTicker}C` === symbol);
-    const isCedear = symbol in CEDEAR_RATIOS && !STOCK_META_MAP.has(symbol);
-    const kind: 'stocks' | 'cedears' | 'bonds' = isBond ? 'bonds' : isCedear ? 'cedears' : 'stocks';
+    const kind = this.resolveArHistoryKind(symbol);
+    const isBond = kind === 'bonds';
+    const isCedear = kind === 'cedears';
 
     const [histRes, overview, optionsRes, bondsLive, spyHistRes, macroData, mervBook, mervBookCi, bmbSnap, macroIfPrimary] =
       await Promise.all([

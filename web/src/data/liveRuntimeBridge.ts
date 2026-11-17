@@ -352,14 +352,18 @@ export async function requestStockDetail(
 export async function requestTerminalBars(
   symbol: string,
   timeframe: TerminalTimeframe,
-  options?: { readonly force?: boolean; readonly visibleBars?: number; readonly signal?: AbortSignal },
+  options?: { readonly force?: boolean; readonly visibleBars?: number; readonly signal?: AbortSignal; readonly market?: 'US' | 'AR' },
 ): Promise<UsTerminalBarsResponseDto | null> {
   const clean = symbol.trim().toUpperCase();
   if (!clean) return null;
   const vis = options?.visibleBars ?? 180;
+  // Pieza 38: `market=AR` desambigua el ticker local ARS (p. ej. NVDA CEDEAR)
+  // del subyacente US en USD (SPEC punto 10). La clave de caché incluye el
+  // mercado para no pisar `NVDA:1D:US` con `NVDA:1D:AR`.
+  const market = options?.market ?? 'US';
   return fetchJsonGuarded<UsTerminalBarsResponseDto>(
-    `bars:${clean}:${timeframe}`,
-    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&visibleBars=${String(vis)}${options?.force ? '&refresh=1' : ''}`,
+    `bars:${clean}:${timeframe}:${market}`,
+    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&market=${market}&visibleBars=${String(vis)}${options?.force ? '&refresh=1' : ''}`,
     { force: options?.force === true, signal: options?.signal },
   );
 }
