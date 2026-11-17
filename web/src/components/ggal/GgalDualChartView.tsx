@@ -47,6 +47,7 @@ import {
 import {
   getMarketLiveClock,
   getMarketLiveQuote,
+  tickFlashClass,
   useLivePriceFlash,
   useMarketLiveStream,
   type MarketLiveQuote,
@@ -1727,8 +1728,7 @@ export function GgalDualChartView({
           <span>
             Spot:{' '}
             <strong
-              className="rounded px-1 text-[#E5E7EB] transition-colors duration-[400ms]"
-              style={{ backgroundColor: liveSpotFlash === null ? 'transparent' : liveSpotFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }}
+              className={`rounded px-1 transition-colors duration-500 ${tickFlashClass(liveSpotFlash)}`}
             >
               {formatCoordPrice(liveDisplaySpot ?? payload?.spotPrice, coordMode)}
             </strong>

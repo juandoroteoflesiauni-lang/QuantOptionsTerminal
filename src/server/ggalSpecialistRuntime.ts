@@ -510,6 +510,11 @@ interface CachedEntry<T> {
   readonly value: T;
 }
 
+interface GgalDualChartComputation {
+  readonly routerStatus: ArFeedRouterStatusSnapshot;
+  readonly dualChart: JsonSafeValue<GgalDualChartPayload>;
+}
+
 interface MarketBundle {
   readonly asOfUtcSec: number;
   readonly overview: ArOverviewResponse;
@@ -542,6 +547,11 @@ const DEFAULT_CACHE_TTL_MS = 12_000;
 const HISTORY_CACHE_TTL_MS = 300_000;
 const ANEXO_B_BG_CACHE_TTL_MS = 12 * 3_600_000;
 const DUAL_CHART_TARGET_BARS = 1_200;
+/** Pieza 35: SWR del gráfico dual — 15 s frescos, revalidación single-flight. */
+const DUAL_CHART_CACHE_TTL_MS = 15_000;
+/** Pieza 35: carrera corta para no bloquear la respuesta cuando no hay caché. */
+const DUAL_CHART_COMPUTE_RACE_MS = 250;
+const DUAL_CHART_WARMING_REASON = 'DUAL_CHART_WARMING_UP';
 const DUAL_CHART_BYMA_DAILY_LIMIT = 1_000;
 const DEFAULT_RECORDER_INTERVAL_MS = 20_000;
 const DEFAULT_MAX_RECORDER_SNAPSHOTS = 500;
@@ -1155,6 +1165,15 @@ export class GgalSpecialistRuntime {
     readonly stocks: readonly Data912RawRow[];
     readonly bonds: readonly Data912RawRow[];
   }> | null = null;
+  private readonly dualChartCache = new Map<
+    string,
+    { readonly fetchedAtMs: number; readonly value: GgalDualChartComputation }
+  >();
+  private readonly dualChartInFlight = new Map<string, Promise<GgalDualChartComputation>>();
+  private readonly dualChartLastError = new Map<
+    string,
+    { readonly atMs: number; readonly message: string }
+  >();
 
   private anexoBStore: AnexoBStoredRecord | null = null;
   private readonly iamcAnexoBUrl: string | null;
@@ -5055,10 +5074,119 @@ export class GgalSpecialistRuntime {
     readonly timeframe: GgalDualChartTimeframe;
     readonly avwapAnchor: GgalAvwapAnchorMode;
     readonly forceRefresh: boolean;
-  }): Promise<{
-    readonly routerStatus: ArFeedRouterStatusSnapshot;
-    readonly dualChart: JsonSafeValue<GgalDualChartPayload>;
-  }> {
+  }): Promise<GgalDualChartComputation> {
+    const key = `${opts.coordMode}|${opts.timeframe}|${opts.avwapAnchor}`;
+    const nowMs = this.nowMsFn();
+    const cached = this.dualChartCache.get(key);
+
+    if (!opts.forceRefresh && cached !== undefined && nowMs - cached.fetchedAtMs < DUAL_CHART_CACHE_TTL_MS) {
+      return cached.value;
+    }
+
+    const inFlight = this.dualChartInFlight.get(key);
+    if (inFlight === undefined) {
+      const computePromise = this.computeDualChart(opts)
+        .then((result) => {
+          if (result.dualChart.status === 'OPERATIONAL') {
+            this.dualChartCache.set(key, { fetchedAtMs: this.nowMsFn(), value: result });
+          }
+          this.dualChartLastError.delete(key);
+          return result;
+        })
+        .catch((err: unknown) => {
+          const message = redactSecrets(
+            err instanceof Error ? err.message : String(err),
+            this.secrets,
+          );
+          this.dualChartLastError.set(key, { atMs: this.nowMsFn(), message });
+          throw err;
+        })
+        .finally(() => {
+          this.dualChartInFlight.delete(key);
+        });
+      this.dualChartInFlight.set(key, computePromise);
+      // La carrera puede abandonar la promesa: evitamos unhandled rejection.
+      computePromise.catch(() => undefined);
+    }
+
+    const lastError = this.dualChartLastError.get(key);
+    if (lastError !== undefined && nowMs - lastError.atMs < DUAL_CHART_CACHE_TTL_MS) {
+      return this.buildWarmingDualChart(
+        Math.floor(nowMs / 1_000),
+        opts,
+        `DUAL_CHART_REFRESH_FAILED: ${lastError.message}`,
+      );
+    }
+
+    const computePromise = this.dualChartInFlight.get(key);
+    if (computePromise === undefined) {
+      return this.computeDualChart(opts);
+    }
+
+    if (!opts.forceRefresh && cached !== undefined) {
+      return cached.value;
+    }
+
+    const raced = await Promise.race<GgalDualChartComputation | null>([
+      computePromise,
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => {
+          resolve(null);
+        }, DUAL_CHART_COMPUTE_RACE_MS);
+        timer.unref();
+      }),
+    ]);
+    if (raced !== null) {
+      return raced;
+    }
+    if (cached !== undefined) {
+      return cached.value;
+    }
+    return this.buildWarmingDualChart(
+      Math.floor(this.nowMsFn() / 1_000),
+      opts,
+      DUAL_CHART_WARMING_REASON,
+    );
+  }
+
+  private buildWarmingDualChart(
+    asOfUtcSec: number,
+    opts: {
+      readonly coordMode: GgalDualChartCoordMode;
+      readonly timeframe: GgalDualChartTimeframe;
+      readonly avwapAnchor: GgalAvwapAnchorMode;
+    },
+    reason: string,
+  ): GgalDualChartComputation {
+    const routerStatus = this.buildStandaloneFastRouterStatus(asOfUtcSec, 0).routerStatus;
+    const warmingLadder: GgalL2LadderState = {
+      available: false,
+      reason: 'FEED_DISCONNECTED',
+      activeProvider: null,
+      qualityTier: 'UNAVAILABLE',
+      asOfUtcSec,
+      symbol: 'GGAL',
+    };
+    return {
+      routerStatus,
+      dualChart: toJsonSafe({
+        status: 'UNAVAILABLE',
+        asOfUtcSec,
+        coordMode: opts.coordMode,
+        timeframe: opts.timeframe,
+        avwapAnchor: opts.avwapAnchor,
+        reason,
+        l2Ladder: warmingLadder,
+      } satisfies GgalDualChartPayload),
+    };
+  }
+
+  private async computeDualChart(opts: {
+    readonly coordMode: GgalDualChartCoordMode;
+    readonly timeframe: GgalDualChartTimeframe;
+    readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly forceRefresh: boolean;
+  }): Promise<GgalDualChartComputation> {
     const runtimeTf =
       opts.timeframe === '1H' ? '1h' : opts.timeframe === '4H' ? '4h' : opts.timeframe;
     const peerTimeout = <T>(p: Promise<T>, ms = 2_500): Promise<T | null> =>

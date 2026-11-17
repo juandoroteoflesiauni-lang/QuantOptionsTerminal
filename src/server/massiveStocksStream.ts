@@ -24,6 +24,8 @@ import {
 export const MASSIVE_RTH_BATCH_INTERVAL_MS = 2_500;
 export const MASSIVE_EXTENDED_BATCH_INTERVAL_MS = 5_000;
 export const MASSIVE_CLOSED_BATCH_INTERVAL_MS = 30_000;
+/** Pieza 35: los batches REST se particionan para rotar el pool y no exceder límites de URL. */
+export const MASSIVE_SNAPSHOT_CHUNK_SIZE = 80;
 
 export type UsLiveSession = 'RTH' | 'EXTENDED' | 'CLOSED';
 
@@ -466,7 +468,19 @@ export class MassiveStocksStream {
   }
 
   private async fetchStockBatch(): Promise<boolean> {
-    const url = `${this.baseUrl}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(this.stockSymbols.join(','))}`;
+    const chunks: string[][] = [];
+    for (let i = 0; i < this.stockSymbols.length; i += MASSIVE_SNAPSHOT_CHUNK_SIZE) {
+      const chunk = this.stockSymbols.slice(i, i + MASSIVE_SNAPSHOT_CHUNK_SIZE);
+      if (chunk.length > 0) {
+        chunks.push(chunk);
+      }
+    }
+    const chunkResults = await Promise.all(chunks.map((chunk) => this.fetchStockBatchChunk(chunk)));
+    return chunkResults.some(Boolean);
+  }
+
+  private async fetchStockBatchChunk(chunk: readonly string[]): Promise<boolean> {
+    const url = `${this.baseUrl}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(chunk.join(','))}`;
     const response = await this.fetchFn(withAuth(url, this.restBatchApiKey()));
     if (!response.ok) {
       this.reportError(`Massive stock batch HTTP ${String(response.status)}`);

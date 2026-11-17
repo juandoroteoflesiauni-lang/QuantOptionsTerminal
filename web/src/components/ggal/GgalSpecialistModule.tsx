@@ -60,6 +60,7 @@ import {
   getMarketLiveFx,
   getMarketLiveQuote,
   pushLiveOrderBook,
+  tickFlashClass,
   useLivePriceFlash,
   useMarketLiveStream,
 } from '../../api/useMarketLiveStream';
@@ -281,9 +282,33 @@ export const GgalSpecialistModule: React.FC<{
     attempts: 0,
   });
   const dualWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dualChartRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dualChartRetryAttemptsRef = useRef(0);
+  const loadDualChartRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
+
+  const clearDualChartRetryTimer = (): void => {
+    if (dualChartRetryTimerRef.current !== null) {
+      clearTimeout(dualChartRetryTimerRef.current);
+      dualChartRetryTimerRef.current = null;
+    }
+  };
+
+  const scheduleDualChartRetry = (): void => {
+    if (dualChartRetryTimerRef.current !== null) return;
+    if (dualChartRetryAttemptsRef.current >= 20) {
+      setDualChartError('No se pudo cargar el gráfico dual: el backend sigue calentando.');
+      return;
+    }
+    dualChartRetryAttemptsRef.current += 1;
+    dualChartRetryTimerRef.current = setTimeout(() => {
+      dualChartRetryTimerRef.current = null;
+      void loadDualChartRef.current?.(false);
+    }, 1_500);
+  };
 
   const loadDualChart = useCallback(
     async (forceRefresh = false) => {
+      clearDualChartRetryTimer();
       dualChartAbortRef.current?.abort();
       const ctrl = new AbortController();
       dualChartAbortRef.current = ctrl;
@@ -297,13 +322,20 @@ export const GgalSpecialistModule: React.FC<{
           forceRefresh,
           signal: ctrl.signal,
         });
-        if (!ctrl.signal.aborted) {
-          setRouterStatus(res.routerStatus);
+        if (ctrl.signal.aborted) return;
+        setRouterStatus(res.routerStatus);
+        if (res.dualChart.status === 'UNAVAILABLE' && res.dualChart.reason === 'DUAL_CHART_WARMING_UP') {
           setDualChartPayload(res.dualChart);
+          scheduleDualChartRetry();
+          return;
         }
-      } catch (err: unknown) {
+        setDualChartPayload(res.dualChart);
+        if (res.dualChart.status === 'OPERATIONAL') {
+          dualChartRetryAttemptsRef.current = 0;
+        }
+      } catch {
         if (!ctrl.signal.aborted) {
-          setDualChartError(err instanceof Error ? err.message : String(err));
+          scheduleDualChartRetry();
         }
       } finally {
         if (!ctrl.signal.aborted) {
@@ -313,6 +345,7 @@ export const GgalSpecialistModule: React.FC<{
     },
     [avwapAnchor, chartTimeframe, coordMode],
   );
+  loadDualChartRef.current = loadDualChart;
 
   const loadDualMicro = useCallback(async (forceRefresh = false) => {
     dualMicroAbortRef.current?.abort();
@@ -474,9 +507,11 @@ export const GgalSpecialistModule: React.FC<{
   );
 
   useEffect(() => {
+    dualChartRetryAttemptsRef.current = 0;
     void loadDualChart(false);
     return () => {
       dualChartAbortRef.current?.abort();
+      clearDualChartRetryTimer();
     };
   }, [loadDualChart]);
 
@@ -1187,8 +1222,7 @@ export const GgalSpecialistModule: React.FC<{
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
                 <div
-                  className="rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight transition-colors duration-[400ms]"
-                  style={{ backgroundColor: arFlash === null ? 'transparent' : arFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }}
+                  className={`rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold transition-colors duration-500 ${tickFlashClass(arFlash)}`}
                 >
                   {fmtCurrency(liveArGgal?.price ?? parityData.result.spot.byma24hArs, '$ ', 2)}
                 </div>
@@ -1215,8 +1249,7 @@ export const GgalSpecialistModule: React.FC<{
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
                 <div
-                  className="rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold text-[#FFFFFF] tracking-tight transition-colors duration-[400ms]"
-                  style={{ backgroundColor: usFlash === null ? 'transparent' : usFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }}
+                  className={`rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold transition-colors duration-500 ${tickFlashClass(usFlash)}`}
                 >
                   {fmtCurrency(liveUsGgal?.price ?? parityData.result.spot.adrMidUsd, 'US$ ', 2)}
                 </div>

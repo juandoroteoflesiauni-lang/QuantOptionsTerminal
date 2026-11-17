@@ -18,7 +18,7 @@ import {
 } from './wsTypes.js';
 
 const DEFAULT_BASE_RECONNECT_BACKOFF_MS = 15_000;
-const SUBSCRIBE_CHUNK_SIZE = 250;
+const SUBSCRIBE_CHUNK_SIZE = 50;
 
 const defaultSleep: SleepFn = (ms) =>
   new Promise((resolve) => {

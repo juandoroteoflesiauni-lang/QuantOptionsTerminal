@@ -48,7 +48,6 @@ import {
   InsightBanner,
   DeltaPill,
   PriceCell,
-  RangeBar,
   MiniSparkline,
   KPICard,
 } from './DesignSystem';
@@ -57,31 +56,10 @@ import {
   getMarketLiveQuote,
   getMarketLiveClock,
   isMarketLiveStreamFresh,
+  tickFlashClass,
   useMarketLiveStream,
+  useTickFlash,
 } from '../api/useMarketLiveStream';
-
-function useTickFlash(value: number | null): 'up' | 'down' | null {
-  const previousRef = useRef<number | null>(value);
-  const [flash, setFlash] = useState<{ readonly dir: 'up' | 'down'; readonly id: number } | null>(null);
-  useEffect(() => {
-    const previous = previousRef.current;
-    previousRef.current = value;
-    if (
-      previous === null ||
-      value === null ||
-      !Number.isFinite(previous) ||
-      !Number.isFinite(value) ||
-      Math.abs(previous - value) <= 1e-9
-    ) {
-      setFlash(null);
-      return;
-    }
-    setFlash({ dir: value > previous ? 'up' : 'down', id: Date.now() });
-    const timer = setTimeout(() => setFlash(null), 400);
-    return () => clearTimeout(timer);
-  }, [value]);
-  return flash?.dir ?? null;
-}
 
 const TickFlash: React.FC<{
   readonly value: number | null;
@@ -91,12 +69,7 @@ const TickFlash: React.FC<{
   const direction = useTickFlash(value);
   return (
     <span
-      className={`inline-flex items-center justify-end rounded-[4px] px-1 py-0.5 ${className}`}
-      style={{
-        transition: 'background-color 400ms ease, color 400ms ease',
-        backgroundColor:
-          direction === null ? 'transparent' : direction === 'up' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-      }}
+      className={`inline-flex items-center justify-end rounded-[4px] px-1 py-0.5 transition-colors duration-500 ${tickFlashClass(direction)} ${className}`}
     >
       {children}
     </span>
@@ -149,15 +122,6 @@ const LogoHeatTile: React.FC<{
       type="button"
       onClick={onClick}
       className={`group relative px-3.5 py-2.5 rounded-[8px] text-left cursor-pointer flex flex-col justify-between min-h-[64px] border hover:border-[#3B82F6]/80 hover:brightness-110 ${bgStyle}`}
-      style={{
-        transition: 'background-color 400ms ease, border-color 400ms ease',
-        backgroundColor:
-          flashDirection === null
-            ? undefined
-            : flashDirection === 'up'
-              ? 'rgba(34, 197, 94, 0.15)'
-              : 'rgba(239, 68, 68, 0.15)',
-      }}
     >
       <div className="flex items-center justify-between gap-2 w-full">
         <div className="flex items-center gap-2 min-w-0">
@@ -167,7 +131,7 @@ const LogoHeatTile: React.FC<{
           </span>
         </div>
         {Number.isFinite(effectivePrice) ? (
-          <span className="font-mono-num text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] transition-colors shrink-0">
+          <span className={`font-mono-num text-[11px] transition-colors duration-500 shrink-0 ${tickFlashClass(flashDirection)}`}>
             ${fmtNum(effectivePrice, effectivePrice < 1000 ? 1 : 0)}
           </span>
         ) : price ? (
@@ -236,38 +200,44 @@ interface NormalizedPanelRow {
   readonly subtitleRight?: string;
 }
 
-const formatRangeBar = (row: NormalizedPanelRow): React.ReactNode => {
+const DayRangeBar: React.FC<{ readonly row: NormalizedPanelRow }> = ({ row }) => {
   const hasRange =
+    Number.isFinite(row.last) &&
     Number.isFinite(row.dayLow) &&
     Number.isFinite(row.dayHigh) &&
-    row.dayHigh > row.dayLow &&
-    Number.isFinite(row.last);
-  const rawPos = Number.isFinite(row.dayRangePos)
-    ? row.dayRangePos
-    : hasRange
-      ? (row.last - row.dayLow) / (row.dayHigh - row.dayLow)
-      : Number.NaN;
-  if (!Number.isFinite(rawPos)) {
+    row.dayHigh > row.dayLow;
+  if (!hasRange) {
     return <span className="text-[var(--text-tertiary)] font-mono-num">—</span>;
   }
-  const pct = Math.max(0, Math.min(100, rawPos * 100));
-  const up = Number.isFinite(row.return1dPct) ? row.return1dPct >= 0 : true;
-  const barColor = up ? '#2EDC7E' : '#FF5468';
+  const posPct = Math.max(0, Math.min(100, ((row.last - row.dayLow) / (row.dayHigh - row.dayLow)) * 100));
+  const barColor = posPct >= 50 ? '#22C55E' : '#EF4444';
   return (
     <div
-      className="inline-flex items-center gap-2 w-[88px] justify-end"
-      title={hasRange ? `Mín ${fmtNum(row.dayLow, 2)} · Máx ${fmtNum(row.dayHigh, 2)}` : undefined}
+      className="inline-flex items-center gap-2"
+      title={`Mín ${fmtNum(row.dayLow, 2)} · Máx ${fmtNum(row.dayHigh, 2)} · Último ${fmtNum(row.last, 2)}`}
     >
-      <div className="relative w-full h-1.5 rounded-full bg-[#1C1C28] overflow-visible">
+      <span className="text-[10.5px] font-mono-num tabular-nums text-[var(--text-secondary)]">
+        {fmtNum(row.dayLow, 2)}
+      </span>
+      <div className="relative h-[6px] w-[54px] rounded-full bg-[#1C1C28]">
         <div
-          className="absolute top-0 bottom-0 left-0 rounded-full opacity-65"
-          style={{ width: `${Math.max(4, pct)}%`, backgroundColor: barColor }}
+          className="absolute inset-y-0 left-0 rounded-full"
+          style={{ width: `${posPct}%`, backgroundColor: barColor }}
         />
         <span
-          className="absolute -top-0.5 w-2 h-2.5 rounded-full border border-[#08080D]"
-          style={{ left: `calc(${pct}% - 4px)`, backgroundColor: barColor }}
+          className="absolute -top-[2px] h-[10px] w-[2px] rounded-full"
+          style={{ left: `calc(${posPct}% - 1px)`, backgroundColor: barColor }}
         />
       </div>
+      <span className="text-[10.5px] font-mono-num tabular-nums text-[var(--text-secondary)]">
+        {fmtNum(row.dayHigh, 2)}
+      </span>
+      <span
+        className="w-[36px] text-right text-[10.5px] font-mono-num tabular-nums"
+        style={{ color: barColor }}
+      >
+        {Math.round(posPct)}%
+      </span>
     </div>
   );
 };
@@ -473,7 +443,7 @@ const EquitySixPanelsGrid: React.FC<{
                   <DeltaPill value={r.return1dPct} size="sm" />
                 </td>
                 <td className="px-2.5 text-[#A5A6BA]">{formatVolMillions(r.volumeM)}</td>
-                <td className="px-3 text-right">{formatRangeBar(r)}</td>
+                <td className="px-3 text-right"><DayRangeBar row={r} /></td>
               </tr>
             ))
           )}
@@ -2669,21 +2639,58 @@ export const USMarketModule: React.FC<{
     US_PANEL_ANALYTICS;
 
   const spyUnifiedQuotes = liveMarket.usSnapshotsBySymbol['SPY']?.marketContext?.unifiedQuotes;
+  const staticMetaMap = new Map(US_MARKET_DATA.map((u) => [u.ticker, u]));
 
   const usPanelRows: NormalizedPanelRow[] = useMemo(() => {
-    const analyticsMap = new Map<string, EquityPanelRowDto>(
-      (usPanelAnalytics?.rows ?? []).map((r) => [r.symbol, r]),
-    );
+    const analyticsRows = usPanelAnalytics?.rows ?? [];
     const unifiedQuoteMap = new Map<string, UsUnifiedQuoteDto>(
       (spyUnifiedQuotes ?? []).map((q) => [q.ticker, q]),
     );
     const finiteOrNull = (v: number | null | undefined): number | null =>
       v !== undefined && v !== null && Number.isFinite(v) ? v : null;
 
-    return US_MARKET_DATA.map((u) => {
-      const extra = analyticsMap.get(u.ticker);
-      const uq = unifiedQuoteMap.get(u.ticker);
-      const live = getMarketLiveQuote(liveStream, 'US', u.ticker);
+    const baseRows = analyticsRows.length > 0
+      ? analyticsRows.map((r) => ({
+          symbol: r.symbol,
+          name: r.name,
+          sector: r.sector,
+          panel: r.panel,
+          color: r.color,
+          last: r.last ?? Number.NaN,
+          prevClose: r.prevClose ?? Number.NaN,
+          low: r.dayLow ?? Number.NaN,
+          high: r.dayHigh ?? Number.NaN,
+          volumeM: r.volumeM ?? Number.NaN,
+          deltaPct: r.return1dPct ?? Number.NaN,
+          return30dPct: r.return30dPct ?? Number.NaN,
+          returnYtdOr252dPct: r.returnYtdOr252dPct ?? Number.NaN,
+          realizedVol30dPct: r.realizedVol30dPct ?? Number.NaN,
+          beta: r.beta ?? Number.NaN,
+          avgVolume40dM: r.avgVolume40dM ?? Number.NaN,
+        }))
+      : US_MARKET_DATA.map((u) => ({
+          symbol: u.ticker,
+          name: u.name,
+          sector: u.sector,
+          panel: u.panel,
+          color: u.color,
+          last: u.price,
+          prevClose: u.prevClose,
+          low: u.low,
+          high: u.high,
+          volumeM: u.volumeM,
+          deltaPct: u.deltaPct,
+          return30dPct: u.return30dPct,
+          returnYtdOr252dPct: u.returnYtdOr252dPct,
+          realizedVol30dPct: u.realizedVol30dPct,
+          beta: u.beta,
+          avgVolume40dM: u.avgVolume40dM,
+        }));
+
+    return baseRows.map((base) => {
+      const extra = analyticsRows.find((r) => r.symbol === base.symbol) ?? null;
+      const uq = unifiedQuoteMap.get(base.symbol);
+      const live = getMarketLiveQuote(liveStream, 'US', base.symbol);
       const uqVolM =
         finiteOrNull(uq?.tradedVolumeUsd) !== null
           ? (uq!.tradedVolumeUsd as number) / 1_000_000
@@ -2692,61 +2699,63 @@ export const USMarketModule: React.FC<{
         finiteOrNull(extra?.tradedVolumeUsd) !== null
           ? (extra!.tradedVolumeUsd as number) / 1_000_000
           : finiteOrNull(extra?.volumeM);
-      const dayLow = live?.dayLow ?? finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? u.low;
-      const dayHigh = live?.dayHigh ?? finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? u.high;
-      const currentLast = live?.price ?? finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? u.price;
+      const dayLow = live?.dayLow ?? finiteOrNull(uq?.dayLow) ?? finiteOrNull(extra?.dayLow) ?? base.low;
+      const dayHigh = live?.dayHigh ?? finiteOrNull(uq?.dayHigh) ?? finiteOrNull(extra?.dayHigh) ?? base.high;
+      const currentLast = live?.price ?? finiteOrNull(uq?.price) ?? finiteOrNull(extra?.last) ?? base.last;
 
       return {
-        symbol: u.ticker,
-        name: u.name,
-        sector: u.sector,
-        panel: u.panel,
-        color: u.color,
+        symbol: base.symbol,
+        name: base.name,
+        sector: base.sector,
+        panel: base.panel,
+        color: base.color,
         last: currentLast,
-        prevClose: live?.previousClose ?? finiteOrNull(uq?.previousClose) ?? finiteOrNull(extra?.prevClose) ?? u.prevClose,
+        prevClose: live?.previousClose ?? finiteOrNull(uq?.previousClose) ?? finiteOrNull(extra?.prevClose) ?? base.prevClose,
         dayLow,
         dayHigh,
         dayRangePos:
           live !== null && Number.isFinite(dayLow) && Number.isFinite(dayHigh) && dayHigh > dayLow
             ? Math.max(0, Math.min(1, (live.price - dayLow) / (dayHigh - dayLow)))
-            : finiteOrNull(uq?.dayRangePos) ?? finiteOrNull(extra?.dayRangePos) ?? u.dayRangePos,
-        volumeM: live?.turnover !== null && live?.turnover !== undefined ? live.turnover / 1_000_000 : uqVolM ?? extraVolM ?? u.volumeM,
-        return1dPct: live?.changePct ?? finiteOrNull(uq?.changePct) ?? finiteOrNull(extra?.return1dPct) ?? u.deltaPct,
+            : finiteOrNull(uq?.dayRangePos) ?? finiteOrNull(extra?.dayRangePos) ?? Number.NaN,
+        volumeM: live?.turnover !== null && live?.turnover !== undefined ? live.turnover / 1_000_000 : uqVolM ?? extraVolM ?? base.volumeM,
+        return1dPct: live?.changePct ?? finiteOrNull(uq?.changePct) ?? finiteOrNull(extra?.return1dPct) ?? base.deltaPct,
         return30dPct:
           extra?.return30dPct !== undefined && extra.return30dPct !== null
             ? extra.return30dPct
-            : u.return30dPct,
+            : base.return30dPct,
         returnYtdOr252dPct:
           extra?.returnYtdOr252dPct !== undefined && extra.returnYtdOr252dPct !== null
             ? extra.returnYtdOr252dPct
-            : u.returnYtdOr252dPct,
+            : base.returnYtdOr252dPct,
         realizedVol30dPct:
           extra?.realizedVol30dPct !== undefined && extra.realizedVol30dPct !== null
             ? extra.realizedVol30dPct
-            : u.realizedVol30dPct,
-        beta: extra?.beta !== undefined && extra.beta !== null ? extra.beta : u.beta,
+            : base.realizedVol30dPct,
+        beta: extra?.beta !== undefined && extra.beta !== null ? extra.beta : base.beta,
         avgVolume40dM:
           extra?.avgVolume40dM !== undefined && extra.avgVolume40dM !== null
             ? extra.avgVolume40dM
-            : u.avgVolume40dM,
+            : base.avgVolume40dM,
       };
     });
   }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version, liveStream]);
 
   const handleSelectUsRow = (symbol: string) => {
-    const item = US_MARKET_DATA.find((u) => u.ticker === symbol);
-    if (!item) return;
+    const row = usPanelRows.find((r) => r.symbol === symbol);
+    if (!row) return;
+    const staticItem = staticMetaMap.get(symbol);
     const live = getMarketLiveQuote(liveStream, 'US', symbol);
+    const staticArsPrice = staticItem?.cedearArsPrice ?? Number.NaN;
+    const price = Number.isFinite(staticArsPrice) ? staticArsPrice : live?.price ?? row.last;
     onOpenOrderTicket({
-      ticker: item.ticker,
+      ticker: row.symbol,
       side: 'Compra',
-      price: Number.isFinite(item.cedearArsPrice)
-        ? item.cedearArsPrice
-        : live?.price ?? (Number.isFinite(item.price) ? item.price : 0),
+      price: Number.isFinite(price) ? price : 0,
       qty: 10,
-      instrumentLabel: Number.isFinite(item.cedearRatioNum)
-        ? `CEDEAR ${item.name} (Ratio ${item.cedearRatio})`
-        : `${item.name} (NYSE / NASDAQ)`,
+      instrumentLabel:
+        staticItem !== undefined && Number.isFinite(staticItem.cedearRatioNum)
+          ? `CEDEAR ${staticItem.name} (Ratio ${staticItem.cedearRatio})`
+          : `${row.name} (NYSE / NASDAQ)`,
     });
   };
 
@@ -3619,7 +3628,9 @@ export const FuturesModule: React.FC = () => {
                         {c.days !== null ? `${String(c.days)}d` : '—'}
                       </td>
                       <td className="px-2.5 font-bold text-[var(--text-primary)]">
-                        {c.price !== null ? `$ ${fmtNum(c.price, 2)}` : '—'}
+                        <TickFlash value={c.price}>
+                          {c.price !== null ? `$ ${fmtNum(c.price, 2)}` : '—'}
+                        </TickFlash>
                       </td>
                       <td className="px-2.5 text-[var(--text-secondary)]">
                         {(() => {

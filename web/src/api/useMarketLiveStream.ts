@@ -208,7 +208,17 @@ export function getMarketLiveClock(snapshot: MarketLiveStreamState): string | nu
   return new Date(snapshot.lastReceivedAtMs).toLocaleTimeString('es-AR', { hour12: false });
 }
 
-export function useLivePriceFlash(value: number | null): 'up' | 'down' | null {
+export function tickFlashClass(direction: 'up' | 'down' | null): string {
+  if (direction === 'up') {
+    return 'border-b-2 border-[#22C55E] bg-[#22C55E]/15 text-[#4ADE80]';
+  }
+  if (direction === 'down') {
+    return 'border-b-2 border-[#EF4444] bg-[#EF4444]/15 text-[#F87171]';
+  }
+  return 'border-b-2 border-transparent';
+}
+
+export function useTickFlash(value: number | null): 'up' | 'down' | null {
   const previousRef = useRef<number | null>(value);
   const [flash, setFlash] = useState<{ readonly direction: 'up' | 'down'; readonly id: number } | null>(null);
   useEffect(() => {
@@ -222,10 +232,14 @@ export function useLivePriceFlash(value: number | null): 'up' | 'down' | null {
       return;
     }
     setFlash({ direction: value > previous ? 'up' : 'down', id: Date.now() });
-    const timer = setTimeout(() => setFlash(null), 400);
+    const timer = setTimeout(() => setFlash(null), 650);
     return () => clearTimeout(timer);
   }, [value]);
   return flash?.direction ?? null;
+}
+
+export function useLivePriceFlash(value: number | null): 'up' | 'down' | null {
+  return useTickFlash(value);
 }
 
 export function useThrottledLiveValue<T>(value: T, intervalMs = 1_000): T {

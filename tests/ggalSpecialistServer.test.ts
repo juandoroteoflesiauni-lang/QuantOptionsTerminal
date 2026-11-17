@@ -1602,4 +1602,71 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
       expect(structJson.proxyResult?.intradayFlow.adrNetSignedUsd).toBeCloseTo(expectedAdrFlow, 2);
     }
   });
+
+  it('sirve dual-chart con SWR 15s, cold start no bloqueante y revalidación single-flight', async () => {
+    const asOfUtcSec = Math.floor(Date.UTC(2026, 9, 15, 15, 30, 0) / 1_000);
+    const mocks = createOfflineMocks({ asOfUtcSec });
+    let nowMs = asOfUtcSec * 1_000;
+    let arFetchCalls = 0;
+    const releaseFirstArFetchRef: { current: (() => void) | null } = { current: null };
+
+    const arFetch: ArHttpFn = (url, init) => {
+      arFetchCalls += 1;
+      if (arFetchCalls === 1) {
+        return new Promise((resolve) => {
+          releaseFirstArFetchRef.current = () => {
+            void mocks.arFetch(url, init).then(resolve);
+          };
+        });
+      }
+      return mocks.arFetch(url, init);
+    };
+
+    const runtime = new MarketRuntime({
+      apiKey: FAKE_SECRET,
+      secrets: [FAKE_SECRET],
+      fetchFn: mocks.usFetch,
+      nowMsFn: () => nowMs,
+    });
+    const arRuntime = new ArgentinaMarketRuntime({
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => nowMs,
+      minData912IntervalMs: 0,
+    });
+    const ggalRuntime = new GgalSpecialistRuntime({
+      runtime,
+      arRuntime,
+      fetchFn: arFetch,
+      secrets: [FAKE_SECRET],
+      nowMsFn: () => nowMs,
+    });
+
+    const params = {
+      coordMode: 'ARS_BYMA' as const,
+      timeframe: '1D' as const,
+      avwapAnchor: 'MONTH_START' as const,
+      forceRefresh: false,
+    };
+
+    const cold = await ggalRuntime.getDualChart(params);
+    expect(cold.dualChart.status).toBe('UNAVAILABLE');
+    expect(cold.dualChart.reason).toBe('DUAL_CHART_WARMING_UP');
+
+    releaseFirstArFetchRef.current?.();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const warm = await ggalRuntime.getDualChart(params);
+    expect(warm.dualChart.status).toBe('OPERATIONAL');
+
+    const callsAfterWarm = arFetchCalls;
+    const fresh = await ggalRuntime.getDualChart(params);
+    expect(fresh.dualChart.status).toBe('OPERATIONAL');
+    expect(arFetchCalls).toBe(callsAfterWarm);
+
+    nowMs += 20_000;
+    const stale = await ggalRuntime.getDualChart(params);
+    expect(stale.dualChart.status).toBe('OPERATIONAL');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(arFetchCalls).toBeGreaterThan(callsAfterWarm);
+  });
 });

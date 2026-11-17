@@ -4,11 +4,14 @@ import type {
   MassiveWsClientOptions,
   WsAggBarEvent,
   WsClientSnapshot,
+  WsSocketFactory,
   WsTradeEvent,
 } from '../src/data/wsTypes.js';
+import { MassiveWsClient } from '../src/data/wsClient.js';
 import {
   getMassiveBatchIntervalMs,
   getUsLiveSession,
+  MASSIVE_SNAPSHOT_CHUNK_SIZE,
   MassiveStocksStream,
   type MarketTickQuote,
   type MassiveStreamWsClient,
@@ -138,11 +141,22 @@ function makeAgg(
 }
 
 describe('MassiveStocksStream — universo US completo, suscripciones T.<símbolo> y fusión WS/batch', () => {
-  it('declara el panel de 73 tickers, los 13 ADRs argentinos y el universo de stream deduplicado', () => {
-    expect(US_PANEL_TICKERS).toHaveLength(73);
-    expect(new Set(US_PANEL_TICKERS).size).toBe(73);
+  it('declara el panel expandido de 162 tickers, los 13 ADRs argentinos y el universo de stream deduplicado', () => {
+    expect(US_PANEL_TICKERS).toHaveLength(162);
+    expect(new Set(US_PANEL_TICKERS).size).toBe(162);
     expect(US_PANEL_TICKERS).toEqual(
-      expect.arrayContaining(['AAPL', 'NVDA', 'GGAL', 'BMA', 'YPF', 'PAM', 'VIST', 'MELI', 'SPY', 'QQQ', 'IWM', 'DIA', 'XLF', 'EWZ']),
+      expect.arrayContaining([
+        'AAPL', 'NVDA', 'GGAL', 'BMA', 'YPF', 'PAM', 'VIST', 'MELI', 'SPY', 'QQQ', 'IWM', 'DIA', 'XLF', 'EWZ',
+        'IREN', 'CRWV', 'ASTS', 'RKLB', 'LUNR', 'NBIS', 'CLSK', 'MARA', 'RIOT', 'WULF', 'CORZ', 'HUT',
+        'OKLO', 'SMR', 'VST', 'CEG', 'GEV', 'VRT', 'ETN', 'ANET', 'MRVL', 'ARM', 'TXN', 'AMAT', 'LRCX',
+        'KLAC', 'ASML', 'TSM', 'SNOW', 'DDOG', 'NET', 'CRWD', 'PANW', 'ZS', 'FTNT', 'MDB', 'SHOP', 'SQ',
+        'AFRM', 'UPST', 'SOFI', 'HOOD', 'COIN', 'MSTR', 'RBLX', 'U', 'APP', 'DUOL', 'SPOT', 'ABNB', 'UBER',
+        'DASH', 'BKNG', 'LULU', 'NKE', 'SBUX', 'CMG', 'COST', 'WMT', 'TGT', 'HD', 'LOW', 'CAT', 'DE', 'BA',
+        'LMT', 'RTX', 'NOC', 'GD', 'GE', 'HON', 'UNP', 'UPS', 'FDX', 'XOM', 'CVX', 'OXY', 'SLB', 'HAL',
+        'FCX', 'NEM', 'AA', 'NUE', 'JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'BLK', 'SCHW', 'V', 'MA', 'AXP',
+        'UNH', 'LLY', 'NVO', 'JNJ', 'PFE', 'MRK', 'ABBV', 'ISRG', 'TMO', 'DHR', 'AMGN', 'GILD', 'BIIB',
+        'MRNA', 'VKTX', 'HIMS', 'TEM', 'RXRX', 'IONQ', 'RGTI', 'QBTS', 'SOUN', 'BBAI', 'PATH', 'AI', 'C3AI',
+      ]),
     );
 
     expect(US_ADR_TICKERS).toHaveLength(13);
@@ -152,7 +166,7 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
     );
 
     const expected = new Set([...US_PANEL_TICKERS, ...US_ADR_TICKERS, 'SPY', 'QQQ', 'IWM', 'DIA', 'I:VIX']);
-    expect(US_STREAM_SYMBOLS).toHaveLength(expected.size); // 73 + 9 ADRs nuevos + SPY/QQQ/IWM/DIA/I:VIX
+    expect(US_STREAM_SYMBOLS).toHaveLength(expected.size); // 162 + 9 ADRs nuevos + I:VIX
     for (const symbol of expected) {
       expect(US_STREAM_SYMBOLS).toContain(symbol);
     }
@@ -305,5 +319,93 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
     h.pushEvents([makeTrade('AAPL', 90, 10, DAY_T_SEC)]);
     expect((h.stream.getQuote('AAPL') as MarketTickQuote).price).toBe(102);
     h.stream.stop();
+  });
+
+  it('particiona el snapshot REST en chunks de 80 tickers', async () => {
+    const symbols = Array.from({ length: 180 }, (_, i) => `S${String(i).padStart(3, '0')}`);
+    const requested: string[][] = [];
+    const fetchFn = (url: string): Promise<FetchResponse> => {
+      const parsed = new URL(url);
+      const tickers = (parsed.searchParams.get('tickers') ?? '').split(',').filter(Boolean);
+      requested.push(tickers);
+      return Promise.resolve({ ok: true, status: 200, text: JSON.stringify({ tickers: [] }), headers: {} });
+    };
+    const stream = new MassiveStocksStream({
+      apiKey: 'k_chunk_test',
+      symbols,
+      fetchFn,
+      createWsClientFn: () => ({
+        connect: () => Promise.resolve(undefined),
+        subscribe: () => {
+          return undefined;
+        },
+        unsubscribe: () => {
+          return undefined;
+        },
+        close: () => {
+          return undefined;
+        },
+        getSnapshot: () => ({}) as WsClientSnapshot,
+      }),
+    });
+    await stream.start();
+    await vi.waitFor(() => {
+      expect(requested).toHaveLength(3);
+    });
+    expect(requested.map((chunk) => chunk.length)).toEqual([
+      MASSIVE_SNAPSHOT_CHUNK_SIZE,
+      MASSIVE_SNAPSHOT_CHUNK_SIZE,
+      20,
+    ]);
+    stream.stop();
+  });
+
+  it('chunka las suscripciones WS en grupos de 50 tickers', async () => {
+    class ChunkedWsSocket {
+      public readonly sentFrames: string[] = [];
+      public onOpen: (() => void) | null = null;
+      public onMessage: ((data: string) => void) | null = null;
+      public onClose: ((info: { readonly code: number; readonly reason: string; readonly wasClean: boolean }) => void) | null = null;
+      public onError: ((error: unknown) => void) | null = null;
+
+      public constructor(public readonly url: string) {}
+
+      public send(data: string): void {
+        this.sentFrames.push(data);
+      }
+
+      public close(): void {
+        return undefined;
+      }
+    }
+
+    const sockets: ChunkedWsSocket[] = [];
+    const factory: WsSocketFactory = (url) => {
+      const sock = new ChunkedWsSocket(url);
+      sockets.push(sock);
+      return sock;
+    };
+    const client = new MassiveWsClient({
+      apiKey: 'KEY_CHUNK_TEST',
+      cluster: 'stocks',
+      initialSubscriptions: Array.from({ length: 120 }, (_, i) => `T.S${String(i).padStart(3, '0')}`),
+      socketFactory: factory,
+    });
+    const connectPromise = client.connect();
+    const sock = sockets[0];
+    if (sock === undefined) {
+      throw new Error('Expected WS socket');
+    }
+    sock.onOpen?.();
+    sock.onMessage?.(JSON.stringify([{ ev: 'status', status: 'connected', message: 'ok' }]));
+    sock.onMessage?.(JSON.stringify([{ ev: 'status', status: 'auth_success', message: 'ok' }]));
+    await connectPromise;
+
+    const chunkSizes = sock.sentFrames
+      .map((frame) => JSON.parse(frame) as { readonly action?: string; readonly params?: string })
+      .filter((frame) => frame.action === 'subscribe')
+      .map((frame) => (frame.params ?? '').split(',').filter(Boolean).length);
+    expect(chunkSizes).toEqual([50, 50, 20]);
+    client.close();
   });
 });

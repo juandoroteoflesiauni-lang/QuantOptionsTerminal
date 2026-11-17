@@ -9,7 +9,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
-import { getMarketLiveQuote, isMarketLiveStreamFresh, useMarketLiveStream } from '../api/useMarketLiveStream';
+import { getMarketLiveQuote, isMarketLiveStreamFresh, tickFlashClass, useMarketLiveStream } from '../api/useMarketLiveStream';
 import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
 import {
@@ -197,7 +197,7 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
     setFlash({ dir: item.lastTickDir, id: item.lastTickTs });
     const timer = setTimeout(() => {
       setFlash(null);
-    }, 400);
+    }, 650);
     return () => clearTimeout(timer);
   }, [item?.lastTickTs, item?.lastTickDir]);
 
@@ -216,13 +216,6 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       onClick={() => onSelectTicker?.(clickableSymbol)}
       title={`${item.symbol} (${item.displayName}) — Click para inspeccionar`}
       className="group inline-flex items-center gap-2 px-2.5 h-[30px] rounded-[8px] bg-[#131722] hover:bg-[#1A1F2C] border border-[#2A2E3D] hover:border-[#3D4358] shrink-0 cursor-pointer select-none"
-      style={{
-        transition: 'background-color 400ms ease, border-color 400ms ease',
-        backgroundColor:
-          flash === null ? undefined : flash.dir === 'up' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-        borderColor:
-          flash === null ? undefined : flash.dir === 'up' ? 'rgba(34, 197, 94, 0.45)' : 'rgba(239, 68, 68, 0.45)',
-      }}
     >
       <CompanyLogo ticker={item.id} name={item.displayName} size="sm" />
 
@@ -230,7 +223,11 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
         {item.symbol}
       </span>
 
-      <span className="font-mono-num text-[12px] font-bold text-[#ECEDF2] whitespace-nowrap">
+      <span
+        className={`font-mono-num text-[12px] font-bold whitespace-nowrap transition-colors duration-500 ${
+          flash === null ? 'text-[#ECEDF2]' : tickFlashClass(flash.dir)
+        }`}
+      >
         {Number.isFinite(item.price)
           ? `${item.prefix ?? ''}${formatPriceEsAr(item.price, item.decimals)}${item.suffix ?? ''}`
           : '—'}
