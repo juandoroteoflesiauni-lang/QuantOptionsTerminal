@@ -7,6 +7,8 @@ export type StockDetailCategory = 'US_STOCKS' | 'PANEL_LIDER' | 'PANEL_GENERAL' 
 
 export interface StockDetailSelectorItem {
   readonly key: string;
+  /** Pieza 41: identidad calificada AR:/US: propagada al callback. */
+  readonly selectionKey: string;
   readonly ticker: string;
   readonly name: string;
   readonly category: StockDetailCategory;
@@ -62,7 +64,7 @@ function categoryForTicker(
   ticker: string,
   items: readonly StockDetailSelectorItem[],
 ): StockDetailCategory {
-  const match = items.find((item) => item.ticker === ticker);
+  const match = items.find((item) => item.selectionKey === ticker || item.ticker === ticker);
   return match?.category ?? 'US_STOCKS';
 }
 
@@ -142,7 +144,7 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
         event.stopPropagation();
         const item = filtered[activeIndex];
         if (item) {
-          onSelect(item.ticker);
+          onSelect(item.selectionKey);
           onClose();
         }
       }
@@ -279,7 +281,7 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
               aria-selected={idx === activeIndex}
               onMouseEnter={() => setActiveIndex(idx)}
               onClick={() => {
-                onSelect(item.ticker);
+                onSelect(item.selectionKey);
                 onClose();
               }}
               className={`flex w-full items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors cursor-pointer ${

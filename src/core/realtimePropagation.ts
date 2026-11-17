@@ -21,6 +21,8 @@ export interface PropagationQuote {
   readonly currency?: 'ARS' | 'USD' | null;
   readonly kind?: 'stock' | 'index' | 'bond' | 'note' | 'corp';
   readonly source?: string;
+  /** Pieza 41: settlement BYMA; ausente/24hs usa la clave canónica base. */
+  readonly settlement?: string | null;
 }
 
 export interface LiveFxSnapshot {
@@ -90,15 +92,18 @@ function isFinitePositive(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }
 
-function quoteKey(market: LiveMarket, symbol: string): string {
-  return `${market}:${symbol.trim().toUpperCase()}`;
+function quoteKey(market: LiveMarket, symbol: string, settlement?: string | null): string {
+  const cleanSettlement = typeof settlement === 'string' ? settlement.trim().toUpperCase() : '';
+  return cleanSettlement === '' || cleanSettlement === '24HS' || cleanSettlement === 'T1'
+    ? `${market}:${symbol.trim().toUpperCase()}`
+    : `${market}:${symbol.trim().toUpperCase()}:${cleanSettlement}`;
 }
 
 function buildQuoteIndex(quotes: readonly PropagationQuote[]): Map<string, PropagationQuote> {
   const index = new Map<string, PropagationQuote>();
   for (const quote of quotes) {
     if (!isFinitePositive(quote.price)) continue;
-    const key = quoteKey(quote.market, quote.symbol);
+    const key = quoteKey(quote.market, quote.symbol, quote.settlement);
     index.set(key, quote);
   }
   return index;

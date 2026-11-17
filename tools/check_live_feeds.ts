@@ -226,7 +226,7 @@ export async function runFeedsCheck(): Promise<void> {
   console.log('PIEZA 33 — AUDITORIA EN VIVO DE FEEDS');
   console.log(`Servidor: http://127.0.0.1:8787  ·  asOfUtcSec=${String(feeds.asOfUtcSec)}`);
   console.log(
-    `Resumen: ${String(feeds.activeCount)}/7 activos · ${String(feeds.configuredCount)}/7 armados · ` +
+    `Resumen: ${String(feeds.activeCount)}/8 activos · ${String(feeds.configuredCount)}/8 armados · ` +
       `${String(feeds.degradedCount)} degradados · ${String(feeds.armedOutOfSessionCount)} fuera de sesión · ` +
       `${String(feeds.notConfiguredCount)} no configurados`,
   );

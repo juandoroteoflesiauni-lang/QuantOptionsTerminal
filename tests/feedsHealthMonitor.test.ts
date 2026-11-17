@@ -196,22 +196,24 @@ describe('Pieza 33 — máquina de estados y resumen', () => {
     });
   }
 
-  it('resume siete proveedores sin duplicar IDs ni filtrar no configurados', () => {
+  it('resume ocho proveedores sin duplicar IDs ni filtrar no configurados', () => {
     const snapshot = createMonitor({}).getSnapshot();
     expect(snapshot.status).toBe('OK');
     expect(snapshot.providers.map((provider) => provider.id)).toEqual([
       'MASSIVE_WS_STOCKS',
       'MASSIVE_REST_POOL',
       'TRADIER_LIVE_WS',
+      'FMP_ENTERPRISE_REST',
       'ORATS_API',
       'PRIMARY_REMARKETS_DLR',
       'BMB_HOMEBROKER_L2',
       'IOL_REST_V2',
     ]);
-    expect(snapshot.summary.totalProviders).toBe(7);
+    expect(snapshot.summary.totalProviders).toBe(8);
     expect(snapshot.summary.activeCount).toBe(0);
     expect(snapshot.summary.configuredCount).toBe(0);
-    expect(snapshot.summary.notConfiguredCount).toBe(7);
+    expect(snapshot.summary.notConfiguredCount).toBe(8);
+    expect(snapshot.summary.standbyCount).toBe(0);
   });
 
   it('redacta material sensible en errores y en fallos de reconnect', async () => {
@@ -237,10 +239,10 @@ describe('Pieza 33 — máquina de estados y resumen', () => {
     expect(result.providerAfter).toBeNull();
   });
 
-  it('pulso ligero mantiene los siete IDs y sólo métricas comunes', () => {
+  it('pulso ligero mantiene los ocho IDs y sólo métricas comunes', () => {
     const pulse = createMonitor({}).getPulse();
     expect(pulse.type).toBe('FEEDS_HEALTH_PULSE');
-    expect(pulse.providers.map((provider) => provider.id)).toHaveLength(7);
+    expect(pulse.providers.map((provider) => provider.id)).toHaveLength(8);
     for (const provider of pulse.providers) {
       expect(Object.keys(provider).sort()).toEqual([
         'id',

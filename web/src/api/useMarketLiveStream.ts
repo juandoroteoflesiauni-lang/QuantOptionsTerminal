@@ -22,6 +22,8 @@ export interface MarketLiveQuote {
   readonly source: string;
   readonly direction: 'up' | 'down' | null;
   readonly revision: number;
+  readonly settlement?: '24hs' | 'CI' | null;
+  readonly exchange?: string | null;
 }
 
 export interface MarketLiveCaucion {
@@ -34,7 +36,7 @@ export interface MarketLiveCaucion {
   readonly turnoverArs: number | null;
   readonly spreadVsBadlarBps: number | null;
   readonly asOfUtcSec: number | null;
-  readonly source: 'BMB_HOMEBROKER' | 'IOL_REST' | 'BCRA_LECAP_REF';
+  readonly source: 'PRIMARY_ECO_WS' | 'BMB_HOMEBROKER' | 'IOL_REST' | 'BCRA_LECAP_REF';
   readonly referenceInstrument: string;
 }
 
@@ -95,8 +97,13 @@ export interface MarketLiveStreamState {
   readonly liveTape: readonly LiveTapeTick[];
   readonly cclMedian: number | null;
   readonly mepMedian: number | null;
-  readonly arSourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
-  readonly usSourceMode: 'MASSIVE_WS' | 'MASSIVE_BATCH' | 'NO_DATA';
+  readonly arSourceMode: 'LIVE_PRIMARY' | 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
+  readonly usSourceMode:
+    | 'TRADIER_WS'
+    | 'FMP_ENTERPRISE_REST'
+    | 'MASSIVE_WS'
+    | 'MASSIVE_BATCH'
+    | 'NO_DATA';
   readonly cauciones: readonly MarketLiveCaucion[];
   readonly futures: readonly MarketLiveFuture[];
   readonly futuresSource: 'PRIMARY_WS' | 'PRIMARY_REST' | 'NONE';
@@ -230,8 +237,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function liveQuoteKey(market: LiveStreamMarket, symbol: string): string {
-  return `${market}:${symbol.trim().toUpperCase()}`;
+export function liveQuoteKey(market: LiveStreamMarket, symbol: string, settlement?: string | null): string {
+  const cleanSettlement = settlement?.trim().toUpperCase();
+  return cleanSettlement === undefined || cleanSettlement === null || cleanSettlement === '' || cleanSettlement === '24HS' || cleanSettlement === 'T1'
+    ? `${market}:${symbol.trim().toUpperCase()}`
+    : `${market}:${symbol.trim().toUpperCase()}:${cleanSettlement}`;
 }
 
 export function isMarketLiveStreamFresh(snapshot: MarketLiveStreamState): boolean {
@@ -281,10 +291,17 @@ export function useLivePriceFlash(value: number | null): 'up' | 'down' | null {
   return useTickFlash(value);
 }
 
-export function useThrottledLiveValue<T>(value: T, intervalMs = 1_000): T {
+export function useThrottledLiveValue<T>(value: T, intervalMs = 1_000, resetKey?: string): T {
   const [throttled, setThrottled] = useState<T>(value);
   const lastUpdateAtMsRef = useRef<number>(0);
+  const previousResetKeyRef = useRef<string | undefined>(resetKey);
   useEffect(() => {
+    if (previousResetKeyRef.current !== resetKey) {
+      previousResetKeyRef.current = resetKey;
+      lastUpdateAtMsRef.current = Date.now();
+      setThrottled(value);
+      return;
+    }
     const now = Date.now();
     const elapsedMs = now - lastUpdateAtMsRef.current;
     if (elapsedMs >= intervalMs) {
@@ -297,7 +314,7 @@ export function useThrottledLiveValue<T>(value: T, intervalMs = 1_000): T {
       setThrottled(value);
     }, intervalMs - elapsedMs);
     return () => clearTimeout(timer);
-  }, [value, intervalMs]);
+  }, [value, intervalMs, resetKey]);
   return throttled;
 }
 
@@ -305,9 +322,19 @@ export function getMarketLiveQuote(
   snapshot: MarketLiveStreamState,
   market: LiveStreamMarket,
   symbol: string,
+  settlement?: string | null,
 ): MarketLiveQuote | null {
   if (!isMarketLiveStreamFresh(snapshot)) return null;
-  return snapshot.quotesBySymbol[liveQuoteKey(market, symbol)] ?? null;
+  const exact = snapshot.quotesBySymbol[liveQuoteKey(market, symbol, settlement)];
+  if (exact !== undefined) return exact;
+  if (settlement === undefined || settlement === null || settlement === '') {
+    return (
+      snapshot.quotesBySymbol[liveQuoteKey(market, symbol, '24hs')] ??
+      snapshot.quotesBySymbol[liveQuoteKey(market, symbol, 'CI')] ??
+      null
+    );
+  }
+  return null;
 }
 
 export function pushLiveOrderBook(snapshot: MarketLiveOrderBook): void {
@@ -343,6 +370,14 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
   const symbol = symbolRaw.trim().toUpperCase();
   const currencyRaw = raw['currency'];
   const currency = currencyRaw === 'ARS' || currencyRaw === 'USD' ? currencyRaw : null;
+  const settlementRaw = raw['settlement'];
+  const settlement =
+    settlementRaw === '24hs' || settlementRaw === '24HS' || settlementRaw === 'T1'
+      ? '24hs'
+      : settlementRaw === 'CI'
+        ? 'CI'
+        : null;
+  const exchangeRaw = raw['exchange'];
   if (
     previous !== null &&
     previous.asOfUtcSec !== null &&
@@ -370,6 +405,8 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
     source: typeof raw['source'] === 'string' && raw['source'] !== '' ? raw['source'] : 'UNKNOWN',
     direction,
     revision: changed || previous === null ? (previous?.revision ?? 0) + 1 : previous.revision,
+    settlement,
+    exchange: typeof exchangeRaw === 'string' && exchangeRaw.trim() !== '' ? exchangeRaw.trim().toUpperCase() : null,
   };
 }
 
@@ -561,11 +598,11 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
   lastBatchReceivedAtMs = receivedAtMs;
 
   const arSourceMode =
-    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'LIVE_IOL' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
+    batch.arSourceMode === 'LIVE_PRIMARY' || batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'LIVE_IOL' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
       ? batch.arSourceMode
       : state.arSourceMode;
   const usSourceMode =
-    batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
+    batch.usSourceMode === 'TRADIER_WS' || batch.usSourceMode === 'FMP_ENTERPRISE_REST' || batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
       ? batch.usSourceMode
       : state.usSourceMode;
   const previousQuotes = state.quotesBySymbol;
@@ -576,7 +613,7 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     const market = raw['market'];
     if (market !== 'AR' && market !== 'US') continue;
     if ((market === 'AR' && arSourceMode === 'NO_DATA') || (market === 'US' && usSourceMode === 'NO_DATA')) continue;
-    const key = liveQuoteKey(market, raw['symbol']);
+    const key = liveQuoteKey(market, raw['symbol'], typeof raw['settlement'] === 'string' ? raw['settlement'] : null);
     const parsed = parseQuote(raw, previousQuotes[key] ?? null);
     if (parsed === null) continue;
     if (parsed.direction !== null) changedTicks += 1;
@@ -645,11 +682,11 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
   const elapsedSec = lastBatchReceivedAtMs === null ? null : Math.max(0.001, (receivedAtMs - lastBatchReceivedAtMs) / 1_000);
   lastBatchReceivedAtMs = receivedAtMs;
   const arSourceMode =
-    batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'LIVE_IOL' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
+    batch.arSourceMode === 'LIVE_PRIMARY' || batch.arSourceMode === 'LIVE_BMB' || batch.arSourceMode === 'LIVE_IOL' || batch.arSourceMode === 'DATA912' || batch.arSourceMode === 'NO_DATA'
       ? batch.arSourceMode
       : state.arSourceMode;
   const usSourceMode =
-    batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
+    batch.usSourceMode === 'TRADIER_WS' || batch.usSourceMode === 'FMP_ENTERPRISE_REST' || batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
       ? batch.usSourceMode
       : state.usSourceMode;
   const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotesBySymbol };
@@ -671,7 +708,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     const market = raw['market'];
     if (market !== 'AR' && market !== 'US') continue;
     if ((market === 'AR' && arSourceMode === 'NO_DATA') || (market === 'US' && usSourceMode === 'NO_DATA')) continue;
-    const key = liveQuoteKey(market, raw['symbol']);
+    const key = liveQuoteKey(market, raw['symbol'], typeof raw['settlement'] === 'string' ? raw['settlement'] : null);
     const parsed = parseQuote(raw, nextQuotes[key] ?? null);
     if (parsed === null) continue;
     if (parsed.direction !== null) changedTicks += 1;
@@ -770,11 +807,11 @@ function applyTickDeltaSequence(
 
   const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotesBySymbol };
   const latestArSourceMode =
-    last.arSourceMode === 'LIVE_BMB' || last.arSourceMode === 'LIVE_IOL' || last.arSourceMode === 'DATA912' || last.arSourceMode === 'NO_DATA'
+    last.arSourceMode === 'LIVE_PRIMARY' || last.arSourceMode === 'LIVE_BMB' || last.arSourceMode === 'LIVE_IOL' || last.arSourceMode === 'DATA912' || last.arSourceMode === 'NO_DATA'
       ? last.arSourceMode
       : state.arSourceMode;
   const latestUsSourceMode =
-    last.usSourceMode === 'MASSIVE_WS' || last.usSourceMode === 'MASSIVE_BATCH' || last.usSourceMode === 'NO_DATA'
+    last.usSourceMode === 'TRADIER_WS' || last.usSourceMode === 'FMP_ENTERPRISE_REST' || last.usSourceMode === 'MASSIVE_WS' || last.usSourceMode === 'MASSIVE_BATCH' || last.usSourceMode === 'NO_DATA'
       ? last.usSourceMode
       : state.usSourceMode;
   if (latestArSourceMode === 'NO_DATA' || latestUsSourceMode === 'NO_DATA') {
@@ -806,7 +843,7 @@ function applyTickDeltaSequence(
       ) {
         continue;
       }
-      const key = liveQuoteKey(market, raw['symbol']);
+      const key = liveQuoteKey(market, raw['symbol'], typeof raw['settlement'] === 'string' ? raw['settlement'] : null);
       const parsed = parseQuote(raw, nextQuotes[key] ?? null);
       if (parsed === null) continue;
       if (parsed.direction !== null) changedTicks += 1;
@@ -1114,6 +1151,8 @@ function flushMarketBatches(): void {
       if (!isRecord(raw)) continue;
       if (raw['type'] === 'ggal_bar_tick') {
         dispatchGgalBarTick(raw);
+      } else if (raw['type'] === 'trade' || raw['type'] === 'quote' || raw['type'] === 'bar_update') {
+        applyLegacyStockEvent(raw);
       }
     }
   }

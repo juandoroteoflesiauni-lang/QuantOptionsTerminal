@@ -30,6 +30,30 @@ export const MASSIVE_SNAPSHOT_CHUNK_SIZE = 80;
 
 export type UsLiveSession = 'RTH' | 'EXTENDED' | 'CLOSED';
 
+/**
+ * Pieza 41: modo explícito del socket/batch de acciones Massive.
+ * `TRADIER_FMP_PRIMARY` significa que el feed de acciones US/ADR se apaga y
+ * `MASSIVE_REST_POOL` queda dedicado a opciones. El override exige la variable
+ * completa, no acepta valores parcialmente verdaderos.
+ */
+export type MassiveStocksMode = 'MASSIVE_STOCKS_ENABLED' | 'STANDBY_TRADIER_FMP_PRIMARY';
+
+const MASSIVE_STOCKS_STANDBY_TRIGGER_ENV_NAMES = [
+  'FMP_API_KEY',
+  'TRADIER_ACCESS_TOKEN',
+  'TRADIER_TOKEN',
+  'TRADIER_API_TOKEN',
+] as const;
+
+export function resolveMassiveStocksMode(env: NodeJS.ProcessEnv = process.env): MassiveStocksMode {
+  const overrideRaw = (env['MASSIVE_STOCKS_WS_ENABLED'] ?? '').trim().toLowerCase();
+  if (overrideRaw === 'true') return 'MASSIVE_STOCKS_ENABLED';
+  for (const name of MASSIVE_STOCKS_STANDBY_TRIGGER_ENV_NAMES) {
+    if ((env[name] ?? '').trim() !== '') return 'STANDBY_TRADIER_FMP_PRIMARY';
+  }
+  return 'MASSIVE_STOCKS_ENABLED';
+}
+
 export interface MarketTickQuote {
   readonly market: 'AR' | 'US';
   readonly symbol: string;
@@ -44,6 +68,10 @@ export interface MarketTickQuote {
   readonly turnover: number | null;
   readonly asOfUtcSec: number | null;
   readonly source: string;
+  /** Pieza 41: exchange US real (FMP batch). `null` cuando el proveedor no lo entrega. */
+  readonly exchange?: string | null;
+  /** Pieza 41: liquidación BYMA cuando el emisor la conoce (`24hs` | `CI`). */
+  readonly settlement?: string | null;
 }
 
 export interface MassiveStreamWsClient {

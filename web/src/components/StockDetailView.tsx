@@ -41,6 +41,7 @@ import { GexStrikeProfileChart } from './stock-detail/GexStrikeProfileChart';
 import { SyncedLowerPaneChart } from './stock-detail/SyncedLowerPaneChart';
 import { CompanyLogo } from './common/CompanyLogo';
 import { projectLiveEma } from '../../../src/core/ema';
+import { projectLiveCandle } from '../../../src/core/realtimePropagation';
 import {
   computeAnchoredVwapSeries,
 } from '../../../src/core/ggal/technicalIndicators';
@@ -72,6 +73,11 @@ import {
   type StockDetailCategory,
   type StockDetailSelectorItem,
 } from './StockDetailSymbolSelector';
+import {
+  dualAdrSymbol,
+  resolveStockDetailRoute,
+  type StockDetailExchange,
+} from './stock-detail/stockDetailRouting';
 
 const CHART_TIMEFRAMES: readonly { readonly id: TerminalTimeframe; readonly label: string }[] = [
   { id: '1m', label: '1m' },
@@ -287,11 +293,10 @@ export const StockDetailView: React.FC<{
 }) => {
   const runtime = useLiveMarketState();
   const liveStream = useMarketLiveStream();
-  const cleanTicker = ticker.trim().toUpperCase() || 'GGAL';
+  const tickerRaw = ticker.trim().toUpperCase() || 'GGAL';
 
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [timeframe, setTimeframe] = useState<TerminalTimeframe>('1D');
-  const [avwapMode, setAvwapMode] = useState<PanoramicAvwapAnchorMode>('MONTH_START');
+  const [timeframe, setTimeframe] = useState<TerminalTimeframe>('1D');  const [avwapMode, setAvwapMode] = useState<PanoramicAvwapAnchorMode>('MONTH_START');
   const [clickedAnchorTimeSec, setClickedAnchorTimeSec] = useState<number | null>(null);
   const [showAvwapBands, setShowAvwapBands] = useState(true);
   const [lowerMode, setLowerMode] = useState<LowerPaneMode>('CVD');
@@ -309,6 +314,8 @@ export const StockDetailView: React.FC<{
   const [usBarsByKey, setUsBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
   // Pieza 38: velas reales ARS de /api/bars?market=AR para tickers argentinos.
   const [arBarsByKey, setArBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
+  const [ar1mFallbackActive, setAr1mFallbackActive] = useState(false);
+  const loadingRequestIdRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const mainLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
@@ -318,21 +325,25 @@ export const StockDetailView: React.FC<{
   const hasOverviewRef = useRef(Boolean(runtime.overview));
   hasOverviewRef.current = Boolean(runtime.overview);
 
-  const isArMarket = useMemo(() => {
-    return (
-      AR_STOCKS.some((stock) => stock.ticker === cleanTicker) ||
-      AR_GENERAL_PANEL_STOCKS.some((stock) => stock.ticker === cleanTicker) ||
-      runtime.overview?.mervalStocks.some((stock) => stock.ticker === cleanTicker) ||
-      runtime.overview?.generalPanelStocks.some((stock) => stock.ticker === cleanTicker) ||
-      runtime.overview?.cedears.some((stock) => stock.ticker === cleanTicker)
-    );
-  }, [cleanTicker, runtime.overview]);
+  const stockRoute = useMemo(() => {
+    return resolveStockDetailRoute({
+      rawTicker: tickerRaw,
+      isArLocalSymbol:
+        AR_STOCKS.some((stock) => stock.ticker === tickerRaw) ||
+        AR_GENERAL_PANEL_STOCKS.some((stock) => stock.ticker === tickerRaw),
+    });
+  }, [tickerRaw]);
+  const cleanTicker = stockRoute?.providerSymbol ?? tickerRaw;
+  const isArMarket = stockRoute?.market === 'AR';
+  const stockMode = stockRoute?.mode ?? 'BYMA_ARS';
+  const stockExchange: StockDetailExchange = stockRoute?.exchange ?? 'US';
+  const currentStockKey = stockRoute?.key ?? cleanTicker;
 
   const liveQuote = getMarketLiveQuote(liveStream, isArMarket ? 'AR' : 'US', cleanTicker);
   useMarketFocusSymbol(isArMarket ? null : cleanTicker);
   const liveClock = getMarketLiveClock(liveStream);
   const liveHeaderFlash = useLivePriceFlash(liveQuote?.price ?? null);
-  const throttledLivePrice = useThrottledLiveValue(liveQuote?.price ?? Number.NaN, 1_000);
+  const throttledLivePrice = useThrottledLiveValue(liveQuote?.price ?? Number.NaN, 1_000, currentStockKey);
 
   useEffect(() => {
     if (runtime.optionsUnderlyingsStatus === 'IDLE') {
@@ -342,39 +353,59 @@ export const StockDetailView: React.FC<{
 
   useEffect(() => {
     const controller = new AbortController();
+    const requestId = loadingRequestIdRef.current + 1;
+    loadingRequestIdRef.current = requestId;
     setLoading(true);
     setLoadError(null);
     setHighlightedLevel(null);
+    setClickedAnchorTimeSec(null);
+    setAr1mFallbackActive(false);
     if (!hasOverviewRef.current) void refreshOverview();
+
+    const isCurrent = (): boolean => requestId === loadingRequestIdRef.current && !controller.signal.aborted;
 
     const load = async (): Promise<void> => {
       try {
         if (isArMarket) {
-          // Pieza 40: la ruta de velas es crítica. El detalle AR y la cadena de
-          // opciones se cargan en paralelo/segundo plano y no mantienen el
-          // spinner activo después de resolver las velas.
-          const barsPromise =
-            timeframe === '1D'
-              ? requestTerminalBars(cleanTicker, timeframe, {
-                  visibleBars: 1_250,
-                  market: 'AR',
-                  signal: controller.signal,
-                })
-              : Promise.resolve(null);
+          // Pieza 41: BYMA usa /api/bars?market=AR. En 1m la API resuelve 1D
+          // sin intentar convertir velas ADR; el detalle no bloquea el gráfico.
+          const requestTimeframe: TerminalTimeframe =
+            timeframe === '1m' && !ar1mFallbackActive ? '1m' : timeframe;
+          const barsPromise = requestTerminalBars(cleanTicker, requestTimeframe, {
+            visibleBars: requestTimeframe === '1D' ? 1_250 : 1_000,
+            market: 'AR',
+            signal: controller.signal,
+          });
           const detailPromise = requestStockDetail(cleanTicker, false, timeframe, controller.signal);
-          const [detail, arBarsRes] = await Promise.all([detailPromise, barsPromise]);
-          if (controller.signal.aborted) return;
-          if (arBarsRes) {
+          let arBarsRes = await Promise.race([
+            barsPromise,
+            new Promise<UsTerminalBarsResponseDto | null>((resolve) => {
+              setTimeout(() => resolve(null), 250);
+            }),
+          ]);
+          if (!isCurrent()) return;
+          if (arBarsRes === null && requestTimeframe === '1m') {
+            // Fallback inmediato del camino 1m a 1D si el primer request no pintó.
+            arBarsRes = await requestTerminalBars(cleanTicker, '1D', {
+              visibleBars: 1_250,
+              market: 'AR',
+              signal: controller.signal,
+            });
+            if (!isCurrent()) return;
+            if (arBarsRes !== null) setAr1mFallbackActive(true);
+          }
+          if (arBarsRes !== null) {
             setArBarsByKey((prev) => ({
               ...prev,
-              [`${cleanTicker}:${timeframe}`]: arBarsRes,
+              [`${currentStockKey}:${timeframe}`]: arBarsRes,
             }));
           }
           setLoading(false);
           void requestOptionsChain(cleanTicker).catch(() => undefined);
-          if (detail === null && arBarsRes === null) {
+          if (arBarsRes === null) {
             setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
           }
+          void detailPromise.catch(() => undefined);
         } else {
           const barsPromise = requestTerminalBars(cleanTicker, timeframe, {
             visibleBars: timeframe === '1D' ? 1_250 : 1_000,
@@ -382,11 +413,11 @@ export const StockDetailView: React.FC<{
           });
           void requestUsSnapshot(cleanTicker, { signal: controller.signal }).catch(() => undefined);
           const barsRes = await barsPromise;
-          if (controller.signal.aborted) return;
+          if (!isCurrent()) return;
           if (barsRes) {
             setUsBarsByKey((prev) => ({
               ...prev,
-              [`${cleanTicker}:${timeframe}`]: barsRes,
+              [`${currentStockKey}:${timeframe}`]: barsRes,
             }));
           } else {
             setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
@@ -394,18 +425,18 @@ export const StockDetailView: React.FC<{
           setLoading(false);
         }
       } catch {
-        if (!controller.signal.aborted) {
+        if (isCurrent()) {
           setLoadError(`Sincronización interrumpida para ${cleanTicker} (${timeframe}).`);
           setLoading(false);
         }
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     };
 
     void load();
     return () => controller.abort();
-  }, [cleanTicker, timeframe, isArMarket]);
+  }, [ar1mFallbackActive, cleanTicker, currentStockKey, timeframe, isArMarket]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -445,10 +476,12 @@ export const StockDetailView: React.FC<{
     )];
     if (usSymbols.length === 0) {
       for (const usMeta of US_MARKET_DATA) {
-        if (seen.has(usMeta.ticker)) continue;
-        seen.add(usMeta.ticker);
+        const selectionKey = `US:${usMeta.ticker}`;
+        if (seen.has(selectionKey)) continue;
+        seen.add(selectionKey);
         items.push({
           key: usMeta.ticker,
+          selectionKey,
           ticker: usMeta.ticker,
           name: usMeta.name,
           category: 'US_STOCKS',
@@ -464,12 +497,14 @@ export const StockDetailView: React.FC<{
       }
     } else {
       for (const symbol of usSymbols) {
-        if (seen.has(symbol)) continue;
-        seen.add(symbol);
+        const selectionKey = `US:${symbol}`;
+        if (seen.has(selectionKey)) continue;
+        seen.add(selectionKey);
         const meta = runtime.optionsUnderlyings.find((u) => u.symbol === symbol && u.market === 'US');
         const staticMeta = US_MARKET_DATA.find((u) => u.ticker === symbol);
         items.push({
           key: symbol,
+          selectionKey,
           ticker: symbol,
           name: meta?.name ?? staticMeta?.name ?? symbol,
           category: 'US_STOCKS',
@@ -490,10 +525,12 @@ export const StockDetailView: React.FC<{
         ? runtime.overview.mervalStocks
         : AR_STOCKS;
     for (const stock of arLeader) {
-      if (seen.has(stock.ticker)) continue;
-      seen.add(stock.ticker);
+      const selectionKey = `AR:${stock.ticker}`;
+      if (seen.has(selectionKey)) continue;
+      seen.add(selectionKey);
       items.push({
         key: stock.ticker,
+        selectionKey,
         ticker: stock.ticker,
         name: stock.name,
         category: 'PANEL_LIDER',
@@ -513,10 +550,12 @@ export const StockDetailView: React.FC<{
         ? runtime.overview.generalPanelStocks
         : AR_GENERAL_PANEL_STOCKS;
     for (const stock of arGeneral) {
-      if (seen.has(stock.ticker)) continue;
-      seen.add(stock.ticker);
+      const selectionKey = `AR:${stock.ticker}`;
+      if (seen.has(selectionKey)) continue;
+      seen.add(selectionKey);
       items.push({
         key: stock.ticker,
+        selectionKey,
         ticker: stock.ticker,
         name: stock.name,
         category: 'PANEL_GENERAL',
@@ -532,10 +571,12 @@ export const StockDetailView: React.FC<{
     }
 
     for (const cedear of runtime.overview?.cedears ?? []) {
-      if (seen.has(cedear.ticker)) continue;
-      seen.add(cedear.ticker);
+      const selectionKey = `AR:${cedear.ticker}`;
+      if (seen.has(selectionKey)) continue;
+      seen.add(selectionKey);
       items.push({
         key: cedear.ticker,
+        selectionKey,
         ticker: cedear.ticker,
         name: cedear.name,
         category: 'CEDEARS',
@@ -577,9 +618,9 @@ export const StockDetailView: React.FC<{
     : undefined;
   const arOptions = isArMarket ? runtime.optionsByUnderlying[cleanTicker] : undefined;
   const usSnap = !isArMarket ? runtime.usSnapshotsBySymbol[cleanTicker] : undefined;
-  const usBarsResp = !isArMarket ? usBarsByKey[`${cleanTicker}:${timeframe}`] : undefined;
+  const usBarsResp = !isArMarket ? usBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
   // Pieza 38: velas reales ARS servidas por /api/bars?market=AR (primario en 1D).
-  const arBarsResp = isArMarket ? arBarsByKey[`${cleanTicker}:${timeframe}`] : undefined;
+  const arBarsResp = isArMarket ? arBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
 
   const contextInfo: StockContextBannerInfo = useMemo(() => {
     const cclMed = normalizeFiniteOrNull(runtime.overview?.cclMedian);
@@ -617,7 +658,7 @@ export const StockDetailView: React.FC<{
         market: 'AR',
         ticker: cleanTicker,
         name: ovStock?.name ?? cedearStock?.name ?? arMeta?.name ?? cleanTicker,
-        marketLabel: cedearStock !== null ? 'CEDEAR · BYMA' : 'BYMA 24hs',
+        marketLabel: stockMode === 'ADR_USD' ? 'ADR · USD' : cedearStock !== null ? 'CEDEAR · BYMA' : 'BYMA 24hs',
         currencySymbol: 'ARS',
         spot,
         prevClose: normalizeFiniteOrNull(ovStock?.prevClose),
@@ -686,7 +727,7 @@ export const StockDetailView: React.FC<{
       market: 'US',
       ticker: cleanTicker,
       name: selectorMeta?.name ?? usMeta?.name ?? cleanTicker,
-      marketLabel: 'US · OPRA',
+      marketLabel: `US · ${stockExchange}${stockRoute?.isAdr === true ? ' · ADR' : ''}`,
       currencySymbol: 'USD',
       spot,
       prevClose: normalizeFiniteOrNull(quote?.previousClose),
@@ -718,7 +759,7 @@ export const StockDetailView: React.FC<{
       cedearArsPrice: cedPrice,
       cedearCclMismatchPct: cclMismatchPct,
     };
-  }, [cleanTicker, isArMarket, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, throttledLivePrice, usBarsResp, usSnap]);
+  }, [cleanTicker, isArMarket, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, throttledLivePrice, usBarsResp, usSnap]);
 
   const chartBundle: PanoramicChartBundle = useMemo(() => {
     let rawBars: readonly MinimalOhlcvBar[] = [];
@@ -736,8 +777,9 @@ export const StockDetailView: React.FC<{
           arBarsResp !== undefined && arBarsResp.bars.length > 0
             ? arBarsResp.bars
             : (stockDetail?.historicalBars ?? []);
-      } else if (stockDetail?.adrBars && stockDetail.adrBars.bars.length > 0) rawBars = stockDetail.adrBars.bars;
-      else intradayUnavailableReason = `Sin feed intradiario BYMA para ${cleanTicker} (${timeframe}) — disponible en 1D`;
+      } else if (arBarsResp !== undefined && arBarsResp.bars.length > 0) {
+        rawBars = arBarsResp.bars;
+      } else intradayUnavailableReason = `Sin feed intradiario BYMA para ${cleanTicker} (${timeframe}) — disponible en 1D`;
       benchBars1d = dedupAndSortBars(stockDetail?.benchmarkBars1d ?? []);
       const frontExpiry = arOptions?.expiries.find((expiry) => expiry.ivAtm !== null && expiry.ivAtm > 0) ?? arOptions?.expiries[0];
       if (frontExpiry?.ivAtm != null && Number.isFinite(frontExpiry.ivAtm)) ivAtmPct = frontExpiry.ivAtm * 100;
@@ -752,7 +794,48 @@ export const StockDetailView: React.FC<{
       if (ivDecimal !== null && Number.isFinite(ivDecimal) && ivDecimal > 0) ivAtmPct = ivDecimal * 100;
     }
 
-    const bars = dedupAndSortBars(rawBars);
+    const bars0 = dedupAndSortBars(rawBars);
+    // Pieza 41: proyecta solo OHLC del último trade real (sin volumen estimado)
+    // sobre la vela abierta del timeframe visible; no reemplaza histórico.
+    const lastHistoricalBar = bars0.at(-1) ?? null;
+    const liveTickPrice = liveQuote?.price ?? null;
+    const liveTickTimeSec = liveQuote?.asOfUtcSec ?? liveStream.lastServerTimeSec;
+    const projectedLiveBar =
+      lastHistoricalBar !== null &&
+      liveTickPrice !== null &&
+      Number.isFinite(liveTickPrice) &&
+      liveTickTimeSec !== null &&
+      Number.isInteger(liveTickTimeSec)
+        ? projectLiveCandle(
+            {
+              timeSec: lastHistoricalBar.time,
+              open: lastHistoricalBar.open,
+              high: lastHistoricalBar.high,
+              low: lastHistoricalBar.low,
+              close: lastHistoricalBar.close,
+              volume: lastHistoricalBar.volume,
+            },
+            {
+              price: liveTickPrice,
+              timeSec: liveTickTimeSec,
+              volumeDelta: null,
+            },
+            timeframe === '1D' ? 86_400 : timeframe === '4h' ? 14_400 : timeframe === '1h' ? 3_600 : timeframe === '15m' ? 900 : timeframe === '5m' ? 300 : 60,
+          )
+        : null;
+    const bars = projectedLiveBar === null
+      ? bars0
+      : [
+          ...bars0.slice(0, -1),
+          {
+            time: projectedLiveBar.timeSec,
+            open: projectedLiveBar.open,
+            high: projectedLiveBar.high,
+            low: projectedLiveBar.low,
+            close: projectedLiveBar.close,
+            volume: projectedLiveBar.volume,
+          },
+        ];
     const closes = bars.map((bar) => bar.close);
     const isIntraday = timeframe !== '1D';
     const spot = contextInfo.spot;
@@ -799,7 +882,7 @@ export const StockDetailView: React.FC<{
       barsAvailable: bars.length > 0 && intradayUnavailableReason === null,
       intradayUnavailableReason,
     };
-  }, [arBarsResp, arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, isArMarket, stockDetail, timeframe, usBarsResp, usSnap]);
+  }, [arBarsResp, arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, isArMarket, liveQuote, liveStream.lastServerTimeSec, stockDetail, timeframe, usBarsResp, usSnap]);
 
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];
@@ -941,7 +1024,7 @@ export const StockDetailView: React.FC<{
             marketSymbol: `${cleanTicker} · NBBO`,
             settlement: 'T+1 US',
             marketState: contextInfo.feedStatus,
-            source: 'MASSIVE_NBBO_L1',
+            source: contextInfo.nbboBid !== null || contextInfo.nbboAsk !== null ? 'TRADIER_WS_NBBO' : 'NO_DATA',
             asOfUtcSec: usSnap?.asOfUtcSec ?? 0,
             bids: contextInfo.nbboBid !== null ? [{ price: contextInfo.nbboBid, size: contextInfo.nbboBidSize ?? 0 }] : [],
             asks: contextInfo.nbboAsk !== null ? [{ price: contextInfo.nbboAsk, size: contextInfo.nbboAskSize ?? 0 }] : [],
@@ -1024,23 +1107,35 @@ export const StockDetailView: React.FC<{
   }, []);
 
   const currentCategory: StockDetailCategory = useMemo(() => {
-    if (selectorItems.some((item) => item.category === 'PANEL_LIDER' && item.ticker === cleanTicker)) return 'PANEL_LIDER';
-    if (selectorItems.some((item) => item.category === 'PANEL_GENERAL' && item.ticker === cleanTicker)) return 'PANEL_GENERAL';
-    if (selectorItems.some((item) => item.category === 'CEDEARS' && item.ticker === cleanTicker)) return 'CEDEARS';
+    if (selectorItems.some((item) => item.selectionKey === currentStockKey && item.category === 'PANEL_LIDER')) return 'PANEL_LIDER';
+    if (selectorItems.some((item) => item.selectionKey === currentStockKey && item.category === 'PANEL_GENERAL')) return 'PANEL_GENERAL';
+    if (selectorItems.some((item) => item.selectionKey === currentStockKey && item.category === 'CEDEARS')) return 'CEDEARS';
     return 'US_STOCKS';
-  }, [cleanTicker, selectorItems]);
+  }, [currentStockKey, selectorItems]);
 
-  const currentBadge =
-    currentCategory === 'US_STOCKS'
-      ? 'US · OPRA'
+  const currentBadge = isArMarket
+    ? stockMode === 'ADR_USD'
+      ? 'ADR · USD'
       : currentCategory === 'CEDEARS'
         ? 'CEDEAR · BYMA'
         : currentCategory === 'PANEL_LIDER'
           ? 'LÍDER · BYMA'
-          : 'GENERAL · BYMA';
+          : 'GENERAL · BYMA'
+    : stockExchange === 'NASDAQ'
+      ? 'NASDAQ'
+      : stockExchange === 'NYSE'
+        ? 'NYSE'
+        : stockExchange === 'AMEX'
+          ? 'AMEX'
+          : stockRoute?.isAdr === true
+            ? 'ADR'
+            : 'US';
 
   const rangePct = rangePositionPct(contextInfo.spot, contextInfo.dayLow, contextInfo.dayHigh);
   const optionsEnabled = contextInfo.market === 'US' || cleanTicker === 'GGAL';
+  const rawLocalSymbol = tickerRaw.replace(/^(?:AR|US):/, '');
+  const dualAdr = dualAdrSymbol(rawLocalSymbol);
+  const canToggleAdrMode = dualAdr !== null;
 
   return (
     <div className="flex flex-col gap-3 pb-6 text-[#F0F2FA]">
@@ -1069,6 +1164,22 @@ export const StockDetailView: React.FC<{
                   <span className="rounded-full border border-[#252532] bg-[#0A0A0D] px-1.5 py-0.5 font-mono-num text-[9.5px] text-[#9CA3AF]">
                     {currentBadge}
                   </span>
+                  {canToggleAdrMode && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onSelectTicker(
+                          stockMode === 'ADR_USD'
+                            ? `AR:${rawLocalSymbol}`
+                            : `US:${dualAdr}`,
+                        )
+                      }
+                      title={stockMode === 'ADR_USD' ? 'Ver BYMA (ARS)' : 'Ver ADR (USD)'}
+                      className="rounded-full border border-[#8B7CF6]/45 bg-[#8B7CF6]/10 px-1.5 py-0.5 font-mono-num text-[9.5px] font-semibold text-[#C4B5FD] transition-colors hover:bg-[#8B7CF6]/20 cursor-pointer"
+                    >
+                      {stockMode === 'ADR_USD' ? 'BYMA' : 'ADR'}
+                    </button>
+                  )}
                 </span>
                 <span className="block max-w-[280px] truncate text-[11.5px] text-[#9CA3AF]">{contextInfo.name}</span>
               </span>
@@ -1341,7 +1452,7 @@ export const StockDetailView: React.FC<{
         open={selectorOpen}
         onClose={() => setSelectorOpen(false)}
         onSelect={onSelectTicker}
-        selectedTicker={cleanTicker}
+        selectedTicker={currentStockKey}
         items={selectorItems}
         status={runtime.optionsUnderlyingsStatus}
         selectedName={contextInfo.name}
@@ -1522,7 +1633,7 @@ const PanoramicPriceChart: React.FC<{
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
     };
-  }, [externalCrosshairTimeRef, externalLogicalRangeRef, onCrosshairTime]);
+  }, [externalCrosshairTimeRef, externalLogicalRangeRef, onCrosshairTime, bundle.barsAvailable]);
 
   useEffect(() => {
     const chart = chartRef.current;

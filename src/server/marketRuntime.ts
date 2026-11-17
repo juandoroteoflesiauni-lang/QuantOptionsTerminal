@@ -279,8 +279,17 @@ import {
   type TradierQuotesResult,
   type TradierStreamTick,
 } from './tradierAdapter.js';
+import { fetchAsFmpHttpFn, FmpEnterpriseClient, loadFmpConfigFromEnv, type FmpConfig } from './fmpClient.js';
+import { TradierHistoricalClient, TradierStocksStream, TRADIER_CORE_US_SYMBOLS } from './tradierStream.js';
+import { resolveMassiveStocksMode } from './massiveStocksStream.js';
+
+/** Pieza 41: primer instante del gap electoral. */
+export const ELECTORAL_GAP_START_UTC_SEC = Date.UTC(2025, 9, 1, 4, 0, 0) / 1_000;
 
 export const DEFAULT_TERMINAL_SYMBOLS = ['SPY', 'QQQ', 'I:SPX'] as const;
+
+/** Pieza 41: cadencia no solapada del batch completo FMP Enterprise. */
+export const FMP_BATCH_QUOTE_INTERVAL_MS = 1_500;
 
 const KEY_ENV_NAMES = [
   'MASSIVE_API_KEY',
@@ -899,6 +908,9 @@ export interface TerminalBarsResponse {
   } | null;
   readonly keyLevels: readonly SerializedKeyLevel[];
   readonly markers: readonly (SerializedAbsorptionMarker | SerializedDivergenceMarker)[];
+  /** Pieza 41: provenance explícita del proveedor de velas. */
+  readonly barsProvider: 'FMP_ENTERPRISE_REST' | 'TRADIER_REST' | 'MASSIVE_REST';
+  readonly barsProviderFallbackUsed: readonly string[];
 }
 
 export interface SerializedUnusualTradeRow {
@@ -1029,6 +1041,12 @@ export interface MarketRuntimeDeps {
   /** Pieza 32: funciones Tradier inyectables para determinismo en tests. */
   readonly tradierChainFetchFn?: typeof fetchTradierOptionChain;
   readonly tradierQuotesFetchFn?: typeof fetchTradierQuotes;
+  /** Pieza 41: configuración FMP inyectada (tests/harness); producción lee `process.env`. */
+  readonly fmpConfig?: FmpConfig;
+  /** Pieza 41: modo stocks Massive inyectado para tests; producción resuelve por env. */
+  readonly massiveStocksMode?: ReturnType<typeof resolveMassiveStocksMode>;
+  /** Pieza 41: habilita el REST histórico Tradier en harness; producción siempre true. */
+  readonly tradierHistoricalBars?: boolean;
   /** Pieza 36: cliente ORATS inyectable; tests offline sin inyección quedan UNAVAILABLE. */
   readonly oratsClient?: OratsHybridClient | null;
 }
@@ -3552,6 +3570,19 @@ export class MarketRuntime {
   >();
   private readonly tradierChainInFlight = new Map<string, Promise<TradierOptionChainResult>>();
   private readonly tradierQuoteTicks = new Map<string, MarketTickQuote>();
+  private readonly fmpConfig: FmpConfig;
+  private readonly fmpClient: FmpEnterpriseClient;
+  private fmpBatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private fmpBatchRunning = false;
+  private readonly fmpQuoteTicks = new Map<string, MarketTickQuote>();
+  private readonly fmpTelemetry = new RollingFeedTelemetry({ latencyKind: 'HTTP_ROUND_TRIP' });
+  private readonly tradierHistoricalClient: TradierHistoricalClient | null;
+  private tradierStocksStream: TradierStocksStream | null = null;
+  private readonly massiveStocksMode: ReturnType<typeof resolveMassiveStocksMode>;
+  private readonly fmpHistoricalProviderEnabled: boolean;
+  private readonly tradierHistoricalProviderEnabled: boolean;
+  /** Pieza 41: cualquier inyección de transporte/loaders es harness offline. */
+  private readonly injectedMarketHarness: boolean;
 
   private readonly snapshotCache: SingleFlightRuntimeCache<TerminalSnapshotResponse>;
   private readonly barsCache: SingleFlightRuntimeCache<TerminalBarsResponse>;
@@ -3585,6 +3616,10 @@ export class MarketRuntime {
   private readonly liveStates1m = new Map<string, LiveBarState>();
   /** Pieza 39: historial profundo ADR (gap electoral) con caché LRU + disco. */
   private readonly ggalDeepHistory = new GgalAdrDeepHistoryStore();
+  /** Pieza 41: caché profunda separada por proveedor para no mezclar Massive/FMP. */
+  private readonly ggalFmpDeepHistory = new GgalAdrDeepHistoryStore({
+    cacheDir: resolve(process.cwd(), '.cache', 'ggal-deep-history', 'fmp-enterprise'),
+  });
   /** Pieza 39: motor tick-by-tick GGAL (ADR/ARS/CCL) con broadcast WS. */
   private readonly ggalTickEngine: GgalTickStreamEngine;
   private readonly closedInputs1m = new Map<
@@ -4046,9 +4081,14 @@ export class MarketRuntime {
     // Pieza 32: en modo fetch simulado (tests) Tradier queda explícitamente no
     // configurado salvo inyección directa, para no golpear la red real.
     const isMockFetch = deps.fetchFn !== undefined;
+    this.injectedMarketHarness =
+      isMockFetch ||
+      deps.loadBarsFn !== undefined ||
+      deps.createWsClientFn !== undefined ||
+      deps.apiKey !== undefined;
     this.tradierConfig =
       deps.tradierConfig ??
-      (isMockFetch
+      (this.injectedMarketHarness
         ? {
             accessToken: null,
             tokenEnvName: null,
@@ -4061,10 +4101,41 @@ export class MarketRuntime {
     if (this.tradierConfig.accessToken !== null) {
       secretSet.add(this.tradierConfig.accessToken);
     }
+    // Pieza 41: en tests sin inyección explícita el entorno real no alimenta
+    // FMP ni cambia el modo Massive; así los harness históricos siguen offline.
+    this.fmpConfig = deps.fmpConfig ?? (this.injectedMarketHarness ? loadFmpConfigFromEnv({}) : loadFmpConfigFromEnv());
+    if (this.fmpConfig.apiKey !== null) secretSet.add(this.fmpConfig.apiKey);
+    this.massiveStocksMode =
+      deps.massiveStocksMode ??
+      (this.injectedMarketHarness ? 'MASSIVE_STOCKS_ENABLED' : resolveMassiveStocksMode());
+    // Los proveedores históricos alternativos se activan en harness solo si el
+    // caller los inyecta explícitamente; así los tests legacy no cambian de red.
+    this.fmpHistoricalProviderEnabled =
+      this.fmpConfig.configured && (!this.injectedMarketHarness || deps.fmpConfig !== undefined);
+    this.tradierHistoricalProviderEnabled =
+      this.tradierConfig.configured && (!this.injectedMarketHarness || deps.tradierHistoricalBars === true);
     this.tradierManager = deps.tradierManager ?? null;
     this.tradierChainFetchFn = deps.tradierChainFetchFn ?? fetchTradierOptionChain;
     this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
     this.secrets = [...secretSet];
+    this.fmpClient = new FmpEnterpriseClient({
+      config: this.fmpConfig,
+      ...(deps.fetchFn === undefined ? {} : { fetchFn: fetchAsFmpHttpFn(deps.fetchFn) }),
+      ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
+      secrets: this.secrets,
+      onResponse: ({ httpStatus, latencyMs }) => {
+        this.fmpTelemetry.record({
+          atMs: this.nowMsFn(),
+          latencyMs,
+          ...(httpStatus === null ? {} : { httpStatus }),
+        });
+      },
+    });
+    this.tradierHistoricalClient = new TradierHistoricalClient({
+      config: this.tradierConfig,
+      ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
+      secrets: this.secrets,
+    });
     this.oratsClient =
       deps.oratsClient !== undefined
         ? deps.oratsClient
@@ -4353,9 +4424,27 @@ export class MarketRuntime {
     if (!this.enableWs) {
       return;
     }
-    // Pieza 32: el socket de stocks usa su clave dedicada (MASSIVE_WS_STOCKS_KEY ->
-    // MASSIVE_API_KEY); los batches REST internos rotan el pool REST.
+    const symbols = [
+      ...new Set([
+        ...US_STREAM_SYMBOLS,
+        ...MASSIVE_WS_CORE_SYMBOLS,
+        ...this.watchedSymbols.map((symbol) => symbol.trim().toUpperCase()),
+      ]),
+    ].filter((symbol) => symbol !== '');
+    // Pieza 41: FMP batch y Tradier WS arrancan sin depender de una clave
+    // Massive. El socket Massive solo se abre cuando no está en standby.
+    if (this.fmpConfig.configured) {
+      this.startFmpBatchQuoteLoop();
+    }
+    this.ensureTradierLiveStream(symbols);
     const wsStocksKey = this.wsStocksKeySlot();
+    if (this.massiveStocksMode === 'STANDBY_TRADIER_FMP_PRIMARY') {
+      if (this.massiveStocksStream !== null) {
+        await this.massiveStocksStream.stopAndWait(4_000).catch(() => undefined);
+        this.massiveStocksStream = null;
+      }
+      return;
+    }
     if (wsStocksKey.key.trim() === '') {
       return;
     }
@@ -4364,13 +4453,6 @@ export class MarketRuntime {
       return;
     }
 
-    const symbols = [
-      ...new Set([
-        ...US_STREAM_SYMBOLS,
-        ...MASSIVE_WS_CORE_SYMBOLS,
-        ...this.watchedSymbols.map((symbol) => symbol.trim().toUpperCase()),
-      ]),
-    ];
     const stream = new MassiveStocksStream({
       apiKey: wsStocksKey.key,
       restApiKeyFn: () => this.restBatchApiKey(),
@@ -4405,7 +4487,111 @@ export class MarketRuntime {
     this.massiveStocksStream = stream;
     await stream.start();
     this.applyMassiveSymbolLeases();
-    this.ensureTradierLiveStream(symbols);
+  }
+
+  /** Pieza 41: universo real de batch-quote (acciones/ETFs, sin índices). */
+  public getFmpBatchSymbols(): readonly string[] {
+    return [...new Set([
+      ...US_PANEL_TICKERS,
+      ...US_STREAM_SYMBOLS.filter((symbol) => !symbol.startsWith('I:')),
+      ...TRADIER_CORE_US_SYMBOLS,
+      ...this.watchedSymbols.filter((symbol) => !symbol.startsWith('I:')),
+      ...this.massiveSymbolLeases.keys(),
+    ])].map((symbol) => symbol.trim().toUpperCase()).filter((symbol) => symbol !== '').sort();
+  }
+
+  private startFmpBatchQuoteLoop(): void {
+    if (!this.fmpConfig.configured || this.fmpBatchTimer !== null || this.fmpBatchRunning) {
+      return;
+    }
+    const run = async (): Promise<void> => {
+      if (!this.fmpConfig.configured) return;
+      try {
+        const result = await this.fmpClient.fetchBatchQuotes(this.getFmpBatchSymbols());
+        for (const quote of result.quotes) {
+          const stored = this.fmpQuoteTicks.get(quote.symbol);
+          const previousLow = stored?.dayLow ?? null;
+          const previousHigh = stored?.dayHigh ?? null;
+          const preserveLow =
+            previousLow !== null && (quote.dayLow === null || previousLow < quote.dayLow);
+          const preserveHigh =
+            previousHigh !== null && (quote.dayHigh === null || previousHigh > quote.dayHigh);
+          const nextQuote: MarketTickQuote = {
+            market: 'US',
+            symbol: quote.symbol,
+            kind: 'stock',
+            currency: 'USD',
+            price: quote.price,
+            previousClose: quote.previousClose,
+            changePct: quote.changePct,
+            dayLow: preserveLow ? previousLow : quote.dayLow,
+            dayHigh: preserveHigh ? previousHigh : quote.dayHigh,
+            volume: quote.volume,
+            turnover: quote.turnover,
+            asOfUtcSec: quote.asOfUtcSec,
+            source: 'FMP_ENTERPRISE_REST',
+            exchange: quote.exchange,
+          };
+          this.fmpQuoteTicks.set(quote.symbol, nextQuote);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emitBroadcast({
+          type: 'status',
+          cluster: 'stocks',
+          state: 'error',
+          message: redactSecrets(`FMP batch quote failed: ${message}`, this.secrets),
+          time: Math.floor(this.nowMsFn() / 1_000),
+        });
+      }
+      if (this.fmpBatchTimer !== null || !this.enableWs) return;
+      this.fmpBatchTimer = setTimeout(() => {
+        this.fmpBatchTimer = null;
+        this.startFmpBatchQuoteLoop();
+      }, FMP_BATCH_QUOTE_INTERVAL_MS);
+      this.fmpBatchTimer.unref();
+    };
+    this.fmpBatchRunning = true;
+    void run();
+  }
+
+  private stopFmpBatchQuoteLoop(): void {
+    if (this.fmpBatchTimer !== null) {
+      clearTimeout(this.fmpBatchTimer);
+      this.fmpBatchTimer = null;
+    }
+    this.fmpBatchRunning = false;
+  }
+
+  public getFmpEnterpriseFeedHealth(): {
+    readonly configured: boolean;
+    readonly lastSuccessAtMs: number | null;
+    readonly requestCount: number;
+    readonly quoteCount: number;
+    readonly subscribedSymbols: readonly string[];
+    readonly telemetry: ReturnType<RollingFeedTelemetry['snapshot']>;
+    readonly lastError: string | null;
+  } {
+    const diagnostics = this.fmpClient.getDiagnostics();
+    return {
+      configured: this.fmpConfig.configured,
+      lastSuccessAtMs: diagnostics.lastSuccessAtMs,
+      requestCount: diagnostics.requests,
+      quoteCount: this.fmpQuoteTicks.size,
+      subscribedSymbols: this.getFmpBatchSymbols(),
+      telemetry: this.fmpTelemetry.snapshot(this.nowMsFn()),
+      lastError: diagnostics.lastError,
+    };
+  }
+
+  public async resyncFmpEnterpriseBatch(): Promise<string> {
+    if (!this.fmpConfig.configured) {
+      throw new Error('FMP_API_KEY is not configured');
+    }
+    this.startFmpBatchQuoteLoop();
+    const result = await this.fmpClient.fetchBatchQuotes(this.getFmpBatchSymbols());
+    if (result.rows === 0) throw new Error('FMP batch quote returned no rows');
+    return 'FMP_ENTERPRISE_REST_RESYNC_COMPLETED';
   }
 
   /** Pieza 40: valida y toma un lease dinámico para un cliente enfocado. */
@@ -4445,13 +4631,19 @@ export class MarketRuntime {
   }
 
   private applyMassiveSymbolLeases(): void {
-    if (this.massiveStocksStream === null) return;
-    const dynamic = [...this.massiveSymbolLeases.keys()];
-    const subscribed = new Set(this.massiveStocksStream.getDynamicSubscribedSymbols());
-    const toSubscribe = dynamic.filter((symbol) => !subscribed.has(symbol));
-    const toUnsubscribe = [...subscribed].filter((symbol) => !this.massiveSymbolLeases.has(symbol));
-    if (toSubscribe.length > 0) this.massiveStocksStream.subscribeSymbols(toSubscribe);
-    if (toUnsubscribe.length > 0) this.massiveStocksStream.unsubscribeSymbols(toUnsubscribe);
+    if (this.massiveStocksStream !== null) {
+      const dynamic = [...this.massiveSymbolLeases.keys()];
+      const subscribed = new Set(this.massiveStocksStream.getDynamicSubscribedSymbols());
+      const toSubscribe = dynamic.filter((symbol) => !subscribed.has(symbol));
+      const toUnsubscribe = [...subscribed].filter((symbol) => !this.massiveSymbolLeases.has(symbol));
+      if (toSubscribe.length > 0) this.massiveStocksStream.subscribeSymbols(toSubscribe);
+      if (toUnsubscribe.length > 0) this.massiveStocksStream.unsubscribeSymbols(toUnsubscribe);
+    }
+    if (this.tradierStocksStream !== null && this.tradierManager === null) {
+      void this.tradierStocksStream
+        .setDynamicSymbols([...this.massiveSymbolLeases.keys()])
+        .catch(() => undefined);
+    }
   }
 
   /** Pieza 40: visibilidad para tests del ciclo de reconexión en background. */
@@ -4460,9 +4652,8 @@ export class MarketRuntime {
   }
 
   /**
-   * Pieza 32: stream Tradier live (`ws.tradier.com`) como respaldo/complemento
-   * instantáneo del socket de stocks de Massive. Solo equities (los índices `I:`
-   * de Massive no tienen símbolo Tradier equivalente y se excluyen explícitamente).
+   * Pieza 41: stream Tradier US/ADR principal. `tradierStream.ts` maneja el
+   * núcleo líquido + leases; el manager inyectado por tests sigue soportado.
    */
   private ensureTradierLiveStream(symbols: readonly string[]): void {
     if (!this.tradierConfig.configured || this.tradierManager !== null) {
@@ -4474,7 +4665,11 @@ export class MarketRuntime {
     if (equities.length === 0) {
       return;
     }
-    const manager = new TradierLiveManager({
+    if (this.tradierStocksStream !== null) {
+      void this.tradierStocksStream.setDynamicSymbols(equities).catch(() => undefined);
+      return;
+    }
+    const stream = new TradierStocksStream({
       config: this.tradierConfig,
       nowMsFn: this.nowMsFn,
       secrets: this.secrets,
@@ -4500,8 +4695,8 @@ export class MarketRuntime {
         });
       },
     });
-    this.tradierManager = manager;
-    void manager.start(equities).catch((err: unknown) => {
+    this.tradierStocksStream = stream;
+    void stream.start().catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       this.emitBroadcast({
         type: 'status',
@@ -4570,6 +4765,16 @@ export class MarketRuntime {
       source: 'TRADIER_WS',
     };
     this.tradierQuoteTicks.set(symbol, quote);
+    // Pieza 41: el tick ADR de GGAL se aplica desde el stream primario. Si
+    // Massive WS también está habilitado por override explícito, no doble
+    // contamos trades: el reducer 1m de Massive sigue vivo para datos de red.
+    if (symbol === 'GGAL' && tick.event === 'trade' && this.massiveStocksStream === null) {
+      this.ggalTickEngine.applyAdrTick({
+        price,
+        size: Number.isFinite(tick.size) && tick.size >= 0 ? tick.size : 0,
+        timeSec: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+      });
+    }
     if (tick.event === 'trade') {
       this.emitBroadcast({
         type: 'trade',
@@ -4593,9 +4798,14 @@ export class MarketRuntime {
   }
 
   public stopWs(): void {
+    this.stopFmpBatchQuoteLoop();
     this.massiveStocksStream?.stop();
     this.massiveStocksStream = null;
     this.massiveSymbolLeases.clear();
+    if (this.tradierStocksStream !== null) {
+      this.tradierStocksStream.stop();
+      this.tradierStocksStream = null;
+    }
     if (this.tradierManager !== null) {
       this.tradierManager.stop();
       this.tradierManager = null;
@@ -4892,30 +5102,73 @@ export class MarketRuntime {
     for (const quote of this.massiveStocksStream?.getQuotes() ?? []) {
       bySymbol.set(quote.symbol, quote);
     }
-    // Pieza 32: complemento Tradier live. Gana el timestamp más nuevo; empate o
-    // timestamp indeterminado mantiene Massive (fuente primaria explícita).
-    for (const tradierQuote of this.tradierQuoteTicks.values()) {
-      const massive = bySymbol.get(tradierQuote.symbol);
-      if (massive === undefined) {
-        bySymbol.set(tradierQuote.symbol, tradierQuote);
+    for (const fmpQuote of this.fmpQuoteTicks.values()) {
+      const existing = bySymbol.get(fmpQuote.symbol);
+      if (existing === undefined) {
+        bySymbol.set(fmpQuote.symbol, fmpQuote);
         continue;
       }
-      if (massive.asOfUtcSec === null && tradierQuote.asOfUtcSec !== null) {
+      bySymbol.set(fmpQuote.symbol, {
+        ...existing,
+        price: fmpQuote.price,
+        previousClose: fmpQuote.previousClose ?? existing.previousClose,
+        changePct: fmpQuote.changePct ?? existing.changePct,
+        dayLow: existing.dayLow !== null && (fmpQuote.dayLow === null || existing.dayLow < fmpQuote.dayLow)
+          ? existing.dayLow
+          : fmpQuote.dayLow,
+        dayHigh: existing.dayHigh !== null && (fmpQuote.dayHigh === null || existing.dayHigh > fmpQuote.dayHigh)
+          ? existing.dayHigh
+          : fmpQuote.dayHigh,
+        volume: fmpQuote.volume ?? existing.volume,
+        turnover: fmpQuote.turnover ?? existing.turnover,
+        asOfUtcSec: fmpQuote.asOfUtcSec ?? existing.asOfUtcSec,
+        source: 'FMP_ENTERPRISE_REST',
+        exchange: fmpQuote.exchange ?? existing.exchange ?? null,
+      });
+    }
+    // Pieza 41: el stream Tradier gobierna el precio con el timestamp más
+    // nuevo, pero jamás borra baseline FMP/Massive válida campo por campo.
+    for (const tradierQuote of this.tradierQuoteTicks.values()) {
+      const existing = bySymbol.get(tradierQuote.symbol);
+      if (existing === undefined) {
         bySymbol.set(tradierQuote.symbol, tradierQuote);
         continue;
       }
       if (
-        massive.asOfUtcSec !== null &&
+        existing.asOfUtcSec !== null &&
         tradierQuote.asOfUtcSec !== null &&
-        tradierQuote.asOfUtcSec > massive.asOfUtcSec
+        tradierQuote.asOfUtcSec < existing.asOfUtcSec
       ) {
-        bySymbol.set(tradierQuote.symbol, tradierQuote);
+        continue;
       }
+      bySymbol.set(tradierQuote.symbol, {
+        ...existing,
+        price: tradierQuote.price,
+        previousClose: tradierQuote.previousClose ?? existing.previousClose,
+        changePct:
+          tradierQuote.previousClose !== null && tradierQuote.previousClose > 0
+            ? ((tradierQuote.price - tradierQuote.previousClose) / tradierQuote.previousClose) * 100
+            : tradierQuote.changePct ?? existing.changePct,
+        dayLow: tradierQuote.dayLow ?? existing.dayLow,
+        dayHigh: tradierQuote.dayHigh ?? existing.dayHigh,
+        volume: tradierQuote.volume ?? existing.volume,
+        turnover: tradierQuote.turnover ?? existing.turnover,
+        asOfUtcSec: tradierQuote.asOfUtcSec ?? existing.asOfUtcSec,
+        source: 'TRADIER_WS',
+      });
     }
     return [...bySymbol.values()];
   }
 
-  public getUsLiveSourceMode(): 'MASSIVE_WS' | 'MASSIVE_BATCH' | 'NO_DATA' {
+  public getUsLiveSourceMode():
+    | 'TRADIER_WS'
+    | 'FMP_ENTERPRISE_REST'
+    | 'MASSIVE_WS'
+    | 'MASSIVE_BATCH'
+    | 'NO_DATA' {
+    const tradierStatus = this.tradierStocksStream?.getStatus() ?? this.tradierManager?.getStatus() ?? null;
+    if (tradierStatus?.connected === true) return 'TRADIER_WS';
+    if (this.fmpQuoteTicks.size > 0) return 'FMP_ENTERPRISE_REST';
     const streamMode = this.massiveStocksStream?.getDiagnostics().sourceMode;
     if (streamMode !== undefined) return streamMode;
     return this.lastUsPanelBase !== null ? 'MASSIVE_BATCH' : 'NO_DATA';
@@ -4928,7 +5181,10 @@ export class MarketRuntime {
 
   /** Pieza 32: estado del stream Tradier live (sin material secreto). */
   public getTradierLiveStatus(): UsTradierProviderStatus {
-    const status = this.tradierManager?.getStatus() ?? null;
+    const status =
+      this.tradierStocksStream?.getStatus() ??
+      this.tradierManager?.getStatus() ??
+      null;
     if (status === null) {
       return {
         configured: this.tradierConfig.configured,
@@ -5008,6 +5264,7 @@ export class MarketRuntime {
     return {
       configured: wsSlot.key.trim() !== '',
       connected: wsSnapshot?.state === 'ready',
+      stocksMode: this.massiveStocksMode,
       keySlot:
         wsSlot.envName === ''
           ? null
@@ -5046,7 +5303,10 @@ export class MarketRuntime {
 
   /** Pieza 33: telemetría Tradier live. */
   public getTradierFeedHealth() {
-    const status = this.tradierManager?.getStatus() ?? null;
+    const status =
+      this.tradierStocksStream?.getStatus() ??
+      this.tradierManager?.getStatus() ??
+      null;
     return {
       configured: this.tradierConfig.configured,
       connected: status?.connected ?? false,
@@ -5055,6 +5315,7 @@ export class MarketRuntime {
       subscribedSymbols: status?.subscribedSymbols ?? [],
       lastError: status?.lastError ?? null,
       telemetry:
+        this.tradierStocksStream?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
         this.tradierManager?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
         emptyFeedTelemetrySnapshot(),
     };
@@ -5062,6 +5323,9 @@ export class MarketRuntime {
 
   /** Pieza 33/40: reinicio no bloqueante del stream de acciones con cierre acotado. */
   public reconnectMassiveStocksWs(): Promise<string> {
+    if (this.massiveStocksMode === 'STANDBY_TRADIER_FMP_PRIMARY') {
+      throw new Error('MASSIVE_WS_STOCKS_STANDBY_TRADIER_FMP_PRIMARY');
+    }
     if (!this.enableWs) {
       throw new Error('Massive WS is disabled by runtime configuration');
     }
@@ -5096,6 +5360,11 @@ export class MarketRuntime {
     if (!this.tradierConfig.configured) {
       throw new Error('Tradier access token not configured');
     }
+    if (this.tradierStocksStream !== null) {
+      this.tradierStocksStream.stop();
+      await this.tradierStocksStream.start();
+      return 'TRADIER_LIVE_WS_RECONNECT_ACCEPTED';
+    }
     if (this.tradierManager !== null) {
       await this.tradierManager.reconnect();
       return 'TRADIER_LIVE_WS_RECONNECT_ACCEPTED';
@@ -5128,9 +5397,7 @@ export class MarketRuntime {
   }
 
   private overlayLiveUsPanel(base: EquityPanelAnalyticsDto): EquityPanelAnalyticsDto {
-    const liveBySymbol = new Map(
-      (this.massiveStocksStream?.getQuotes() ?? []).map((quote) => [quote.symbol, quote]),
-    );
+    const liveBySymbol = new Map(this.getLiveUsQuotes().map((quote) => [quote.symbol, quote]));
     if (liveBySymbol.size === 0) return base;
     let asOfUtcSec = base.asOfUtcSec;
     const rows = base.rows.map((row) => {
@@ -5169,9 +5436,7 @@ export class MarketRuntime {
   }
 
   private overlayLiveSnapshot(base: TerminalSnapshotResponse): TerminalSnapshotResponse {
-    const liveBySymbol = new Map(
-      (this.massiveStocksStream?.getQuotes() ?? []).map((quote) => [quote.symbol, quote]),
-    );
+    const liveBySymbol = new Map(this.getLiveUsQuotes().map((quote) => [quote.symbol, quote]));
     if (liveBySymbol.size === 0) return base;
     const unifiedQuotes = base.marketContext.unifiedQuotes.map((quote) => {
       const live = liveBySymbol.get(quote.ticker.toUpperCase());
@@ -7404,14 +7669,20 @@ export class MarketRuntime {
     visibleBars: number,
     rthOnly: boolean,
   ): Promise<TerminalBarsResponse> {
-    const apiKey = this.assertRestApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const barSeconds = TIMEFRAME_SECONDS[timeframe];
+    const canUseFmp = this.fmpHistoricalProviderEnabled;
+    const canUseTradierHistorical = this.tradierHistoricalProviderEnabled && this.tradierHistoricalClient !== null;
+    const providerChain: readonly ('FMP_ENTERPRISE_REST' | 'TRADIER_REST' | 'MASSIVE_REST')[] =
+      canUseFmp
+        ? (canUseTradierHistorical ? ['FMP_ENTERPRISE_REST', 'TRADIER_REST'] : ['FMP_ENTERPRISE_REST'])
+        : canUseTradierHistorical
+          ? ['TRADIER_REST']
+          : ['MASSIVE_REST'];
 
-    // Pieza 39: GGAL ADR intradía usa historial profundo (14 meses o 15.000
-    // barras, sort=asc&limit=5000 siguiendo next_url) para cubrir el gap
-    // electoral en el AVWAP Anclado. Caché LRU + snapshot en disco: las
-    // consultas posteriores responden desde la caché (<15 ms).
+    // Pieza 39: GGAL ADR intradía usa historial profundo (14 meses) para cubrir
+    // el gap electoral en el AVWAP Anclado. Caché LRU + snapshot en disco por
+    // proveedor: las consultas posteriores responden desde la caché (<15 ms).
     const useDeepHistory =
       parsed.canonicalSymbol === 'GGAL' &&
       isGgalDeepHistoryTimeframe(timeframe) &&
@@ -7420,54 +7691,136 @@ export class MarketRuntime {
     let bars: readonly Bar[];
     let barsStatusOk = true;
     let visibleStart = 0;
+    let barsProvider: TerminalBarsResponse['barsProvider'] = providerChain[0] ?? 'MASSIVE_REST';    const providerFallbackUsed: string[] = [];
     if (useDeepHistory) {
-      bars = await this.ggalDeepHistory.ensure(timeframe as GgalDeepHistoryTimeframe, {
-        forceRefresh: false,
-        loadFn: async () => {
-          const res = await this.loadBarsFn({
-            provider: 'massive',
-            symbol: parsed.canonicalSymbol,
-            timeframe,
-            visibleBars: GGAL_DEEP_HISTORY_MAX_BARS,
-            warmupBars: 0,
-            rthOnly,
-            maxPages: 8,
-            now: nowSec,
-            apiKey,
-            fetchFn: this.fetchFn,
-            ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
-            window: { from: deepHistoryFromUtcSec(nowSec), to: nowSec },
-            sort: 'asc',
-            pageLimit: 5_000,
-          });
-          if (res.report.providerError !== null) {
-            throw new Error(res.report.providerError.message);
+      const fromSec = deepHistoryFromUtcSec(nowSec);
+      const fmpLoad = async (): Promise<readonly Bar[]> => {
+        const result = await this.fmpClient.fetchHistorical({
+          symbol: parsed.canonicalSymbol,
+          timeframe,
+          fromUtcSec: fromSec,
+          toUtcSec: nowSec,
+        });
+        if (result.rows === 0) throw new Error('FMP deep history returned no bars');
+        const first = result.bars[0];
+        if (first === undefined || first.time >= ELECTORAL_GAP_START_UTC_SEC) {
+          throw new Error('FMP deep history does not cover the pre-electoral edge');
+        }
+        return result.bars;
+      };
+      const tradierDeepLoad = async (): Promise<readonly Bar[]> => {
+        if (this.tradierHistoricalClient === null) throw new Error('Tradier historical is unavailable');
+        return (await this.tradierHistoricalClient.fetchHistoricalBars({
+          symbol: parsed.canonicalSymbol,
+          timeframe,
+          fromUtcSec: fromSec,
+          toUtcSec: nowSec,
+        })).bars;
+      };
+      const massiveDeepLoad = async (): Promise<readonly Bar[]> => {
+        const apiKey = this.assertRestApiKey();
+        const res = await this.loadBarsFn({
+          provider: 'massive',
+          symbol: parsed.canonicalSymbol,
+          timeframe,
+          visibleBars: GGAL_DEEP_HISTORY_MAX_BARS,
+          warmupBars: 0,
+          rthOnly,
+          maxPages: 8,
+          now: nowSec,
+          apiKey,
+          fetchFn: this.fetchFn,
+          ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+          window: { from: fromSec, to: nowSec },
+          sort: 'asc',
+          pageLimit: 5_000,
+        });
+        if (res.report.providerError !== null) {
+          throw new Error(res.report.providerError.message);
+        }
+        return res.bars;
+      };
+      const store =
+        providerChain[0] === 'FMP_ENTERPRISE_REST'
+          ? this.ggalFmpDeepHistory
+          : this.ggalDeepHistory;
+      let lastError: Error | null = null;
+      let loadedBars: readonly Bar[] = [];
+      for (let index = 0; index < providerChain.length; index += 1) {
+        const provider = providerChain[index];
+        if (provider === undefined) continue;
+        try {
+          loadedBars = await (provider === 'FMP_ENTERPRISE_REST'
+            ? store.ensure(timeframe as GgalDeepHistoryTimeframe, { forceRefresh: false, loadFn: fmpLoad })
+            : (provider === 'TRADIER_REST'
+                ? tradierDeepLoad()
+                : massiveDeepLoad()));
+          if (loadedBars.length > 0) {
+            barsProvider = provider;
+            break;
           }
-          return res.bars;
-        },
-      });
-      if (bars.length === 0) {
+        } catch (err: unknown) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (provider !== providerChain[providerChain.length - 1]) providerFallbackUsed.push(provider);
+        }
+      }
+      if (loadedBars.length === 0) {
         throw new RuntimeNoDataError(
           'NO_BARS_DATA',
-          `No deep history available from Massive for ${parsed.canonicalSymbol} (${timeframe})`,
+          `No deep history available for ${parsed.canonicalSymbol} (${timeframe})${lastError === null ? '' : `: ${lastError.message}`}`,
           this.secrets,
           503,
         );
       }
-      this.ggalTickEngine.seedHistory(
-        'ADR',
+      bars = loadedBars;
+    } else if (providerChain[0] === 'FMP_ENTERPRISE_REST') {
+      const fromSec = nowSec - visibleBars * barSeconds - 14 * 86_400;
+      const fmpResult = await this.fmpClient.fetchHistorical({
+        symbol: parsed.canonicalSymbol,
         timeframe,
-        bars.map((bar) => ({
-          timeSec: bar.time,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-          ...(Number.isFinite(bar.vw) ? { vw: bar.vw as number } : {}),
-        })),
-      );
+        fromUtcSec: fromSec,
+        toUtcSec: nowSec,
+      });
+      if (fmpResult.bars.length === 0) {
+        if (canUseTradierHistorical) {
+          providerFallbackUsed.push('FMP_ENTERPRISE_REST');
+          barsProvider = 'TRADIER_REST';
+          const tradierResult = await this.tradierHistoricalClient.fetchHistoricalBars({
+            symbol: parsed.canonicalSymbol,
+            timeframe,
+            fromUtcSec: fromSec,
+            toUtcSec: nowSec,
+          });
+          if (tradierResult.bars.length === 0) {
+            throw new RuntimeNoDataError('NO_BARS_DATA', `No bars available for ${parsed.canonicalSymbol} (${timeframe})`, this.secrets, 503);
+          }
+          bars = tradierResult.bars;
+        } else {
+          throw new RuntimeNoDataError('NO_BARS_DATA', `No bars available from FMP for ${parsed.canonicalSymbol} (${timeframe})`, this.secrets, 503);
+        }
+      } else {
+        bars = fmpResult.bars;
+      }
+      const startIdx = Math.max(0, bars.length - visibleBars);
+      visibleStart = startIdx;
+    } else if (providerChain[0] === 'TRADIER_REST') {
+      if (this.tradierHistoricalClient === null) {
+        throw new RuntimeNoDataError('NO_BARS_DATA', 'Tradier historical client is unavailable', this.secrets, 503);
+      }
+      const fromSec = nowSec - visibleBars * barSeconds - 14 * 86_400;
+      const tradierResult = await this.tradierHistoricalClient.fetchHistoricalBars({
+        symbol: parsed.canonicalSymbol,
+        timeframe,
+        fromUtcSec: fromSec,
+        toUtcSec: nowSec,
+      });
+      if (tradierResult.bars.length === 0) {
+        throw new RuntimeNoDataError('NO_BARS_DATA', `No bars available from Tradier for ${parsed.canonicalSymbol} (${timeframe})`, this.secrets, 503);
+      }
+      bars = tradierResult.bars;
+      visibleStart = Math.max(0, bars.length - visibleBars);
     } else {
+      const apiKey = this.assertRestApiKey();
       const res = await this.loadBarsFn({
         provider: 'massive',
         symbol: parsed.canonicalSymbol,
@@ -7490,6 +7843,21 @@ export class MarketRuntime {
       bars = res.bars;
       barsStatusOk = res.report.providerError === null;
       visibleStart = res.visibleStart;
+    }
+    if (useDeepHistory) {
+      this.ggalTickEngine.seedHistory(
+        'ADR',
+        timeframe,
+        bars.map((bar) => ({
+          timeSec: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+          ...(Number.isFinite(bar.vw) ? { vw: bar.vw as number } : {}),
+        })),
+      );
     }
 
     const closes = bars.map((b) => b.close);
@@ -7621,6 +7989,8 @@ export class MarketRuntime {
       zones,
       keyLevels,
       markers,
+      barsProvider,
+      barsProviderFallbackUsed: [...providerFallbackUsed],
     };
 
     assertJsonSafeSerialized(payload);

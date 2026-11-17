@@ -5,10 +5,17 @@ import type { IolCaucionQuote, IolFeedAdapter } from './iolFeedAdapter.js';
 import type { MarketTickQuote } from './massiveStocksStream.js';
 import type { PrimaryDlrContractDto, PrimaryRofexClient } from './primaryRofexLoader.js';
 
-export type ArRealtimeSourceMode = 'LIVE_BMB' | 'LIVE_IOL' | 'NO_DATA';
+export function realtimeQuoteKey(symbol: string, settlement?: string | null): string {
+  const cleanSettlement = typeof settlement === 'string' ? settlement.trim().toUpperCase() : '';
+  return cleanSettlement === '' || cleanSettlement === '24HS' || cleanSettlement === 'T1'
+    ? `${symbol.trim().toUpperCase()}|24`
+    : `${symbol.trim().toUpperCase()}|${cleanSettlement}`;
+}
+
+export type ArRealtimeSourceMode = 'LIVE_PRIMARY' | 'LIVE_BMB' | 'LIVE_IOL' | 'NO_DATA';
 
 export interface ArRealtimeBusCaucion extends IolCaucionQuote {
-  readonly source: 'IOL_REST';
+  readonly source: 'IOL_REST' | 'PRIMARY_ECO_WS';
 }
 
 export interface ArRealtimeBusDeps {
@@ -25,6 +32,7 @@ export class ArRealtimeBus {
   private readonly nowMsFn: () => number;
   private readonly injectedQuotes = new Map<string, MarketTickQuote>();
   private readonly injectedFutures = new Map<string, PrimaryDlrContractDto>();
+  private readonly injectedCauciones = new Map<string, ArRealtimeBusCaucion>();
 
   public constructor(deps: ArRealtimeBusDeps) {
     this.bmbClient = deps.bmbClient;
@@ -49,7 +57,17 @@ export class ArRealtimeBus {
       if (quote.market !== 'AR' || typeof quote.symbol !== 'string' || quote.symbol.trim() === '') continue;
       if (!Number.isFinite(quote.price) || quote.price <= 0) continue;
       const symbol = quote.symbol.trim().toUpperCase();
-      this.injectedQuotes.set(symbol, { ...quote, symbol });
+      this.injectedQuotes.set(realtimeQuoteKey(symbol, quote.settlement), { ...quote, symbol });
+    }
+  }
+
+  /** Pieza 41: cauciones primarias por plazo; nunca inventa turnover/tasa. */
+  public ingestCauciones(rows: readonly ArRealtimeBusCaucion[]): void {
+    for (const row of rows) {
+      if (!Number.isFinite(row.termDays) || row.termDays <= 0) continue;
+      if (row.tnaWeighted === null || !Number.isFinite(row.tnaWeighted)) continue;
+      const key = `${row.currency}:${String(row.termDays)}`;
+      this.injectedCauciones.set(key, { ...row, source: 'PRIMARY_ECO_WS' });
     }
   }
 
@@ -64,9 +82,12 @@ export class ArRealtimeBus {
 
   public getQuotes(): readonly MarketTickQuote[] {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
-    const bySymbol = new Map<string, MarketTickQuote>();
+    const byKey = new Map<string, MarketTickQuote>();
+    const setQuote = (quote: MarketTickQuote): void => {
+      byKey.set(realtimeQuoteKey(quote.symbol, quote.settlement), quote);
+    };
     for (const quote of this.iolClient.getQuotes()) {
-      bySymbol.set(quote.symbol, quote);
+      setQuote(quote);
     }
     const snapshot = this.bmbClient?.getCachedSnapshot() ?? null;
     if (snapshot !== null && snapshot.health.connected) {
@@ -89,8 +110,8 @@ export class ArRealtimeBus {
           }
         }
         if (latest === null) continue;
-        const base = bySymbol.get(symbol);
-        bySymbol.set(symbol, {
+        const base = byKey.get(realtimeQuoteKey(symbol, null));
+        setQuote({
           market: 'AR',
           symbol,
           kind: base?.kind ?? 'stock',
@@ -111,13 +132,31 @@ export class ArRealtimeBus {
       }
     }
     for (const quote of this.injectedQuotes.values()) {
-      bySymbol.set(quote.symbol, quote);
+      const existing = byKey.get(realtimeQuoteKey(quote.symbol, quote.settlement));
+      // Una observación primaria no pisa una trade BMB más nueva.
+      if (
+        existing?.source === 'BMB_HOMEBROKER' &&
+        existing.asOfUtcSec !== null &&
+        quote.asOfUtcSec !== null &&
+        quote.asOfUtcSec < existing.asOfUtcSec
+      ) {
+        continue;
+      }
+      setQuote(quote);
     }
-    return [...bySymbol.values()].map((quote) => ({ ...quote }));
+    return [...byKey.values()].map((quote) => ({ ...quote }));
   }
 
   public getCauciones(): readonly ArRealtimeBusCaucion[] {
-    return this.iolClient.getCauciones().map((row) => ({ ...row, source: 'IOL_REST' }));
+    const byKey = new Map<string, ArRealtimeBusCaucion>();
+    for (const row of this.injectedCauciones.values()) {
+      byKey.set(`${row.currency}:${String(row.termDays)}`, row);
+    }
+    for (const row of this.iolClient.getCauciones()) {
+      const key = `${row.currency}:${String(row.termDays)}`;
+      if (!byKey.has(key)) byKey.set(key, { ...row, source: 'IOL_REST' });
+    }
+    return [...byKey.values()].map((row) => ({ ...row }));
   }
 
   /** DLR/* futures derived from the last Primary WS `Md` ticks (empty until first tick). */
@@ -140,6 +179,8 @@ export class ArRealtimeBus {
 
   public getSourceMode(): ArRealtimeSourceMode {
     const quotes = this.getQuotes();
+    if (quotes.some((quote) => quote.source === 'PRIMARY_ECO_WS')) return 'LIVE_PRIMARY';
+    if (this.injectedCauciones.size > 0) return 'LIVE_PRIMARY';
     if (quotes.some((quote) => quote.source === 'BMB_HOMEBROKER')) return 'LIVE_BMB';
     if (quotes.some((quote) => quote.source === 'IOL_REST')) return 'LIVE_IOL';
     return 'NO_DATA';

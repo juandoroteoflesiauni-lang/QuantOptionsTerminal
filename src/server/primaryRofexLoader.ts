@@ -381,6 +381,21 @@ interface ParsedPrimaryMarketData {
   readonly nominalVolume: number | null;
   readonly impliedVol: number | null;
   readonly updatedAtUtcSec: number | null;
+  /** Pieza 41: timestamp del trade LA, distinto del freshness del libro. */
+  readonly lastTradeAtUtcSec?: number | null;
+  /** Pieza 41: monto negociado real si el proveedor entrega `TV`. */
+  readonly turnover?: number | null;
+  /** Pieza 41: timestamp del frame; se usa para stale, no como fecha del trade. */
+  readonly frameAtUtcSec?: number | null;
+}
+
+export interface PrimaryMervMarketDataFrame {
+  readonly symbol: string;
+  readonly marketId: string;
+  readonly ticker: string | null;
+  readonly settlement: string | null;
+  readonly snapshot: ParsedPrimaryMarketData;
+  readonly receivedAtUtcSec: number;
 }
 
 interface InstrumentDetailMetadata {
@@ -640,6 +655,20 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'BMB_COMITENTE',
     'BMB_SESSION_COOKIE',
     'BMB_HUB_TOKEN',
+    // Pieza 41: proveedores US y aliases canónicos/compatibles.
+    'FMP_API_KEY',
+    'MASSIVE_API_KEY',
+    'MASSIVE_WS_STOCKS_KEY',
+    'MASSIVE_REST_KEY',
+    'MASSIVE_REST_KEYS',
+    'TRADIER_ACCESS_TOKEN',
+    'TRADIER_TOKEN',
+    'TRADIER_API_TOKEN',
+    'ORATS_API_TOKEN',
+    'ORATS_API_KEY',
+    'IOL_USERNAME',
+    'IOL_PASSWORD',
+    'IOL_REFRESH_TOKEN',
   ] as const;
   const out = new Set<string>();
   for (const key of names) {
@@ -1011,11 +1040,11 @@ export function parseMervInstrumentSymbol(rawSymbol: string): {
   readonly settlement: string;
   readonly rawSymbol: string;
 } | null {
-  const m = /^MERV\s*-\s*XMEV\s*-\s*([A-Z0-9.]+)\s*-\s*(24HS|CI|48HS|SPOT|T1)$/i.exec(rawSymbol.trim());
+  const m = /^MERV\s*-\s*XMEV\s*-\s*(.+?)\s*-\s*(24HS|CI|48HS|SPOT|T1)$/i.exec(rawSymbol.trim());
   if (m === null) {
     return null;
   }
-  const ticker = m[1]?.toUpperCase() ?? '';
+  const ticker = (m[1] ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
   const settlementRaw = m[2] ?? '';
   if (ticker === '' || settlementRaw === '') {
     return null;
@@ -1081,6 +1110,23 @@ export const BYMA_L2_UNIVERSE_TICKERS: readonly string[] = [
 /** Raíces de opciones activas de Galicia (GGAL): calls `GFGC*` y puts `GFGV*`. */
 export const BYMA_L2_OPTION_PREFIXES: readonly string[] = ['GFGC', 'GFGV'];
 
+/**
+ * Pieza 41: renta fija explícita. `AL30D/GD30D/...` son instrumentos separados,
+ * no aliases; el CER activo se complementa por el caller con el catálogo.
+ */
+export const BYMA_L2_FIXED_INCOME_TICKERS: readonly string[] = Object.freeze([
+  'AL29', 'AL29D', 'AL30', 'AL30D',
+  'GD29', 'GD29D', 'GD30', 'GD30D',
+  'AL35', 'AL35D', 'GD35', 'GD35D',
+  'AE38', 'AE38D', 'GD38', 'GD38D',
+  'AL41', 'AL41D', 'GD41', 'GD41D',
+  'BPY26', 'BPOA7', 'BPOB7', 'BPOC7', 'BPOD7',
+  'BA37D', 'TO26',
+]);
+
+/** Pieza 41: cauciones en pesos identificadas en el catálogo MERV. */
+export const BYMA_L2_CAUCION_TICKER_RE = /^PESOS\s*-\s*(\d+)D$/i;
+
 export const BYMA_L2_GGAL_TICKER = 'GGAL';
 
 /**
@@ -1099,10 +1145,14 @@ export function selectBymaL2Products(
   options: {
     readonly universeTickers?: readonly string[];
     readonly optionPrefixes?: readonly string[];
+    readonly fixedIncomeTickers?: readonly string[];
   } = {},
 ): readonly DlrInstrumentRef[] {
   const universe = new Set(
     (options.universeTickers ?? BYMA_L2_UNIVERSE_TICKERS).map((ticker) => ticker.trim().toUpperCase()),
+  );
+  const fixedIncome = new Set(
+    (options.fixedIncomeTickers ?? BYMA_L2_FIXED_INCOME_TICKERS).map((ticker) => ticker.trim().toUpperCase()),
   );
   const prefixes = (options.optionPrefixes ?? BYMA_L2_OPTION_PREFIXES).map((prefix) => prefix.trim().toUpperCase());
 
@@ -1130,10 +1180,13 @@ export function selectBymaL2Products(
   const out: DlrInstrumentRef[] = [];
   const isOptionTicker = (ticker: string): boolean =>
     prefixes.some((prefix) => prefix !== '' && ticker.startsWith(prefix));
+  const isCaucionTicker = (ticker: string): boolean => BYMA_L2_CAUCION_TICKER_RE.test(ticker);
   for (const [ticker, settlements] of settlementsByTicker) {
     const inUniverse = universe.has(ticker);
+    const isFixedIncome = fixedIncome.has(ticker);
     const isOption = isOptionTicker(ticker);
-    if (!inUniverse && !isOption) {
+    const isCaucion = isCaucionTicker(ticker);
+    if (!inUniverse && !isOption && !isFixedIncome && !isCaucion) {
       continue;
     }
     let has24hs = false;
@@ -1143,11 +1196,27 @@ export function selectBymaL2Products(
         break;
       }
     }
+    // Una identidad canónica (ticker, 24hs) puede llegar como `24HS` y `T1`;
+    // elegimos exactamente un raw para no publicar dos observaciones distintas.
+    const selected24Raw = [...settlements.entries()]
+      .filter(([, settlement]) => settlement === '24hs')
+      .sort((a, b) => {
+        const aPreferred = a[0].toUpperCase().includes('24HS') ? 0 : 1;
+        const bPreferred = b[0].toUpperCase().includes('24HS') ? 0 : 1;
+        return aPreferred - bPreferred || a[0].localeCompare(b[0]);
+      })
+      .at(0)?.[0];
     for (const [rawSymbol, settlement] of settlements) {
       const isCi = settlement.toUpperCase() === 'CI';
-      const include = isOption
-        ? settlement === '24hs' || (isCi && !has24hs)
-        : settlement === '24hs' || (isCi && (ticker === BYMA_L2_GGAL_TICKER || !has24hs));
+      if (settlement === '24hs' && selected24Raw !== undefined && rawSymbol !== selected24Raw) {
+        continue;
+      }
+      const include =
+        isOption
+          ? settlement === '24hs' || (isCi && !has24hs)
+          : isCaucion
+            ? settlement === '24hs' || isCi
+            : settlement === '24hs' || (isCi && (isFixedIncome || ticker === BYMA_L2_GGAL_TICKER || !has24hs));
       if (!include) {
         continue;
       }
@@ -1341,6 +1410,66 @@ function parsePrimaryMarketDataNode(
     nominalVolume,
     impliedVol: iv.price,
     updatedAtUtcSec,
+    lastTradeAtUtcSec: la.utcSec,
+    turnover: tv,
+  };
+}
+
+/**
+ * Pieza 41: frames `Md` son incrementales. `present` es el conjunto de entries
+ * reales del frame; una entry ausente conserva el valor anterior, mientras una
+ * entry presente inválida queda null (nunca se inventa un respaldo).
+ */
+export function mergePrimaryMarketData(
+  previous: ParsedPrimaryMarketData | null,
+  next: ParsedPrimaryMarketData,
+  present: ReadonlySet<string>,
+): ParsedPrimaryMarketData {
+  if (previous === null) return next;
+  const ENTRY_BY_FIELD: Readonly<Partial<Record<keyof ParsedPrimaryMarketData, readonly string[]>>> = {
+    last: ['LA'],
+    settlement: ['SE'],
+    close: ['CL'],
+    open: ['OP'],
+    high: ['HI'],
+    low: ['LO'],
+    openInterest: ['OI'],
+    nominalVolume: ['TV', 'NV'],
+    impliedVol: ['IV'],
+    lastTradeAtUtcSec: ['LA'],
+    turnover: ['TV'],
+  };
+  const keep = (field: keyof ParsedPrimaryMarketData): boolean => {
+    const entries = ENTRY_BY_FIELD[field];
+    return entries === undefined ? false : !entries.some((entry) => present.has(entry));
+  };
+  return {
+    symbol: next.symbol,
+    marketId: next.marketId,
+    bids: next.bids.length > 0 ? next.bids : previous.bids,
+    asks: next.asks.length > 0 ? next.asks : previous.asks,
+    last: keep('last') ? previous.last : next.last,
+    settlement: keep('settlement') ? previous.settlement : next.settlement,
+    close: keep('close') ? previous.close : next.close,
+    open: keep('open') ? previous.open : next.open,
+    high: keep('high') ? previous.high : next.high,
+    low: keep('low') ? previous.low : next.low,
+    openInterest: keep('openInterest') ? previous.openInterest : next.openInterest,
+    nominalVolume: keep('nominalVolume') ? previous.nominalVolume : next.nominalVolume,
+    impliedVol: keep('impliedVol') ? previous.impliedVol : next.impliedVol,
+    updatedAtUtcSec: (() => {
+      const nextUpdated = next.updatedAtUtcSec ?? null;
+      const previousUpdated = previous.updatedAtUtcSec ?? null;
+      const nextFrame = next.frameAtUtcSec ?? null;
+      if (nextUpdated !== null) {
+        return previousUpdated === null ? nextUpdated : Math.max(nextUpdated, previousUpdated);
+      }
+      if (nextFrame !== null && previousUpdated !== null && nextFrame > previousUpdated) return nextFrame;
+      return previousUpdated;
+    })(),
+    lastTradeAtUtcSec: keep('lastTradeAtUtcSec') ? previous.lastTradeAtUtcSec ?? null : next.lastTradeAtUtcSec ?? null,
+    turnover: keep('turnover') ? previous.turnover ?? null : next.turnover ?? null,
+    frameAtUtcSec: next.frameAtUtcSec ?? previous.frameAtUtcSec ?? null,
   };
 }
 
@@ -1413,6 +1542,10 @@ export class PrimaryRofexClient {
     | ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void)
     | null = null;
   private ggalArsTickCache: GgalArsTickCache | null = null;
+  /** Pieza 41: frames MERV normalizados para quotes/cauciones generales. */
+  private mervMarketDataListener:
+    | ((frame: PrimaryMervMarketDataFrame) => void)
+    | null = null;
 
   private readonly instrumentListCache: SingleFlightRuntimeCache<readonly { readonly marketId: string; readonly symbol: string }[]>;
   private readonly detailCache: SingleFlightRuntimeCache<InstrumentDetailMetadata | null>;
@@ -1968,33 +2101,73 @@ export class PrimaryRofexClient {
                     ? Buffer.from(raw).toString('utf8')
                     : String(raw);
             const parsed: unknown = JSON.parse(text);
-            if (!isPlainRecord(parsed) || !isPlainRecord(parsed['marketData'])) {
+            if (
+              !isPlainRecord(parsed) ||
+              parsed['type'] !== 'Md' ||
+              !isPlainRecord(parsed['marketData'])
+            ) {
               return;
             }
+            const md = parsed['marketData'] as Readonly<Record<string, unknown>>;
             const inst = isPlainRecord(parsed['instrumentId']) ? parsed['instrumentId'] : null;
             const sym = inst ? readStr(inst, ['symbol']) : readStr(parsed, ['symbol']);
             const mkt = (inst ? readStr(inst, ['marketId']) : readStr(parsed, ['marketId'])) ?? 'ROFX';
             if (sym !== null) {
-              const snap = parsePrimaryMarketDataNode(sym, mkt, parsed['marketData']);
-              this.wsSnapshots.set(`${mkt}:${sym}`, snap);
+              const frameTimeSec = toUtcSecFromMixed(
+                typeof parsed['timestamp'] === 'number' && Number.isFinite(parsed['timestamp'])
+                  ? parsed['timestamp']
+                  : null,
+              );
+              const receivedSec = Math.floor(receivedAtMs / 1_000);
+              const present = new Set<string>();
+              for (const entry of ['BI', 'OF', 'LA', 'SE', 'CL', 'OP', 'HI', 'LO', 'OI', 'IV', 'TV', 'NV']) {
+                if (md[entry] !== undefined) present.add(entry);
+              }
+              const parsedSnapshot = parsePrimaryMarketDataNode(sym, mkt, md);
+              const nextSnapshot: ParsedPrimaryMarketData = {
+                ...parsedSnapshot,
+                ...(frameTimeSec === null ? {} : { frameAtUtcSec: frameTimeSec }),
+              };
+              const key = `${mkt}:${sym}`;
+              const previous = this.wsSnapshots.get(key) ?? null;
+              const previousFrameSec = previous?.frameAtUtcSec ?? null;
+              if (
+                frameTimeSec !== null &&
+                previousFrameSec !== null &&
+                frameTimeSec < previousFrameSec
+              ) {
+                return;
+              }
+              const snapshot = mergePrimaryMarketData(previous, nextSnapshot, present);
+              this.wsSnapshots.set(key, snapshot);
               if (sym.startsWith('DLR/')) {
                 this.wsTelemetry.record({
                   atMs: receivedAtMs,
                   latencyMs:
-                    snap.updatedAtUtcSec !== null && snap.updatedAtUtcSec > 0
-                      ? receivedAtMs - snap.updatedAtUtcSec * 1_000
+                    snapshot.updatedAtUtcSec !== null && snapshot.updatedAtUtcSec > 0
+                      ? receivedAtMs - snapshot.updatedAtUtcSec * 1_000
                       : null,
                   isValidTick: true,
                 });
                 this.recomputeLiveDlrDerived();
               }
               const mervParsed = parseMervInstrumentSymbol(sym);
+              if (mervParsed !== null && this.mervMarketDataListener !== null) {
+                this.mervMarketDataListener({
+                  symbol: sym,
+                  marketId: mkt,
+                  ticker: mervParsed.ticker,
+                  settlement: mervParsed.settlement,
+                  snapshot,
+                  receivedAtUtcSec: receivedSec,
+                });
+              }
               if (
                 mervParsed !== null &&
                 mervParsed.ticker === BYMA_L2_GGAL_TICKER &&
                 mervParsed.settlement === '24hs'
               ) {
-                this.maybeEmitGgalArsTick(parsed['marketData'], parsed['timestamp']);
+                this.maybeEmitGgalArsTick(md, parsed['timestamp']);
               }
             }
           } catch {
@@ -2086,6 +2259,13 @@ export class PrimaryRofexClient {
     listener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null,
   ): void {
     this.ggalArsTickListener = listener;
+  }
+
+  /** Pieza 41: frames MERV incrementales para bus general (sin I/O). */
+  public setMervMarketDataListener(
+    listener: ((frame: PrimaryMervMarketDataFrame) => void) | null,
+  ): void {
+    this.mervMarketDataListener = listener;
   }
 
   private maybeEmitGgalArsTick(md: Readonly<Record<string, unknown>>, timestampRaw: unknown): void {
@@ -2283,12 +2463,18 @@ export class PrimaryRofexClient {
    * y los suscribe en un único mensaje `smd` level 2 con puntas BI/OF hasta 5
    * niveles por lado. Idempotente (single-flight + cobertura por símbolo).
    */
-  public async startBymaL2LiveStream(): Promise<void> {
+  public async startBymaL2LiveStream(
+    options: { readonly fixedIncomeTickers?: readonly string[] } = {},
+  ): Promise<void> {
     if (!this.config.configured) return;
     if (this.bymaStreamInFlight !== null) return this.bymaStreamInFlight;
     const run = async (): Promise<void> => {
       const catalog = await this.getAllInstruments(false);
-      const mervProducts = selectBymaL2Products(catalog);
+      const mervProducts = selectBymaL2Products(catalog, {
+        ...(options.fixedIncomeTickers === undefined
+          ? {}
+          : { fixedIncomeTickers: [...BYMA_L2_FIXED_INCOME_TICKERS, ...options.fixedIncomeTickers] }),
+      });
       const todayUtc = new Date(this.nowMsFn()).toISOString().slice(0, 10).replace(/-/g, '');
       const dlrProducts = filterDlrOutrightProducts(
         catalog,

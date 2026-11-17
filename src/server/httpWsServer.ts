@@ -311,6 +311,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     getMassiveWs: () => runtime.getMassiveWsFeedHealth(),
     getMassiveRest: () => runtime.getMassiveRestFeedHealth(),
     getTradier: () => runtime.getTradierFeedHealth(),
+    getFmp: () => runtime.getFmpEnterpriseFeedHealth(),
     getOrats: () => ggalRuntime.getOratsFeedHealth(),
     getPrimary: () => arRuntime.getPrimaryFeedHealth(),
     getBmb: () => arRuntime.getBmbFeedHealth(),
@@ -318,6 +319,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     reconnectMassiveWs: () => runtime.reconnectMassiveStocksWs(),
     resyncMassiveRest: () => runtime.resyncMassiveRestPool(),
     reconnectTradier: () => runtime.reconnectTradierLive(),
+    resyncFmp: () => runtime.resyncFmpEnterpriseBatch(),
     resyncOrats: () => ggalRuntime.resyncOrats(),
     reconnectPrimary: () => arRuntime.reconnectPrimaryDlr(),
     reconnectBmb: () => arRuntime.reconnectBmb(),
@@ -368,7 +370,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         turnoverArs: row.volumeArs,
         spreadVsBadlarBps: row.spreadVsBadlarBps,
         asOfUtcSec: row.asOfUtcSec,
-        source: row.source === 'BMB_HOMEBROKER' ? 'BMB_HOMEBROKER' : row.source === 'IOL_REST' ? 'IOL_REST' : 'BCRA_LECAP_REF',
+        source:
+          row.source === 'PRIMARY_ECO_WS'
+            ? 'PRIMARY_ECO_WS'
+            : row.source === 'BMB_HOMEBROKER'
+              ? 'BMB_HOMEBROKER'
+              : row.source === 'IOL_REST'
+                ? 'IOL_REST'
+                : 'BCRA_LECAP_REF',
         referenceInstrument: row.referenceInstrument,
       })),
       futures: ar.futures.map((contract) => ({
@@ -1251,11 +1260,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       return;
     }
 
-    if (
-      event.type !== 'bar_update' &&
-      event.type !== 'trade' &&
-      event.type !== 'quote'
-    ) {
+    const broadcastTypes = new Set<RuntimeWsBroadcast['type']>(['bar_update', 'trade', 'quote', 'ggal_bar_tick']);
+    if (!broadcastTypes.has(event.type)) {
       return;
     }
     const key = coalesceEventKey(event);

@@ -176,7 +176,7 @@ import { emptyFeedTelemetrySnapshot } from './feedsHealthMonitor.js';
 import { BmbFeedAdapter, isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
 import { IolFeedAdapter } from './iolFeedAdapter.js';
 import { resolveArIntradayFallback } from './wsCoalescerAndStability.js';
-import { ArRealtimeBus } from './arRealtimeBus.js';
+import { ArRealtimeBus, realtimeQuoteKey } from './arRealtimeBus.js';
 import type { MarketTickQuote } from './massiveStocksStream.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
@@ -437,7 +437,7 @@ export interface ArCaucionCurveRowDto {
   readonly spreadVsBadlarBps: number | null;
   readonly referenceInstrument: string;
   readonly originLabel: string;
-  readonly source: 'BMB_HOMEBROKER' | 'IOL_REST' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
+  readonly source: 'PRIMARY_ECO_WS' | 'BMB_HOMEBROKER' | 'IOL_REST' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
   readonly asOfUtcSec: number | null;
 }
 
@@ -457,7 +457,7 @@ export interface ArMonitoringResponse {
   readonly cclMedian: number | null;
   readonly badlarTna: number | null;
   readonly cauciones?: readonly ArCaucionCurveRowDto[];
-  readonly caucionesStatus?: 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
+  readonly caucionesStatus?: 'LIVE_PRIMARY' | 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
   readonly bmbHealth?: BmbConnectorHealthDto;
   readonly arPanelAnalytics?: EquityPanelAnalyticsDto | null;
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
@@ -470,7 +470,7 @@ export interface ArLiveMarketSnapshot {
   readonly cauciones: readonly ArCaucionCurveRowDto[];
   readonly futures: readonly PrimaryDlrContractDto[];
   readonly futuresSource: 'PRIMARY_WS' | 'PRIMARY_REST' | 'NONE';
-  readonly sourceMode: 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
+  readonly sourceMode: 'LIVE_PRIMARY' | 'LIVE_BMB' | 'LIVE_IOL' | 'DATA912' | 'NO_DATA';
   readonly bmbHealth: BmbConnectorHealthDto | null;
 }
 
@@ -717,6 +717,8 @@ function computeArTerminalBarsPayload(
     rthOnly: false,
     asOfUtcSec: nowSec,
     visibleStartIndex: 0,
+    barsProvider: 'MASSIVE_REST',
+    barsProviderFallbackUsed: [],
     bars: bars.map((bar) => ({
       time: bar.time,
       open: bar.open,
@@ -1617,6 +1619,73 @@ export function resolveArDefaultTerminalMarket(rawSymbol: string): 'AR' | null {
   );
   if (isBond) return 'AR';
   return STOCK_META_MAP.has(upper) ? 'AR' : null;
+}
+
+/** Set de instrumentos BYMA explicitamente tradables como acciones/renta fija. */
+const BYMA_FIXED_INCOME_TICKER_SET = new Set<string>([
+  ...['AL29', 'AL29D', 'AL30', 'AL30D', 'GD29', 'GD29D', 'GD30', 'GD30D', 'AL35', 'AL35D', 'GD35', 'GD35D', 'AE38', 'AE38D', 'GD38', 'GD38D', 'AL41', 'AL41D', 'GD41', 'GD41D', 'BPY26', 'BPOA7', 'BPOB7', 'BPOC7', 'BPOD7', 'BA37D', 'TO26'],
+  ...SOVEREIGN_BONDS.map((bond) => bond.baseTicker),
+  ...SOVEREIGN_BONDS.flatMap((bond) => [`${bond.baseTicker}D`, `${bond.baseTicker}C`]),
+]);
+
+const BYMA_OPTION_PREFIXES = ['GFGC', 'GFGV'];
+
+/**
+ * Pieza 41: normaliza un frame `Md` a `MarketTickQuote` sin inferir moneda de
+ * instrumentos desconocidos. Solo LA con precio real crea quote; puntas no.
+ */
+export function primaryFrameToMarketTickQuote(frame: {
+  readonly ticker: string | null;
+  readonly settlement: string | null;
+  readonly snapshot: {
+    readonly last: number | null;
+    readonly close: number | null;
+    readonly open: number | null;
+    readonly high: number | null;
+    readonly low: number | null;
+    readonly nominalVolume?: number | null;
+    readonly turnover?: number | null;
+    readonly lastTradeAtUtcSec?: number | null;
+  };
+}): MarketTickQuote | null {
+  const rawTicker = frame.ticker?.trim().toUpperCase() ?? '';
+  const ticker = rawTicker;
+  const price = frame.snapshot.last;
+  if (
+    ticker === '' || BYMA_OPTION_PREFIXES.some((prefix) => ticker.startsWith(prefix)) ||
+    price === null || !Number.isFinite(price) || price <= 0
+  ) {
+    return null;
+  }
+  const isFixedIncome = BYMA_FIXED_INCOME_TICKER_SET.has(ticker);
+  const isStock = STOCK_META_MAP.has(ticker) || Object.hasOwn(CEDEAR_RATIOS, ticker);
+  if (!isFixedIncome && !isStock) return null;
+  const previousClose =
+    frame.snapshot.close !== null && Number.isFinite(frame.snapshot.close) && frame.snapshot.close > 0
+      ? frame.snapshot.close
+      : null;
+  return {
+    market: 'AR',
+    symbol: ticker,
+    kind: isFixedIncome ? 'bond' : 'stock',
+    currency:
+      isFixedIncome
+        ? (ticker.endsWith('D') || ticker.endsWith('C') ? 'USD' : 'ARS')
+        : 'ARS',
+    price,
+    previousClose,
+    changePct:
+      previousClose !== null && previousClose > 0
+        ? ((price - previousClose) / previousClose) * 100
+        : null,
+    dayLow: frame.snapshot.low !== null && Number.isFinite(frame.snapshot.low) ? frame.snapshot.low : null,
+    dayHigh: frame.snapshot.high !== null && Number.isFinite(frame.snapshot.high) ? frame.snapshot.high : null,
+    volume: frame.snapshot.nominalVolume ?? null,
+    turnover: frame.snapshot.turnover ?? null,
+    asOfUtcSec: frame.snapshot.lastTradeAtUtcSec ?? null,
+    source: 'PRIMARY_ECO_WS',
+    settlement: frame.settlement,
+  };
 }
 
 function sanitizeFinite(value: number | null | undefined): number | null {
@@ -3557,6 +3626,7 @@ export class ArgentinaMarketRuntime {
     });
     this.macroCache = new SingleFlightRuntimeCache({ ttlResolver: () => DEFAULT_MACRO_CACHE_TTL_MS, nowFn: this.nowMsFn });
     this.computedCache = new SingleFlightRuntimeCache({ ttlResolver: quoteTtlResolver, nowFn: this.nowMsFn });
+    this.attachPrimaryMarketDataListener();
   }
 
   public getSecrets(): readonly string[] {
@@ -3568,6 +3638,38 @@ export class ArgentinaMarketRuntime {
       out.add(s);
     }
     return [...out];
+  }
+
+  /** Pieza 41: cache/ingestión de quotes y cauciones Eco Primary. */
+  public attachPrimaryMarketDataListener(): void {
+    this.primaryClient.setMervMarketDataListener((frame) => {
+      if (frame.ticker === null || frame.settlement === null) return;
+      const caucionMatch = /^PESOS\s*-\s*(\d+)D$/i.exec(frame.ticker);
+      if (caucionMatch !== null) {
+        const termDays = Number(caucionMatch[1]);
+        const snap = frame.snapshot;
+        const rate = snap.last;
+        if (termDays <= 0 || rate === null || !Number.isFinite(rate) || rate <= 0) return;
+        this.realtimeBus.ingestCauciones([
+          {
+            symbol: frame.ticker,
+            termDays,
+            currency: 'ARS',
+            tnaWeighted: rate,
+            bidTna: snap.bids[0]?.price ?? null,
+            askTna: snap.asks[0]?.price ?? null,
+            turnoverArs: snap.turnover ?? null,
+            asOfUtcSec: snap.lastTradeAtUtcSec ?? null,
+            source: 'PRIMARY_ECO_WS',
+          },
+        ]);
+        return;
+      }
+      const quote = primaryFrameToMarketTickQuote(frame);
+      if (quote !== null) {
+        this.realtimeBus.ingestQuotes([quote]);
+      }
+    });
   }
 
   public getConnectorHealth(): {
@@ -3691,7 +3793,11 @@ export class ArgentinaMarketRuntime {
     this.realtimeBus.start(symbols);
     void this.primaryClient.startDlrLiveStream().catch(() => undefined);
     // Stream productivo Eco Valores XOMS: L2 BYMA 5 puntas (MERV) + curva DLR/*.
-    void this.primaryClient.startBymaL2LiveStream().catch(() => undefined);
+    void this.primaryClient.startBymaL2LiveStream({
+      fixedIncomeTickers: SOVEREIGN_BONDS
+        .filter((bond) => bond.currency === 'CER')
+        .map((bond) => bond.baseTicker),
+    }).catch(() => undefined);
     const run = async (): Promise<void> => {
       if (!this.liveStreaming || this.liveRefreshInFlight) return;
       const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));
@@ -3956,7 +4062,26 @@ export class ArgentinaMarketRuntime {
       nowSec: Math.floor(this.nowMsFn() / 1_000),
     });
     const busCauciones = this.realtimeBus.getCauciones();
-    const iolCauciones: readonly ArCaucionCurveRowDto[] = busCauciones.map((row) => ({
+    const primaryCauciones: readonly ArCaucionCurveRowDto[] = busCauciones
+      .filter((row) => row.source === 'PRIMARY_ECO_WS')
+      .map((row) => ({
+        termDays: row.termDays,
+        label: `${String(row.termDays)} días`,
+        currency: row.currency,
+        tnaWeighted: row.tnaWeighted,
+        teaEffective: row.tnaWeighted !== null ? sanitizeFinite(computeCaucionTeaEffectivePct(row.tnaWeighted, row.termDays)) : null,
+        bidTna: row.bidTna,
+        askTna: row.askTna,
+        volumeArs: row.turnoverArs,
+        spreadVsBadlarBps: null,
+        referenceInstrument: row.symbol,
+        originLabel: 'Puntas/trades vivos Eco Primary XOMS',
+        source: 'PRIMARY_ECO_WS',
+        asOfUtcSec: row.asOfUtcSec,
+      }));
+    const iolCauciones: readonly ArCaucionCurveRowDto[] = busCauciones
+      .filter((row) => row.source === 'IOL_REST')
+      .map((row) => ({
       termDays: row.termDays,
       label: `${String(row.termDays)} días`,
       currency: row.currency,
@@ -3972,15 +4097,25 @@ export class ArgentinaMarketRuntime {
       asOfUtcSec: row.asOfUtcSec,
     }));
     const bmbTenors = new Set(caucionesCurve.status === 'LIVE_BMB' ? caucionesCurve.rows.map((row) => `${row.currency}:${String(row.termDays)}`) : []);
-    const cauciones: readonly ArCaucionCurveRowDto[] = caucionesCurve.status === 'LIVE_BMB'
-      ? [...caucionesCurve.rows, ...iolCauciones.filter((row) => !bmbTenors.has(`${row.currency}:${String(row.termDays)}`))]
-      : iolCauciones.length > 0
-        ? iolCauciones
-        : caucionesCurve.rows;
-    const mergedQuotes = new Map(quotes.map((quote) => [quote.symbol, quote]));
+    const cauciones: readonly ArCaucionCurveRowDto[] =
+      primaryCauciones.length > 0
+        ? [...primaryCauciones, ...[
+            ...caucionesCurve.rows,
+            ...iolCauciones,
+          ].filter((row) => !primaryCauciones.some((primary) => primary.currency === row.currency && primary.termDays === row.termDays))]
+        : caucionesCurve.status === 'LIVE_BMB'
+          ? [...caucionesCurve.rows, ...iolCauciones.filter((row) => !bmbTenors.has(`${row.currency}:${String(row.termDays)}`))]
+          : iolCauciones.length > 0
+            ? iolCauciones
+            : caucionesCurve.rows;
+    const mergedQuotes = new Map<string, MarketTickQuote>();
+    const quoteKey = (quote: MarketTickQuote): string => realtimeQuoteKey(quote.symbol, quote.settlement);
+    for (const quote of quotes) {
+      mergedQuotes.set(quoteKey(quote), quote);
+    }
     for (const quote of realtimeQuotes) {
-      const base = mergedQuotes.get(quote.symbol);
-      mergedQuotes.set(quote.symbol, {
+      const base = mergedQuotes.get(quoteKey(quote));
+      mergedQuotes.set(quoteKey(quote), {
         ...quote,
         previousClose: quote.previousClose ?? base?.previousClose ?? null,
         changePct: quote.changePct ?? base?.changePct ?? null,
@@ -5777,6 +5912,24 @@ export class ArgentinaMarketRuntime {
       mergeBmbNormalizedRows(corpRes.rows, bmbSnap, nowSec, new Set(corpRes.rows.map((row) => row.symbol))).rows,
       'ON_CORP',
     );
+    const busCaucionesMonitoring = this.realtimeBus.getCauciones();
+    const primaryCaucionesMonitoring: readonly ArCaucionCurveRowDto[] = busCaucionesMonitoring
+      .filter((row) => row.source === 'PRIMARY_ECO_WS')
+      .map((row) => ({
+        termDays: row.termDays,
+        label: `${String(row.termDays)} días`,
+        currency: row.currency,
+        tnaWeighted: row.tnaWeighted,
+        teaEffective: row.tnaWeighted !== null ? sanitizeFinite(computeCaucionTeaEffectivePct(row.tnaWeighted, row.termDays)) : null,
+        bidTna: row.bidTna,
+        askTna: row.askTna,
+        volumeArs: row.turnoverArs,
+        spreadVsBadlarBps: null,
+        referenceInstrument: row.symbol,
+        originLabel: 'Puntas/trades vivos Eco Primary XOMS',
+        source: 'PRIMARY_ECO_WS',
+        asOfUtcSec: row.asOfUtcSec,
+      }));
     const caucionesCurve = buildCaucionesLiquidityCurve({
       bmbSnapshot: bmbSnap,
       tpmTna: macroData.variables.tpmTna,
@@ -5839,8 +5992,11 @@ export class ArgentinaMarketRuntime {
       mepMedian: overview.mepMedian,
       cclMedian: overview.cclMedian,
       badlarTna: macroData.variables.badlarTna,
-      cauciones: caucionesCurve.rows,
-      caucionesStatus: caucionesCurve.status,
+      cauciones: primaryCaucionesMonitoring.length > 0 ? primaryCaucionesMonitoring : caucionesCurve.rows,
+      caucionesStatus:
+        primaryCaucionesMonitoring.length > 0
+          ? 'LIVE_PRIMARY'
+          : caucionesCurve.status,
       bmbHealth: bmbSnap.health,
       arPanelAnalytics,
       usEquityPanel,

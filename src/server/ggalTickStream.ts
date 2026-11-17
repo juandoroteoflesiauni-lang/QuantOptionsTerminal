@@ -483,6 +483,12 @@ export class GgalTickStreamEngine {
     this.deriveCclTick();
   }
 
+  /** Pieza 41: trade por trade del stream Tradier ADR (sin minutos intermedios). */
+  public applyAdrTick(input: { readonly price: number; readonly size: number; readonly timeSec: number }): void {
+    this.applySideTick('ADR', input.price, input.size, input.timeSec);
+    this.deriveCclTick();
+  }
+
   /** Tick del lado ARS (BMB SignalR SendPrices / IOL REST). */
   public applyArsTick(input: { readonly price: number; readonly size: number; readonly timeSec: number }): void {
     this.applySideTick('ARS', input.price, input.size, input.timeSec);

@@ -1,0 +1,636 @@
+{
+  "version": 1,
+  "electoralGapStartUtcSec": 1759291200,
+  "fmpHistorical": {
+    "rows": [
+      {
+        "date": "2026-07-30 13:16:00",
+        "open": 10.0,
+        "high": 10.5,
+        "low": 9.9,
+        "close": 10.4,
+        "volume": 100
+      },
+      {
+        "date": "2026-07-30 13:20:00",
+        "open": 10.4,
+        "high": 10.6,
+        "low": 10.2,
+        "close": 10.2,
+        "volume": 40
+      },
+      {
+        "date": "2026-07-30 13:20:00",
+        "open": 10.4,
+        "high": 10.7,
+        "low": 10.0,
+        "close": 10.6,
+        "volume": 60
+      },
+      {
+        "date": "malformed",
+        "open": 10.0,
+        "high": 10.0,
+        "low": 10.0,
+        "close": 10.0,
+        "volume": 0
+      },
+      {
+        "date": "2026-07-30 13:25:00",
+        "open": 0,
+        "high": 10.0,
+        "low": 9.0,
+        "close": 10.0,
+        "volume": 0
+      },
+      {
+        "date": "2026-01-30 13:20:00",
+        "open": 20.0,
+        "high": 20.1,
+        "low": 19.8,
+        "close": 20.0,
+        "volume": 5
+      },
+      {
+        "date": "2026-07-30 14:20:00",
+        "open": 10.6,
+        "high": 10.8,
+        "low": 10.5,
+        "close": 10.7,
+        "volume": 7,
+        "vw": 10.68
+      },
+      {
+        "date": "2026-07-30 14:20:00",
+        "open": 10.6,
+        "high": 10.9,
+        "low": 10.4,
+        "close": 10.8,
+        "volume": 8,
+        "vw": null
+      }
+    ],
+    "expectedBars": [
+      {
+        "time": 1769797200,
+        "open": 20.0,
+        "high": 20.1,
+        "low": 19.8,
+        "close": 20.0,
+        "volume": 5
+      },
+      {
+        "time": 1785431760,
+        "open": 10.0,
+        "high": 10.5,
+        "low": 9.9,
+        "close": 10.4,
+        "volume": 100
+      },
+      {
+        "time": 1785432000,
+        "open": 10.4,
+        "high": 10.7,
+        "low": 10.0,
+        "close": 10.6,
+        "volume": 60
+      },
+      {
+        "time": 1785435600,
+        "open": 10.6,
+        "high": 10.8,
+        "low": 10.5,
+        "close": 10.7,
+        "volume": 7
+      }
+    ],
+    "expectedDiscarded": 3
+  },
+  "fmpBatch": {
+    "rows": [
+      {
+        "symbol": "AAPL",
+        "name": "Apple Inc.",
+        "price": 331.85501,
+        "changePercentage": -1.8732,
+        "volume": 28718014,
+        "dayLow": 329.59,
+        "dayHigh": 334.48,
+        "exchange": "NASDAQ",
+        "open": 333.13,
+        "previousClose": 338.18999,
+        "timestamp": 1785430812
+      },
+      {
+        "symbol": "SPY",
+        "price": 600.0,
+        "volume": 0,
+        "exchange": "NYSE ARCA",
+        "previousClose": 602.0,
+        "timestamp": 1785430812
+      },
+      {
+        "symbol": "NO_PRICE",
+        "price": 0,
+        "volume": 1,
+        "timestamp": 1785430812
+      },
+      {
+        "symbol": "SPY",
+        "price": 600.0,
+        "volume": 1,
+        "timestamp": 1785430812
+      }
+    ],
+    "expectedQuotes": [
+      {
+        "symbol": "AAPL",
+        "exchange": "NASDAQ",
+        "price": 331.85501,
+        "changePct": -1.8732,
+        "previousClose": 338.18999,
+        "volume": 28718014,
+        "asOfUtcSec": 1785430812
+      },
+      {
+        "symbol": "SPY",
+        "exchange": "NYSE ARCA",
+        "price": 600.0,
+        "changePct": -0.33222591362126247,
+        "previousClose": 602.0,
+        "volume": 0,
+        "asOfUtcSec": 1785430812
+      }
+    ],
+    "expectedDiscarded": 2
+  },
+  "routing": {
+    "cases": [
+      {
+        "key": "AR:GGAL",
+        "providerSymbol": "GGAL",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      },
+      {
+        "key": "US:GGAL",
+        "providerSymbol": "GGAL",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": true,
+        "exchange": "NASDAQ",
+        "badge": "NASDAQ",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "AR:YPFD",
+        "providerSymbol": "YPFD",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      },
+      {
+        "key": "US:YPF",
+        "providerSymbol": "YPF",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": true,
+        "exchange": "NYSE",
+        "badge": "NYSE",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "AR:PAMP",
+        "providerSymbol": "PAMP",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      },
+      {
+        "key": "US:PAM",
+        "providerSymbol": "PAM",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": true,
+        "exchange": "NYSE",
+        "badge": "NYSE",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "AR:TGSU2",
+        "providerSymbol": "TGSU2",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      },
+      {
+        "key": "US:TGS",
+        "providerSymbol": "TGS",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": true,
+        "exchange": "NYSE",
+        "badge": "NYSE",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "AR:CRES",
+        "providerSymbol": "CRES",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      },
+      {
+        "key": "US:CRESY",
+        "providerSymbol": "CRESY",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": true,
+        "exchange": "NYSE",
+        "badge": "NYSE",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "AR:TECO2",
+        "providerSymbol": "TECO2",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      },
+      {
+        "key": "US:TEO",
+        "providerSymbol": "TEO",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": true,
+        "exchange": "NYSE",
+        "badge": "NYSE",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "US:SPY",
+        "providerSymbol": "SPY",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": false,
+        "exchange": "NYSE",
+        "badge": "NYSE",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "NVDA",
+        "providerSymbol": "NVDA",
+        "market": "US",
+        "mode": "ADR_USD",
+        "isAdr": false,
+        "exchange": "NASDAQ",
+        "badge": "NASDAQ",
+        "currencySymbol": "USD"
+      },
+      {
+        "key": "AR:NVDA",
+        "providerSymbol": "NVDA",
+        "market": "AR",
+        "mode": "BYMA_ARS",
+        "isAdr": false,
+        "exchange": "BYMA",
+        "badge": "BYMA",
+        "currencySymbol": "ARS"
+      }
+    ]
+  },
+  "massiveStocksMode": {
+    "cases": [
+      {
+        "env": {
+          "MASSIVE_API_KEY": "mk"
+        },
+        "expected": "MASSIVE_STOCKS_ENABLED"
+      },
+      {
+        "env": {
+          "FMP_API_KEY": "fk"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "TRADIER_ACCESS_TOKEN": "t"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "TRADIER_TOKEN": "t"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "TRADIER_API_TOKEN": "t"
+        },
+        "expected": "STANDBY_TRADIER_FMP_PRIMARY"
+      },
+      {
+        "env": {
+          "FMP_API_KEY": "fk",
+          "MASSIVE_STOCKS_WS_ENABLED": "true"
+        },
+        "expected": "MASSIVE_STOCKS_ENABLED"
+      },
+      {
+        "env": {
+          "MASSIVE_STOCKS_WS_ENABLED": "TRUE"
+        },
+        "expected": "MASSIVE_STOCKS_ENABLED"
+      }
+    ]
+  },
+  "primarySelection": {
+    "instruments": [
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - T1"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GGAL - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AL30 - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AL30 - T1"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AL30 - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AL30D - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GD30 - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - GD30D - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - TX26 - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - PESOS - 1D - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - PESOS - 3D - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - PESOS - 7D - CI"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - NOPE - 24HS"
+      },
+      {
+        "marketId": "MERV",
+        "symbol": "MERV - XMEV - AL30 - 48HS"
+      }
+    ],
+    "expectedSymbols": [
+      "MERV - XMEV - AL30 - 24HS",
+      "MERV - XMEV - AL30 - CI",
+      "MERV - XMEV - AL30D - 24HS",
+      "MERV - XMEV - GD30 - CI",
+      "MERV - XMEV - GD30D - 24HS",
+      "MERV - XMEV - GGAL - 24HS",
+      "MERV - XMEV - GGAL - CI",
+      "MERV - XMEV - PESOS - 1D - 24HS",
+      "MERV - XMEV - PESOS - 3D - 24HS",
+      "MERV - XMEV - PESOS - 7D - CI",
+      "MERV - XMEV - TX26 - CI"
+    ]
+  },
+  "primaryMdMerge": {
+    "base": {
+      "symbol": "MERV - XMEV - AL30 - 24HS",
+      "marketId": "MERV",
+      "bids": [
+        {
+          "price": 77.0,
+          "size": 10,
+          "orderCount": 1
+        }
+      ],
+      "asks": [
+        {
+          "price": 77.1,
+          "size": 10,
+          "orderCount": 1
+        }
+      ],
+      "last": 77.05,
+      "settlement": 77.0,
+      "close": 76.5,
+      "open": 76.8,
+      "high": 77.2,
+      "low": 76.4,
+      "openInterest": null,
+      "nominalVolume": 1000,
+      "impliedVol": null,
+      "updatedAtUtcSec": 100,
+      "lastTradeAtUtcSec": 100,
+      "turnover": null,
+      "frameAtUtcSec": 100
+    },
+    "bookOnlyFrame": {
+      "bids": [
+        {
+          "price": 77.02,
+          "size": 11,
+          "orderCount": 2
+        }
+      ],
+      "asks": [
+        {
+          "price": 77.12,
+          "size": 12,
+          "orderCount": 3
+        }
+      ],
+      "last": null,
+      "settlement": null,
+      "close": null,
+      "open": null,
+      "high": null,
+      "low": null,
+      "openInterest": null,
+      "nominalVolume": null,
+      "impliedVol": null,
+      "updatedAtUtcSec": null,
+      "lastTradeAtUtcSec": null,
+      "turnover": null,
+      "frameAtUtcSec": 104
+    },
+    "bookOnlyPresent": [
+      "BI",
+      "OF"
+    ],
+    "expected": {
+      "bids": [
+        {
+          "price": 77.02,
+          "size": 11,
+          "orderCount": 2
+        }
+      ],
+      "asks": [
+        {
+          "price": 77.12,
+          "size": 12,
+          "orderCount": 3
+        }
+      ],
+      "last": 77.05,
+      "close": 76.5,
+      "open": 76.8,
+      "high": 77.2,
+      "low": 76.4,
+      "nominalVolume": 1000,
+      "lastTradeAtUtcSec": 100,
+      "frameAtUtcSec": 104
+    },
+    "futureFrameReceivedSec": 110,
+    "futureFrameTimeSec": 190,
+    "expectedFutureRejected": true
+  },
+  "primaryQuotes": {
+    "frames": [
+      {
+        "ticker": "AL30",
+        "settlement": "24hs",
+        "price": 77.05,
+        "close": 76.5,
+        "low": 76.4,
+        "high": 77.2,
+        "volume": 1000,
+        "turnover": null,
+        "timeSec": 100
+      },
+      {
+        "ticker": "AL30D",
+        "settlement": "24hs",
+        "price": 60.25,
+        "close": 60.1,
+        "low": 60.0,
+        "high": 60.4,
+        "volume": 900,
+        "turnover": null,
+        "timeSec": 101
+      },
+      {
+        "ticker": "AL30",
+        "settlement": "CI",
+        "price": 77.06,
+        "close": 76.51,
+        "low": 76.41,
+        "high": 77.21,
+        "volume": 10,
+        "turnover": null,
+        "timeSec": 102
+      },
+      {
+        "ticker": "PESOS - 3D",
+        "settlement": "24hs",
+        "rate": 0.0401,
+        "bid": 0.04,
+        "ask": 0.0402,
+        "turnover": 10000000.0,
+        "timeSec": 103
+      }
+    ],
+    "expectedQuoteKeys": [
+      "AR:AL30:24hs",
+      "AR:AL30D:24hs",
+      "AR:AL30:CI"
+    ],
+    "expectedCaucion": {
+      "termDays": 3,
+      "currency": "ARS",
+      "tnaWeighted": 0.0401,
+      "bidTna": 0.04,
+      "askTna": 0.0402,
+      "turnoverArs": 10000000.0,
+      "source": "PRIMARY_ECO_WS"
+    }
+  },
+  "redaction": {
+    "secrets": [
+      "fmp-test-secret",
+      "tradier-test-token"
+    ],
+    "cases": [
+      {
+        "input": "https://x/stable/chart?symbol=GGAL&apikey=fmp-test-secret",
+        "expected": "https://x/stable/chart?symbol=GGAL&apikey=[REDACTED]"
+      },
+      {
+        "input": "https://x/api?apikey=fmp%2Dtest%2Dsecret",
+        "expected": "https://x/api?apikey=[REDACTED]"
+      },
+      {
+        "input": "error token tradier-test-token",
+        "expected": "error token <redacted>"
+      }
+    ]
+  },
+  "health": {
+    "defaultProviderIds": [
+      "MASSIVE_WS_STOCKS",
+      "MASSIVE_REST_POOL",
+      "TRADIER_LIVE_WS",
+      "FMP_ENTERPRISE_REST",
+      "ORATS_API",
+      "PRIMARY_REMARKETS_DLR",
+      "BMB_HOMEBROKER_L2",
+      "IOL_REST_V2"
+    ],
+    "standby": {
+      "id": "MASSIVE_WS_STOCKS",
+      "state": "STANDBY_TRADIER_FMP_PRIMARY",
+      "connected": null,
+      "reconnectable": false
+    }
+  }
+}

@@ -18,6 +18,7 @@ export type FeedProviderId =
   | 'MASSIVE_WS_STOCKS'
   | 'MASSIVE_REST_POOL'
   | 'TRADIER_LIVE_WS'
+  | 'FMP_ENTERPRISE_REST'
   | 'ORATS_API'
   | 'PRIMARY_REMARKETS_DLR'
   | 'BMB_HOMEBROKER_L2'
@@ -26,6 +27,7 @@ export type FeedProviderId =
 export type FeedProviderState =
   | 'CONNECTED'
   | 'ARMED_OUT_OF_SESSION'
+  | 'STANDBY_TRADIER_FMP_PRIMARY'
   | 'DEGRADED'
   | 'NOT_CONFIGURED';
 
@@ -375,12 +377,14 @@ export interface FeedProviderHealth {
 }
 
 export interface FeedsHealthSummary {
-  readonly totalProviders: 7;
+  readonly totalProviders: number;
   readonly configuredCount: number;
   readonly activeCount: number;
   readonly degradedCount: number;
   readonly notConfiguredCount: number;
   readonly armedOutOfSessionCount: number;
+  /** Pieza 41: Standby explícito no se mezcla con activo/degradado. */
+  readonly standbyCount?: number;
 }
 
 export interface FeedsHealthSnapshot {
@@ -418,6 +422,7 @@ const FEED_RECONNECT_ACTIONS: Readonly<Record<FeedProviderId, FeedReconnectActio
   MASSIVE_WS_STOCKS: 'RECONNECT',
   MASSIVE_REST_POOL: 'RESYNC',
   TRADIER_LIVE_WS: 'RECONNECT',
+  FMP_ENTERPRISE_REST: 'RESYNC',
   ORATS_API: 'RESYNC',
   PRIMARY_REMARKETS_DLR: 'RECONNECT',
   BMB_HOMEBROKER_L2: 'RECONNECT',
@@ -428,6 +433,7 @@ const ALL_FEED_PROVIDER_IDS: readonly FeedProviderId[] = [
   'MASSIVE_WS_STOCKS',
   'MASSIVE_REST_POOL',
   'TRADIER_LIVE_WS',
+  'FMP_ENTERPRISE_REST',
   'ORATS_API',
   'PRIMARY_REMARKETS_DLR',
   'BMB_HOMEBROKER_L2',
@@ -524,20 +530,23 @@ function countStates(providers: readonly FeedProviderHealth[]): FeedsHealthSumma
   let degradedCount = 0;
   let notConfiguredCount = 0;
   let armedOutOfSessionCount = 0;
+  let standbyCount = 0;
   for (const provider of providers) {
     if (provider.state === 'CONNECTED') activeCount += 1;
     else if (provider.state === 'DEGRADED') degradedCount += 1;
     else if (provider.state === 'NOT_CONFIGURED') notConfiguredCount += 1;
+    else if (provider.state === 'STANDBY_TRADIER_FMP_PRIMARY') standbyCount += 1;
     else armedOutOfSessionCount += 1;
     if (provider.configured) configuredCount += 1;
   }
   return {
-    totalProviders: 7,
+    totalProviders: providers.length,
     configuredCount,
     activeCount,
     degradedCount,
     notConfiguredCount,
     armedOutOfSessionCount,
+    standbyCount,
   };
 }
 
@@ -591,6 +600,8 @@ export interface MassiveWsFeedHealthSource {
   readonly activeSymbolCount: number;
   readonly subscribedOptionQuotes: number;
   readonly lastWsMessageAgeMs: number | null;
+  /** Pieza 41: modo de stocks Massive (producción Eco/FMP). */
+  readonly stocksMode?: 'MASSIVE_STOCKS_ENABLED' | 'STANDBY_TRADIER_FMP_PRIMARY';
 }
 
 export interface MassiveRestFeedHealthSource {
@@ -609,6 +620,16 @@ export interface TradierFeedHealthSource {
   readonly reconnectAttempts: number;
   readonly subscribedSymbols: readonly string[];
   readonly lastError: string | null;
+  readonly telemetry: FeedTelemetrySnapshot;
+}
+
+export interface FmpEnterpriseFeedHealthSource {
+  readonly configured: boolean;
+  readonly lastSuccessAtMs: number | null;
+  readonly lastError: string | null;
+  readonly requestCount: number;
+  readonly quoteCount: number;
+  readonly subscribedSymbols: readonly string[];
   readonly telemetry: FeedTelemetrySnapshot;
 }
 
@@ -677,6 +698,8 @@ export interface FeedsHealthMonitorDeps {
   readonly getMassiveWs: () => MassiveWsFeedHealthSource;
   readonly getMassiveRest: () => MassiveRestFeedHealthSource;
   readonly getTradier: () => TradierFeedHealthSource;
+  /** Pieza 41: omitido en harness legacy se reporta NOT_CONFIGURED, no se oculta. */
+  readonly getFmp?: () => FmpEnterpriseFeedHealthSource;
   readonly getOrats: () => OratsFeedHealthSource;
   readonly getPrimary: () => PrimaryFeedHealthSource;
   readonly getBmb: () => BmbFeedHealthSource;
@@ -684,6 +707,7 @@ export interface FeedsHealthMonitorDeps {
   readonly reconnectMassiveWs: () => Promise<string>;
   readonly resyncMassiveRest: () => Promise<string>;
   readonly reconnectTradier: () => Promise<string>;
+  readonly resyncFmp?: () => Promise<string>;
   readonly resyncOrats: () => Promise<string>;
   readonly reconnectPrimary: () => Promise<string>;
   readonly reconnectBmb: () => Promise<string>;
@@ -711,6 +735,15 @@ export class FeedsHealthMonitor {
     const massiveWs = this.deps.getMassiveWs();
     const massiveRest = this.deps.getMassiveRest();
     const tradier = this.deps.getTradier();
+    const fmp = this.deps.getFmp?.() ?? {
+      configured: false,
+      lastSuccessAtMs: null,
+      lastError: null,
+      requestCount: 0,
+      quoteCount: 0,
+      subscribedSymbols: [],
+      telemetry: emptyFeedTelemetrySnapshot(),
+    };
     const orats = this.deps.getOrats();
     const primary = this.deps.getPrimary();
     const bmb = this.deps.getBmb();
@@ -726,7 +759,10 @@ export class FeedsHealthMonitor {
       ...commonProvider({
         id: 'MASSIVE_WS_STOCKS',
         region: 'US',
-        role: 'Spot NBBO / Trades US',
+        role:
+          massiveWs.stocksMode === 'STANDBY_TRADIER_FMP_PRIMARY'
+            ? 'Standby — Tradier/FMP primario'
+            : 'Spot NBBO / Trades US',
         configured: massiveWs.configured,
         connected: massiveWsSocketLive,
         sessionMode: usSession,
@@ -735,10 +771,17 @@ export class FeedsHealthMonitor {
         lastError: massiveWs.lastError,
         activeSymbolCount: massiveWs.activeSymbolCount,
         subscribedSymbols: massiveWs.subscribedSymbols,
-        reconnectable: true,
+        reconnectable: massiveWs.stocksMode !== 'STANDBY_TRADIER_FMP_PRIMARY',
         nowMs,
         secrets: this.secrets,
       }),
+      ...(massiveWs.stocksMode === 'STANDBY_TRADIER_FMP_PRIMARY'
+        ? {
+            state: 'STANDBY_TRADIER_FMP_PRIMARY' as const,
+            connected: null,
+            lastError: null,
+          }
+        : {}),
       massiveWs: {
         keySlot: massiveWs.keySlot,
         subscribedOptionQuotes: massiveWs.subscribedOptionQuotes,
@@ -794,6 +837,28 @@ export class FeedsHealthMonitor {
         sessionCreated: tradier.sessionCreated,
         reconnectAttempts: tradier.reconnectAttempts,
       },
+    };
+
+    const fmpProvider: FeedProviderHealth = {
+      ...commonProvider({
+        id: 'FMP_ENTERPRISE_REST',
+        region: 'US',
+        role: 'Intradario/EOD + Batch Quotes US',
+        configured: fmp.configured,
+        connected:
+          fmp.telemetry.lastHttpSuccessAtMs !== null &&
+          fmp.telemetry.lastHttpSuccessAtMs <= nowMs &&
+          nowMs - fmp.telemetry.lastHttpSuccessAtMs <= 10_000,
+        sessionMode: usSession,
+        telemetry: fmp.telemetry,
+        latencyKind: 'HTTP_ROUND_TRIP',
+        lastError: fmp.lastError,
+        activeSymbolCount: fmp.quoteCount,
+        subscribedSymbols: fmp.subscribedSymbols,
+        reconnectable: true,
+        nowMs,
+        secrets: this.secrets,
+      }),
     };
 
     const oratsProvider: FeedProviderHealth = {
@@ -927,6 +992,7 @@ export class FeedsHealthMonitor {
       massiveWsProvider,
       massiveRestProvider,
       tradierProvider,
+      fmpProvider,
       oratsProvider,
       primaryProvider,
       bmbProvider,
@@ -974,6 +1040,13 @@ export class FeedsHealthMonitor {
         case 'TRADIER_LIVE_WS':
           detail = await this.deps.reconnectTradier();
           break;
+        case 'FMP_ENTERPRISE_REST': {
+          if (this.deps.resyncFmp === undefined) {
+            throw new Error('FMP resync is not wired');
+          }
+          detail = await this.deps.resyncFmp();
+          break;
+        }
         case 'ORATS_API':
           detail = await this.deps.resyncOrats();
           break;

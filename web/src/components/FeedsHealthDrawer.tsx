@@ -8,6 +8,7 @@ export type FeedProviderId =
   | 'MASSIVE_WS_STOCKS'
   | 'MASSIVE_REST_POOL'
   | 'TRADIER_LIVE_WS'
+  | 'FMP_ENTERPRISE_REST'
   | 'ORATS_API'
   | 'PRIMARY_REMARKETS_DLR'
   | 'BMB_HOMEBROKER_L2'
@@ -16,6 +17,7 @@ export type FeedProviderId =
 export type FeedProviderState =
   | 'CONNECTED'
   | 'ARMED_OUT_OF_SESSION'
+  | 'STANDBY_TRADIER_FMP_PRIMARY'
   | 'DEGRADED'
   | 'NOT_CONFIGURED';
 
@@ -123,12 +125,13 @@ export interface FeedProviderHealth {
 }
 
 export interface FeedsHealthSummary {
-  readonly totalProviders: 7;
+  readonly totalProviders: number;
   readonly configuredCount: number;
   readonly activeCount: number;
   readonly degradedCount: number;
   readonly notConfiguredCount: number;
   readonly armedOutOfSessionCount: number;
+  readonly standbyCount?: number;
 }
 
 export interface FeedsHealthSnapshot {
@@ -176,6 +179,7 @@ function isFeedProviderId(value: unknown): value is FeedProviderId {
     value === 'MASSIVE_WS_STOCKS' ||
     value === 'MASSIVE_REST_POOL' ||
     value === 'TRADIER_LIVE_WS' ||
+    value === 'FMP_ENTERPRISE_REST' ||
     value === 'ORATS_API' ||
     value === 'PRIMARY_REMARKETS_DLR' ||
     value === 'BMB_HOMEBROKER_L2' ||
@@ -207,9 +211,11 @@ function parsePulse(raw: unknown): FeedsHealthPulse | null {
         ? 'CONNECTED'
         : rawProvider['state'] === 'ARMED_OUT_OF_SESSION'
           ? 'ARMED_OUT_OF_SESSION'
-          : rawProvider['state'] === 'NOT_CONFIGURED'
-            ? 'NOT_CONFIGURED'
-            : 'DEGRADED',
+          : rawProvider['state'] === 'STANDBY_TRADIER_FMP_PRIMARY'
+            ? 'STANDBY_TRADIER_FMP_PRIMARY'
+            : rawProvider['state'] === 'NOT_CONFIGURED'
+              ? 'NOT_CONFIGURED'
+              : 'DEGRADED',
       sessionMode: rawProvider['sessionMode'] === 'IN_SESSION' ? 'IN_SESSION' : 'OUT_OF_SESSION',
       latencyMs: nullableNumber(rawProvider['latencyMs']),
       lastTickAgeMs: nullableNumber(rawProvider['lastTickAgeMs']),
@@ -222,12 +228,13 @@ function parsePulse(raw: unknown): FeedsHealthPulse | null {
     type: 'FEEDS_HEALTH_PULSE',
     asOfUtcSec,
     summary: {
-      totalProviders: 7,
+      totalProviders: nonNegativeInt(summaryRaw['totalProviders']) ?? 8,
       configuredCount: nonNegativeInt(summaryRaw['configuredCount']) ?? 0,
       activeCount: nonNegativeInt(summaryRaw['activeCount']) ?? 0,
       degradedCount: nonNegativeInt(summaryRaw['degradedCount']) ?? 0,
       notConfiguredCount: nonNegativeInt(summaryRaw['notConfiguredCount']) ?? 0,
       armedOutOfSessionCount: nonNegativeInt(summaryRaw['armedOutOfSessionCount']) ?? 0,
+      standbyCount: nonNegativeInt(summaryRaw['standbyCount']) ?? 0,
     },
     providers,
   };
@@ -458,6 +465,9 @@ function stateStyles(state: FeedProviderState): { readonly bg: string; readonly 
   if (state === 'ARMED_OUT_OF_SESSION') {
     return { bg: 'bg-[#281E0E]', text: 'text-[#F5B544]', border: 'border-[#59411A]' };
   }
+  if (state === 'STANDBY_TRADIER_FMP_PRIMARY') {
+    return { bg: 'bg-[#101B33]', text: 'text-[#60A5FA]', border: 'border-[#22406F]' };
+  }
   if (state === 'NOT_CONFIGURED') {
     return { bg: 'bg-[#131722]', text: 'text-[#787B86]', border: 'border-[#2A2E3D]' };
   }
@@ -652,7 +662,7 @@ export const FeedsHealthDrawer: React.FC<FeedsHealthDrawerProps> = ({
               <p className="text-[10.5px] text-[#787B86]">
                 {summary === null
                   ? 'Sin snapshot válido'
-                  : `${String(summary.activeCount)}/${String(summary.totalProviders)} activos · ${String(summary.configuredCount)} armados`}
+                  : `${String(summary.activeCount)}/${String(summary.totalProviders)} activos · ${String(summary.configuredCount)} armados${summary.standbyCount !== undefined && summary.standbyCount > 0 ? ` · ${String(summary.standbyCount)} standby` : ''}`}
               </p>
             </div>
           </div>

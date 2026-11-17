@@ -1238,7 +1238,7 @@ export const MonitoringModule: React.FC<{
     readonly spreadVsBadlarBps: number | null;
     readonly referenceInstrument: string;
     readonly originLabel: string;
-    readonly source: 'BMB_HOMEBROKER' | 'IOL_REST' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
+    readonly source: 'PRIMARY_ECO_WS' | 'BMB_HOMEBROKER' | 'IOL_REST' | 'DATA912_CAUCION' | 'BCRA_LECAP_REF';
   }
 
   interface BmbHealthExt {
@@ -1249,7 +1249,7 @@ export const MonitoringModule: React.FC<{
   const monitoringExt = liveMarket.monitoring as
     | (NonNullable<typeof liveMarket.monitoring> & {
         readonly cauciones?: readonly ArCaucionRowExt[];
-        readonly caucionesStatus?: 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
+        readonly caucionesStatus?: 'LIVE_PRIMARY' | 'LIVE_BMB' | 'REFERENCE_BCRA_LECAP' | 'NO_DATA';
         readonly bmbHealth?: BmbHealthExt;
       })
     | null;
@@ -1266,7 +1266,7 @@ export const MonitoringModule: React.FC<{
     volumeArs: row.turnoverArs,
     spreadVsBadlarBps: row.spreadVsBadlarBps,
     referenceInstrument: row.referenceInstrument,
-    originLabel: row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : row.source === 'IOL_REST' ? 'IOL REST v2 en vivo' : 'Referencia BCRA / LECAP',
+    originLabel: row.source === 'PRIMARY_ECO_WS' ? 'Eco Primary XOMS en vivo' : row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : row.source === 'IOL_REST' ? 'IOL REST v2 en vivo' : 'Referencia BCRA / LECAP',
     source: row.source,
   })) : [];
   const liveCauciones: readonly ArCaucionRowExt[] =
@@ -1278,7 +1278,7 @@ export const MonitoringModule: React.FC<{
   const caucionesStatus =
     liveStreamFresh && liveStream.arSourceMode === 'NO_DATA'
       ? 'NO_DATA'
-      : liveStreamFresh && (liveStream.arSourceMode === 'LIVE_BMB' || liveStream.arSourceMode === 'LIVE_IOL') && streamedCauciones.length > 0
+      : liveStreamFresh && (liveStream.arSourceMode === 'LIVE_PRIMARY' || liveStream.arSourceMode === 'LIVE_BMB' || liveStream.arSourceMode === 'LIVE_IOL') && streamedCauciones.length > 0
         ? liveStream.arSourceMode
         : monitoringExt?.caucionesStatus ?? 'NO_DATA';
   const bmbHealth = monitoringExt?.bmbHealth;
@@ -1754,7 +1754,7 @@ export const MonitoringModule: React.FC<{
           </InsightBanner>
         )}
         {subPanel === 'cauciones' && (
-          <InsightBanner variant={caucionesStatus === 'LIVE_BMB' || caucionesStatus === 'LIVE_IOL' ? 'pos' : 'warn'} tag="Liquidez / Cauciones">
+          <InsightBanner variant={caucionesStatus === 'LIVE_PRIMARY' || caucionesStatus === 'LIVE_BMB' || caucionesStatus === 'LIVE_IOL' ? 'pos' : 'warn'} tag="Liquidez / Cauciones">
             {caucionesStatus === 'LIVE_BMB' ? (
               <>
                 Puntas vivas Tomadora/Colocadora vía <strong className="text-[#2EDC7E]">Bull Market HomeBroker</strong> ({liveCauciones.length} plazos activos).
