@@ -1025,6 +1025,34 @@ export function fetchGgalDualChart(
   );
 }
 
+export function fetchGgalDualChartSeries(
+  params: {
+    readonly coord: GgalDualChartCoordMode;
+    readonly timeframe: GgalDualChartTimeframe;
+    readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly forceRefresh?: boolean;
+    readonly signal?: AbortSignal;
+  },
+): Promise<GgalDualChartResponseDto> {
+  const sp = new URLSearchParams({
+    coord: params.coord,
+    timeframe: params.timeframe,
+    avwapAnchor: params.avwapAnchor,
+    light: '1',
+  });
+  if (params.forceRefresh) {
+    sp.set('refresh', '1');
+  }
+  return requestJson<GgalDualChartResponseDto>(
+    `/api/ar/ggal-specialist/dual-chart?${sp.toString()}`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    },
+  );
+}
+
 // ---------- MOTOR 6 DTOs & CLIENT ----------
 
 export type BymaClearingStrategyKindDto =

@@ -1,12 +1,14 @@
 /** Read-only IOL REST v2 L1 adapter with OAuth password/refresh-token lifecycle. */
 
 import type { MarketTickQuote } from './massiveStocksStream.js';
+import type { Bar } from '../core/types.js';
 import { isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
 import {
   RollingFeedTelemetry,
   type FeedTelemetrySnapshot,
 } from './feedsHealthMonitor.js';
 import { redactSecrets } from './runtimeCache.js';
+import { normalizeIolHistoricalBars } from './wsCoalescerAndStability.js';
 
 export const IOL_L1_POLL_INTERVAL_MS = 2_500;
 const IOL_REQUEST_TIMEOUT_MS = 5_000;
@@ -291,6 +293,48 @@ export class IolFeedAdapter {
       out.push(...(this.quotesByPanel.get(panel.id) ?? []));
     }
     return out.map((quote) => ({ ...quote }));
+  }
+
+  /**
+   * Pieza 40: serie histórica IOL para índices (p. ej. `bCBA/MERV`). Devuelve
+   * únicamente OHLC real; el volumen de un índice puede ser 0 y no se inventa.
+   */
+  public async getInstrumentHistory(
+    rawSymbol: string,
+    options: { readonly market?: 'bCBA' | 'nYSE' | 'nASDAQ' | 'aMEX' | 'bCS' | 'rOFX'; readonly calendarDays?: number } = {},
+  ): Promise<readonly Bar[]> {
+    const symbol = rawSymbol.trim().toUpperCase();
+    const market = options.market ?? 'bCBA';
+    const calendarDays = Math.min(Math.max(options.calendarDays ?? 400, 30), 1_200);
+    if (symbol === '' || !/^[A-Z0-9.:_-]{1,24}$/.test(symbol)) return [];
+    const token = await this.ensureToken();
+    const toIso = (ms: number): string => new Date(ms).toISOString();
+    const fromIso = toIso(this.nowMsFn() - calendarDays * 86_400_000);
+    const toIsoEnd = toIso(this.nowMsFn());
+    const path = `/api/v2/${market}/Titulos/${encodeURIComponent(symbol)}/Cotizacion/seriehistorica/${encodeURIComponent(fromIso)}/${encodeURIComponent(toIsoEnd)}/sinAjustar`;
+    const startedAtMs = this.nowMsFn();
+    let response: IolHttpResponse;
+    try {
+      response = await this.fetchFn(`${this.baseUrl}${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        timeoutMs: IOL_REQUEST_TIMEOUT_MS,
+      });
+      const completedAtMs = this.nowMsFn();
+      this.httpTelemetry.record({
+        atMs: completedAtMs,
+        latencyMs: completedAtMs - startedAtMs,
+        httpStatus: response.status,
+      });
+    } catch (err: unknown) {
+      const completedAtMs = this.nowMsFn();
+      this.httpTelemetry.record({ atMs: completedAtMs, latencyMs: completedAtMs - startedAtMs });
+      throw err;
+    }
+    if (!response.ok) {
+      throw new Error(`IOL history HTTP ${String(response.status)} for ${market}/${symbol}`);
+    }
+    const body: unknown = JSON.parse(response.text);
+    return Array.isArray(body) ? normalizeIolHistoricalBars(body) : [];
   }
 
   public getCauciones(): readonly IolCaucionQuote[] {

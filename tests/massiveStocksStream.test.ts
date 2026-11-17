@@ -173,7 +173,7 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
     expect(US_STREAM_SYMBOLS.filter((s) => s.startsWith('T.'))).toHaveLength(0);
   });
 
-  it('suscribe canales explícitos T.<símbolo> por cada acción/ETF (sin wildcard T.*) conservando Q.*/AM.*, con GGAL explícito (Pieza 39)', () => {
+  it('suscribe canales explícitos T/Q/A/AM del núcleo sin wildcards Q.*/AM.* (Pieza 40)', () => {
     const h = makeHarness(['AAPL', 'MSFT', 'SPY', 'I:VIX']);
     void h.stream.start();
     expect(h.createdOptions.length).toBe(1);
@@ -181,16 +181,55 @@ describe('MassiveStocksStream — universo US completo, suscripciones T.<símbol
     expect(subs).toContain('T.AAPL');
     expect(subs).toContain('T.MSFT');
     expect(subs).toContain('T.SPY');
-    expect(subs).toContain('Q.*');
-    expect(subs).toContain('AM.*');
+    expect(subs).not.toContain('Q.*');
+    expect(subs).not.toContain('AM.*');
     expect(subs).not.toContain('T.*');
-    // Pieza 39 (cambio intencional): GGAL ADR se suscribe explícitamente para
-    // el streaming tick-by-tick del GGAL Specialist -> T.GGAL se une al set
-    // (antes: ['T.AAPL','T.MSFT','T.SPY']) junto con A.GGAL y AM.GGAL.
+    // Pieza 40 (contrato actualizado): GGAL permanece explícito y cada símbolo
+    // del núcleo usa canales T/Q/A/AM sin arrastrar el universo completo.
     expect(subs.filter((s) => s.startsWith('T.')).sort()).toEqual(['T.AAPL', 'T.GGAL', 'T.MSFT', 'T.SPY']);
     expect(subs).toContain('A.GGAL');
     expect(subs).toContain('AM.GGAL');
+    expect(subs).toContain('Q.GGAL');
     h.stream.stop();
+  });
+
+  it('agrega y libera suscripciones dinámicas bajo demanda sin tocar el núcleo (Pieza 40)', () => {
+    const subscribeCalls: string[][] = [];
+    const unsubscribeCalls: string[][] = [];
+    const stream = new MassiveStocksStream({
+      apiKey: 'k_dynamic_test',
+      symbols: ['AAPL', 'SPY'],
+      coreSymbols: ['AAPL', 'SPY'],
+      fetchFn: () => Promise.resolve({ ok: true, status: 200, text: JSON.stringify({ tickers: [] }), headers: {} }),
+      createWsClientFn: () => ({
+        connect: () => Promise.resolve(),
+        subscribe: (channels: string | readonly string[]) => {
+          subscribeCalls.push(
+            Array.isArray(channels) ? channels.map((channel) => String(channel)) : [String(channels)],
+          );
+        },
+        unsubscribe: (channels: string | readonly string[]) => {
+          unsubscribeCalls.push(
+            Array.isArray(channels) ? channels.map((channel) => String(channel)) : [String(channels)],
+          );
+        },
+        close: () => undefined,
+        getSnapshot: () => ({}) as WsClientSnapshot,
+      }),
+    });
+    void stream.start();
+    stream.subscribeSymbols(['TSLA']);
+    expect(stream.getDynamicSubscribedSymbols()).toEqual(['TSLA']);
+    expect(stream.getSubscribedSymbols()).toEqual(['AAPL', 'GGAL', 'SPY', 'TSLA']);
+    expect(subscribeCalls).toEqual([
+      ['T.TSLA', 'Q.TSLA', 'A.TSLA', 'AM.TSLA'],
+    ]);
+    stream.unsubscribeSymbols(['TSLA']);
+    expect(stream.getDynamicSubscribedSymbols()).toEqual([]);
+    expect(unsubscribeCalls).toEqual([
+      ['T.TSLA', 'Q.TSLA', 'A.TSLA', 'AM.TSLA'],
+    ]);
+    stream.stop();
   });
 
   it('aplica cadencia de batch 2500 ms RTH / 5000 ms extendida / 30000 ms cerrada', () => {

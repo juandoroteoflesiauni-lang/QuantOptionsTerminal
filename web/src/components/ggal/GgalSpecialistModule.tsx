@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import {
   fetchGgalClearingRisk,
-  fetchGgalDualChart,
+  fetchGgalDualChartSeries,
   fetchGgalDualDensity,
   fetchGgalFeedStatus,
   fetchGgalMarginRisk,
@@ -62,6 +62,7 @@ import {
   pushLiveOrderBook,
   tickFlashClass,
   useLivePriceFlash,
+  useMarketFocusSymbol,
   useMarketLiveStream,
 } from '../../api/useMarketLiveStream';
 
@@ -218,6 +219,7 @@ export const GgalSpecialistModule: React.FC<{
 }> = ({ onOpenOrderTicket }) => {
   const [activeTab, setActiveTab] = useState<GgalTabId>('parity-gap');
   const liveStream = useMarketLiveStream();
+  useMarketFocusSymbol('GGAL');
   const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
   const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
   const liveFx = getMarketLiveFx(liveStream);
@@ -287,6 +289,7 @@ export const GgalSpecialistModule: React.FC<{
   const dualWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dualChartRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dualChartRetryAttemptsRef = useRef(0);
+  const lastValidDualChartRef = useRef<GgalDualChartPayloadDto | null>(null);
   const loadDualChartRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
 
   const clearDualChartRetryTimer = (): void => {
@@ -298,15 +301,18 @@ export const GgalSpecialistModule: React.FC<{
 
   const scheduleDualChartRetry = (): void => {
     if (dualChartRetryTimerRef.current !== null) return;
-    if (dualChartRetryAttemptsRef.current >= 20) {
-      setDualChartError('No se pudo cargar el gráfico dual: el backend sigue calentando.');
+    if (dualChartRetryAttemptsRef.current >= 2) {
+      if (lastValidDualChartRef.current === null) {
+        setDualChartError('No se pudo cargar el gráfico dual tras dos reintentos.');
+      }
       return;
     }
+    const delayMs = dualChartRetryAttemptsRef.current === 0 ? 400 : 800;
     dualChartRetryAttemptsRef.current += 1;
     dualChartRetryTimerRef.current = setTimeout(() => {
       dualChartRetryTimerRef.current = null;
       void loadDualChartRef.current?.(false);
-    }, 1_500);
+    }, delayMs);
   };
 
   const loadDualChart = useCallback(
@@ -315,22 +321,23 @@ export const GgalSpecialistModule: React.FC<{
       dualChartAbortRef.current?.abort();
       const ctrl = new AbortController();
       dualChartAbortRef.current = ctrl;
-      // Pieza 39: caché instantánea por vista (`mode:timeframe:anchor`). Al
-      // cambiar de modo/timeframe se pinta al instante desde caché (<16 ms)
-      // sin desmontar ni vaciar el chart; la sincronización sigue en segundo
-      // plano y reemplaza el payload cuando llega.
       const cacheKey = `${coordMode}:${chartTimeframe}:${avwapAnchor}`;
       const cached = dualChartCacheRef.current.get(cacheKey);
       if (cached !== undefined) {
         setDualChartPayload(cached);
         setDualChartError(null);
         setDualChartLoading(false);
-      } else {
-        setDualChartLoading(true);
+      } else if (lastValidDualChartRef.current !== null) {
+        setDualChartPayload(lastValidDualChartRef.current);
         setDualChartError(null);
+        setDualChartLoading(true);
+      } else {
+        setDualChartPayload(null);
+        setDualChartError(null);
+        setDualChartLoading(true);
       }
       try {
-        const res = await fetchGgalDualChart({
+        const res = await fetchGgalDualChartSeries({
           coord: coordMode,
           timeframe: chartTimeframe,
           avwapAnchor,
@@ -340,22 +347,24 @@ export const GgalSpecialistModule: React.FC<{
         if (ctrl.signal.aborted) return;
         setRouterStatus(res.routerStatus);
         if (res.dualChart.status === 'UNAVAILABLE' && res.dualChart.reason === 'DUAL_CHART_WARMING_UP') {
-          setDualChartPayload(res.dualChart);
           scheduleDualChartRetry();
           return;
         }
         if (res.dualChart.status === 'OPERATIONAL') {
           dualChartRetryAttemptsRef.current = 0;
+          lastValidDualChartRef.current = res.dualChart;
           dualChartCacheRef.current.delete(cacheKey);
           dualChartCacheRef.current.set(cacheKey, res.dualChart);
-          // Tope LRU simple: la vista nunca acumula payloads sin límite.
           while (dualChartCacheRef.current.size > 24) {
             const oldestKey = dualChartCacheRef.current.keys().next().value;
             if (oldestKey === undefined) break;
             dualChartCacheRef.current.delete(oldestKey);
           }
+          setDualChartPayload(res.dualChart);
+          setDualChartError(null);
+        } else if (cached === undefined && lastValidDualChartRef.current === null) {
+          setDualChartPayload(res.dualChart);
         }
-        setDualChartPayload(res.dualChart);
       } catch {
         if (!ctrl.signal.aborted) {
           scheduleDualChartRetry();

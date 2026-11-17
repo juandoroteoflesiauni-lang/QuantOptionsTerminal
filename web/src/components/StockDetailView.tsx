@@ -66,7 +66,7 @@ import type {
   StockContextBannerInfo,
   StockExecutionDeckData,
 } from './stock-detail/stockDetailTypes';
-import { getMarketLiveClock, getMarketLiveQuote, useLivePriceFlash, useMarketLiveStream, useThrottledLiveValue } from '../api/useMarketLiveStream';
+import { getMarketLiveClock, getMarketLiveQuote, useLivePriceFlash, useMarketFocusSymbol, useMarketLiveStream, useThrottledLiveValue } from '../api/useMarketLiveStream';
 import {
   StockDetailSymbolSelector,
   type StockDetailCategory,
@@ -74,6 +74,7 @@ import {
 } from './StockDetailSymbolSelector';
 
 const CHART_TIMEFRAMES: readonly { readonly id: TerminalTimeframe; readonly label: string }[] = [
+  { id: '1m', label: '1m' },
   { id: '5m', label: '5m' },
   { id: '15m', label: '15m' },
   { id: '1h', label: '1H' },
@@ -309,6 +310,7 @@ export const StockDetailView: React.FC<{
   // Pieza 38: velas reales ARS de /api/bars?market=AR para tickers argentinos.
   const [arBarsByKey, setArBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const mainLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
   const lowerLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
   const mainCrosshairRef = useRef<((time: number | null) => void) | null>(null);
@@ -327,6 +329,7 @@ export const StockDetailView: React.FC<{
   }, [cleanTicker, runtime.overview]);
 
   const liveQuote = getMarketLiveQuote(liveStream, isArMarket ? 'AR' : 'US', cleanTicker);
+  useMarketFocusSymbol(isArMarket ? null : cleanTicker);
   const liveClock = getMarketLiveClock(liveStream);
   const liveHeaderFlash = useLivePriceFlash(liveQuote?.price ?? null);
   const throttledLivePrice = useThrottledLiveValue(liveQuote?.price ?? Number.NaN, 1_000);
@@ -340,24 +343,26 @@ export const StockDetailView: React.FC<{
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
+    setLoadError(null);
     setHighlightedLevel(null);
     if (!hasOverviewRef.current) void refreshOverview();
 
     const load = async (): Promise<void> => {
       try {
         if (isArMarket) {
-          // Pieza 38: /api/bars?market=AR devuelve el histórico real en ARS
-          // (hasta 1.250 ruedas, 1D) en paralelo con el detalle AR.
-          const [detail, arBarsRes] = await Promise.all([
-            requestStockDetail(cleanTicker, false, timeframe, controller.signal),
+          // Pieza 40: la ruta de velas es crítica. El detalle AR y la cadena de
+          // opciones se cargan en paralelo/segundo plano y no mantienen el
+          // spinner activo después de resolver las velas.
+          const barsPromise =
             timeframe === '1D'
               ? requestTerminalBars(cleanTicker, timeframe, {
                   visibleBars: 1_250,
                   market: 'AR',
                   signal: controller.signal,
                 })
-              : Promise.resolve(null),
-          ]);
+              : Promise.resolve(null);
+          const detailPromise = requestStockDetail(cleanTicker, false, timeframe, controller.signal);
+          const [detail, arBarsRes] = await Promise.all([detailPromise, barsPromise]);
           if (controller.signal.aborted) return;
           if (arBarsRes) {
             setArBarsByKey((prev) => ({
@@ -365,24 +370,33 @@ export const StockDetailView: React.FC<{
               [`${cleanTicker}:${timeframe}`]: arBarsRes,
             }));
           }
-          if (AR_BYMA_OPTIONS_ELIGIBLE.has(cleanTicker) || (detail?.relatedOptionsCount ?? 0) > 0) {
-            await requestOptionsChain(cleanTicker);
+          setLoading(false);
+          void requestOptionsChain(cleanTicker).catch(() => undefined);
+          if (detail === null && arBarsRes === null) {
+            setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
           }
         } else {
-          const [barsRes] = await Promise.all([
-            requestTerminalBars(cleanTicker, timeframe, {
-              visibleBars: timeframe === '1D' ? 1_250 : 1_000,
-              signal: controller.signal,
-            }),
-            requestUsSnapshot(cleanTicker, { signal: controller.signal }),
-          ]);
+          const barsPromise = requestTerminalBars(cleanTicker, timeframe, {
+            visibleBars: timeframe === '1D' ? 1_250 : 1_000,
+            signal: controller.signal,
+          });
+          void requestUsSnapshot(cleanTicker, { signal: controller.signal }).catch(() => undefined);
+          const barsRes = await barsPromise;
           if (controller.signal.aborted) return;
           if (barsRes) {
             setUsBarsByKey((prev) => ({
               ...prev,
               [`${cleanTicker}:${timeframe}`]: barsRes,
             }));
+          } else {
+            setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
           }
+          setLoading(false);
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setLoadError(`Sincronización interrumpida para ${cleanTicker} (${timeframe}).`);
+          setLoading(false);
         }
       } finally {
         if (!controller.signal.aborted) setLoading(false);
@@ -1239,6 +1253,9 @@ export const StockDetailView: React.FC<{
               </button>
             ))}
             {loading && <span className="ml-1 font-mono-num text-[10px] text-[#8B7CF6]">Sincronizando…</span>}
+            {loadError !== null && (
+              <span className="ml-1 font-mono-num text-[10px] text-[#F23645]">{loadError}</span>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">

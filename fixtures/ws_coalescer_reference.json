@@ -1,0 +1,370 @@
+{
+  "ar_intraday_fallback": {
+    "1D": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": null,
+      "requestedTimeframe": "1D"
+    },
+    "1m": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_1M_BARS_AR",
+      "requestedTimeframe": "1m"
+    },
+    "5m": {
+      "effectiveTimeframe": "5m",
+      "fallbackReason": null,
+      "requestedTimeframe": "5m"
+    }
+  },
+  "coalesce_latest": {
+    "expected": {
+      "bar_update:stocks:SPY": {
+        "key": "bar_update:stocks:SPY",
+        "value": 4.0
+      },
+      "trade:stocks:NVDA": {
+        "key": "trade:stocks:NVDA",
+        "value": 2.0
+      },
+      "trade:stocks:SPY": {
+        "key": "trade:stocks:SPY",
+        "value": 3.0
+      }
+    },
+    "input": [
+      {
+        "key": "trade:stocks:SPY",
+        "value": 1.0
+      },
+      {
+        "key": "trade:stocks:NVDA",
+        "value": 2.0
+      },
+      {
+        "key": "trade:stocks:SPY",
+        "value": 3.0
+      },
+      {
+        "key": "bar_update:stocks:SPY",
+        "value": 4.0
+      }
+    ]
+  },
+  "iol_history": {
+    "expected": [
+      {
+        "close": 2848945.27,
+        "high": 2880639.69,
+        "low": 2812730.5,
+        "open": 2835603.73,
+        "time": 1767618000,
+        "volume": 0.0,
+        "vw": 2845000.0
+      },
+      {
+        "close": 2835843.0,
+        "high": 2864156.5,
+        "low": 2798086.0,
+        "open": 2848945.27,
+        "time": 1767704400,
+        "volume": 0.0
+      }
+    ],
+    "firstTimeSec": 1767618000,
+    "input": [
+      {
+        "apertura": 2835603.73,
+        "fechaHora": "2026-01-05T10:00:00",
+        "maximo": 2880639.69,
+        "minimo": 2812730.5,
+        "precioPromedio": 2845000.0,
+        "ultimoPrecio": 2848945.27,
+        "volumenNominal": null
+      },
+      {
+        "apertura": 2848945.27,
+        "fechaHora": "2026-01-06T10:00:00",
+        "maximo": 2864156.5,
+        "minimo": 2798086.0,
+        "ultimoPrecio": 2835843.0,
+        "volumenNominal": 0
+      },
+      {
+        "apertura": 999.0,
+        "fechaHora": "2026-01-06T10:00:00",
+        "maximo": 1000.0,
+        "minimo": 998.0,
+        "ultimoPrecio": 999.5,
+        "volumenNominal": 1
+      }
+    ]
+  },
+  "massive_core": {
+    "channelsBySymbol": {
+      "AAPL": [
+        "T.AAPL",
+        "Q.AAPL",
+        "A.AAPL",
+        "AM.AAPL"
+      ],
+      "AMZN": [
+        "T.AMZN",
+        "Q.AMZN",
+        "A.AMZN",
+        "AM.AMZN"
+      ],
+      "BBAR": [
+        "T.BBAR",
+        "Q.BBAR",
+        "A.BBAR",
+        "AM.BBAR"
+      ],
+      "BMA": [
+        "T.BMA",
+        "Q.BMA",
+        "A.BMA",
+        "AM.BMA"
+      ],
+      "CEPU": [
+        "T.CEPU",
+        "Q.CEPU",
+        "A.CEPU",
+        "AM.CEPU"
+      ],
+      "CRESY": [
+        "T.CRESY",
+        "Q.CRESY",
+        "A.CRESY",
+        "AM.CRESY"
+      ],
+      "DIA": [
+        "T.DIA",
+        "Q.DIA",
+        "A.DIA",
+        "AM.DIA"
+      ],
+      "EDN": [
+        "T.EDN",
+        "Q.EDN",
+        "A.EDN",
+        "AM.EDN"
+      ],
+      "EWZ": [
+        "T.EWZ",
+        "Q.EWZ",
+        "A.EWZ",
+        "AM.EWZ"
+      ],
+      "GGAL": [
+        "T.GGAL",
+        "Q.GGAL",
+        "A.GGAL",
+        "AM.GGAL"
+      ],
+      "GOOGL": [
+        "T.GOOGL",
+        "Q.GOOGL",
+        "A.GOOGL",
+        "AM.GOOGL"
+      ],
+      "IBIT": [
+        "T.IBIT",
+        "Q.IBIT",
+        "A.IBIT",
+        "AM.IBIT"
+      ],
+      "IWM": [
+        "T.IWM",
+        "Q.IWM",
+        "A.IWM",
+        "AM.IWM"
+      ],
+      "KO": [
+        "T.KO",
+        "Q.KO",
+        "A.KO",
+        "AM.KO"
+      ],
+      "LOMA": [
+        "T.LOMA",
+        "Q.LOMA",
+        "A.LOMA",
+        "AM.LOMA"
+      ],
+      "MELI": [
+        "T.MELI",
+        "Q.MELI",
+        "A.MELI",
+        "AM.MELI"
+      ],
+      "META": [
+        "T.META",
+        "Q.META",
+        "A.META",
+        "AM.META"
+      ],
+      "MSFT": [
+        "T.MSFT",
+        "Q.MSFT",
+        "A.MSFT",
+        "AM.MSFT"
+      ],
+      "NVDA": [
+        "T.NVDA",
+        "Q.NVDA",
+        "A.NVDA",
+        "AM.NVDA"
+      ],
+      "PAM": [
+        "T.PAM",
+        "Q.PAM",
+        "A.PAM",
+        "AM.PAM"
+      ],
+      "QQQ": [
+        "T.QQQ",
+        "Q.QQQ",
+        "A.QQQ",
+        "AM.QQQ"
+      ],
+      "SPY": [
+        "T.SPY",
+        "Q.SPY",
+        "A.SPY",
+        "AM.SPY"
+      ],
+      "SUPV": [
+        "T.SUPV",
+        "Q.SUPV",
+        "A.SUPV",
+        "AM.SUPV"
+      ],
+      "TGS": [
+        "T.TGS",
+        "Q.TGS",
+        "A.TGS",
+        "AM.TGS"
+      ],
+      "TSLA": [
+        "T.TSLA",
+        "Q.TSLA",
+        "A.TSLA",
+        "AM.TSLA"
+      ],
+      "VIXY": [
+        "T.VIXY",
+        "Q.VIXY",
+        "A.VIXY",
+        "AM.VIXY"
+      ],
+      "YPF": [
+        "T.YPF",
+        "Q.YPF",
+        "A.YPF",
+        "AM.YPF"
+      ]
+    },
+    "forbiddenWildcards": [
+      "Q.*",
+      "AM.*",
+      "T.*"
+    ],
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "IWM",
+      "DIA",
+      "VIXY",
+      "GGAL",
+      "YPF",
+      "BMA",
+      "PAM",
+      "BBAR",
+      "SUPV",
+      "TGS",
+      "CEPU",
+      "CRESY",
+      "EDN",
+      "LOMA",
+      "MELI",
+      "NVDA",
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "META",
+      "TSLA",
+      "GOOGL",
+      "KO",
+      "EWZ",
+      "IBIT"
+    ]
+  },
+  "massive_dynamic_leases": {
+    "coreSymbols": [
+      "SPY",
+      "QQQ",
+      "IWM",
+      "DIA",
+      "VIXY",
+      "GGAL",
+      "YPF",
+      "BMA",
+      "PAM",
+      "BBAR",
+      "SUPV",
+      "TGS",
+      "CEPU",
+      "CRESY",
+      "EDN",
+      "LOMA",
+      "MELI",
+      "NVDA",
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "META",
+      "TSLA",
+      "GOOGL",
+      "KO",
+      "EWZ",
+      "IBIT"
+    ],
+    "expected": {},
+    "operations": [
+      {
+        "action": "acquire",
+        "owner": "ws-1",
+        "symbol": "TSLA"
+      },
+      {
+        "action": "acquire",
+        "owner": "ws-2",
+        "symbol": "TSLA"
+      },
+      {
+        "action": "acquire",
+        "owner": "ws-1",
+        "symbol": "AAPL"
+      },
+      {
+        "action": "release",
+        "owner": "ws-1",
+        "symbol": "TSLA"
+      },
+      {
+        "action": "release",
+        "owner": "ws-1",
+        "symbol": "AAPL"
+      }
+    ]
+  },
+  "meta": {
+    "closeTimeoutMs": 4000,
+    "focusIntervalMs": 50,
+    "generalIntervalMs": 100,
+    "maxGgalChartRetries": 2,
+    "name": "Pieza 40 coalescing, dynamic Massive WS and stability reference",
+    "precisionTolerance": 1e-09,
+    "retryBackoffBaseMs": 400
+  }
+}

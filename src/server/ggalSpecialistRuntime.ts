@@ -5074,8 +5074,10 @@ export class GgalSpecialistRuntime {
     readonly timeframe: GgalDualChartTimeframe;
     readonly avwapAnchor: GgalAvwapAnchorMode;
     readonly forceRefresh: boolean;
+    /** Pieza 40: ruta rápida solo con velas/EMA/AVWAP, sin cálculos pesados. */
+    readonly light?: boolean;
   }): Promise<GgalDualChartComputation> {
-    const key = `${opts.coordMode}|${opts.timeframe}|${opts.avwapAnchor}`;
+    const key = `${opts.coordMode}|${opts.timeframe}|${opts.avwapAnchor}|${opts.light === true ? 'light' : 'full'}`;
     const nowMs = this.nowMsFn();
     const cached = this.dualChartCache.get(key);
 
@@ -5181,12 +5183,211 @@ export class GgalSpecialistRuntime {
     };
   }
 
-  private async computeDualChart(opts: {
+  /**
+   * Pieza 40: ruta rápida de velas. No consulta peers, estructura, cono ni
+   * perfil griego; solo series esenciales para pintar el chart en <300 ms.
+   */
+  private async computeDualChartLight(opts: {
     readonly coordMode: GgalDualChartCoordMode;
     readonly timeframe: GgalDualChartTimeframe;
     readonly avwapAnchor: GgalAvwapAnchorMode;
     readonly forceRefresh: boolean;
   }): Promise<GgalDualChartComputation> {
+    const runtimeTf =
+      opts.timeframe === '1H' ? '1h' : opts.timeframe === '4H' ? '4h' : opts.timeframe;
+    const [adrBarsRes, adrDailyRes, bymaDailyBars] = await Promise.all([
+      this.runtime
+        .getBars('GGAL', runtimeTf, {
+          visibleBars: DUAL_CHART_TARGET_BARS,
+          forceRefresh: opts.forceRefresh,
+        })
+        .catch(() => null),
+      opts.timeframe === '1D'
+        ? Promise.resolve(null)
+        : this.runtime
+            .getBars('GGAL', '1D', {
+              visibleBars: DUAL_CHART_TARGET_BARS,
+              forceRefresh: false,
+            })
+            .catch(() => null),
+      this.loadFullBymaGgalHistory(false),
+    ]);
+
+    const adrRawBars = adrBarsRes?.bars ?? [];
+    const adrDailyBars = opts.timeframe === '1D' ? adrRawBars : (adrDailyRes?.bars ?? adrRawBars);
+    const asOfUtcSec =
+      adrBarsRes?.asOfUtcSec ??
+      adrDailyRes?.asOfUtcSec ??
+      bymaDailyBars[bymaDailyBars.length - 1]?.timeSec ??
+      Math.floor(this.nowMsFn() / 1_000);
+
+    const lastByma = bymaDailyBars[bymaDailyBars.length - 1];
+    const lastAdr = adrDailyBars[adrDailyBars.length - 1];
+    const historicalCcl =
+      lastByma !== undefined &&
+      lastAdr !== undefined &&
+      Number.isFinite(lastByma.close) &&
+      lastByma.close > 0 &&
+      Number.isFinite(lastAdr.close) &&
+      lastAdr.close > 0
+        ? (lastByma.close * GGAL_ADR_RATIO) / lastAdr.close
+        : Number.NaN;
+
+    const convertedBars: GgalChartBarPoint[] = [];
+    if (opts.coordMode === 'ARS_BYMA') {
+      if (opts.timeframe === '1D') {
+        for (const b of bymaDailyBars) {
+          const bar = convertOhlcBarToCoord(b, null, 'ARS_BYMA');
+          if (bar !== null) convertedBars.push(bar);
+        }
+      } else if (adrRawBars.length > 0 && Number.isFinite(historicalCcl) && historicalCcl > 0) {
+        const factor = historicalCcl / GGAL_ADR_RATIO;
+        for (const b of adrRawBars) {
+          convertedBars.push({
+            timeSec: b.time,
+            open: b.open * factor,
+            high: b.high * factor,
+            low: b.low * factor,
+            close: b.close * factor,
+            volume: b.volume * GGAL_ADR_RATIO,
+          });
+        }
+      }
+    } else if (opts.coordMode === 'USD_ADR_NASDAQ') {
+      for (const b of adrRawBars) {
+        const bar = convertOhlcBarToCoord(
+          null,
+          { timeSec: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
+          'USD_ADR_NASDAQ',
+        );
+        if (bar !== null) convertedBars.push(bar);
+      }
+    } else {
+      const adrByDate = new Map<string, GgalChartBarPoint>();
+      for (const b of adrDailyBars) {
+        const dateKey = formatIsoUtcFromSec(b.time).slice(0, 10);
+        adrByDate.set(dateKey, {
+          timeSec: b.time,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+          volume: b.volume,
+        });
+      }
+      for (const b of bymaDailyBars) {
+        const dateKey = formatIsoUtcFromSec(b.timeSec).slice(0, 10);
+        const bar = convertOhlcBarToCoord(b, adrByDate.get(dateKey) ?? null, 'RATIO_CCL');
+        if (bar !== null) convertedBars.push(bar);
+      }
+    }
+    convertedBars.sort((a, b) => a.timeSec - b.timeSec);
+    if (convertedBars.length === 0) {
+      return {
+        routerStatus: this.buildStandaloneFastRouterStatus(asOfUtcSec, 0).routerStatus,
+        dualChart: toJsonSafe({
+          status: 'UNAVAILABLE',
+          asOfUtcSec,
+          coordMode: opts.coordMode,
+          timeframe: opts.timeframe,
+          avwapAnchor: opts.avwapAnchor,
+          reason: `NO_ALIGNED_BARS_FOR_${opts.coordMode}_${opts.timeframe}`,
+          l2Ladder: this.buildStandaloneFastRouterStatus(asOfUtcSec, 0).l2Ladder,
+        } satisfies GgalDualChartPayload),
+      };
+    }
+
+    let anchorIdx = 0;
+    const lastBar = convertedBars[convertedBars.length - 1];
+    if (lastBar !== undefined) {
+      if (opts.avwapAnchor === 'MONTH_START') {
+        const lastMonth = formatIsoUtcFromSec(lastBar.timeSec).slice(0, 7);
+        const found = convertedBars.findIndex((b) => formatIsoUtcFromSec(b.timeSec).slice(0, 7) === lastMonth);
+        anchorIdx = found >= 0 ? found : 0;
+      } else if (opts.avwapAnchor === 'LAST_BIMONTHLY_EXPIRY') {
+        const found = convertedBars.findIndex((b) => b.timeSec >= lastBar.timeSec - 45 * 86_400);
+        anchorIdx = found >= 0 ? found : 0;
+      } else if (opts.avwapAnchor === 'LAST_EARNINGS') {
+        const found = convertedBars.findIndex((b) => b.timeSec >= lastBar.timeSec - 90 * 86_400);
+        anchorIdx = found >= 0 ? found : 0;
+      } else {
+        let maxGap = -1;
+        for (let i = 1; i < convertedBars.length; i += 1) {
+          const prev = convertedBars[i - 1];
+          const curr = convertedBars[i];
+          if (prev === undefined || curr === undefined || prev.close <= 0) continue;
+          const gap = Math.abs(curr.open - prev.close) / prev.close;
+          if (gap > maxGap) {
+            maxGap = gap;
+            anchorIdx = i;
+          }
+        }
+      }
+    }
+
+    const avwapAnchorUtcSec = convertedBars[anchorIdx]?.timeSec ?? convertedBars[0]?.timeSec ?? asOfUtcSec;
+    const avwapBands = computeAnchoredVwapSeries(convertedBars, avwapAnchorUtcSec);
+    const ema9 = computeEmaSeries(convertedBars, 9);
+    const ema21 = computeEmaSeries(convertedBars, 21);
+    const ema50 = computeEmaSeries(convertedBars, 50);
+    const ema200 = computeEmaSeries(convertedBars, 200);
+    const fastRouter = this.buildStandaloneFastRouterStatus(asOfUtcSec, 0);
+    const marketTz = opts.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+    const volumeProfile = computeVolumeProfile(convertedBars, 32, marketTz);
+    const zones = this.detectUnmitigatedZones(convertedBars);
+    const tickMode =
+      opts.coordMode === 'USD_ADR_NASDAQ'
+        ? 'ADR'
+        : opts.coordMode === 'ARS_BYMA'
+          ? 'ARS'
+          : 'CCL';
+    this.runtime
+      .getGgalTickEngine()
+      .setAvwapAnchor(tickMode, runtimeTf, avwapAnchorUtcSec);
+
+    return {
+      routerStatus: fastRouter.routerStatus,
+      dualChart: toJsonSafe({
+        status: 'OPERATIONAL',
+        asOfUtcSec,
+        coordMode: opts.coordMode,
+        timeframe: opts.timeframe,
+        avwapAnchor: opts.avwapAnchor,
+        avwapAnchorUtcSec,
+        spotPrice: lastBar?.close ?? Number.NaN,
+        cclRate: historicalCcl,
+        callWall: Number.NaN,
+        putWall: Number.NaN,
+        zeroGamma: Number.NaN,
+        maxPain: Number.NaN,
+        bars: convertedBars,
+        ema9,
+        ema21,
+        ema50,
+        ema200,
+        avwapBands,
+        volumeProfile,
+        zones,
+        expectedCone: [],
+        subPaneSeries: [],
+        greekProfile: [],
+        l2Ladder: fastRouter.l2Ladder,
+        confluenceAlerts: [],
+        reason: null,
+      } satisfies GgalDualChartPayload),
+    };
+  }
+
+  private async computeDualChart(opts: {
+    readonly coordMode: GgalDualChartCoordMode;
+    readonly timeframe: GgalDualChartTimeframe;
+    readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly forceRefresh: boolean;
+    readonly light?: boolean;
+  }): Promise<GgalDualChartComputation> {
+    if (opts.light === true) {
+      return this.computeDualChartLight(opts);
+    }
     const runtimeTf =
       opts.timeframe === '1H' ? '1h' : opts.timeframe === '4H' ? '4h' : opts.timeframe;
     const peerTimeout = <T>(p: Promise<T>, ms = 2_500): Promise<T | null> =>

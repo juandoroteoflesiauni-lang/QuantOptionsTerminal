@@ -701,11 +701,17 @@ describe('serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offl
       },
     ]);
 
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 120));
     client.close();
 
-    const tradeMsg = receivedMessages.find((m) => m['type'] === 'trade');
-    const barUpdateMsg = receivedMessages.find((m) => m['type'] === 'bar_update');
+    const batchMessages = receivedMessages.filter((m) => m['type'] === 'market_batch');
+    const tradeMsg = batchMessages
+      .flatMap((batch) => (Array.isArray(batch['events']) ? (batch['events'] as Record<string, unknown>[]) : []))
+      .find((event) => event['type'] === 'trade');
+    const barUpdateMsg = batchMessages
+      .flatMap((batch) => (Array.isArray(batch['events']) ? (batch['events'] as Record<string, unknown>[]) : []))
+      .find((event) => event['type'] === 'bar_update');
+    expect(batchMessages.length).toBeGreaterThan(0);
     expect(tradeMsg).toBeDefined();
     expect(barUpdateMsg).toBeDefined();
     expect(tradeMsg?.['time']).toBe(fixedNowSec);

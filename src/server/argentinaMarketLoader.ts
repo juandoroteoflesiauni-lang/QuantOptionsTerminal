@@ -175,6 +175,7 @@ import { redactSecrets, SingleFlightRuntimeCache } from './runtimeCache.js';
 import { emptyFeedTelemetrySnapshot } from './feedsHealthMonitor.js';
 import { BmbFeedAdapter, isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
 import { IolFeedAdapter } from './iolFeedAdapter.js';
+import { resolveArIntradayFallback } from './wsCoalescerAndStability.js';
 import { ArRealtimeBus } from './arRealtimeBus.js';
 import type { MarketTickQuote } from './massiveStocksStream.js';
 
@@ -494,6 +495,10 @@ export interface ArHistoricalBarDto {
 export type ArTerminalBarsResponse = TerminalBarsResponse & {
   readonly market: 'AR';
   readonly currency: 'ARS';
+  /** Pieza 40: fallback explícito 1m -> 1D para activos sin velas BYMA 1m. */
+  readonly requestedTimeframe?: Timeframe;
+  readonly effectiveTimeframe?: Timeframe;
+  readonly fallbackReason?: string;
 };
 
 export type JsonSafe<T> = T extends number
@@ -5790,7 +5795,9 @@ export class ArgentinaMarketRuntime {
     let enrichedGeneral = overview.generalPanelStocks;
     let enrichedCedears = overview.cedears;
     let arPanelAnalytics: EquityPanelAnalyticsDto | null =
-      (this.computedCache.peek('ar:panel:acciones:analytics')?.value as EquityPanelAnalyticsDto | undefined) ??
+      (this.computedCache.peek('ar:panel:acciones:analytics')?.value as
+        | { readonly analytics?: EquityPanelAnalyticsDto }
+        | undefined)?.analytics ??
       null;
     let usEquityPanel: EquityPanelAnalyticsDto | null = null;
 
@@ -6313,6 +6320,37 @@ export class ArgentinaMarketRuntime {
     return this.lazyUsRuntime;
   }
 
+  /** Pieza 40: serie histórica MERV de IOL; fallback explícito al panel EW. */
+  private async getIolMervBenchmarkBars(
+    forceRefresh = false,
+  ): Promise<{ readonly bars: readonly Bar[]; readonly error: string | null }> {
+    const cached = await this.computedCache.getOrCompute(
+      'iol:merv:benchmark',
+      async () => {
+        try {
+          const bars = await this.iolClient.getInstrumentHistory('MERV', {
+            market: 'bCBA',
+            calendarDays: 400,
+          });
+          if (bars.length < 60) {
+            return {
+              bars: [] as readonly Bar[],
+              error: 'IOL MERV history returned fewer than 60 sessions',
+            };
+          }
+          return { bars, error: null };
+        } catch (err: unknown) {
+          return {
+            bars: [] as readonly Bar[],
+            error: redactSecrets(err instanceof Error ? err.message : String(err), this.secrets),
+          };
+        }
+      },
+      { forceRefresh, ttlMs: AR_HIST_WEEKEND_TTL_MS },
+    );
+    return cached.value as { readonly bars: readonly Bar[]; readonly error: string | null };
+  }
+
   private async buildArPanelAnalytics(params: {
     readonly overview: ArOverviewResponse;
     readonly argStocks: readonly NormalizedQuoteRow[];
@@ -6351,7 +6389,15 @@ export class ArgentinaMarketRuntime {
             liderSeries.push(res.bars);
           }
         }
-        const benchmarkBars = this.buildEqualWeightIndexBars(liderSeries);
+        const mervRes = await this.getIolMervBenchmarkBars(params.forceRefresh);
+        if (mervRes.error !== null) {
+          errors.push(mervRes.error);
+        }
+        const benchmarkBars =
+          mervRes.bars.length > 0
+            ? mervRes.bars
+            : this.buildEqualWeightIndexBars(liderSeries);
+        const benchmarkSymbol = mervRes.bars.length > 0 ? 'MERV' : 'PANEL_LIDER_EW';
 
         const enrichList = (list: readonly ArStockDto[]): readonly ArStockDto[] =>
           list.map((dto) => {
@@ -6447,7 +6493,7 @@ export class ArgentinaMarketRuntime {
           generalPanelStocks: enrichedGeneral,
           analytics: {
             asOfUtcSec: params.nowSec,
-            benchmarkSymbol: 'PANEL_LIDER_EW',
+            benchmarkSymbol,
             panelLabel: 'BYMA · Panel Líder y General (Data912)',
             currency: 'ARS' as const,
             rows: panelRows,
@@ -6879,7 +6925,9 @@ export class ArgentinaMarketRuntime {
     if (symbol === '' || !/^[A-Z0-9.:_-]{1,24}$/.test(symbol)) {
       throw new RuntimeNoDataError('INVALID_SYMBOL', `Invalid AR ticker "${rawSymbol}"`, this.secrets, 400);
     }
-    const timeframe = parseTimeframe(rawTimeframe, this.secrets);
+    const parsedTimeframe = parseTimeframe(rawTimeframe, this.secrets);
+    const fallback = resolveArIntradayFallback(parsedTimeframe);
+    const timeframe = fallback.effectiveTimeframe;
     if (timeframe !== '1D') {
       throw new RuntimeNoDataError(
         'NO_BARS_DATA',
@@ -6907,9 +6955,17 @@ export class ArgentinaMarketRuntime {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const visibleBars = Math.min(Math.max(options.visibleBars ?? 1_250, 20), 1_250);
     const full = computeArTerminalBarsPayload(symbol, timeframe, bars, nowSec);
+    const fallbackFields =
+      fallback.fallbackReason === null
+        ? {}
+        : {
+            requestedTimeframe: fallback.requestedTimeframe,
+            effectiveTimeframe: fallback.effectiveTimeframe,
+            fallbackReason: fallback.fallbackReason,
+          };
     assertJsonSafeSerialized(full);
     const startSlice = Math.max(0, bars.length - visibleBars);
-    if (startSlice === 0) return full;
+    if (startSlice === 0) return { ...full, ...fallbackFields };
     const fullOverlays = full.overlays;
     const sliced: ArTerminalBarsResponse = {
       ...full,
@@ -6938,7 +6994,7 @@ export class ArgentinaMarketRuntime {
       },
     };
     assertJsonSafeSerialized(sliced);
-    return sliced;
+    return { ...sliced, ...fallbackFields };
   }
 
   public async getStockDetail(

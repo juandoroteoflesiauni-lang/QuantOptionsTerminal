@@ -366,12 +366,15 @@ export function useFeedsHealthPulse(): FeedsHealthController {
 
   const reconnectProvider = useCallback(async (provider: FeedProviderId): Promise<void> => {
     setReconnectingProvider(provider);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4_500);
     try {
       const response = await fetch('/api/system/feeds-reconnect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', accept: 'application/json' },
         cache: 'no-store',
         body: JSON.stringify({ provider }),
+        signal: controller.signal,
       });
       const raw: unknown = await response.json().catch(() => null);
       if (!response.ok) {
@@ -383,12 +386,14 @@ export function useFeedsHealthPulse(): FeedsHealthController {
       const result = raw as FeedReconnectResult;
       setLastReconnectOk(Boolean(result.ok));
       setLastReconnectDetail(result.detail);
-      await refresh();
+      // La reconexión continúa en el backend; la UI no espera a que termine.
+      void refresh().catch(() => undefined);
     } catch (err: unknown) {
       setLastReconnectOk(false);
       setLastReconnectDetail(err instanceof Error ? err.message : String(err));
     } finally {
-      setReconnectingProvider(null);
+      clearTimeout(timeoutId);
+      setReconnectingProvider((current) => (current === provider ? null : current));
     }
   }, [refresh]);
 

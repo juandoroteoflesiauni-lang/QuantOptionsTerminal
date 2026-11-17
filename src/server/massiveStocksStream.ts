@@ -20,6 +20,7 @@ import {
   RollingFeedTelemetry,
   type FeedTelemetrySnapshot,
 } from './feedsHealthMonitor.js';
+import { buildMassiveWsChannels } from './wsCoalescerAndStability.js';
 
 export const MASSIVE_RTH_BATCH_INTERVAL_MS = 2_500;
 export const MASSIVE_EXTENDED_BATCH_INTERVAL_MS = 5_000;
@@ -68,6 +69,13 @@ export interface MassiveStocksStreamDeps {
    * Inyección explícita; si no se provee, los batches REST usan `apiKey`.
    */
   readonly restApiKeyFn?: () => string;
+  /**
+   * Pieza 40: núcleo líquido suscripto por WS. El universo completo sigue
+   * alimentando los batches REST, pero el socket ya no usa wildcards.
+   */
+  readonly coreSymbols?: readonly string[];
+  /** Pieza 40: inyectable para tests del cierre acotado en reconexión. */
+  readonly sleepFn?: (ms: number) => Promise<void>;
 }
 
 interface MutableQuote {
@@ -176,6 +184,8 @@ export class MassiveStocksStream {
   private readonly restApiKeyFn: (() => string) | null;
   private readonly symbols: ReadonlySet<string>;
   private readonly stockSymbols: readonly string[];
+  private readonly coreSymbols: ReadonlySet<string>;
+  private readonly dynamicSymbols = new Set<string>();
   private readonly fetchFn: FetchFn;
   private readonly createWsClientFn: MassiveStocksStreamDeps['createWsClientFn'];
   private readonly nowMsFn: () => number;
@@ -188,6 +198,7 @@ export class MassiveStocksStream {
   private readonly onErrorCb: MassiveStocksStreamDeps['onError'];
   private readonly quotes = new Map<string, MutableQuote>();
   private readonly wsTickAtMs = new Map<string, number>();
+  private readonly sleepFn: (ms: number) => Promise<void>;
   private client: MassiveStreamWsClient | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
@@ -201,6 +212,13 @@ export class MassiveStocksStream {
     this.restApiKeyFn = deps.restApiKeyFn ?? null;
     this.symbols = new Set(deps.symbols.map((symbol) => symbol.trim().toUpperCase()).filter((s) => s !== ''));
     this.stockSymbols = [...this.symbols].filter((symbol) => !symbol.startsWith('I:')).sort();
+    const requestedCore = deps.coreSymbols ?? this.stockSymbols;
+    const coreCandidates = new Set([...requestedCore.map((symbol) => symbol.trim().toUpperCase()), 'GGAL']);
+    this.coreSymbols = new Set(
+      [...coreCandidates].filter(
+        (symbol) => symbol !== '' && (this.symbols.has(symbol) || symbol === 'GGAL'),
+      ),
+    );
     this.fetchFn = deps.fetchFn;
     this.createWsClientFn = deps.createWsClientFn;
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
@@ -208,31 +226,33 @@ export class MassiveStocksStream {
     this.onEventsCb = deps.onEvents;
     this.onStateChangeCb = deps.onStateChange;
     this.onErrorCb = deps.onError;
+    this.sleepFn =
+      deps.sleepFn ??
+      ((ms: number) =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, ms);
+        }));
   }
 
   public start(): Promise<void> {
     if (this.started) return Promise.resolve();
     this.started = true;
     try {
-      // Suscripciones explícitas por trade channel `T.<símbolo>` para todo el
-      // universo configurado (acciones/ETFs/ADRs); los wildcards Q.*/AM.* se
-      // conservan para puntas y agregados. Los índices `I:*` no tienen canal T.
-      // Pieza 39: GGAL ADR se suscribe explícitamente (T/A/AM) para el
-      // streaming tick-by-tick del GGAL Specialist (dedupe con el universo).
-      const tradeChannels = this.stockSymbols.map((symbol) => `T.${symbol}`);
-      const ggalExplicitChannels = ['T.GGAL', 'A.GGAL', 'AM.GGAL'] as const;
+      // Pieza 40: suscripción explícita del núcleo líquido. Se eliminan los
+      // wildcards Q.*/AM.* porque traían el universo completo y anulaban el
+      // ahorro del batching. Los símbolos dinámicos se agregan bajo demanda.
+      const coreStocks = [...this.coreSymbols].filter((symbol) => !symbol.startsWith('I:')).sort();
+      const channels = coreStocks.flatMap((symbol) => buildMassiveWsChannels(symbol));
       this.client = this.createWsClientFn({
         apiKey: this.apiKey,
         cluster: 'stocks',
-        initialSubscriptions: [
-          ...new Set([...tradeChannels, ...ggalExplicitChannels, 'Q.*', 'AM.*']),
-        ],
+        initialSubscriptions: [...new Set(channels)],
         autoReconnect: true,
         onEvents: (events) => {
           const configuredEvents = events.filter(
             (event) =>
               (event.ev === 'T' || event.ev === 'Q' || event.ev === 'A' || event.ev === 'AM') &&
-              (this.symbols.has(event.sym.toUpperCase()) || event.sym.toUpperCase() === 'GGAL'),
+              this.isWsSymbolAllowed(event.sym.toUpperCase()),
           );
           if (configuredEvents.length === 0) return;
           this.lastWsMessageMs = this.nowMsFn();
@@ -275,6 +295,48 @@ export class MassiveStocksStream {
     return Promise.resolve();
   }
 
+  /** Pieza 40: suscripción dinámica bajo demanda (lease del cliente enfocado). */
+  public subscribeSymbols(symbols: readonly string[]): void {
+    const added: string[] = [];
+    for (const raw of symbols) {
+      const symbol = raw.trim().toUpperCase();
+      if (
+        symbol === '' ||
+        symbol.startsWith('I:') ||
+        !/^[A-Z][A-Z0-9.-]{0,14}$/.test(symbol) ||
+        this.coreSymbols.has(symbol) ||
+        this.dynamicSymbols.has(symbol)
+      ) {
+        continue;
+      }
+      this.dynamicSymbols.add(symbol);
+      added.push(symbol);
+    }
+    if (added.length === 0 || this.client === null) return;
+    this.client.subscribe(added.flatMap((symbol) => buildMassiveWsChannels(symbol)));
+  }
+
+  /** Pieza 40: libera un lease dinámico cuando ya no lo necesita ningún cliente. */
+  public unsubscribeSymbols(symbols: readonly string[]): void {
+    const removed: string[] = [];
+    for (const raw of symbols) {
+      const symbol = raw.trim().toUpperCase();
+      if (!this.dynamicSymbols.has(symbol)) continue;
+      this.dynamicSymbols.delete(symbol);
+      removed.push(symbol);
+    }
+    if (removed.length === 0 || this.client === null) return;
+    this.client.unsubscribe(removed.flatMap((symbol) => buildMassiveWsChannels(symbol)));
+  }
+
+  public getSubscribedSymbols(): readonly string[] {
+    return [...new Set([...this.coreSymbols, ...this.dynamicSymbols])].sort();
+  }
+
+  public getDynamicSubscribedSymbols(): readonly string[] {
+    return [...this.dynamicSymbols].sort();
+  }
+
   public stop(): void {
     if (!this.started) return;
     this.started = false;
@@ -282,7 +344,18 @@ export class MassiveStocksStream {
     this.timer = null;
     const current = this.client;
     this.client = null;
-    current?.close(1000, 'server_shutdown');
+    current?.close(1000, 'stream_reconnect');
+  }
+
+  /** Pieza 40: cierre acotado para reconexión manual; nunca cuelga el caller. */
+  public async stopAndWait(closeTimeoutMs = 4_000): Promise<void> {
+    const current = this.client;
+    this.stop();
+    const attempts = Math.max(1, Math.ceil(closeTimeoutMs / 25));
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (current === null || current.getSnapshot().state === 'closed') return;
+      await this.sleepFn(25);
+    }
   }
 
   public getQuotes(): readonly MarketTickQuote[] {
@@ -296,10 +369,6 @@ export class MassiveStocksStream {
 
   public getWsSnapshot(): WsClientSnapshot | null {
     return this.client?.getSnapshot() ?? null;
-  }
-
-  public getSubscribedSymbols(): readonly string[] {
-    return [...this.stockSymbols];
   }
 
   public getFeedTelemetrySnapshot(): FeedTelemetrySnapshot {
@@ -334,6 +403,10 @@ export class MassiveStocksStream {
     };
   }
 
+  private isWsSymbolAllowed(symbol: string): boolean {
+    return this.coreSymbols.has(symbol) || this.dynamicSymbols.has(symbol);
+  }
+
   private reportError(message: string): void {
     this.lastError = message;
     this.onErrorCb?.(message);
@@ -343,7 +416,7 @@ export class MassiveStocksStream {
     for (const event of events) {
       if (event.ev !== 'T' && event.ev !== 'Q' && event.ev !== 'A' && event.ev !== 'AM') continue;
       const symbol = event.sym.toUpperCase();
-      if (!this.symbols.has(symbol)) continue;
+      if (!this.isWsSymbolAllowed(symbol)) continue;
       const existing = this.quotes.get(symbol);
       const wsTickAt = this.wsTickAtMs.get(symbol);
       const hasRecentTrade =

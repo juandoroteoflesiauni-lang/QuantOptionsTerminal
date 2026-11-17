@@ -95,6 +95,7 @@ interface ServerMessage {
   readonly type?: unknown;
   readonly sequence?: unknown;
   readonly deltaRevision?: unknown;
+  readonly delta?: unknown;
   readonly quotes?: unknown;
   readonly liveFx?: unknown;
   readonly futures?: unknown;
@@ -262,7 +263,12 @@ describe('WebSocket tick propagation', () => {
     client.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : Buffer.from(raw as Uint8Array).toString('utf-8');
       const message = JSON.parse(text) as ServerMessage;
-      if (message.type === 'TICK_DELTA' && Number.isNaN(firstTickDeltaAtMs)) {
+      if (
+        message.type === 'market_batch' &&
+        message.delta !== undefined &&
+        message.delta !== null &&
+        Number.isNaN(firstTickDeltaAtMs)
+      ) {
         firstTickDeltaAtMs = Date.now();
       }
       messages.push(message);
@@ -297,12 +303,14 @@ describe('WebSocket tick propagation', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 180));
     client.close();
 
-    const deltas = messages.filter((message) => message.type === 'TICK_DELTA');
-    expect(deltas.length).toBeGreaterThan(0);
-    const deltaWithFx = deltas.find((delta) => delta.liveFx !== undefined && delta.liveFx !== null);
+    const batches = messages.filter((message) => message.type === 'market_batch');
+    expect(batches.length).toBeGreaterThan(0);
+    const deltaWithFx = batches
+      .map((batch) => batch.delta as ServerMessage | undefined)
+      .find((delta) => delta?.liveFx !== undefined && delta.liveFx !== null);
     expect(deltaWithFx).toBeDefined();
     if (deltaWithFx === undefined) {
-      throw new Error('Expected TICK_DELTA with liveFx');
+      throw new Error('Expected market_batch delta with liveFx');
     }
     const liveFx = deltaWithFx.liveFx as LiveFxSnapshot;
     expect(liveFx.mepMedian).not.toBeNull();

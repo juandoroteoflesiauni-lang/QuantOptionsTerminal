@@ -98,6 +98,11 @@ interface ClientSubscriptionState {
   symbols: Set<string> | null;
   needsSnapshot: boolean;
   healthOnly: boolean;
+  /** Pieza 40: dueño del lease dinámico y símbolo de alta frecuencia. */
+  ownerId: string;
+  focusSymbol: string | null;
+  marketEvents: Map<string, RuntimeWsBroadcast>;
+  focusEvents: Map<string, RuntimeWsBroadcast>;
 }
 
 function isBenignSocketError(err: unknown): boolean {
@@ -239,18 +244,33 @@ function shouldSendBroadcast(
   if (event.type === 'status') {
     return true;
   }
+  const eventSymbol =
+    event.type === 'bar_update' || event.type === 'trade' || event.type === 'quote'
+      ? event.symbol
+      : '';
   if (state.symbols === null || state.symbols.size === 0 || state.symbols.has('*')) {
     return true;
   }
-  if (state.symbols.has(event.symbol)) {
+  if (state.symbols.has(eventSymbol)) {
     return true;
   }
   for (const watched of state.symbols) {
-    if (event.symbol.startsWith(`O:${watched}`)) {
+    if (eventSymbol.startsWith(`O:${watched}`)) {
       return true;
     }
   }
   return false;
+}
+
+/** Pieza 40: clave estable para latest-write-wins dentro de cada ciclo. */
+function coalesceEventKey(event: RuntimeWsBroadcast): string {
+  if (event.type === 'ggal_bar_tick') {
+    return `${event.type}:${event.mode}:${event.timeframe}:${event.symbol}`;
+  }
+  if (event.type === 'status') {
+    return `${event.type}:${event.cluster}`;
+  }
+  return `${event.type}:${event.cluster}:${event.symbol}`;
 }
 
 function extractErrorMessage(err: unknown, fallback: string): string {
@@ -314,7 +334,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   let marketTickSequence = 0;
   let deltaRevision = 0;
   let marketTickTimer: ReturnType<typeof setInterval> | null = null;
+  let focusTickTimer: ReturnType<typeof setInterval> | null = null;
   let feedsHealthTimer: ReturnType<typeof setInterval> | null = null;
+  let wsClientIdSequence = 0;
   let previousDeltaQuotes = new Map<string, (ReturnType<MarketRuntime['getLiveUsQuotes']>)[number]>();
   let previousDeltaCauciones = '';
   let previousDeltaFutures = '';
@@ -421,22 +443,52 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     client.send(JSON.stringify(pulse));
   };
 
-  const broadcastTickDelta = (): void => {
-    const payload = JSON.stringify(buildTickDelta());
+  const sendMarketBatch = (
+    client: WebSocket,
+    state: ClientSubscriptionState,
+    events: readonly RuntimeWsBroadcast[],
+    delta: ReturnType<typeof buildTickDelta> | null,
+  ): void => {
+    if (client.readyState !== WebSocket.OPEN) return;
+    if (client.bufferedAmount > 1_048_576) {
+      state.needsSnapshot = true;
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      type: 'market_batch',
+      serverTimeSec: Math.floor(Date.now() / 1_000),
+      focusSymbol: state.focusSymbol,
+      events,
+    };
+    if (delta !== null) payload['delta'] = delta;
+    client.send(JSON.stringify(payload));
+  };
+
+  const flushGeneralMarketBatches = (): void => {
+    const delta = buildTickDelta();
     for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
       const state = clientStates.get(client);
-      if (state?.healthOnly === true) continue;
-      if (client.bufferedAmount > 1_048_576) {
-        if (state !== undefined) state.needsSnapshot = true;
-        continue;
-      }
-      if (state?.needsSnapshot === true) {
+      if (state === undefined || state.healthOnly) continue;
+      if (state.needsSnapshot) {
         sendMarketTickBatch(client);
         state.needsSnapshot = false;
+        state.marketEvents.clear();
+        state.focusEvents.clear();
         continue;
       }
-      client.send(payload);
+      sendMarketBatch(client, state, [...state.marketEvents.values()], delta);
+      state.marketEvents.clear();
+    }
+  };
+
+  const flushFocusedMarketBatches = (): void => {
+    for (const client of wss.clients) {
+      const state = clientStates.get(client);
+      if (state === undefined || state.healthOnly || state.focusSymbol === null) continue;
+      const events = [...state.focusEvents.values()];
+      if (events.length === 0) continue;
+      sendMarketBatch(client, state, events, null);
+      state.focusEvents.clear();
     }
   };
 
@@ -887,11 +939,13 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         }
 
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const light = parseBooleanFlag(params.get('light'));
         const dualChart = await ggalRuntime.getDualChart({
           coordMode,
           timeframe,
           avwapAnchor,
           forceRefresh,
+          ...(light ? { light: true } : {}),
         });
         sendJson(res, 200, dualChart);
         return;
@@ -1102,7 +1156,15 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     } catch {
       healthOnly = false;
     }
-    const state: ClientSubscriptionState = { symbols: null, needsSnapshot: false, healthOnly };
+    const state: ClientSubscriptionState = {
+      symbols: null,
+      needsSnapshot: false,
+      healthOnly,
+      ownerId: `ws-${String(++wsClientIdSequence)}`,
+      focusSymbol: null,
+      marketEvents: new Map(),
+      focusEvents: new Map(),
+    };
     clientStates.set(ws, state);
     clientAlive.set(ws, true);
     ws.on('pong', () => {
@@ -1129,10 +1191,16 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       }
     }
 
+    ws.on('close', () => {
+      runtime.releaseMassiveStockOwner(state.ownerId);
+      state.marketEvents.clear();
+      state.focusEvents.clear();
+    });
+
     ws.on('message', (raw) => {
       try {
         const text = typeof raw === 'string' ? raw : Buffer.from(raw as Uint8Array).toString('utf-8');
-        const parsed = JSON.parse(text) as { readonly action?: unknown; readonly symbols?: unknown };
+        const parsed = JSON.parse(text) as { readonly action?: unknown; readonly symbols?: unknown; readonly symbol?: unknown };
         if (parsed.action === 'subscribe' && Array.isArray(parsed.symbols)) {
           const nextSet = new Set<string>();
           for (const item of parsed.symbols) {
@@ -1141,6 +1209,25 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
             }
           }
           state.symbols = nextSet.size > 0 ? nextSet : null;
+        } else if (parsed.action === 'focus' && typeof parsed.symbol === 'string') {
+          const nextFocusRaw = parsed.symbol.trim().toUpperCase();
+          const nextFocus = nextFocusRaw === '' ? null : nextFocusRaw;
+          const previousFocus = state.focusSymbol;
+          state.focusSymbol = nextFocus;
+          // Los eventos pendientes del foco anterior vuelven al carril general.
+          for (const [key, event] of state.focusEvents) {
+            if (event.type === 'status') continue;
+            if (nextFocus === null || event.symbol !== nextFocus) {
+              state.marketEvents.set(key, event);
+            }
+          }
+          state.focusEvents.clear();
+          if (previousFocus !== null && previousFocus !== nextFocus) {
+            runtime.releaseMassiveStockSymbol(previousFocus, state.ownerId);
+          }
+          if (nextFocus !== null) {
+            runtime.acquireMassiveStockSymbol(nextFocus, state.ownerId);
+          }
         }
       } catch {
         // Mensajes malformados del cliente WS se ignoran sin tumbar el socket.
@@ -1149,15 +1236,40 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   });
 
   const removeListener = runtime.addWsListener((event) => {
-    const serialized = JSON.stringify(event);
+    if (event.type === 'status') {
+      const serialized = JSON.stringify(event);
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) {
+          continue;
+        }
+        const state = clientStates.get(client);
+        if (state === undefined || state.healthOnly) continue;
+        if (shouldSendBroadcast(state, event)) {
+          client.send(serialized);
+        }
+      }
+      return;
+    }
+
+    if (
+      event.type !== 'bar_update' &&
+      event.type !== 'trade' &&
+      event.type !== 'quote'
+    ) {
+      return;
+    }
+    const key = coalesceEventKey(event);
     for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) {
+      if (client.readyState !== WebSocket.OPEN) {
         continue;
       }
-      const state = clientStates.get(client) ?? { symbols: null, needsSnapshot: false, healthOnly: false };
-      if (state.healthOnly) continue;
-      if (shouldSendBroadcast(state, event)) {
-        client.send(serialized);
+      const state = clientStates.get(client);
+      if (state === undefined || state.healthOnly) continue;
+      if (!shouldSendBroadcast(state, event)) continue;
+      if (state.focusSymbol !== null && event.symbol === state.focusSymbol) {
+        state.focusEvents.set(key, event);
+      } else {
+        state.marketEvents.set(key, event);
       }
     }
   });
@@ -1182,9 +1294,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       });
 
       marketTickTimer = setInterval(() => {
-        broadcastTickDelta();
+        flushGeneralMarketBatches();
       }, 100);
       marketTickTimer.unref();
+
+      focusTickTimer = setInterval(() => {
+        flushFocusedMarketBatches();
+      }, 50);
+      focusTickTimer.unref();
 
       feedsHealthTimer = setInterval(() => {
         const pulse = feedsHealthMonitor.getPulse();
@@ -1240,6 +1357,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     async stop(): Promise<void> {
       if (marketTickTimer !== null) clearInterval(marketTickTimer);
       marketTickTimer = null;
+      if (focusTickTimer !== null) clearInterval(focusTickTimer);
+      focusTickTimer = null;
       if (feedsHealthTimer !== null) clearInterval(feedsHealthTimer);
       feedsHealthTimer = null;
       if (heartbeatTimer !== null) clearInterval(heartbeatTimer);

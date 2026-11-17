@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   TrendingUp,
   ArrowUpRight,
@@ -57,6 +57,7 @@ import {
   getMarketLiveClock,
   isMarketLiveStreamFresh,
   tickFlashClass,
+  useMarketFocusSymbol,
   useMarketLiveStream,
   useTickFlash,
 } from '../api/useMarketLiveStream';
@@ -85,7 +86,7 @@ const RealTimeBadge: React.FC<{ readonly clock: string | null }> = ({ clock }) =
   );
 };
 
-const LogoHeatTile: React.FC<{
+const LogoHeatTileImpl: React.FC<{
   readonly ticker: string;
   readonly name?: string;
   readonly deltaPct: number;
@@ -241,6 +242,116 @@ const DayRangeBar: React.FC<{ readonly row: NormalizedPanelRow }> = ({ row }) =>
     </div>
   );
 };
+
+const formatVolMillionsShared = (value: number | null | undefined, currencyPrefix = '$ '): string => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  if (Math.abs(value) >= 1_000) return `${currencyPrefix}${fmtNum(value / 1_000, 2)}B`;
+  return `${currencyPrefix}${fmtNum(value, 1)}M`;
+};
+
+const PanelTableRow: React.FC<{
+  readonly row: NormalizedPanelRow;
+  readonly denseRowClass: string;
+  readonly currencyPrefix: string;
+  readonly onSelectRow: (symbol: string) => void;
+}> = memo(({ row, denseRowClass, currencyPrefix, onSelectRow }) => (
+  <tr
+    onClick={() => onSelectRow(row.symbol)}
+    className={`${denseRowClass} hover:bg-[#171724] transition-colors cursor-pointer`}
+  >
+    <td className="px-3 text-left">
+      <div className="flex items-center gap-2 min-w-0">
+        <CompanyLogo ticker={row.symbol} name={row.name} size={denseRowClass.includes('h-8') ? 'xs' : 'sm'} />
+        <span className="font-bold text-[#F3F4F6] tracking-tight">{row.symbol}</span>
+        <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">{row.name}</span>
+      </div>
+    </td>
+    <td className="px-2.5 font-semibold text-[#F3F4F6]">
+      <TickFlash value={Number.isFinite(row.last) ? row.last : null}>
+        {Number.isFinite(row.last) ? `${'$ '}${fmtNum(row.last, row.last >= 1000 ? 0 : 2)}` : '—'}
+      </TickFlash>
+    </td>
+    <td className="px-2.5">
+      <DeltaPill value={row.return1dPct} size="sm" />
+    </td>
+    <td className="px-2.5 text-[#A5A6BA]">{formatVolMillionsShared(row.volumeM, currencyPrefix)}</td>
+    <td className="px-3 text-right"><DayRangeBar row={row} /></td>
+  </tr>
+), (prev, next) => (
+  prev.denseRowClass === next.denseRowClass &&
+  prev.currencyPrefix === next.currencyPrefix &&
+  prev.row.symbol === next.row.symbol &&
+  prev.row.name === next.row.name &&
+  prev.row.last === next.row.last &&
+  prev.row.return1dPct === next.row.return1dPct &&
+  prev.row.volumeM === next.row.volumeM &&
+  prev.row.dayLow === next.row.dayLow &&
+  prev.row.dayHigh === next.row.dayHigh &&
+  prev.row.dayRangePos === next.row.dayRangePos
+));
+
+const RiskTableRow: React.FC<{
+  readonly row: NormalizedPanelRow;
+  readonly currencyPrefix: string;
+  readonly onSelectRow: (symbol: string) => void;
+}> = memo(({ row, currencyPrefix, onSelectRow }) => (
+  <tr
+    key={row.symbol}
+    onClick={() => onSelectRow(row.symbol)}
+    className="h-8 hover:bg-[#171724] cursor-pointer transition-colors"
+  >
+    <td className="px-3 text-left">
+      <div className="flex items-center gap-2">
+        <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
+        <span className="font-bold text-[#F3F4F6]">{row.symbol}</span>
+      </div>
+    </td>
+    <td className={`px-2.5 ${Number.isFinite(row.realizedVol30dPct) && row.realizedVol30dPct >= 45 ? 'text-[#F5B544] font-semibold' : 'text-[#D1D4DC]'}`}>
+      {Number.isFinite(row.realizedVol30dPct) ? `${fmtNum(row.realizedVol30dPct, 1)}%` : '—'}
+    </td>
+    <td
+      className={`px-2.5 font-semibold ${
+        !Number.isFinite(row.beta)
+          ? 'text-[#6D6D84]'
+          : row.beta >= 1.25
+            ? 'text-[#8B7CF6]'
+            : row.beta < 0.7
+              ? 'text-[#38BDF8]'
+              : 'text-[#D1D4DC]'
+      }`}
+    >
+      {fmtNum(row.beta, 2)}
+    </td>
+    <td className="px-2.5"><DeltaPill value={row.return30dPct} size="sm" /></td>
+    <td className="px-2.5"><DeltaPill value={row.returnYtdOr252dPct} size="sm" /></td>
+    <td className="px-3 text-[#A5A6BA]">{formatVolMillionsShared(row.avgVolume40dM, currencyPrefix)}</td>
+  </tr>
+), (prev, next) => (
+  prev.currencyPrefix === next.currencyPrefix &&
+  prev.row.symbol === next.row.symbol &&
+  prev.row.name === next.row.name &&
+  prev.row.realizedVol30dPct === next.row.realizedVol30dPct &&
+  prev.row.beta === next.row.beta &&
+  prev.row.return30dPct === next.row.return30dPct &&
+  prev.row.returnYtdOr252dPct === next.row.returnYtdOr252dPct &&
+  prev.row.avgVolume40dM === next.row.avgVolume40dM
+));
+
+const areLogoHeatTilePropsEqual = (
+  prev: React.ComponentProps<typeof LogoHeatTileImpl>,
+  next: React.ComponentProps<typeof LogoHeatTileImpl>,
+): boolean => (
+  prev.ticker === next.ticker &&
+  prev.name === next.name &&
+  prev.deltaPct === next.deltaPct &&
+  prev.price === next.price &&
+  prev.priceValue === next.priceValue
+);
+
+const LogoHeatTile: React.FC<React.ComponentProps<typeof LogoHeatTileImpl>> = memo(
+  LogoHeatTileImpl,
+  areLogoHeatTilePropsEqual,
+);
 
 const EquitySixPanelsGrid: React.FC<{
   readonly mode: 'AR' | 'US';
@@ -416,35 +527,13 @@ const EquitySixPanelsGrid: React.FC<{
             </tr>
           ) : (
             list.map((r) => (
-              <tr
+              <PanelTableRow
                 key={r.symbol}
-                onClick={() => onSelectRow(r.symbol)}
-                className={`${denseRowClass} hover:bg-[#171724] transition-colors cursor-pointer`}
-              >
-                <td className="px-3 text-left">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <CompanyLogo
-                      ticker={r.symbol}
-                      name={r.name}
-                      size={denseRowClass.includes('h-8') ? 'xs' : 'sm'}
-                    />
-                    <span className="font-bold text-[#F3F4F6] tracking-tight">{r.symbol}</span>
-                    <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">
-                      {r.name}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-2.5 font-semibold text-[#F3F4F6]">
-                  <TickFlash value={Number.isFinite(r.last) ? r.last : null}>
-                    {Number.isFinite(r.last) ? `${currencyPrefix}${fmtNum(r.last, r.last >= 1000 ? 0 : 2)}` : '—'}
-                  </TickFlash>
-                </td>
-                <td className="px-2.5">
-                  <DeltaPill value={r.return1dPct} size="sm" />
-                </td>
-                <td className="px-2.5 text-[#A5A6BA]">{formatVolMillions(r.volumeM)}</td>
-                <td className="px-3 text-right"><DayRangeBar row={r} /></td>
-              </tr>
+                row={r}
+                denseRowClass={denseRowClass}
+                currencyPrefix={currencyPrefix}
+                onSelectRow={onSelectRow}
+              />
             ))
           )}
         </tbody>
@@ -621,47 +710,12 @@ const EquitySixPanelsGrid: React.FC<{
               </thead>
               <tbody className="divide-y divide-[#1A1A26] font-mono-num text-[12px]">
                 {riskRows.map((r) => (
-                  <tr
+                  <RiskTableRow
                     key={r.symbol}
-                    onClick={() => onSelectRow(r.symbol)}
-                    className="h-8 hover:bg-[#171724] cursor-pointer transition-colors"
-                  >
-                    <td className="px-3 text-left">
-                      <div className="flex items-center gap-2">
-                        <CompanyLogo ticker={r.symbol} name={r.name} size="xs" />
-                        <span className="font-bold text-[#F3F4F6]">{r.symbol}</span>
-                      </div>
-                    </td>
-                    <td
-                      className={`px-2.5 ${
-                        Number.isFinite(r.realizedVol30dPct) && r.realizedVol30dPct >= 45
-                          ? 'text-[#F5B544] font-semibold'
-                          : 'text-[#D1D4DC]'
-                      }`}
-                    >
-                      {Number.isFinite(r.realizedVol30dPct) ? `${fmtNum(r.realizedVol30dPct, 1)}%` : '—'}
-                    </td>
-                    <td
-                      className={`px-2.5 font-semibold ${
-                        !Number.isFinite(r.beta)
-                          ? 'text-[#6D6D84]'
-                          : r.beta >= 1.25
-                            ? 'text-[#8B7CF6]'
-                            : r.beta < 0.7
-                              ? 'text-[#38BDF8]'
-                              : 'text-[#D1D4DC]'
-                      }`}
-                    >
-                      {fmtNum(r.beta, 2)}
-                    </td>
-                    <td className="px-2.5">
-                      <DeltaPill value={r.return30dPct} size="sm" />
-                    </td>
-                    <td className="px-2.5">
-                      <DeltaPill value={r.returnYtdOr252dPct} size="sm" />
-                    </td>
-                    <td className="px-3 text-[#A5A6BA]">{formatVolMillions(r.avgVolume40dM)}</td>
-                  </tr>
+                    row={r}
+                    currencyPrefix={currencyPrefix}
+                    onSelectRow={onSelectRow}
+                  />
                 ))}
               </tbody>
             </table>
@@ -2576,6 +2630,8 @@ export const USMarketModule: React.FC<{
   const liveMarket = useLiveMarketState();
   const liveStream = useMarketLiveStream();
   const [directUsPanelAnalytics, setDirectUsPanelAnalytics] = useState<EquityPanelAnalyticsDto | null>(null);
+  const [focusedUsSymbol, setFocusedUsSymbol] = useState<string | null>(null);
+  useMarketFocusSymbol(focusedUsSymbol);
   // Pieza 32: estado real de proveedores US (Massive WS/REST pool, Tradier Live, ORATS).
   const usProviders = useUsProvidersStatus();
   const prov = usProviders?.providers;
@@ -2743,6 +2799,7 @@ export const USMarketModule: React.FC<{
   const handleSelectUsRow = (symbol: string) => {
     const row = usPanelRows.find((r) => r.symbol === symbol);
     if (!row) return;
+    setFocusedUsSymbol(symbol);
     const staticItem = staticMetaMap.get(symbol);
     const live = getMarketLiveQuote(liveStream, 'US', symbol);
     const staticArsPrice = staticItem?.cedearArsPrice ?? Number.NaN;

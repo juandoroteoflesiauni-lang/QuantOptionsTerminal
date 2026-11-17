@@ -1343,6 +1343,41 @@ export const US_STREAM_SYMBOLS: readonly string[] = [
   ]),
 ] as const;
 
+/**
+ * Pieza 40: núcleo líquido suscripto por WS sin wildcards. Los tickers BYMA
+ * solicitados se mapean a sus ADR reales (YPFD→YPF, PAMP→PAM, TGSU2→TGS,
+ * CRES→CRESY). `I:VIX` sigue disponible por batch REST para la UI actual.
+ */
+export const MASSIVE_WS_CORE_SYMBOLS: readonly string[] = [
+  'SPY',
+  'QQQ',
+  'IWM',
+  'DIA',
+  'VIXY',
+  'GGAL',
+  'YPF',
+  'BMA',
+  'PAM',
+  'BBAR',
+  'SUPV',
+  'TGS',
+  'CEPU',
+  'CRESY',
+  'EDN',
+  'LOMA',
+  'MELI',
+  'NVDA',
+  'AAPL',
+  'MSFT',
+  'AMZN',
+  'META',
+  'TSLA',
+  'GOOGL',
+  'KO',
+  'EWZ',
+  'IBIT',
+] as const;
+
 export interface OptionsUnderlyingMetaDto {
   /** Clave estable para el selector: GGAL BYMA es `GGAL`; el ADR es `US:GGAL`. */
   readonly key: string;
@@ -3543,6 +3578,9 @@ export class MarketRuntime {
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
   private massiveStocksStream: MassiveStocksStream | null = null;
+  /** Pieza 40: leases dinámicos por conexión WebSocket enfocada. */
+  private readonly massiveSymbolLeases = new Map<string, Set<string>>();
+  private massiveReconnectInFlight: Promise<void> | null = null;
   private lastUsPanelBase: EquityPanelAnalyticsDto | null = null;
   private readonly liveStates1m = new Map<string, LiveBarState>();
   /** Pieza 39: historial profundo ADR (gap electoral) con caché LRU + disco. */
@@ -4329,6 +4367,7 @@ export class MarketRuntime {
     const symbols = [
       ...new Set([
         ...US_STREAM_SYMBOLS,
+        ...MASSIVE_WS_CORE_SYMBOLS,
         ...this.watchedSymbols.map((symbol) => symbol.trim().toUpperCase()),
       ]),
     ];
@@ -4336,6 +4375,7 @@ export class MarketRuntime {
       apiKey: wsStocksKey.key,
       restApiKeyFn: () => this.restBatchApiKey(),
       symbols,
+      coreSymbols: MASSIVE_WS_CORE_SYMBOLS,
       fetchFn: this.fetchFn,
       createWsClientFn: this.createWsClientFn,
       nowMsFn: this.nowMsFn,
@@ -4364,7 +4404,59 @@ export class MarketRuntime {
     });
     this.massiveStocksStream = stream;
     await stream.start();
+    this.applyMassiveSymbolLeases();
     this.ensureTradierLiveStream(symbols);
+  }
+
+  /** Pieza 40: valida y toma un lease dinámico para un cliente enfocado. */
+  public acquireMassiveStockSymbol(rawSymbol: string, ownerId: string): boolean {
+    const symbol = rawSymbol.trim().toUpperCase();
+    const owner = ownerId.trim();
+    if (symbol === '' || owner === '' || symbol.startsWith('I:') || !/^[A-Z][A-Z0-9.-]{0,14}$/.test(symbol)) {
+      return false;
+    }
+    if (MASSIVE_WS_CORE_SYMBOLS.includes(symbol)) return true;
+    const owners = this.massiveSymbolLeases.get(symbol) ?? new Set<string>();
+    owners.add(owner);
+    this.massiveSymbolLeases.set(symbol, owners);
+    this.applyMassiveSymbolLeases();
+    return true;
+  }
+
+  /** Pieza 40: libera un lease; solo desuscribe al perder el último dueño. */
+  public releaseMassiveStockSymbol(rawSymbol: string, ownerId: string): void {
+    const symbol = rawSymbol.trim().toUpperCase();
+    const owner = ownerId.trim();
+    const owners = this.massiveSymbolLeases.get(symbol);
+    if (owners === undefined || owner === '') return;
+    owners.delete(owner);
+    if (owners.size === 0) this.massiveSymbolLeases.delete(symbol);
+    this.applyMassiveSymbolLeases();
+  }
+
+  public releaseMassiveStockOwner(ownerId: string): void {
+    const owner = ownerId.trim();
+    if (owner === '') return;
+    for (const [symbol, owners] of [...this.massiveSymbolLeases.entries()]) {
+      owners.delete(owner);
+      if (owners.size === 0) this.massiveSymbolLeases.delete(symbol);
+    }
+    this.applyMassiveSymbolLeases();
+  }
+
+  private applyMassiveSymbolLeases(): void {
+    if (this.massiveStocksStream === null) return;
+    const dynamic = [...this.massiveSymbolLeases.keys()];
+    const subscribed = new Set(this.massiveStocksStream.getDynamicSubscribedSymbols());
+    const toSubscribe = dynamic.filter((symbol) => !subscribed.has(symbol));
+    const toUnsubscribe = [...subscribed].filter((symbol) => !this.massiveSymbolLeases.has(symbol));
+    if (toSubscribe.length > 0) this.massiveStocksStream.subscribeSymbols(toSubscribe);
+    if (toUnsubscribe.length > 0) this.massiveStocksStream.unsubscribeSymbols(toUnsubscribe);
+  }
+
+  /** Pieza 40: visibilidad para tests del ciclo de reconexión en background. */
+  public getMassiveWsReconnectPromise(): Promise<void> | null {
+    return this.massiveReconnectInFlight;
   }
 
   /**
@@ -4503,6 +4595,7 @@ export class MarketRuntime {
   public stopWs(): void {
     this.massiveStocksStream?.stop();
     this.massiveStocksStream = null;
+    this.massiveSymbolLeases.clear();
     if (this.tradierManager !== null) {
       this.tradierManager.stop();
       this.tradierManager = null;
@@ -4925,8 +5018,7 @@ export class MarketRuntime {
             },
       lastError: wsSnapshot?.lastError?.message ?? null,
       telemetry: stream?.getFeedTelemetrySnapshot() ?? emptyFeedTelemetrySnapshot(),
-      subscribedSymbols: stream?.getSubscribedSymbols() ?? [],
-      activeSymbolCount: diagnostics?.quoteCount ?? 0,
+      subscribedSymbols: stream?.getSubscribedSymbols() ?? [],      activeSymbolCount: diagnostics?.quoteCount ?? 0,
       subscribedOptionQuotes: this.subscribedOptionContracts.size,
       lastWsMessageAgeMs:
         diagnostics?.lastWsMessageMs !== null &&
@@ -4968,8 +5060,8 @@ export class MarketRuntime {
     };
   }
 
-  /** Pieza 33: reinicio exclusivo del stream de acciones, sin tumbar Tradier/opciones. */
-  public async reconnectMassiveStocksWs(): Promise<string> {
+  /** Pieza 33/40: reinicio no bloqueante del stream de acciones con cierre acotado. */
+  public reconnectMassiveStocksWs(): Promise<string> {
     if (!this.enableWs) {
       throw new Error('Massive WS is disabled by runtime configuration');
     }
@@ -4977,10 +5069,20 @@ export class MarketRuntime {
     if (wsKey.trim() === '') {
       throw new Error('MASSIVE_WS_STOCKS_KEY / MASSIVE_API_KEY not configured');
     }
-    this.massiveStocksStream?.stop();
-    this.massiveStocksStream = null;
-    await this.startWs();
-    return 'MASSIVE_WS_STOCKS_RECONNECT_ACCEPTED';
+    if (this.massiveReconnectInFlight !== null) {
+      return Promise.resolve('MASSIVE_WS_STOCKS_RECONNECT_ACCEPTED');
+    }
+    const work = (async (): Promise<void> => {
+      const previous = this.massiveStocksStream;
+      this.massiveStocksStream = null;
+      await previous?.stopAndWait(4_000).catch(() => undefined);
+      await this.startWs();
+    })().finally(() => {
+      this.massiveReconnectInFlight = null;
+    });
+    this.massiveReconnectInFlight = work;
+    work.catch(() => undefined);
+    return Promise.resolve('MASSIVE_WS_STOCKS_RECONNECT_ACCEPTED');
   }
 
   /** Pieza 33: sonda real del pool REST mediante refresco forzado de snapshot. */

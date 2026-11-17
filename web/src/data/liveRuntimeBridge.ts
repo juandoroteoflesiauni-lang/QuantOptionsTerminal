@@ -703,46 +703,8 @@ export async function requestUsSnapshot(
   return res;
 }
 
-function handleWsMessage(raw: string): void {
-  try {
-    const msg = JSON.parse(raw) as {
-      type?: string;
-      symbol?: string;
-      price?: number;
-      bar?: { close?: number };
-    };
-    if (!msg.symbol) return;
-    const sym = msg.symbol.toUpperCase();
-    const price =
-      typeof msg.price === 'number' && Number.isFinite(msg.price)
-        ? msg.price
-        : typeof msg.bar?.close === 'number' && Number.isFinite(msg.bar.close)
-        ? msg.bar.close
-        : null;
-    if (price === null) return;
-
-    const usRow = US_MARKET_DATA.find((u) => u.ticker === sym);
-    if (usRow) {
-      usRow.price = price;
-      if (Number.isFinite(usRow.cedearArsPrice) && price > 0) {
-        usRow.cclImplicit = (usRow.cedearArsPrice * usRow.cedearRatioNum) / price;
-      }
-    }
-    if (sym === 'SPY') {
-      const sp = GLOBAL_INDICATORS.find((g) => g.id === 'sp500');
-      if (sp) sp.value = price;
-    }
-    publishTickerUpdatesFromMemory();
-    notify();
-  } catch {
-    // Ignorar payloads malformados
-  }
-}
-
 export function startLiveRuntimePolling(enabled: boolean): () => void {
   let disposed = false;
-  let ws: WebSocket | null = null;
-  let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   const runInitialAndCycle = async () => {
     if (disposed) return;
@@ -832,71 +794,10 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
     void refreshOverview();
   }, 20_000);
 
-  const connectWs = () => {
-    if (disposed || typeof window === 'undefined' || typeof WebSocket === 'undefined') {
-      return;
-    }
-    try {
-      const url = import.meta.env.DEV
-        ? 'ws://127.0.0.1:8787/ws'
-        : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
-      const socket = new WebSocket(url);
-      ws = socket;
-      socket.addEventListener('open', () => {
-        socket.send(
-          JSON.stringify({
-            action: 'subscribe',
-            symbols: ['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT'],
-          })
-        );
-      });
-      socket.addEventListener('message', (ev) => {
-        if (!disposed && typeof ev.data === 'string') {
-          handleWsMessage(ev.data);
-        }
-      });
-      const scheduleReconnect = () => {
-        if (ws === socket) {
-          ws = null;
-        }
-        if (!disposed && wsReconnectTimer === null) {
-          wsReconnectTimer = setTimeout(() => {
-            wsReconnectTimer = null;
-            connectWs();
-          }, 3_000);
-        }
-      };
-      socket.addEventListener('close', scheduleReconnect);
-      socket.addEventListener('error', () => {
-        try {
-          socket.close();
-        } catch {
-          // noop
-        }
-      });
-    } catch {
-      ws = null;
-    }
-  };
-
-  connectWs();
-
   return () => {
     disposed = true;
     clearInterval(fastRetryId);
     clearInterval(intervalId);
-    if (wsReconnectTimer !== null) {
-      clearTimeout(wsReconnectTimer);
-      wsReconnectTimer = null;
-    }
-    if (ws) {
-      try {
-        ws.close();
-      } catch {
-        // noop
-      }
-      ws = null;
-    }
   };
 }
 
