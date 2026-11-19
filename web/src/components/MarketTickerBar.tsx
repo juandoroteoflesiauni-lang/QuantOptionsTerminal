@@ -9,7 +9,14 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
-import { getMarketLiveQuote, isMarketLiveStreamFresh, tickFlashClass, useMarketLiveStream } from '../api/useMarketLiveStream';
+import {
+  formatExtendedSessionBadge,
+  getMarketLiveQuote,
+  isMarketLiveStreamFresh,
+  tickFlashClass,
+  useMarketLiveStream,
+  type LiveUsSessionPhase,
+} from '../api/useMarketLiveStream';
 import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
 import {
@@ -43,6 +50,7 @@ export interface TickerItem {
   suffix?: string;
   lastTickDir?: 'up' | 'down' | null;
   lastTickTs?: number;
+  sessionPhase?: LiveUsSessionPhase | null;
 }
 
 export interface MarketTickerBarProps {
@@ -131,7 +139,8 @@ class TickerFeedStore {
       const changed =
         !Number.isFinite(current.price) ||
         Math.abs(u.price - current.price) > 1e-6 ||
-        (Number.isFinite(u.changePct) && (!Number.isFinite(current.changePct) || Math.abs(u.changePct - current.changePct) > 1e-6));
+        (Number.isFinite(u.changePct) && (!Number.isFinite(current.changePct) || Math.abs(u.changePct - current.changePct) > 1e-6)) ||
+        (u.sessionPhase !== undefined && u.sessionPhase !== current.sessionPhase);
       if (!changed) continue;
 
       const updated: TickerItem = {
@@ -143,6 +152,7 @@ class TickerFeedStore {
           (u.dir ?? (Number.isFinite(current.price) ? (u.price > current.price ? 'up' : u.price < current.price ? 'down' : null) : null)) !== null
             ? now
             : current.lastTickTs,
+        sessionPhase: u.sessionPhase !== undefined ? u.sessionPhase : current.sessionPhase ?? null,
       };
       this.itemsMap.set(u.id, updated);
       const listeners = this.listenersMap.get(u.id);
@@ -222,6 +232,11 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       <span className="text-[11.5px] font-semibold text-[#8A8F9E] group-hover:text-[#D1D4DC] transition-colors whitespace-nowrap">
         {item.symbol}
       </span>
+      {formatExtendedSessionBadge(item.sessionPhase) !== null && (
+        <span className="rounded px-1 py-0.2 font-mono-num text-[9px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
+          {formatExtendedSessionBadge(item.sessionPhase)}
+        </span>
+      )}
 
       <span
         className={`font-mono-num text-[12px] font-bold whitespace-nowrap transition-colors duration-500 ${
@@ -322,12 +337,22 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
     const pushQuote = (id: string, market: 'AR' | 'US', symbol: string): void => {
       const quote = getMarketLiveQuote(liveStream, market, symbol);
       if (quote === null) return;
+      const extBadge = formatExtendedSessionBadge(quote.sessionPhase);
+      const displayPrice =
+        extBadge !== null && quote.extendedPrice !== undefined && quote.extendedPrice !== null
+          ? quote.extendedPrice
+          : quote.price;
+      const displayChangePct =
+        extBadge !== null && quote.extendedChangePct !== undefined && quote.extendedChangePct !== null
+          ? quote.extendedChangePct
+          : quote.changePct ?? Number.NaN;
       updates.push({
         id,
         symbol: id,
-        price: quote.price,
-        changePct: quote.changePct ?? Number.NaN,
+        price: displayPrice,
+        changePct: displayChangePct,
         dir: quote.direction,
+        sessionPhase: market === 'US' ? (quote.sessionPhase ?? null) : null,
       });
     };
     for (const symbol of ['SPY', 'QQQ', 'IWM', 'DIA', 'NVDA', 'AAPL']) {

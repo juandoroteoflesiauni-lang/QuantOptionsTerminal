@@ -67,7 +67,15 @@ import type {
   StockContextBannerInfo,
   StockExecutionDeckData,
 } from './stock-detail/stockDetailTypes';
-import { getMarketLiveClock, getMarketLiveQuote, useLivePriceFlash, useMarketFocusSymbol, useMarketLiveStream, useThrottledLiveValue } from '../api/useMarketLiveStream';
+import {
+  formatExtendedSessionBadge,
+  getMarketLiveClock,
+  getMarketLiveQuote,
+  useLivePriceFlash,
+  useMarketFocusSymbol,
+  useMarketLiveStream,
+  useThrottledLiveValue,
+} from '../api/useMarketLiveStream';
 import {
   StockDetailSymbolSelector,
   type StockDetailCategory,
@@ -696,9 +704,11 @@ export const StockDetailView: React.FC<{
 
     const usMeta = US_MARKET_DATA.find((stock) => stock.ticker === cleanTicker);
     const selectorMeta = runtime.optionsUnderlyings.find((meta) => meta.symbol === cleanTicker && meta.market === 'US');
-    const quote = usSnap?.marketContext?.unifiedQuotes?.find((q) => q.ticker.toUpperCase() === cleanTicker);
+    const snapQuote = usSnap?.marketContext?.unifiedQuotes?.find((q) => q.ticker.toUpperCase() === cleanTicker);
+    const snapExtBadge = formatExtendedSessionBadge(liveQuote?.sessionPhase ?? snapQuote?.sessionPhase ?? null);
     const snapSpot =
-      quote?.price ??
+      (snapExtBadge !== null ? (liveQuote?.extendedPrice ?? snapQuote?.extendedPrice) : null) ??
+      snapQuote?.price ??
       usSnap?.envelope?.snapshot?.metrics?.spot ??
       usSnap?.envelope?.metrics?.spot?.value ??
       usBarsResp?.bars.at(-1)?.close ??
@@ -716,13 +726,17 @@ export const StockDetailView: React.FC<{
         : normalizeFiniteOrNull(matchedCedear?.cclImplicit);
     const cclMismatchPct =
       impliedCcl !== null && cclMed !== null && cclMed > 0 ? ((impliedCcl / cclMed) - 1) * 100 : null;
-    const volM = normalizeFiniteOrNull(quote?.volumeM);
+    const volM = normalizeFiniteOrNull(snapQuote?.volumeM);
     const volumeCompact =
       volM !== null
         ? `US$ ${fmtNum(volM, 1)} M`
-        : normalizeFiniteOrNull(quote?.volume) !== null
-          ? `${fmtNum((quote?.volume ?? Number.NaN) / 1_000_000, 2)} M acc.`
+        : normalizeFiniteOrNull(snapQuote?.volume) !== null
+          ? `${fmtNum((snapQuote?.volume ?? Number.NaN) / 1_000_000, 2)} M acc.`
           : '—';
+    const rawChangePct =
+      snapExtBadge !== null
+        ? (liveQuote?.extendedChangePct ?? snapQuote?.extendedChangePct ?? liveQuote?.changePct ?? snapQuote?.changePct)
+        : (liveQuote?.changePct ?? snapQuote?.changePct);
     return {
       market: 'US',
       ticker: cleanTicker,
@@ -730,10 +744,10 @@ export const StockDetailView: React.FC<{
       marketLabel: `US · ${stockExchange}${stockRoute?.isAdr === true ? ' · ADR' : ''}`,
       currencySymbol: 'USD',
       spot,
-      prevClose: normalizeFiniteOrNull(quote?.previousClose),
-      changePct: normalizeFiniteOrNull(quote?.changePct),
-      dayLow: normalizeFiniteOrNull(quote?.dayLow),
-      dayHigh: normalizeFiniteOrNull(quote?.dayHigh),
+      prevClose: normalizeFiniteOrNull(liveQuote?.previousClose ?? snapQuote?.previousClose),
+      changePct: normalizeFiniteOrNull(rawChangePct),
+      dayLow: normalizeFiniteOrNull(liveQuote?.dayLow ?? snapQuote?.dayLow),
+      dayHigh: normalizeFiniteOrNull(liveQuote?.dayHigh ?? snapQuote?.dayHigh),
       volumeCompact,
       volRelative: normalizeFiniteOrNull(usMeta?.volMultiple),
       feedStatus: usSnap?.feedMode ?? (usBarsResp ? 'LIVE' : 'NO_DATA'),
@@ -749,17 +763,17 @@ export const StockDetailView: React.FC<{
       bondTirPct: null,
       bondParityPct: null,
       marketCclMedian: cclMed,
-      nbboBid: normalizeFiniteOrNull(quote?.bid),
-      nbboAsk: normalizeFiniteOrNull(quote?.ask),
-      nbboBidSize: normalizeFiniteOrNull(quote?.bidSize),
-      nbboAskSize: normalizeFiniteOrNull(quote?.askSize),
-      nbboSpreadPct: normalizeFiniteOrNull(quote?.spreadPct),
+      nbboBid: normalizeFiniteOrNull(snapQuote?.bid),
+      nbboAsk: normalizeFiniteOrNull(snapQuote?.ask),
+      nbboBidSize: normalizeFiniteOrNull(snapQuote?.bidSize),
+      nbboAskSize: normalizeFiniteOrNull(snapQuote?.askSize),
+      nbboSpreadPct: normalizeFiniteOrNull(snapQuote?.spreadPct),
       cedearTicker: matchedCedear?.ticker ?? null,
       cedearRatio: cedRatio,
       cedearArsPrice: cedPrice,
       cedearCclMismatchPct: cclMismatchPct,
     };
-  }, [cleanTicker, isArMarket, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, throttledLivePrice, usBarsResp, usSnap]);
+  }, [cleanTicker, isArMarket, liveQuote, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, throttledLivePrice, usBarsResp, usSnap]);
 
   const chartBundle: PanoramicChartBundle = useMemo(() => {
     let rawBars: readonly MinimalOhlcvBar[] = [];
@@ -1131,6 +1145,13 @@ export const StockDetailView: React.FC<{
             ? 'ADR'
             : 'US';
 
+  const usExtendedBadge = !isArMarket
+    ? formatExtendedSessionBadge(
+        liveQuote?.sessionPhase ??
+          usSnap?.marketContext?.unifiedQuotes?.find((q) => q.ticker.toUpperCase() === cleanTicker)?.sessionPhase ??
+          null,
+      )
+    : null;
   const rangePct = rangePositionPct(contextInfo.spot, contextInfo.dayLow, contextInfo.dayHigh);
   const optionsEnabled = contextInfo.market === 'US' || cleanTicker === 'GGAL';
   const rawLocalSymbol = tickerRaw.replace(/^(?:AR|US):/, '');
@@ -1204,10 +1225,17 @@ export const StockDetailView: React.FC<{
                   {Number.isFinite(contextInfo.spot) ? fmtNum(contextInfo.spot, 2) : '—'}
                 </span>
               </div>
-              <div className={`mt-0.5 font-mono-num text-[12px] font-semibold ${contextInfo.changePct != null && contextInfo.changePct >= 0 ? 'text-[#22C55E]' : 'text-[#F23645]'}`}>
-                {contextInfo.changePct != null
-                  ? `${contextInfo.changePct >= 0 ? '+' : ''}${fmtNum(contextInfo.changePct, 2)} %`
-                  : '—'}
+              <div className={`mt-0.5 flex items-center gap-1.5 font-mono-num text-[12px] font-semibold ${contextInfo.changePct != null && contextInfo.changePct >= 0 ? 'text-[#22C55E]' : 'text-[#F23645]'}`}>
+                {usExtendedBadge !== null && (
+                  <span className="rounded px-1 py-0.2 font-mono-num text-[9px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
+                    {usExtendedBadge}
+                  </span>
+                )}
+                <span>
+                  {contextInfo.changePct != null
+                    ? `${contextInfo.changePct >= 0 ? '+' : ''}${fmtNum(contextInfo.changePct, 2)} %`
+                    : '—'}
+                </span>
               </div>
             </div>
 
@@ -1243,8 +1271,14 @@ export const StockDetailView: React.FC<{
 
           <div className="flex shrink-0 items-center gap-2">
             {liveQuote !== null && liveClock !== null ? (
-              <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-1 font-mono-num text-[10px] font-semibold text-[#22C55E]">
-                ● Tiempo real {liveClock}
+              <span
+                className={`rounded-full border px-2 py-1 font-mono-num text-[10px] font-semibold ${
+                  usExtendedBadge !== null
+                    ? 'border-[#F5B544]/40 bg-[#F5B544]/10 text-[#F5B544]'
+                    : 'border-[#22C55E]/35 bg-[#22C55E]/10 text-[#22C55E]'
+                }`}
+              >
+                {usExtendedBadge !== null ? `● ${usExtendedBadge} ${liveClock}` : `● Tiempo real ${liveClock}`}
               </span>
             ) : (
               <span className="rounded-full border border-[#F5B544]/35 bg-[#F5B544]/10 px-2 py-1 font-mono-num text-[10px] font-semibold text-[#F5B544]">

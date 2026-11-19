@@ -155,7 +155,11 @@ import {
 } from '../core/ggal/l2AndRegimeEngines.js';
 import {
   getMarketParts,
+  getUsEquitySessionPhase,
+  isExtendedHoursPhase,
+  isRth,
   MAX_TIME_SECONDS,
+  type UsEquitySessionPhase,
 } from '../core/sessions.js';
 import { computeSessionVwap } from '../core/sessionVwap.js';
 import { evaluateTerminalConfluence } from '../core/terminal/confluenceOrchestrator.js';
@@ -238,6 +242,7 @@ import type {
   WsClientSnapshot,
   WsConnectionState,
   WsNormalizedEvent,
+  WsTradeEvent,
 } from '../data/wsTypes.js';
 import {
   SingleFlightRuntimeCache,
@@ -274,9 +279,11 @@ import {
   TradierLiveManager,
   type TradierChainOverlaySummary,
   type TradierConfig,
+  type TradierHttpFn,
   type TradierOptionChainResult,
   type TradierOptionContractNormalized,
   type TradierQuotesResult,
+  type TradierSocketFactory,
   type TradierStreamTick,
 } from './tradierAdapter.js';
 import {
@@ -287,6 +294,7 @@ import {
   type FmpBatchMode,
   type FmpBatchQuote,
   type FmpConfig,
+  type FmpExtendedQuote,
 } from './fmpClient.js';
 import { TradierHistoricalClient, TradierStocksStream, TRADIER_CORE_US_SYMBOLS } from './tradierStream.js';
 import { resolveMassiveStocksMode } from './massiveStocksStream.js';
@@ -298,6 +306,8 @@ export const DEFAULT_TERMINAL_SYMBOLS = ['SPY', 'QQQ', 'I:SPX'] as const;
 
 /** Pieza 41: cadencia no solapada del batch completo FMP Enterprise. */
 export const FMP_BATCH_QUOTE_INTERVAL_MS = 1_500;
+/** Pieza 42: cadencia del poll extendido Pre-Market / After-Hours (04:00–20:00 ET). */
+export const FMP_EXTENDED_QUOTE_INTERVAL_MS = 2_000;
 
 const KEY_ENV_NAMES = [
   'MASSIVE_API_KEY',
@@ -644,6 +654,10 @@ export interface SerializedUnifiedQuote {
   readonly bidSize?: number | null | undefined;
   readonly askSize?: number | null | undefined;
   readonly spreadPct?: number | null | undefined;
+  readonly regularClose?: number | null | undefined;
+  readonly extendedPrice?: number | null | undefined;
+  readonly extendedChangePct?: number | null | undefined;
+  readonly sessionPhase?: UsEquitySessionPhase | undefined;
 }
 
 export interface SerializedMarketContext {
@@ -1061,6 +1075,9 @@ export interface MarketRuntimeDeps {
   readonly tradierHistoricalBars?: boolean;
   /** Pieza 36: cliente ORATS inyectable; tests offline sin inyección quedan UNAVAILABLE. */
   readonly oratsClient?: OratsHybridClient | null;
+  /** Pieza 42: inyección de socket/http Tradier para pruebas de flujo WS offline. */
+  readonly tradierCreateSocketFn?: TradierSocketFactory;
+  readonly tradierHttpFn?: TradierHttpFn;
 }
 
 interface ParsedSymbol {
@@ -1662,6 +1679,10 @@ export interface EquityPanelRowDto {
   readonly avgVolume40dM: number | null;
   readonly iv30d: number | null;
   readonly hasUsOptions: boolean;
+  readonly regularClose?: number | null;
+  readonly extendedPrice?: number | null;
+  readonly extendedChangePct?: number | null;
+  readonly sessionPhase?: UsEquitySessionPhase;
 }
 
 export interface EquityPanelAnalyticsDto {
@@ -3538,6 +3559,105 @@ async function fetchFallbackUsTreasuryCurve(
 }
 
 /**
+ * Pieza 42: fusiona explícitamente el baseline RTH con cotizaciones de horario
+ * extendido (`PRE_MARKET` / `AFTER_HOURS`). En horario extendido, el batch RTH
+ * jamás sobrescribe un tick extendido válido y se preservan `regularClose`,
+ * `previousClose`, `extendedPrice`, `extendedChangePct` y `sessionPhase`.
+ */
+export function mergeUsRegularAndExtendedQuote(input: {
+  readonly regular: MarketTickQuote | null;
+  readonly extended: MarketTickQuote | null;
+  readonly sessionPhase: UsEquitySessionPhase;
+}): MarketTickQuote | null {
+  const { regular, extended, sessionPhase } = input;
+  if (regular === null && extended === null) {
+    return null;
+  }
+  const previousClose = regular?.previousClose ?? extended?.previousClose ?? null;
+  const regularClose =
+    sessionPhase === 'PRE_MARKET'
+      ? (regular?.previousClose ?? regular?.regularClose ?? regular?.price ?? extended?.regularClose ?? null)
+      : sessionPhase === 'RTH'
+        ? (regular?.regularClose ?? previousClose)
+        : (regular?.regularClose ?? regular?.price ?? extended?.regularClose ?? previousClose);
+
+  if (
+    isExtendedHoursPhase(sessionPhase) &&
+    extended !== null &&
+    Number.isFinite(extended.price) &&
+    extended.price > 0
+  ) {
+    const extRef =
+      sessionPhase === 'AFTER_HOURS'
+        ? (regularClose ?? previousClose)
+        : (previousClose ?? regularClose);
+    const extendedChangePct =
+      extRef !== null && extRef > 0
+        ? ((extended.price - extRef) / extRef) * 100
+        : (extended.extendedChangePct ?? extended.changePct ?? null);
+    const mergedChangePct =
+      sessionPhase === 'PRE_MARKET'
+        ? (extendedChangePct ?? regular?.changePct ?? null)
+        : (regular?.changePct ?? extendedChangePct);
+    const mergedDayLow =
+      regular?.dayLow ?? extended.dayLow ?? null;
+    const mergedDayHigh =
+      regular?.dayHigh ?? extended.dayHigh ?? null;
+    return {
+      market: 'US',
+      symbol: extended.symbol,
+      kind: regular?.kind ?? extended.kind,
+      currency: 'USD',
+      price: extended.price,
+      previousClose,
+      changePct: mergedChangePct,
+      dayLow: mergedDayLow,
+      dayHigh: mergedDayHigh,
+      volume: extended.volume ?? regular?.volume ?? null,
+      turnover: regular?.turnover ?? extended.turnover ?? null,
+      asOfUtcSec: extended.asOfUtcSec ?? regular?.asOfUtcSec ?? null,
+      source: extended.source,
+      exchange: regular?.exchange ?? extended.exchange ?? null,
+      regularClose,
+      extendedPrice: extended.price,
+      extendedChangePct,
+      sessionPhase,
+    };
+  }
+
+  const base = regular ?? extended;
+  if (base === null) return null;
+  if (sessionPhase === 'CLOSED') {
+    const extPrice =
+      extended !== null && Number.isFinite(extended.price) && extended.price > 0
+        ? extended.price
+        : (base.extendedPrice ?? null);
+    const extRef = regularClose ?? previousClose;
+    const extChangePct =
+      extPrice !== null && extRef !== null && extRef > 0
+        ? ((extPrice - extRef) / extRef) * 100
+        : (extended?.extendedChangePct ?? base.extendedChangePct ?? null);
+    return {
+      ...base,
+      previousClose,
+      regularClose,
+      extendedPrice: extPrice,
+      extendedChangePct: extChangePct,
+      sessionPhase: 'CLOSED',
+    };
+  }
+
+  return {
+    ...base,
+    previousClose,
+    regularClose,
+    extendedPrice: null,
+    extendedChangePct: null,
+    sessionPhase: 'RTH',
+  };
+}
+
+/**
  * Runtime central en servidor para datos de mercado, cálculos cuantitativos y WebSocket live.
  */
 export class MarketRuntime {
@@ -3570,6 +3690,8 @@ export class MarketRuntime {
   private tradierManager: TradierLiveManager | null;
   private readonly tradierChainFetchFn: typeof fetchTradierOptionChain;
   private readonly tradierQuotesFetchFn: typeof fetchTradierQuotes;
+  private readonly tradierCreateSocketFn: TradierSocketFactory | undefined;
+  private readonly tradierHttpFn: TradierHttpFn | undefined;
   private readonly oratsClient: OratsHybridClient | null;
   private readonly usVolSurfaceCache = new Map<
     string,
@@ -3587,7 +3709,10 @@ export class MarketRuntime {
   private readonly fmpClient: FmpEnterpriseClient;
   private fmpBatchTimer: ReturnType<typeof setTimeout> | null = null;
   private fmpBatchRunning = false;
+  private fmpExtendedTimer: ReturnType<typeof setTimeout> | null = null;
+  private fmpExtendedRunning = false;
   private readonly fmpQuoteTicks = new Map<string, MarketTickQuote>();
+  private readonly fmpExtendedQuoteTicks = new Map<string, MarketTickQuote>();
   private readonly fmpTelemetry = new RollingFeedTelemetry({ latencyKind: 'HTTP_ROUND_TRIP' });
   private readonly tradierHistoricalClient: TradierHistoricalClient | null;
   private tradierStocksStream: TradierStocksStream | null = null;
@@ -4149,6 +4274,8 @@ export class MarketRuntime {
     this.tradierManager = deps.tradierManager ?? null;
     this.tradierChainFetchFn = deps.tradierChainFetchFn ?? fetchTradierOptionChain;
     this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
+    this.tradierCreateSocketFn = deps.tradierCreateSocketFn;
+    this.tradierHttpFn = deps.tradierHttpFn;
     this.secrets = [...secretSet];
     const harnessFmpConfig = loadFmpConfigFromEnv({});
     this.fmpClient = new FmpEnterpriseClient({
@@ -4479,6 +4606,7 @@ export class MarketRuntime {
     // Massive. El socket Massive solo se abre cuando no está en standby.
     if (this.fmpConfig.configured) {
       this.startFmpBatchQuoteLoop();
+      this.startFmpExtendedQuoteLoop();
     }
     this.ensureTradierLiveStream(symbols);
     const wsStocksKey = this.wsStocksKeySlot();
@@ -4619,6 +4747,138 @@ export class MarketRuntime {
     this.fmpBatchRunning = false;
   }
 
+  /** Pieza 42: prioriza símbolos enfocados (leases) y núcleo US/ADR antes del resto. */
+  public getFmpExtendedBatchSymbols(): readonly string[] {
+    return [...new Set([
+      ...[...this.massiveSymbolLeases.keys()].map((s) => s.trim().toUpperCase()),
+      ...TRADIER_CORE_US_SYMBOLS,
+      ...this.watchedSymbols.map((s) => s.trim().toUpperCase()),
+      ...this.getFmpBatchSymbols(),
+    ])].filter((s) => s !== '' && !s.startsWith('I:'));
+  }
+
+  private ingestFmpExtendedQuotes(quotes: readonly FmpExtendedQuote[]): void {
+    const tradierLiveConnected =
+      (this.tradierStocksStream?.getStatus() ?? this.tradierManager?.getStatus())?.connected === true;
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const phase = getUsEquitySessionPhase(nowSec);
+    for (const quote of quotes) {
+      const prevExt = this.fmpExtendedQuoteTicks.get(quote.symbol);
+      const reg = this.fmpQuoteTicks.get(quote.symbol);
+      const extTimeSec = quote.asOfUtcSec ?? nowSec;
+      if (
+        prevExt !== undefined &&
+        prevExt.asOfUtcSec !== null &&
+        quote.asOfUtcSec !== null &&
+        quote.asOfUtcSec < prevExt.asOfUtcSec
+      ) {
+        continue;
+      }
+      const prevClose = reg?.previousClose ?? prevExt?.previousClose ?? null;
+      const regularClose =
+        phase === 'AFTER_HOURS'
+          ? (reg?.price ?? prevExt?.regularClose ?? prevClose)
+          : (prevClose ?? reg?.price ?? prevExt?.regularClose ?? null);
+      const extRef = phase === 'AFTER_HOURS' ? (regularClose ?? prevClose) : (prevClose ?? regularClose);
+      const extendedChangePct =
+        extRef !== null && extRef > 0 ? ((quote.price - extRef) / extRef) * 100 : null;
+      const nextExt: MarketTickQuote = {
+        market: 'US',
+        symbol: quote.symbol,
+        kind: reg?.kind ?? 'stock',
+        currency: 'USD',
+        price: quote.price,
+        previousClose: prevClose,
+        changePct: phase === 'PRE_MARKET' ? extendedChangePct : (reg?.changePct ?? extendedChangePct),
+        dayLow: reg?.dayLow ?? prevExt?.dayLow ?? null,
+        dayHigh: reg?.dayHigh ?? prevExt?.dayHigh ?? null,
+        volume: reg?.volume ?? prevExt?.volume ?? null,
+        turnover: reg?.turnover ?? prevExt?.turnover ?? null,
+        asOfUtcSec: extTimeSec,
+        source: 'FMP_ENTERPRISE_REST',
+        exchange: reg?.exchange ?? null,
+        regularClose,
+        extendedPrice: quote.price,
+        extendedChangePct,
+        sessionPhase: phase,
+      };
+      this.fmpExtendedQuoteTicks.set(quote.symbol, nextExt);
+
+      const priceChanged = prevExt === undefined || Math.abs(prevExt.price - quote.price) > 1e-6;
+      if (isExtendedHoursPhase(phase) && !tradierLiveConnected && priceChanged) {
+        const size = quote.tradeSize ?? 0;
+        this.ingestLiveTradeInto1m(quote.symbol, quote.price, size, extTimeSec);
+        if (quote.symbol === 'GGAL' && this.massiveStocksStream === null) {
+          this.ggalTickEngine.applyAdrTick({
+            price: quote.price,
+            size,
+            timeSec: extTimeSec,
+          });
+        }
+      }
+    }
+  }
+
+  public async pollFmpExtendedBatchOnce(): Promise<number> {
+    if (!this.fmpConfig.configured) return 0;
+    const symbols = this.getFmpExtendedBatchSymbols();
+    if (symbols.length === 0) return 0;
+    const result = await this.fmpClient.fetchExtendedBatchQuotes(symbols, {
+      onChunk: ({ quotes }) => {
+        this.ingestFmpExtendedQuotes(quotes);
+      },
+    });
+    return result.rows;
+  }
+
+  private shouldContinueFmpExtendedBatch(): boolean {
+    return this.fmpExtendedRunning && this.enableWs && this.fmpConfig.configured;
+  }
+
+  private startFmpExtendedQuoteLoop(): void {
+    if (!this.fmpConfig.configured || this.fmpExtendedTimer !== null || this.fmpExtendedRunning) {
+      return;
+    }
+    const run = async (): Promise<void> => {
+      if (!this.shouldContinueFmpExtendedBatch()) return;
+      const nowSec = Math.floor(this.nowMsFn() / 1_000);
+      const phase = getUsEquitySessionPhase(nowSec);
+      const inExtended = isExtendedHoursPhase(phase);
+      if (inExtended) {
+        try {
+          await this.pollFmpExtendedBatchOnce();
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.emitBroadcast({
+            type: 'status',
+            cluster: 'stocks',
+            state: 'error',
+            message: redactSecrets(`FMP extended batch quote failed: ${message}`, this.secrets),
+            time: nowSec,
+          });
+        }
+      }
+      if (!this.shouldContinueFmpExtendedBatch()) return;
+      const delayMs = inExtended ? FMP_EXTENDED_QUOTE_INTERVAL_MS : 15_000;
+      this.fmpExtendedTimer = setTimeout(() => {
+        this.fmpExtendedTimer = null;
+        if (!this.shouldContinueFmpExtendedBatch()) return;
+        void run();
+      }, delayMs);
+      this.fmpExtendedTimer.unref();
+    };
+    this.fmpExtendedRunning = true;
+    void run();
+  }
+
+  private stopFmpExtendedQuoteLoop(): void {
+    if (this.fmpExtendedTimer !== null) {
+      clearTimeout(this.fmpExtendedTimer);
+      this.fmpExtendedTimer = null;
+    }
+    this.fmpExtendedRunning = false;
+  }
+
   public getFmpEnterpriseFeedHealth(): {
     readonly configured: boolean;
     readonly lastSuccessAtMs: number | null;
@@ -4733,6 +4993,8 @@ export class MarketRuntime {
     }
     const stream = new TradierStocksStream({
       config: this.tradierConfig,
+      ...(this.tradierCreateSocketFn === undefined ? {} : { createSocketFn: this.tradierCreateSocketFn }),
+      ...(this.tradierHttpFn === undefined ? {} : { httpFn: this.tradierHttpFn }),
       nowMsFn: this.nowMsFn,
       secrets: this.secrets,
       onTick: (tick) => {
@@ -4770,11 +5032,51 @@ export class MarketRuntime {
     });
   }
 
+  private ingestLiveTradeInto1m(
+    symbol: string,
+    price: number,
+    size: number,
+    timeSec: number,
+  ): void {
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(timeSec) || timeSec <= 0) {
+      return;
+    }
+    const cleanTimeSec = Math.floor(timeSec);
+    const cleanSize = Number.isFinite(size) && size >= 0 ? size : 0;
+    const tradeEvent: WsTradeEvent = {
+      ev: 'T',
+      sym: symbol,
+      price,
+      size: cleanSize,
+      timeSec: cleanTimeSec,
+      eventTimeMs: cleanTimeSec * 1_000,
+    };
+    const currentState = this.liveStates1m.get(symbol) ?? createLiveBarState([], 60);
+    const nextState = ingestWsEvents(currentState, [tradeEvent], {
+      symbol,
+      maxClosedBars: 600,
+    });
+    this.liveStates1m.set(symbol, nextState);
+    const lastClosed = nextState.closedBars[nextState.closedBars.length - 1];
+    this.emitBroadcast({
+      type: 'bar_update',
+      cluster: 'stocks',
+      symbol,
+      time: cleanTimeSec,
+      formingBar: nextState.formingBar !== null ? serializeBar(nextState.formingBar) : null,
+      lastClosedBar: lastClosed !== undefined ? serializeBar(lastClosed) : null,
+      projectedEma21: null,
+      projectedSessionVwap: null,
+      projectedAvwap: null,
+      serverTimeSec: cleanTimeSec,
+    });
+  }
+
   /**
    * Pieza 32: ingiere un tick Tradier al bus interno (wsListeners) y al estado de
    * cotizaciones US como complemento explícito de Massive (source `TRADIER_WS`).
-   * Regla de fusión: gana el timestamp más nuevo; empate/indeterminado queda
-   * Massive (fuente primaria). Campos no calculables se omiten (nunca 0 fake).
+   * Pieza 42: procesa `trade` y `timesale` en RTH, Pre-Market y After-Hours,
+   * alimentando `liveStates1m`, `market_batch` y `GgalTickStreamEngine`.
    */
   private ingestTradierTick(tick: TradierStreamTick): void {
     const symbol = tick.symbol.trim().toUpperCase();
@@ -4789,13 +5091,15 @@ export class MarketRuntime {
     if (existing !== null && asOfUtcSec !== null && existing.asOfUtcSec !== null && asOfUtcSec < existing.asOfUtcSec) {
       return;
     }
+    const tickTimeSec = asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000);
+    const phase = tick.sessionPhase ?? getUsEquitySessionPhase(tickTimeSec);
     if (!Number.isFinite(price) || price <= 0) {
       if (tick.event === 'quote' && Number.isFinite(tick.bid) && Number.isFinite(tick.ask)) {
         this.emitBroadcast({
           type: 'quote',
           cluster: 'stocks',
           symbol,
-          time: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+          time: tickTimeSec,
           bid: Number.isFinite(tick.bid) ? tick.bid : null,
           ask: Number.isFinite(tick.ask) ? tick.ask : null,
           mid: Number.isFinite(bidAskMid) ? bidAskMid : null,
@@ -4807,6 +5111,14 @@ export class MarketRuntime {
       Number.isFinite(tick.previousClose) && tick.previousClose > 0
         ? tick.previousClose
         : existing?.previousClose ?? null;
+    const regularBaseline =
+      this.fmpQuoteTicks.get(symbol)?.price ??
+      existing?.regularClose ??
+      previousClose;
+    const isExt = isExtendedHoursPhase(phase);
+    const extRef = phase === 'AFTER_HOURS' ? (regularBaseline ?? previousClose) : (previousClose ?? regularBaseline);
+    const extendedChangePct =
+      isExt && extRef !== null && extRef > 0 ? ((price - extRef) / extRef) * 100 : null;
     const volume = Number.isFinite(tick.cumulativeVolume) && tick.cumulativeVolume >= 0
       ? tick.cumulativeVolume
       : existing?.volume ?? null;
@@ -4818,40 +5130,48 @@ export class MarketRuntime {
       price,
       previousClose,
       changePct:
-        previousClose !== null && previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : null,
+        isExt && phase === 'PRE_MARKET'
+          ? extendedChangePct
+          : previousClose !== null && previousClose > 0
+            ? ((price - previousClose) / previousClose) * 100
+            : null,
       dayLow: existing?.dayLow ?? null,
       dayHigh: existing?.dayHigh ?? null,
       volume,
       turnover: existing?.turnover ?? null,
-      asOfUtcSec,
+      asOfUtcSec: tickTimeSec,
       source: 'TRADIER_WS',
+      regularClose: regularBaseline,
+      extendedPrice: isExt ? price : null,
+      extendedChangePct,
+      sessionPhase: phase,
     };
     this.tradierQuoteTicks.set(symbol, quote);
-    // Pieza 41: el tick ADR de GGAL se aplica desde el stream primario. Si
-    // Massive WS también está habilitado por override explícito, no doble
-    // contamos trades: el reducer 1m de Massive sigue vivo para datos de red.
-    if (symbol === 'GGAL' && tick.event === 'trade' && this.massiveStocksStream === null) {
-      this.ggalTickEngine.applyAdrTick({
-        price,
-        size: Number.isFinite(tick.size) && tick.size >= 0 ? tick.size : 0,
-        timeSec: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
-      });
-    }
-    if (tick.event === 'trade') {
+    const isTradeLike = tick.event === 'trade' || tick.event === 'timesale';
+    if (isTradeLike) {
+      const size = Number.isFinite(tick.size) && tick.size >= 0 ? tick.size : 0;
+      this.ingestLiveTradeInto1m(symbol, price, size, tickTimeSec);
+      if (symbol === 'GGAL' && this.massiveStocksStream === null) {
+        this.ggalTickEngine.applyAdrTick({
+          price,
+          size,
+          timeSec: tickTimeSec,
+        });
+      }
       this.emitBroadcast({
         type: 'trade',
         cluster: 'stocks',
         symbol,
-        time: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        time: tickTimeSec,
         price,
-        size: Number.isFinite(tick.size) ? tick.size : 0,
+        size,
       });
     } else {
       this.emitBroadcast({
         type: 'quote',
         cluster: 'stocks',
         symbol,
-        time: asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000),
+        time: tickTimeSec,
         bid: Number.isFinite(tick.bid) ? tick.bid : null,
         ask: Number.isFinite(tick.ask) ? tick.ask : null,
         mid: Number.isFinite(bidAskMid) ? bidAskMid : null,
@@ -4861,6 +5181,7 @@ export class MarketRuntime {
 
   public stopWs(): void {
     this.stopFmpBatchQuoteLoop();
+    this.stopFmpExtendedQuoteLoop();
     this.massiveStocksStream?.stop();
     this.massiveStocksStream = null;
     this.massiveSymbolLeases.clear();
@@ -5134,12 +5455,16 @@ export class MarketRuntime {
   }
 
   public getLiveUsQuotes(): readonly MarketTickQuote[] {
-    const bySymbol = new Map<string, MarketTickQuote>();
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const sessionPhase = getUsEquitySessionPhase(nowSec);
+    const regularBySymbol = new Map<string, MarketTickQuote>();
+    const extendedBySymbol = new Map<string, MarketTickQuote>();
+
     const panel = this.lastUsPanelBase;
     if (panel !== null) {
       for (const row of panel.rows) {
         if (row.last === null || !Number.isFinite(row.last) || row.last <= 0) continue;
-        bySymbol.set(row.symbol, {
+        regularBySymbol.set(row.symbol, {
           market: 'US',
           symbol: row.symbol,
           kind: 'stock',
@@ -5162,15 +5487,15 @@ export class MarketRuntime {
       }
     }
     for (const quote of this.massiveStocksStream?.getQuotes() ?? []) {
-      bySymbol.set(quote.symbol, quote);
+      regularBySymbol.set(quote.symbol, quote);
     }
     for (const fmpQuote of this.fmpQuoteTicks.values()) {
-      const existing = bySymbol.get(fmpQuote.symbol);
+      const existing = regularBySymbol.get(fmpQuote.symbol);
       if (existing === undefined) {
-        bySymbol.set(fmpQuote.symbol, fmpQuote);
+        regularBySymbol.set(fmpQuote.symbol, fmpQuote);
         continue;
       }
-      bySymbol.set(fmpQuote.symbol, {
+      regularBySymbol.set(fmpQuote.symbol, {
         ...existing,
         price: fmpQuote.price,
         previousClose: fmpQuote.previousClose ?? existing.previousClose,
@@ -5188,38 +5513,71 @@ export class MarketRuntime {
         exchange: fmpQuote.exchange ?? existing.exchange ?? null,
       });
     }
-    // Pieza 41: el stream Tradier gobierna el precio con el timestamp más
-    // nuevo, pero jamás borra baseline FMP/Massive válida campo por campo.
-    for (const tradierQuote of this.tradierQuoteTicks.values()) {
-      const existing = bySymbol.get(tradierQuote.symbol);
-      if (existing === undefined) {
-        bySymbol.set(tradierQuote.symbol, tradierQuote);
-        continue;
-      }
-      if (
-        existing.asOfUtcSec !== null &&
-        tradierQuote.asOfUtcSec !== null &&
-        tradierQuote.asOfUtcSec < existing.asOfUtcSec
-      ) {
-        continue;
-      }
-      bySymbol.set(tradierQuote.symbol, {
-        ...existing,
-        price: tradierQuote.price,
-        previousClose: tradierQuote.previousClose ?? existing.previousClose,
-        changePct:
-          tradierQuote.previousClose !== null && tradierQuote.previousClose > 0
-            ? ((tradierQuote.price - tradierQuote.previousClose) / tradierQuote.previousClose) * 100
-            : tradierQuote.changePct ?? existing.changePct,
-        dayLow: tradierQuote.dayLow ?? existing.dayLow,
-        dayHigh: tradierQuote.dayHigh ?? existing.dayHigh,
-        volume: tradierQuote.volume ?? existing.volume,
-        turnover: tradierQuote.turnover ?? existing.turnover,
-        asOfUtcSec: tradierQuote.asOfUtcSec ?? existing.asOfUtcSec,
-        source: 'TRADIER_WS',
-      });
+
+    for (const extQuote of this.fmpExtendedQuoteTicks.values()) {
+      extendedBySymbol.set(extQuote.symbol, extQuote);
     }
-    return [...bySymbol.values()];
+
+    // Pieza 41 + 42: Tradier WS gobierna cuando su timestamp es más nuevo; en
+    // Pre-Market / After-Hours un tick Tradier entra como cotización extendida
+    // para que jamás sea sobrescrito por el batch RTH congelado.
+    for (const tradierQuote of this.tradierQuoteTicks.values()) {
+      const tickPhase = tradierQuote.sessionPhase ?? sessionPhase;
+      if (tickPhase === 'RTH') {
+        const existingReg = regularBySymbol.get(tradierQuote.symbol);
+        if (
+          existingReg !== undefined &&
+          existingReg.asOfUtcSec !== null &&
+          tradierQuote.asOfUtcSec !== null &&
+          tradierQuote.asOfUtcSec < existingReg.asOfUtcSec
+        ) {
+          continue;
+        }
+        regularBySymbol.set(tradierQuote.symbol, {
+          ...(existingReg ?? tradierQuote),
+          ...tradierQuote,
+          previousClose: tradierQuote.previousClose ?? existingReg?.previousClose ?? null,
+          changePct:
+            tradierQuote.previousClose !== null && tradierQuote.previousClose > 0
+              ? ((tradierQuote.price - tradierQuote.previousClose) / tradierQuote.previousClose) * 100
+              : tradierQuote.changePct ?? existingReg?.changePct ?? null,
+          dayLow: tradierQuote.dayLow ?? existingReg?.dayLow ?? null,
+          dayHigh: tradierQuote.dayHigh ?? existingReg?.dayHigh ?? null,
+          volume: tradierQuote.volume ?? existingReg?.volume ?? null,
+          turnover: tradierQuote.turnover ?? existingReg?.turnover ?? null,
+          asOfUtcSec: tradierQuote.asOfUtcSec ?? existingReg?.asOfUtcSec ?? null,
+          source: 'TRADIER_WS',
+        });
+      } else {
+        const existingExt = extendedBySymbol.get(tradierQuote.symbol);
+        if (
+          existingExt !== undefined &&
+          existingExt.asOfUtcSec !== null &&
+          tradierQuote.asOfUtcSec !== null &&
+          tradierQuote.asOfUtcSec < existingExt.asOfUtcSec
+        ) {
+          continue;
+        }
+        extendedBySymbol.set(tradierQuote.symbol, tradierQuote);
+      }
+    }
+
+    const allSymbols = new Set<string>([
+      ...regularBySymbol.keys(),
+      ...extendedBySymbol.keys(),
+    ]);
+    const mergedQuotes: MarketTickQuote[] = [];
+    for (const symbol of allSymbols) {
+      const merged = mergeUsRegularAndExtendedQuote({
+        regular: regularBySymbol.get(symbol) ?? null,
+        extended: extendedBySymbol.get(symbol) ?? null,
+        sessionPhase,
+      });
+      if (merged !== null) {
+        mergedQuotes.push(merged);
+      }
+    }
+    return mergedQuotes;
   }
 
   public getUsLiveSourceMode():
@@ -5495,6 +5853,10 @@ export class MarketRuntime {
         volumeM: live.turnover !== null ? live.turnover / 1_000_000 : row.volumeM,
         tradedVolumeUsd: live.turnover ?? row.tradedVolumeUsd ?? null,
         return1dPct: live.changePct ?? row.return1dPct,
+        ...(live.regularClose !== undefined ? { regularClose: live.regularClose } : {}),
+        ...(live.extendedPrice !== undefined ? { extendedPrice: live.extendedPrice } : {}),
+        ...(live.extendedChangePct !== undefined ? { extendedChangePct: live.extendedChangePct } : {}),
+        ...(live.sessionPhase !== undefined ? { sessionPhase: live.sessionPhase } : {}),
       };
     });
     return {
@@ -5536,6 +5898,10 @@ export class MarketRuntime {
         volume: live.volume ?? quote.volume,
         volumeM: live.turnover !== null ? live.turnover / 1_000_000 : quote.volumeM,
         tradedVolumeUsd: live.turnover ?? quote.tradedVolumeUsd ?? null,
+        ...(live.regularClose !== undefined ? { regularClose: live.regularClose } : {}),
+        ...(live.extendedPrice !== undefined ? { extendedPrice: live.extendedPrice } : {}),
+        ...(live.extendedChangePct !== undefined ? { extendedChangePct: live.extendedChangePct } : {}),
+        ...(live.sessionPhase !== undefined ? { sessionPhase: live.sessionPhase } : {}),
       };
     });
     const vix = liveBySymbol.get('I:VIX');
@@ -7769,6 +8135,7 @@ export class MarketRuntime {
     let barsStatusOk = true;
     let visibleStart = 0;
     let barsProvider: TerminalBarsResponse['barsProvider'] = providerChain[0] ?? 'MASSIVE_REST';    const providerFallbackUsed: string[] = [];
+    const includeExtended = timeframe !== '1D' && !rthOnly;
     if (useDeepHistory) {
       const fromSec = deepHistoryFromUtcSec(nowSec);
       const fmpLoad = async (): Promise<readonly Bar[]> => {
@@ -7777,6 +8144,7 @@ export class MarketRuntime {
           timeframe,
           fromUtcSec: fromSec,
           toUtcSec: nowSec,
+          includeExtended,
         });
         if (result.rows === 0) throw new Error('FMP deep history returned no bars');
         const first = result.bars[0];
@@ -7792,6 +8160,7 @@ export class MarketRuntime {
           timeframe,
           fromUtcSec: fromSec,
           toUtcSec: nowSec,
+          includeExtended,
         })).bars;
       };
       const massiveDeepLoad = async (): Promise<readonly Bar[]> => {
@@ -7857,6 +8226,7 @@ export class MarketRuntime {
         timeframe,
         fromUtcSec: fromSec,
         toUtcSec: nowSec,
+        includeExtended,
       });
       if (fmpResult.bars.length === 0) {
         if (canUseTradierHistorical) {
@@ -7867,16 +8237,17 @@ export class MarketRuntime {
             timeframe,
             fromUtcSec: fromSec,
             toUtcSec: nowSec,
+            includeExtended,
           });
           if (tradierResult.bars.length === 0) {
             throw new RuntimeNoDataError('NO_BARS_DATA', `No bars available for ${parsed.canonicalSymbol} (${timeframe})`, this.secrets, 503);
           }
-          bars = tradierResult.bars;
+          bars = rthOnly && timeframe !== '1D' ? tradierResult.bars.filter((b) => isRth(b.time)) : tradierResult.bars;
         } else {
           throw new RuntimeNoDataError('NO_BARS_DATA', `No bars available from FMP for ${parsed.canonicalSymbol} (${timeframe})`, this.secrets, 503);
         }
       } else {
-        bars = fmpResult.bars;
+        bars = rthOnly && timeframe !== '1D' ? fmpResult.bars.filter((b) => isRth(b.time)) : fmpResult.bars;
       }
       const startIdx = Math.max(0, bars.length - visibleBars);
       visibleStart = startIdx;
@@ -7890,11 +8261,12 @@ export class MarketRuntime {
         timeframe,
         fromUtcSec: fromSec,
         toUtcSec: nowSec,
+        includeExtended,
       });
       if (tradierResult.bars.length === 0) {
         throw new RuntimeNoDataError('NO_BARS_DATA', `No bars available from Tradier for ${parsed.canonicalSymbol} (${timeframe})`, this.secrets, 503);
       }
-      bars = tradierResult.bars;
+      bars = rthOnly && timeframe !== '1D' ? tradierResult.bars.filter((b) => isRth(b.time)) : tradierResult.bars;
       visibleStart = Math.max(0, bars.length - visibleBars);
     } else {
       const apiKey = this.assertRestApiKey();

@@ -5,6 +5,13 @@ import { refreshBackendHealth } from '../data/liveRuntimeBridge';
 export type LiveStreamMarket = 'AR' | 'US';
 export type LiveStreamTransport = 'WS' | 'POLL';
 export type LiveQuoteKind = 'stock' | 'index' | 'bond' | 'note' | 'corp';
+export type LiveUsSessionPhase = 'PRE_MARKET' | 'RTH' | 'AFTER_HOURS' | 'CLOSED';
+
+export function formatExtendedSessionBadge(phase: LiveUsSessionPhase | null | undefined): 'PRE' | 'AH' | null {
+  if (phase === 'PRE_MARKET') return 'PRE';
+  if (phase === 'AFTER_HOURS') return 'AH';
+  return null;
+}
 
 export interface MarketLiveQuote {
   readonly market: LiveStreamMarket;
@@ -24,6 +31,10 @@ export interface MarketLiveQuote {
   readonly revision: number;
   readonly settlement?: '24hs' | 'CI' | null;
   readonly exchange?: string | null;
+  readonly regularClose?: number | null;
+  readonly extendedPrice?: number | null;
+  readonly extendedChangePct?: number | null;
+  readonly sessionPhase?: LiveUsSessionPhase | null;
 }
 
 export interface MarketLiveCaucion {
@@ -377,6 +388,14 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
       : settlementRaw === 'CI'
         ? 'CI'
         : null;
+  const sessionPhaseRaw = raw['sessionPhase'];
+  const sessionPhase: LiveUsSessionPhase | null =
+    sessionPhaseRaw === 'PRE_MARKET' ||
+    sessionPhaseRaw === 'RTH' ||
+    sessionPhaseRaw === 'AFTER_HOURS' ||
+    sessionPhaseRaw === 'CLOSED'
+      ? sessionPhaseRaw
+      : (previous?.sessionPhase ?? null);
   const exchangeRaw = raw['exchange'];
   if (
     previous !== null &&
@@ -407,6 +426,16 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
     revision: changed || previous === null ? (previous?.revision ?? 0) + 1 : previous.revision,
     settlement,
     exchange: typeof exchangeRaw === 'string' && exchangeRaw.trim() !== '' ? exchangeRaw.trim().toUpperCase() : null,
+    regularClose: partial
+      ? finitePositive(raw['regularClose']) ?? previous?.regularClose ?? null
+      : finitePositive(raw['regularClose']),
+    extendedPrice: partial
+      ? finitePositive(raw['extendedPrice']) ?? previous?.extendedPrice ?? null
+      : finitePositive(raw['extendedPrice']),
+    extendedChangePct: partial
+      ? nullableNumber(raw['extendedChangePct']) ?? previous?.extendedChangePct ?? null
+      : nullableNumber(raw['extendedChangePct']),
+    sessionPhase,
   };
 }
 
@@ -980,6 +1009,14 @@ function applyLegacyStockEvent(raw: unknown): void {
     asOfUtcSec = finitePositive(raw['time']);
   }
   if (price === null || asOfUtcSec === null) return;
+  const extPhase =
+    previous?.sessionPhase === 'PRE_MARKET' || previous?.sessionPhase === 'AFTER_HOURS'
+      ? previous.sessionPhase
+      : null;
+  const extRef =
+    extPhase === 'AFTER_HOURS'
+      ? (previous?.regularClose ?? previous?.previousClose ?? null)
+      : (previous?.previousClose ?? previous?.regularClose ?? null);
   const parsed = parseQuote(
     {
       market: 'US',
@@ -998,6 +1035,13 @@ function applyLegacyStockEvent(raw: unknown): void {
       turnover: previous?.turnover ?? null,
       asOfUtcSec,
       source: 'MASSIVE_WS',
+      regularClose: previous?.regularClose ?? null,
+      extendedPrice: extPhase !== null ? price : null,
+      extendedChangePct:
+        extPhase !== null && extRef !== null && extRef > 0
+          ? ((price - extRef) / extRef) * 100
+          : (previous?.extendedChangePct ?? null),
+      sessionPhase: previous?.sessionPhase ?? null,
     },
     previous,
     true,

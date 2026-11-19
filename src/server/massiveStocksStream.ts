@@ -7,7 +7,7 @@
  * bounded queues and reconnect backoff; this module owns quote state and cadence.
  */
 
-import { getMarketParts } from '../core/sessions.js';
+import { getMarketParts, type UsEquitySessionPhase } from '../core/sessions.js';
 import type { FetchFn } from '../data/types.js';
 import type {
   MassiveWsClientOptions,
@@ -80,6 +80,11 @@ export interface MarketTickQuote {
   readonly exchange?: string | null;
   /** Pieza 41: liquidación BYMA cuando el emisor la conoce (`24hs` | `CI`). */
   readonly settlement?: string | null;
+  /** Pieza 42: sesión US + precio/variación extendida explícita sin sobrescribir cierre RTH. */
+  readonly regularClose?: number | null;
+  readonly extendedPrice?: number | null;
+  readonly extendedChangePct?: number | null;
+  readonly sessionPhase?: UsEquitySessionPhase;
 }
 
 export interface MassiveStreamWsClient {

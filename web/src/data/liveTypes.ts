@@ -183,6 +183,8 @@ export interface PanelVolHistoryPoint {
   readonly constituents: number;
 }
 
+export type UsEquitySessionPhase = 'PRE_MARKET' | 'RTH' | 'AFTER_HOURS' | 'CLOSED';
+
 export interface EquityPanelRowDto {
   readonly symbol: string;
   readonly name: string;
@@ -204,6 +206,10 @@ export interface EquityPanelRowDto {
   readonly avgVolume40dM: number | null;
   readonly iv30d: number | null;
   readonly hasUsOptions: boolean;
+  readonly regularClose?: number | null;
+  readonly extendedPrice?: number | null;
+  readonly extendedChangePct?: number | null;
+  readonly sessionPhase?: UsEquitySessionPhase;
 }
 
 export interface EquityPanelAnalyticsDto {
@@ -905,6 +911,10 @@ export interface UsUnifiedQuoteDto {
   readonly bidSize?: number | null;
   readonly askSize?: number | null;
   readonly spreadPct?: number | null;
+  readonly regularClose?: number | null;
+  readonly extendedPrice?: number | null;
+  readonly extendedChangePct?: number | null;
+  readonly sessionPhase?: UsEquitySessionPhase;
 }
 
 export interface UsStrikeExposureDto {

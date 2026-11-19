@@ -53,6 +53,7 @@ import {
 } from './DesignSystem';
 import { CompanyLogo } from './common/CompanyLogo';
 import {
+  formatExtendedSessionBadge,
   getMarketLiveQuote,
   getMarketLiveClock,
   isMarketLiveStreamFresh,
@@ -60,6 +61,7 @@ import {
   useMarketFocusSymbol,
   useMarketLiveStream,
   useTickFlash,
+  type LiveUsSessionPhase,
 } from '../api/useMarketLiveStream';
 
 const TickFlash: React.FC<{
@@ -158,25 +160,34 @@ const UsIndexLogoKpiCard: React.FC<{
   readonly flashValue?: number;
   readonly deltaPct?: number;
   readonly subtitle: string;
-}> = ({ logoTicker, iconNode, title, heroValue, flashValue, deltaPct, subtitle }) => (
-  <div className="px-4 py-3.5 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
-    <div className="flex items-center gap-2.5 min-w-0">
-      {logoTicker ? (
-        <CompanyLogo ticker={logoTicker} name={title} size="md" />
-      ) : (
-        iconNode
-      )}
-      <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">{title}</span>
-    </div>
-    <div className="flex items-baseline gap-2.5 pt-0.5">
-      <div className="font-mono-num text-[22px] leading-[26px] font-bold text-[#FFFFFF] tracking-tight">
-        <TickFlash value={flashValue ?? null}>{heroValue}</TickFlash>
+  readonly sessionPhase?: LiveUsSessionPhase | null;
+}> = ({ logoTicker, iconNode, title, heroValue, flashValue, deltaPct, subtitle, sessionPhase }) => {
+  const extBadge = formatExtendedSessionBadge(sessionPhase);
+  return (
+    <div className="px-4 py-3.5 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
+      <div className="flex items-center gap-2.5 min-w-0">
+        {logoTicker ? (
+          <CompanyLogo ticker={logoTicker} name={title} size="md" />
+        ) : (
+          iconNode
+        )}
+        <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">{title}</span>
+        {extBadge !== null && (
+          <span className="ml-auto shrink-0 rounded px-1.5 py-0.5 font-mono-num text-[9px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
+            {extBadge}
+          </span>
+        )}
       </div>
-      {deltaPct !== undefined && <DeltaPill value={deltaPct} size="md" />}
+      <div className="flex items-baseline gap-2.5 pt-0.5">
+        <div className="font-mono-num text-[22px] leading-[26px] font-bold text-[#FFFFFF] tracking-tight">
+          <TickFlash value={flashValue ?? null}>{heroValue}</TickFlash>
+        </div>
+        {deltaPct !== undefined && <DeltaPill value={deltaPct} size="md" />}
+      </div>
+      <div className="text-[11.5px] text-[#787B86] leading-snug truncate">{subtitle}</div>
     </div>
-    <div className="text-[11.5px] text-[#787B86] leading-snug truncate">{subtitle}</div>
-  </div>
-);
+  );
+};
 
 export type MonitorSubPanel = 'acciones' | 'bonos' | 'cedears' | 'cauciones';
 
@@ -199,6 +210,9 @@ interface NormalizedPanelRow {
   readonly beta: number;
   readonly avgVolume40dM: number;
   readonly subtitleRight?: string;
+  readonly sessionPhase?: LiveUsSessionPhase | null;
+  readonly extendedPrice?: number | null;
+  readonly extendedChangePct?: number | null;
 }
 
 const DayRangeBar: React.FC<{ readonly row: NormalizedPanelRow }> = ({ row }) => {
@@ -254,36 +268,50 @@ const PanelTableRow: React.FC<{
   readonly denseRowClass: string;
   readonly currencyPrefix: string;
   readonly onSelectRow: (symbol: string) => void;
-}> = memo(({ row, denseRowClass, currencyPrefix, onSelectRow }) => (
-  <tr
-    onClick={() => onSelectRow(row.symbol)}
-    className={`${denseRowClass} hover:bg-[#171724] transition-colors cursor-pointer`}
-  >
-    <td className="px-3 text-left">
-      <div className="flex items-center gap-2 min-w-0">
-        <CompanyLogo ticker={row.symbol} name={row.name} size={denseRowClass.includes('h-8') ? 'xs' : 'sm'} />
-        <span className="font-bold text-[#F3F4F6] tracking-tight">{row.symbol}</span>
-        <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">{row.name}</span>
-      </div>
-    </td>
-    <td className="px-2.5 font-semibold text-[#F3F4F6]">
-      <TickFlash value={Number.isFinite(row.last) ? row.last : null}>
-        {Number.isFinite(row.last) ? `${'$ '}${fmtNum(row.last, row.last >= 1000 ? 0 : 2)}` : '—'}
-      </TickFlash>
-    </td>
-    <td className="px-2.5">
-      <DeltaPill value={row.return1dPct} size="sm" />
-    </td>
-    <td className="px-2.5 text-[#A5A6BA]">{formatVolMillionsShared(row.volumeM, currencyPrefix)}</td>
-    <td className="px-3 text-right"><DayRangeBar row={row} /></td>
-  </tr>
-), (prev, next) => (
+}> = memo(({ row, denseRowClass, currencyPrefix, onSelectRow }) => {
+  const extBadge = formatExtendedSessionBadge(row.sessionPhase);
+  const displayDeltaPct =
+    extBadge !== null && row.extendedChangePct !== undefined && row.extendedChangePct !== null && Number.isFinite(row.extendedChangePct)
+      ? row.extendedChangePct
+      : row.return1dPct;
+  return (
+    <tr
+      onClick={() => onSelectRow(row.symbol)}
+      className={`${denseRowClass} hover:bg-[#171724] transition-colors cursor-pointer`}
+    >
+      <td className="px-3 text-left">
+        <div className="flex items-center gap-2 min-w-0">
+          <CompanyLogo ticker={row.symbol} name={row.name} size={denseRowClass.includes('h-8') ? 'xs' : 'sm'} />
+          <span className="font-bold text-[#F3F4F6] tracking-tight">{row.symbol}</span>
+          {extBadge !== null && (
+            <span className="rounded px-1 py-0.2 font-mono-num text-[8.5px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
+              {extBadge}
+            </span>
+          )}
+          <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">{row.name}</span>
+        </div>
+      </td>
+      <td className="px-2.5 font-semibold text-[#F3F4F6]">
+        <TickFlash value={Number.isFinite(row.last) ? row.last : null}>
+          {Number.isFinite(row.last) ? `${'$ '}${fmtNum(row.last, row.last >= 1000 ? 0 : 2)}` : '—'}
+        </TickFlash>
+      </td>
+      <td className="px-2.5">
+        <DeltaPill value={displayDeltaPct} size="sm" />
+      </td>
+      <td className="px-2.5 text-[#A5A6BA]">{formatVolMillionsShared(row.volumeM, currencyPrefix)}</td>
+      <td className="px-3 text-right"><DayRangeBar row={row} /></td>
+    </tr>
+  );
+}, (prev, next) => (
   prev.denseRowClass === next.denseRowClass &&
   prev.currencyPrefix === next.currencyPrefix &&
   prev.row.symbol === next.row.symbol &&
   prev.row.name === next.row.name &&
   prev.row.last === next.row.last &&
   prev.row.return1dPct === next.row.return1dPct &&
+  prev.row.extendedChangePct === next.row.extendedChangePct &&
+  prev.row.sessionPhase === next.row.sessionPhase &&
   prev.row.volumeM === next.row.volumeM &&
   prev.row.dayLow === next.row.dayLow &&
   prev.row.dayHigh === next.row.dayHigh &&
@@ -392,6 +420,9 @@ const EquitySixPanelsGrid: React.FC<{
               : row.dayRangePos,
           volumeM: live.turnover !== null ? live.turnover / 1_000_000 : row.volumeM,
           return1dPct: live.changePct ?? row.return1dPct,
+          sessionPhase: mode === 'US' ? (live.sessionPhase ?? row.sessionPhase ?? null) : null,
+          extendedPrice: mode === 'US' ? (live.extendedPrice ?? row.extendedPrice ?? null) : null,
+          extendedChangePct: mode === 'US' ? (live.extendedChangePct ?? row.extendedChangePct ?? null) : null,
         };
       }),
     [inputRows, liveStream, mode],
@@ -2792,6 +2823,9 @@ export const USMarketModule: React.FC<{
           extra?.avgVolume40dM !== undefined && extra.avgVolume40dM !== null
             ? extra.avgVolume40dM
             : base.avgVolume40dM,
+        sessionPhase: live?.sessionPhase ?? extra?.sessionPhase ?? null,
+        extendedPrice: live?.extendedPrice ?? extra?.extendedPrice ?? null,
+        extendedChangePct: live?.extendedChangePct ?? extra?.extendedChangePct ?? null,
       };
     });
   }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version, liveStream]);
@@ -2819,21 +2853,38 @@ export const USMarketModule: React.FC<{
   const withLiveUsQuote = (item: (typeof US_MARKET_DATA)[number] | undefined) => {
     if (item === undefined) return undefined;
     const live = getMarketLiveQuote(liveStream, 'US', item.ticker);
-    return live === null
-      ? item
-      : {
-          ...item,
-          price: live.price,
-          prevClose: live.previousClose ?? item.prevClose,
-          deltaPct: live.changePct ?? item.deltaPct,
-          low: live.dayLow ?? item.low,
-          high: live.dayHigh ?? item.high,
-          volumeM: live.turnover !== null ? live.turnover / 1_000_000 : item.volumeM,
-        };
+    if (live === null) {
+      return {
+        ...item,
+        sessionPhase: null as LiveUsSessionPhase | null,
+        extendedPrice: null as number | null,
+        extendedChangePct: null as number | null,
+      };
+    }
+    const extBadge = formatExtendedSessionBadge(live.sessionPhase);
+    return {
+      ...item,
+      price:
+        extBadge !== null && live.extendedPrice !== undefined && live.extendedPrice !== null
+          ? live.extendedPrice
+          : live.price,
+      prevClose: live.previousClose ?? item.prevClose,
+      deltaPct:
+        extBadge !== null && live.extendedChangePct !== undefined && live.extendedChangePct !== null
+          ? live.extendedChangePct
+          : live.changePct ?? item.deltaPct,
+      low: live.dayLow ?? item.low,
+      high: live.dayHigh ?? item.high,
+      volumeM: live.turnover !== null ? live.turnover / 1_000_000 : item.volumeM,
+      sessionPhase: live.sessionPhase ?? null,
+      extendedPrice: live.extendedPrice ?? null,
+      extendedChangePct: live.extendedChangePct ?? null,
+    };
   };
   const spy = withLiveUsQuote(US_MARKET_DATA.find((u) => u.ticker === 'SPY'));
   const qqq = withLiveUsQuote(US_MARKET_DATA.find((u) => u.ticker === 'QQQ'));
   const iwm = withLiveUsQuote(US_MARKET_DATA.find((u) => u.ticker === 'IWM'));
+  const spyExtBadge = formatExtendedSessionBadge(spy?.sessionPhase);
   const spyCtx = liveMarket.usSnapshotsBySymbol['SPY']?.marketContext;
   const ust10y = spyCtx?.treasury?.yield10Y ?? null;
   const ust2y = spyCtx?.treasury?.yield2Y ?? null;
@@ -2849,6 +2900,11 @@ export const USMarketModule: React.FC<{
     <div className="space-y-4 animate-module">
       <InsightBanner variant="default" tag="Wall Street en Vivo">
         <RealTimeBadge clock={getMarketLiveClock(liveStream)} />{' '}
+        {spyExtBadge !== null && (
+          <span className="inline-flex items-center rounded-full border border-[#F5B544]/35 bg-[#F5B544]/10 px-1.5 py-0.5 font-mono-num text-[9.5px] font-bold text-[#F5B544] mr-1">
+            {spyExtBadge}
+          </span>
+        )}
         SPY:{' '}
         <strong className="text-[var(--text-primary)] font-mono-num">
           {spy && Number.isFinite(spy.price) ? `US$ ${fmtNum(spy.price, 2)}` : '—'}
@@ -2922,6 +2978,7 @@ export const USMarketModule: React.FC<{
           heroValue={spy && Number.isFinite(spy.price) ? `US$ ${fmtNum(spy.price, 2)}` : '—'}
           flashValue={spy?.price}
           deltaPct={spy?.deltaPct}
+          sessionPhase={spy?.sessionPhase ?? null}
           subtitle={`CEDEAR SPY: $ ${fmtNum(spy?.cedearArsPrice, 0)} · Ratio 20:1`}
         />
         <UsIndexLogoKpiCard
@@ -2930,6 +2987,7 @@ export const USMarketModule: React.FC<{
           heroValue={qqq && Number.isFinite(qqq.price) ? `US$ ${fmtNum(qqq.price, 2)}` : '—'}
           flashValue={qqq?.price}
           deltaPct={qqq?.deltaPct}
+          sessionPhase={qqq?.sessionPhase ?? null}
           subtitle={`CEDEAR QQQ: $ ${fmtNum(qqq?.cedearArsPrice, 0)} · Ratio 20:1`}
         />
         <UsIndexLogoKpiCard
@@ -2938,6 +2996,7 @@ export const USMarketModule: React.FC<{
           heroValue={iwm && Number.isFinite(iwm.price) ? `US$ ${fmtNum(iwm.price, 2)}` : '—'}
           flashValue={iwm?.price}
           deltaPct={iwm?.deltaPct}
+          sessionPhase={iwm?.sessionPhase ?? null}
           subtitle={`CEDEAR IWM: $ ${fmtNum(iwm?.cedearArsPrice, 0)} · Ratio 10:1`}
         />
         <UsIndexLogoKpiCard

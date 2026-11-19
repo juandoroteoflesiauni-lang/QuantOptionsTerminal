@@ -34,6 +34,7 @@ import type {
   OptionSnapshotContract,
 } from '../data/optionsTypes.js';
 import type { WsSocketLike } from '../data/wsTypes.js';
+import { getUsEquitySessionPhase, type UsEquitySessionPhase } from '../core/sessions.js';
 import { parseExpirationDate } from '../data/normalizeOptions.js';
 import {
   RollingFeedTelemetry,
@@ -286,6 +287,27 @@ function priceNum(value: unknown): number {
 function countNum(value: unknown): number {
   const n = num(value);
   return n >= 0 ? n : Number.NaN;
+}
+
+/** ISO o epoch ms/seg de Tradier -> segundos UTC enteros. */
+function tradierEventTimeToUtcSec(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value >= 1e11) return Math.floor(value / 1_000);
+    if (value >= 1e9) return Math.floor(value);
+    return Number.NaN;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return Number.NaN;
+    if (/^\d{10,13}(?:\.\d+)?$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) {
+        return parsed >= 1e11 ? Math.floor(parsed / 1_000) : Math.floor(parsed);
+      }
+    }
+    return isoToUtcSec(trimmed);
+  }
+  return Number.NaN;
 }
 
 /** ISO de Tradier (`2026-11-13T16:00:00.000Z`) -> segundos UTC enteros. */
@@ -987,7 +1009,9 @@ export function createDefaultTradierSocketFactory(): TradierSocketFactory {
   };
 }
 
-export type TradierStreamEventKind = 'trade' | 'quote' | 'summary';
+export const TRADIER_WS_STREAM_FILTERS = ['trade', 'quote', 'timesale', 'summary'] as const;
+
+export type TradierStreamEventKind = 'trade' | 'quote' | 'timesale' | 'summary';
 
 export interface TradierStreamTick {
   readonly symbol: string;
@@ -1003,6 +1027,8 @@ export interface TradierStreamTick {
   readonly low: number;
   readonly cumulativeVolume: number;
   readonly previousClose: number;
+  readonly regularClose?: number;
+  readonly sessionPhase?: UsEquitySessionPhase;
   readonly asOfUtcSec: number;
   readonly provider: 'TRADIER';
 }
@@ -1339,7 +1365,7 @@ export class TradierLiveManager {
         const payload = JSON.stringify({
           symbols: this.subscribedSymbols,
           sessionid: sessionId,
-          filter: ['trade', 'quote'],
+          filter: [...TRADIER_WS_STREAM_FILTERS],
           linebreak: true,
         });
         socket.send(payload);
@@ -1439,8 +1465,22 @@ export class TradierLiveManager {
         this.scheduleReconnect(`stream ERROR: ${message}`);
         continue;
       }
-      const eventName = typeof event['event'] === 'string' ? event['event'].trim().toLowerCase() : '';
-      if (eventName !== 'trade' && eventName !== 'quote' && eventName !== 'summary') continue;
+      const rawType = typeof event['type'] === 'string' ? event['type'].trim().toLowerCase() : '';
+      const eventName =
+        typeof event['event'] === 'string' && event['event'].trim() !== ''
+          ? event['event'].trim().toLowerCase()
+          : rawType;
+      if (
+        eventName !== 'trade' &&
+        eventName !== 'quote' &&
+        eventName !== 'timesale' &&
+        eventName !== 'summary'
+      ) {
+        continue;
+      }
+      if (eventName === 'timesale' && (event['cancel'] === true || event['correction'] === true)) {
+        continue;
+      }
       const symbol = typeof event['symbol'] === 'string' ? event['symbol'].trim().toUpperCase() : '';
       if (symbol === '' || !this.subscribedSymbols.includes(symbol)) continue;
       this.ingestStreamEvent(symbol, eventName, event);
@@ -1453,7 +1493,9 @@ export class TradierLiveManager {
     event: Record<string, unknown>,
   ): void {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
-    const eventAsOfSec = isoToUtcSec(event['date']);
+    const eventAsOfSec = tradierEventTimeToUtcSec(
+      event['date'] ?? event['biddate'] ?? event['askdate'],
+    );
     const existing = this.latest.get(symbol);
     const next: MutableLiveQuoteState = existing ?? {
       symbol,
@@ -1467,9 +1509,13 @@ export class TradierLiveManager {
       asOfUtcSec: Number.NaN,
     };
 
-    if (eventName === 'trade') {
+    if (eventName === 'trade' || eventName === 'timesale') {
       const price = priceNum(event['last'] ?? event['price']);
       if (Number.isFinite(price)) next.price = price;
+      const bid = priceNum(event['bid']);
+      const ask = priceNum(event['ask']);
+      if (Number.isFinite(bid)) next.bid = bid;
+      if (Number.isFinite(ask)) next.ask = ask;
       const size = countNum(event['size']);
       const cumVol = countNum(event['cumvol'] ?? event['cumsize']);
       if (Number.isFinite(cumVol) && (!Number.isFinite(next.cumulativeVolume) || cumVol >= next.cumulativeVolume)) {
@@ -1526,11 +1572,12 @@ export class TradierLiveManager {
       bidSize: next.bidSize,
       ask: next.ask,
       askSize: next.askSize,
-      open: Number.NaN,
-      high: Number.NaN,
-      low: Number.NaN,
+      open: eventName === 'summary' ? priceNum(event['open']) : Number.NaN,
+      high: eventName === 'summary' ? priceNum(event['high']) : Number.NaN,
+      low: eventName === 'summary' ? priceNum(event['low']) : Number.NaN,
       cumulativeVolume: next.cumulativeVolume,
       previousClose: next.previousClose,
+      sessionPhase: getUsEquitySessionPhase(next.asOfUtcSec),
       asOfUtcSec: next.asOfUtcSec,
       provider: 'TRADIER',
     };

@@ -34,6 +34,7 @@ export interface LiveTickerUpdate {
   readonly price: number;
   readonly changePct: number;
   readonly dir?: 'up' | 'down' | null;
+  readonly sessionPhase?: 'PRE_MARKET' | 'RTH' | 'AFTER_HOURS' | 'CLOSED' | null;
 }
 
 export interface LiveMarketState {

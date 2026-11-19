@@ -21,6 +21,7 @@
  *  - Política Zero Silent Fallbacks + redacción estricta de secretos `.env`.
  */
 
+import { isExtendedHoursPhase } from '../core/sessions.js';
 import { evaluateDualProbabilityDensity, type DualProbabilityOutput, type HistoricalDualObservation, type OptionSliceIvNode } from '../core/ggal/dualDensity.js';
 import {
   evaluateParityGap,
@@ -2234,11 +2235,23 @@ export class GgalSpecialistRuntime {
       tradierGgal.bid > 0 &&
       Number.isFinite(tradierGgal.ask) &&
       tradierGgal.ask >= tradierGgal.bid;
+    const liveUsGgal = this.runtime.getLiveUsQuotes().find((q) => q.symbol === 'GGAL') ?? null;
+    const extendedAdrSpot =
+      liveUsGgal !== null &&
+      liveUsGgal.sessionPhase !== undefined &&
+      isExtendedHoursPhase(liveUsGgal.sessionPhase) &&
+      liveUsGgal.extendedPrice !== undefined &&
+      liveUsGgal.extendedPrice !== null &&
+      Number.isFinite(liveUsGgal.extendedPrice) &&
+      liveUsGgal.extendedPrice > 0
+        ? liveUsGgal.extendedPrice
+        : null;
     const lastAdrBarClose =
       bundle.usBars !== null && bundle.usBars.bars.length > 0
         ? (bundle.usBars.bars[bundle.usBars.bars.length - 1]?.close ?? null)
         : null;
     const adrSpot =
+      extendedAdrSpot ??
       bundle.usSnapshot?.envelope.snapshot.metrics.spot ??
       lastAdrBarClose ??
       ggalOverview?.adrPrice ??
@@ -5548,16 +5561,30 @@ export class GgalSpecialistRuntime {
     }));
 
     const parity = bundle !== null ? this.computeParityGapCore(bundle) : null;
+    const liveUsGgalDual = this.runtime.getLiveUsQuotes().find((q) => q.symbol === 'GGAL') ?? null;
+    const extendedAdrDual =
+      liveUsGgalDual !== null &&
+      liveUsGgalDual.sessionPhase !== undefined &&
+      isExtendedHoursPhase(liveUsGgalDual.sessionPhase) &&
+      liveUsGgalDual.extendedPrice !== undefined &&
+      liveUsGgalDual.extendedPrice !== null &&
+      Number.isFinite(liveUsGgalDual.extendedPrice) &&
+      liveUsGgalDual.extendedPrice > 0
+        ? liveUsGgalDual.extendedPrice
+        : null;
     const adrLastUsdFromFast =
+      extendedAdrDual ??
       fastUsSnap?.envelope.snapshot.metrics.spot ??
       adrRawBars[adrRawBars.length - 1]?.close ??
       Number.NaN;
     const adrLastUsd =
-      parity !== null &&
-      Number.isFinite(parity.output.spot.adrMidUsd) &&
-      parity.output.spot.adrMidUsd > 0
-        ? parity.output.spot.adrMidUsd
-        : adrLastUsdFromFast;
+      extendedAdrDual !== null
+        ? extendedAdrDual
+        : parity !== null &&
+            Number.isFinite(parity.output.spot.adrMidUsd) &&
+            parity.output.spot.adrMidUsd > 0
+          ? parity.output.spot.adrMidUsd
+          : adrLastUsdFromFast;
 
     const ggalLiveFast = fastLiveStocks.find((r) => r.symbol === 'GGAL');
     const bymaLastFast =

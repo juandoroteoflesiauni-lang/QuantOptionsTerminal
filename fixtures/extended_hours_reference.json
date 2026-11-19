@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "sessionCases": [
+    {
+      "name": "EST 03:59 antes de pre-market",
+      "utcSec": 1768467540,
+      "expected": "CLOSED"
+    },
+    {
+      "name": "EST 04:00 apertura pre-market",
+      "utcSec": 1768467600,
+      "expected": "PRE_MARKET"
+    },
+    {
+      "name": "EST 09:29 cierre pre-market",
+      "utcSec": 1768487340,
+      "expected": "PRE_MARKET"
+    },
+    {
+      "name": "EST 09:30 apertura RTH",
+      "utcSec": 1768487400,
+      "expected": "RTH"
+    },
+    {
+      "name": "EST 15:59 ultimo minuto RTH",
+      "utcSec": 1768510740,
+      "expected": "RTH"
+    },
+    {
+      "name": "EST 16:00 inicio after-hours",
+      "utcSec": 1768510800,
+      "expected": "AFTER_HOURS"
+    },
+    {
+      "name": "EST 19:59 ultimo minuto after-hours",
+      "utcSec": 1768525140,
+      "expected": "AFTER_HOURS"
+    },
+    {
+      "name": "EST 20:00 cerrado",
+      "utcSec": 1768525200,
+      "expected": "CLOSED"
+    },
+    {
+      "name": "EDT 08:15 pre-market verano",
+      "utcSec": 1784117700,
+      "expected": "PRE_MARKET"
+    },
+    {
+      "name": "EDT 18:30 after-hours verano",
+      "utcSec": 1784154600,
+      "expected": "AFTER_HOURS"
+    },
+    {
+      "name": "Sabado 12:00 cerrado",
+      "utcSec": 1794675600,
+      "expected": "CLOSED"
+    }
+  ],
+  "aftermarketBatch": {
+    "trades": [
+      {
+        "symbol": "AAPL",
+        "price": 351.25,
+        "tradeSize": 400,
+        "timestamp": 1795127400250
+      },
+      {
+        "symbol": "AAPL",
+        "price": 348.0,
+        "tradeSize": 100,
+        "timestamp": 1795127340250
+      },
+      {
+        "symbol": "GGAL",
+        "price": 62.4,
+        "size": 150,
+        "timestamp": 1795127400
+      },
+      {
+        "symbol": "BAD",
+        "price": 0,
+        "tradeSize": 10,
+        "timestamp": 1795127400250
+      }
+    ],
+    "quotes": [
+      {
+        "symbol": "AAPL",
+        "bidPrice": 351.2,
+        "bidSize": 200,
+        "askPrice": 351.3,
+        "askSize": 300,
+        "timestamp": 1795127401250
+      },
+      {
+        "symbol": "NVDA",
+        "bidPrice": 145.1,
+        "bidSize": 100,
+        "askPrice": 145.3,
+        "askSize": 100,
+        "timestamp": 1795127400250
+      }
+    ],
+    "expected": [
+      {
+        "symbol": "AAPL",
+        "price": 351.25,
+        "tradeSize": 400,
+        "bid": 351.2,
+        "bidSize": 200,
+        "ask": 351.3,
+        "askSize": 300,
+        "asOfUtcSec": 1795127401
+      },
+      {
+        "symbol": "GGAL",
+        "price": 62.4,
+        "tradeSize": 150,
+        "bid": null,
+        "bidSize": null,
+        "ask": null,
+        "askSize": null,
+        "asOfUtcSec": 1795127400
+      },
+      {
+        "symbol": "NVDA",
+        "price": 145.2,
+        "tradeSize": null,
+        "bid": 145.1,
+        "bidSize": 100,
+        "ask": 145.3,
+        "askSize": 100,
+        "asOfUtcSec": 1795127400
+      }
+    ]
+  },
+  "mergeCases": [
+    {
+      "name": "AFTER_HOURS: regular RTH 349.21 (-0.91928% vs prevClose 352.45), ext 351.25",
+      "sessionPhase": "AFTER_HOURS",
+      "regularPrice": 349.21,
+      "previousClose": 352.45,
+      "regularChangePct": -0.919279330401478,
+      "extendedPrice": 351.25,
+      "expectedPrice": 351.25,
+      "expectedRegularClose": 349.21,
+      "expectedChangePct": -0.919279330401478,
+      "expectedExtendedChangePct": 0.5841757108903011
+    },
+    {
+      "name": "PRE_MARKET: regular close 60.50, ext 62.315",
+      "sessionPhase": "PRE_MARKET",
+      "regularPrice": 60.5,
+      "previousClose": 60.5,
+      "regularChangePct": 0.0,
+      "extendedPrice": 62.315,
+      "expectedPrice": 62.315,
+      "expectedRegularClose": 60.5,
+      "expectedChangePct": 2.999999999999996,
+      "expectedExtendedChangePct": 2.999999999999996
+    }
+  ],
+  "intradayBars": {
+    "rows": [
+      {
+        "date": "2026-07-15 08:15:00",
+        "open": 61.0,
+        "high": 61.5,
+        "low": 60.8,
+        "close": 61.4,
+        "volume": 1200
+      },
+      {
+        "date": "2026-07-15 10:00:00",
+        "open": 61.5,
+        "high": 62.0,
+        "low": 61.4,
+        "close": 61.8,
+        "volume": 5000
+      },
+      {
+        "date": "2026-07-15 17:45:00",
+        "open": 61.8,
+        "high": 62.2,
+        "low": 61.7,
+        "close": 62.1,
+        "volume": 900
+      }
+    ],
+    "expectedExtendedTimes": [
+      1784117700,
+      1784124000,
+      1784151900
+    ],
+    "expectedRthOnlyTimes": [
+      1784124000
+    ]
+  }
+}

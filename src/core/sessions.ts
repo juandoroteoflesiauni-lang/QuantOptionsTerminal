@@ -31,8 +31,12 @@ export interface MarketParts {
 /** Umbral máximo admitido para un timestamp en segundos. */
 export const MAX_TIME_SECONDS = 1e11;
 
+export const PRE_MARKET_START_MINUTES = 4 * 60;
 export const RTH_START_MINUTES = 9 * 60 + 30;
-const RTH_END_MINUTES = 16 * 60;
+export const RTH_END_MINUTES = 16 * 60;
+export const AFTER_HOURS_END_MINUTES = 20 * 60;
+
+export type UsEquitySessionPhase = 'PRE_MARKET' | 'RTH' | 'AFTER_HOURS' | 'CLOSED';
 
 const FORMATTER_OPTIONS: Intl.DateTimeFormatOptions = {
   year: 'numeric',
@@ -255,6 +259,30 @@ export function isRthFromParts(parts: MarketParts): boolean {
 
 export function isRth(time: number): boolean {
   return isRthFromParts(getMarketParts(time, 'EQUITY'));
+}
+
+export function getUsEquitySessionPhaseFromParts(parts: MarketParts): UsEquitySessionPhase {
+  if (parts.weekday < 1 || parts.weekday > 5) {
+    return 'CLOSED';
+  }
+  if (parts.minutesOfDay >= PRE_MARKET_START_MINUTES && parts.minutesOfDay < RTH_START_MINUTES) {
+    return 'PRE_MARKET';
+  }
+  if (parts.minutesOfDay >= RTH_START_MINUTES && parts.minutesOfDay < RTH_END_MINUTES) {
+    return 'RTH';
+  }
+  if (parts.minutesOfDay >= RTH_END_MINUTES && parts.minutesOfDay < AFTER_HOURS_END_MINUTES) {
+    return 'AFTER_HOURS';
+  }
+  return 'CLOSED';
+}
+
+export function getUsEquitySessionPhase(timeSec: number): UsEquitySessionPhase {
+  return getUsEquitySessionPhaseFromParts(getMarketParts(timeSec, 'EQUITY'));
+}
+
+export function isExtendedHoursPhase(phase: UsEquitySessionPhase): boolean {
+  return phase === 'PRE_MARKET' || phase === 'AFTER_HOURS';
 }
 
 /**

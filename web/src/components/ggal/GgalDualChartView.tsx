@@ -48,6 +48,7 @@ import {
   computeSessionVwapSeries,
 } from '../../../../src/core/ggal/technicalIndicators';
 import {
+  formatExtendedSessionBadge,
   getMarketLiveClock,
   getMarketLiveQuote,
   tickFlashClass,
@@ -1056,6 +1057,8 @@ export function GgalDualChartView({
   const liveStream = useMarketLiveStream();
   const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
   const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
+  const adrExtBadge = formatExtendedSessionBadge(liveUsGgal?.sessionPhase);
+  const adrExtChangePct = liveUsGgal?.extendedChangePct ?? null;
   const liveDisplaySpot = coordMode === 'ARS_BYMA'
     ? liveArGgal?.price ?? null
     : coordMode === 'USD_ADR_NASDAQ'
@@ -1852,8 +1855,16 @@ export function GgalDualChartView({
             </strong>
           </span>
           {liveDisplaySpot !== null && liveClock !== null && (
-            <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-1.5 py-0.5 text-[#22C55E]">
-              ● Tiempo real {liveClock}
+            <span
+              className={`rounded-full border px-1.5 py-0.5 ${
+                (coordMode === 'USD_ADR_NASDAQ' || coordMode === 'RATIO_CCL') && adrExtBadge !== null
+                  ? 'border-[#F5B544]/40 bg-[#F5B544]/10 text-[#F5B544]'
+                  : 'border-[#22C55E]/35 bg-[#22C55E]/10 text-[#22C55E]'
+              }`}
+            >
+              {(coordMode === 'USD_ADR_NASDAQ' || coordMode === 'RATIO_CCL') && adrExtBadge !== null
+                ? `● ${adrExtBadge}${adrExtChangePct !== null ? ` (${adrExtChangePct >= 0 ? '+' : ''}${adrExtChangePct.toFixed(2).replace('.', ',')}%)` : ''} · ${liveClock}`
+                : `● Tiempo real ${liveClock}`}
             </span>
           )}
           <span

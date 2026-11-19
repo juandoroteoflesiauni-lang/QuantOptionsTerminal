@@ -64,6 +64,7 @@ export interface TradierHistoricalRequest {
   readonly timeframe: Timeframe;
   readonly fromUtcSec: number;
   readonly toUtcSec: number;
+  readonly includeExtended?: boolean;
 }
 
 export interface TradierHistoricalResult {
@@ -284,7 +285,8 @@ export class TradierHistoricalClient {
         discarded: normalized.discarded,
       };
     }
-    const url = `${config.restBaseUrl}/markets/timesales?symbol=${encodeURIComponent(symbol)}&interval=${interval}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&session_filter=all`;
+    const sessionFilter = request.includeExtended === false ? 'open' : 'all';
+    const url = `${config.restBaseUrl}/markets/timesales?symbol=${encodeURIComponent(symbol)}&interval=${interval}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&session_filter=${sessionFilter}`;
     const response = await this.httpFn(url, { method: 'GET', headers });
     if (!response.ok) throw new Error(redactSecrets(`Tradier timesales HTTP ${String(response.status)}`, currentSecrets));
     const normalized = parseTradierTimesales(JSON.parse(response.text) as unknown);
