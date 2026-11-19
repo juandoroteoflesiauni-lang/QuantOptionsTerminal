@@ -279,7 +279,15 @@ import {
   type TradierQuotesResult,
   type TradierStreamTick,
 } from './tradierAdapter.js';
-import { fetchAsFmpHttpFn, FmpEnterpriseClient, loadFmpConfigFromEnv, resolveFmpConfig, type FmpConfig } from './fmpClient.js';
+import {
+  fetchAsFmpHttpFn,
+  FmpEnterpriseClient,
+  loadFmpConfigFromEnv,
+  resolveFmpConfig,
+  type FmpBatchMode,
+  type FmpBatchQuote,
+  type FmpConfig,
+} from './fmpClient.js';
 import { TradierHistoricalClient, TradierStocksStream, TRADIER_CORE_US_SYMBOLS } from './tradierStream.js';
 import { resolveMassiveStocksMode } from './massiveStocksStream.js';
 
@@ -4159,12 +4167,16 @@ export class MarketRuntime {
         this.fmpTelemetry.record({
           atMs: this.nowMsFn(),
           latencyMs,
+          ...(httpStatus !== null && httpStatus >= 200 && httpStatus < 300 ? { isValidTick: true } : {}),
           ...(httpStatus === null ? {} : { httpStatus }),
         });
       },
     });
     this.tradierHistoricalClient = new TradierHistoricalClient({
-      resolveConfigFn: (): TradierConfig => this.tradierConfig,
+      resolveConfigFn: (): TradierConfig =>
+        this.tradierStocksStream?.getEffectiveConfig() ??
+        this.tradierManager?.getEffectiveConfig() ??
+        this.tradierConfig,
       ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
       secrets: this.secrets,
     });
@@ -4532,40 +4544,51 @@ export class MarketRuntime {
     ])].map((symbol) => symbol.trim().toUpperCase()).filter((symbol) => symbol !== '').sort();
   }
 
+  private ingestFmpBatchQuotes(quotes: readonly FmpBatchQuote[]): void {
+    for (const quote of quotes) {
+      const stored = this.fmpQuoteTicks.get(quote.symbol);
+      const previousLow = stored?.dayLow ?? null;
+      const previousHigh = stored?.dayHigh ?? null;
+      const preserveLow =
+        previousLow !== null && (quote.dayLow === null || previousLow < quote.dayLow);
+      const preserveHigh =
+        previousHigh !== null && (quote.dayHigh === null || previousHigh > quote.dayHigh);
+      const nextQuote: MarketTickQuote = {
+        market: 'US',
+        symbol: quote.symbol,
+        kind: 'stock',
+        currency: 'USD',
+        price: quote.price,
+        previousClose: quote.previousClose,
+        changePct: quote.changePct,
+        dayLow: preserveLow ? previousLow : quote.dayLow,
+        dayHigh: preserveHigh ? previousHigh : quote.dayHigh,
+        volume: quote.volume,
+        turnover: quote.turnover,
+        asOfUtcSec: quote.asOfUtcSec,
+        source: 'FMP_ENTERPRISE_REST',
+        exchange: quote.exchange,
+      };
+      this.fmpQuoteTicks.set(quote.symbol, nextQuote);
+    }
+  }
+
+  private shouldContinueFmpBatch(): boolean {
+    return this.fmpBatchRunning && this.enableWs && this.fmpConfig.configured;
+  }
+
   private startFmpBatchQuoteLoop(): void {
     if (!this.fmpConfig.configured || this.fmpBatchTimer !== null || this.fmpBatchRunning) {
       return;
     }
     const run = async (): Promise<void> => {
-      if (!this.fmpConfig.configured) return;
+      if (!this.shouldContinueFmpBatch()) return;
       try {
-        const result = await this.fmpClient.fetchBatchQuotes(this.getFmpBatchSymbols());
-        for (const quote of result.quotes) {
-          const stored = this.fmpQuoteTicks.get(quote.symbol);
-          const previousLow = stored?.dayLow ?? null;
-          const previousHigh = stored?.dayHigh ?? null;
-          const preserveLow =
-            previousLow !== null && (quote.dayLow === null || previousLow < quote.dayLow);
-          const preserveHigh =
-            previousHigh !== null && (quote.dayHigh === null || previousHigh > quote.dayHigh);
-          const nextQuote: MarketTickQuote = {
-            market: 'US',
-            symbol: quote.symbol,
-            kind: 'stock',
-            currency: 'USD',
-            price: quote.price,
-            previousClose: quote.previousClose,
-            changePct: quote.changePct,
-            dayLow: preserveLow ? previousLow : quote.dayLow,
-            dayHigh: preserveHigh ? previousHigh : quote.dayHigh,
-            volume: quote.volume,
-            turnover: quote.turnover,
-            asOfUtcSec: quote.asOfUtcSec,
-            source: 'FMP_ENTERPRISE_REST',
-            exchange: quote.exchange,
-          };
-          this.fmpQuoteTicks.set(quote.symbol, nextQuote);
-        }
+        await this.fmpClient.fetchBatchQuotes(this.getFmpBatchSymbols(), {
+          onChunk: ({ quotes }) => {
+            this.ingestFmpBatchQuotes(quotes);
+          },
+        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         this.emitBroadcast({
@@ -4576,10 +4599,11 @@ export class MarketRuntime {
           time: Math.floor(this.nowMsFn() / 1_000),
         });
       }
-      if (this.fmpBatchTimer !== null || !this.enableWs) return;
+      if (!this.shouldContinueFmpBatch()) return;
       this.fmpBatchTimer = setTimeout(() => {
         this.fmpBatchTimer = null;
-        this.startFmpBatchQuoteLoop();
+        if (!this.shouldContinueFmpBatch()) return;
+        void run();
       }, FMP_BATCH_QUOTE_INTERVAL_MS);
       this.fmpBatchTimer.unref();
     };
@@ -4603,6 +4627,7 @@ export class MarketRuntime {
     readonly subscribedSymbols: readonly string[];
     readonly telemetry: ReturnType<RollingFeedTelemetry['snapshot']>;
     readonly lastError: string | null;
+    readonly batchMode: FmpBatchMode;
   } {
     const diagnostics = this.fmpClient.getDiagnostics();
     return {
@@ -4613,6 +4638,7 @@ export class MarketRuntime {
       subscribedSymbols: this.getFmpBatchSymbols(),
       telemetry: this.fmpTelemetry.snapshot(this.nowMsFn()),
       lastError: diagnostics.lastError,
+      batchMode: diagnostics.batchMode,
     };
   }
 
@@ -4621,7 +4647,11 @@ export class MarketRuntime {
       throw new Error('FMP_API_KEY is not configured');
     }
     this.startFmpBatchQuoteLoop();
-    const result = await this.fmpClient.fetchBatchQuotes(this.getFmpBatchSymbols());
+    const result = await this.fmpClient.fetchBatchQuotes(this.getFmpBatchSymbols(), {
+      onChunk: ({ quotes }) => {
+        this.ingestFmpBatchQuotes(quotes);
+      },
+    });
     if (result.rows === 0) throw new Error('FMP batch quote returned no rows');
     return 'FMP_ENTERPRISE_REST_RESYNC_COMPLETED';
   }

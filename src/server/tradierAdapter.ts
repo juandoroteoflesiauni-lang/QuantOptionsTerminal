@@ -166,6 +166,49 @@ export function switchTradierConfigToSandbox(config: TradierConfig): TradierConf
   };
 }
 
+/**
+ * Pieza 41.4: conmuta de Sandbox a Live tras un HTTP 401 en
+ * `sandbox.tradier.com/v1` (p. ej. token Live con `TRADIER_USE_SANDBOX=true`).
+ */
+export function switchTradierConfigToLive(config: TradierConfig): TradierConfig {
+  return {
+    ...config,
+    apiEnv: 'prod',
+    restBaseUrl: TRADIER_PROD_REST_BASE,
+    wsBaseUrl: TRADIER_WS_BASE,
+    sandboxFallbackUsed: false,
+  };
+}
+
+/**
+ * Pieza 41.4: resuelve la única conmutación de reintento permitida ante un
+ * rechazo de sesión (`HTTP 401` bidireccional Live <-> Sandbox; `403` solo en
+ * fallback genérico Live -> Sandbox cuando `sandboxFallbackAllowed` está activo).
+ */
+export function resolveTradierSessionRetryConfig(
+  config: TradierConfig,
+  httpStatus: number,
+): TradierConfig | null {
+  if (config.apiEnv === 'sandbox') {
+    return httpStatus === 401 ? switchTradierConfigToLive(config) : null;
+  }
+  if (
+    config.sandboxFallbackAllowed &&
+    (httpStatus === 401 || (config.tokenIsGeneric && httpStatus === 403))
+  ) {
+    return switchTradierConfigToSandbox(config);
+  }
+  return null;
+}
+
+export function formatTradierEnvironmentTelemetry(
+  environment: 'LIVE' | 'SANDBOX',
+  restBaseUrl: string,
+): string {
+  const host = restBaseUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  return `${environment} · ${host}`;
+}
+
 // ---------------------------------------------------------------------------
 // Transporte HTTP
 // ---------------------------------------------------------------------------
@@ -1010,6 +1053,7 @@ export interface TradierLiveManagerDeps {
   readonly onTick?: (tick: TradierStreamTick) => void;
   readonly onError?: (message: string) => void;
   readonly onStateChange?: (state: TradierStreamState) => void;
+  readonly onEnvironmentNegotiated?: (config: TradierConfig) => void;
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
 }
@@ -1078,13 +1122,14 @@ export class TradierLiveManager {
   private readonly onTickCb: TradierLiveManagerDeps['onTick'];
   private readonly onErrorCb: TradierLiveManagerDeps['onError'];
   private readonly onStateChangeCb: TradierLiveManagerDeps['onStateChange'];
+  private readonly onEnvironmentNegotiatedCb: TradierLiveManagerDeps['onEnvironmentNegotiated'];
   private readonly telemetry = new RollingFeedTelemetry({
     latencyKind: 'PROVIDER_EVENT_AGE',
   });
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
 
-  private sandboxFallbackAttempted = false;
+  private negotiatedEnv: TradierApiEnv | null = null;
 
   private readonly latest = new Map<string, MutableLiveQuoteState>();
   private readonly rejectedSymbols = new Set<string>();
@@ -1110,8 +1155,13 @@ export class TradierLiveManager {
     this.onTickCb = deps.onTick;
     this.onErrorCb = deps.onError;
     this.onStateChangeCb = deps.onStateChange;
+    this.onEnvironmentNegotiatedCb = deps.onEnvironmentNegotiated;
     this.reconnectBaseDelayMs = deps.reconnectBaseDelayMs ?? 5_000;
     this.reconnectMaxDelayMs = deps.reconnectMaxDelayMs ?? 60_000;
+  }
+
+  public getEffectiveConfig(): TradierConfig {
+    return this.config;
   }
 
   public getStatus(): TradierStreamStatus {
@@ -1213,30 +1263,23 @@ export class TradierLiveManager {
     this.onErrorCb?.(this.lastError);
   }
 
-  /** `POST /markets/events/session` -> `{ stream: { sessionid, url } }`. */
-  private async createSession(): Promise<{ readonly sessionId: string; readonly wsUrl: string }> {
-    const response = await this.httpFn(`${this.config.restBaseUrl}/markets/events/session`, {
+  private async postSessionRequest(config: TradierConfig): Promise<TradierHttpResponse> {
+    return this.httpFn(`${config.restBaseUrl}/markets/events/session`, {
       method: 'POST',
       headers: {
-        ...buildAuthHeaders(this.config),
+        ...buildAuthHeaders(config),
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       timeoutMs: 10_000,
     });
-    if (!response.ok) {
-      const canFallbackToSandbox =
-        this.config.tokenIsGeneric &&
-        this.config.sandboxFallbackAllowed &&
-        this.config.apiEnv === 'prod' &&
-        !this.sandboxFallbackAttempted &&
-        (response.status === 401 || response.status === 403);
-      if (canFallbackToSandbox) {        this.sandboxFallbackAttempted = true;
-        this.config = switchTradierConfigToSandbox(this.config);
-        return this.createSession();
-      }
-      throw new Error(`Tradier session HTTP ${String(response.status)}`);
-    }
-    const body = parseJsonBody(response.text);
+  }
+
+  private parseSessionPayload(
+    config: TradierConfig,
+    responseText: string,
+    switched: boolean,
+  ): { readonly sessionId: string; readonly wsUrl: string } {
+    const body = parseJsonBody(responseText);
     const stream = isRecord(body) && isRecord(body['stream']) ? body['stream'] : null;
     const sessionId = stream !== null && typeof stream['sessionid'] === 'string' ? stream['sessionid'].trim() : '';
     if (sessionId === '') {
@@ -1245,11 +1288,39 @@ export class TradierLiveManager {
     const urlFromResponse =
       stream !== null && typeof stream['url'] === 'string' && stream['url'].trim() !== ''
         ? stream['url'].trim()
-        : this.config.wsBaseUrl;
-    // Tras la conmutación explícita Live -> Sandbox, la URL del proveedor no
-    // puede reabrir el endpoint Live.
-    const effectiveWsUrl = this.sandboxFallbackAttempted ? this.config.wsBaseUrl : urlFromResponse;
+        : config.wsBaseUrl;
+    const wrongHostForEnv =
+      (config.apiEnv === 'prod' && urlFromResponse.includes('sandbox.tradier.com')) ||
+      (config.apiEnv === 'sandbox' && urlFromResponse.includes('ws.tradier.com'));
+    const effectiveWsUrl = switched || wrongHostForEnv ? config.wsBaseUrl : urlFromResponse;
     return { sessionId, wsUrl: effectiveWsUrl };
+  }
+
+  /** `POST /markets/events/session` -> `{ stream: { sessionid, url } }`. */
+  private async createSession(): Promise<{ readonly sessionId: string; readonly wsUrl: string }> {
+    const response = await this.postSessionRequest(this.config);
+    if (response.ok) {
+      const payload = this.parseSessionPayload(this.config, response.text, false);
+      this.negotiatedEnv = this.config.apiEnv;
+      return payload;
+    }
+
+    if (this.negotiatedEnv === null) {
+      const alternateConfig = resolveTradierSessionRetryConfig(this.config, response.status);
+      if (alternateConfig !== null) {
+        const retryResponse = await this.postSessionRequest(alternateConfig);
+        if (retryResponse.ok) {
+          const payload = this.parseSessionPayload(alternateConfig, retryResponse.text, true);
+          this.config = alternateConfig;
+          this.negotiatedEnv = alternateConfig.apiEnv;
+          this.onEnvironmentNegotiatedCb?.(this.config);
+          return payload;
+        }
+        throw new Error(`Tradier session HTTP ${String(retryResponse.status)}`);
+      }
+    }
+
+    throw new Error(`Tradier session HTTP ${String(response.status)}`);
   }
 
   private async connectCycle(preserveConnectedState = false): Promise<void> {

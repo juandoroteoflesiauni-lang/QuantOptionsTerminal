@@ -39,6 +39,9 @@ export const FMP_LEGACY_BASE_URL = 'https://financialmodelingprep.com';
 export type FmpIntradayTimeframe = Exclude<Timeframe, '1D'>;
 export type FmpSource = 'FMP_STABLE' | 'FMP_LEGACY';
 export type FmpEndpoint = 'HISTORICAL_CHART' | 'HISTORICAL_PRICE_EOD' | 'BATCH_QUOTE';
+export type FmpBatchMode = 'stable-batch' | 'v3-batch' | 'stable-single-pool';
+
+export const FMP_BATCH_QUOTE_CHUNK_SIZE = 50;
 
 export interface FmpConfig {
   readonly apiKey: string | null;
@@ -103,6 +106,22 @@ export interface FmpBatchQuotesResult {
   readonly rows: number;
   readonly discarded: number;
   readonly keyEnvName: FmpKeyRole;
+  readonly batchMode: FmpBatchMode;
+}
+
+export interface FmpBatchChunkEvent {
+  readonly quotes: readonly FmpBatchQuote[];
+  readonly chunkIndex: number;
+  readonly totalChunks: number;
+  readonly batchMode: FmpBatchMode;
+  readonly httpStatus: number;
+  readonly atMs: number;
+  readonly latencyMs: number | null;
+}
+
+export interface FmpBatchQuotesOptions {
+  readonly chunkSize?: number;
+  readonly onChunk?: (event: FmpBatchChunkEvent) => void;
 }
 
 export interface FmpHttpResult {
@@ -121,11 +140,16 @@ export interface FmpClientDeps {
   readonly fetchFn?: FmpHttpFn;
   readonly nowMsFn?: () => number;
   readonly secrets?: readonly string[];
+  readonly batchChunkSize?: number;
+  readonly onChunk?: (event: FmpBatchChunkEvent) => void;
   /** Telemetría local opcional: status/rows/latencia; nunca URL ni key. */
   readonly onResponse?: (input: {
     readonly httpStatus: number | null;
     readonly rows: number;
     readonly latencyMs: number | null;
+    readonly chunkIndex?: number;
+    readonly totalChunks?: number;
+    readonly batchMode?: FmpBatchMode;
   }) => void;
 }
 
@@ -356,6 +380,12 @@ function buildLegacyChartUrl(symbol: string, path: string, apiKey: string): stri
   return url.toString();
 }
 
+function buildLegacyBatchQuoteUrl(symbols: readonly string[], apiKey: string): string {
+  const url = new URL(`${FMP_LEGACY_BASE_URL}/api/v3/quote/${encodeURIComponent(symbols.join(','))}`);
+  url.searchParams.set('apikey', apiKey);
+  return url.toString();
+}
+
 export function buildFmpHistoricalPath(request: FmpHistoricalRequest): string {
   const symbol = cleanSymbol(request.symbol);
   if (symbol === '') throw new Error('FMP historical request requires a symbol');
@@ -395,7 +425,10 @@ export class FmpEnterpriseClient {
   private readonly baseSecrets: readonly string[];
   private lastError: string | null = null;
   private lastSuccessAtMs: number | null = null;
+  private lastBatchMode: FmpBatchMode = 'stable-single-pool';
   private requests = 0;
+  private readonly batchChunkSize: number;
+  private readonly onChunk: FmpClientDeps['onChunk'];
   private readonly onResponse: FmpClientDeps['onResponse'];
 
   public constructor(deps: FmpClientDeps) {
@@ -404,6 +437,11 @@ export class FmpEnterpriseClient {
     this.fetchFn = deps.fetchFn ?? createDefaultFmpHttpFn();
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
     this.baseSecrets = [...(deps.secrets ?? [])];
+    const requestedChunkSize = deps.batchChunkSize ?? FMP_BATCH_QUOTE_CHUNK_SIZE;
+    this.batchChunkSize = Number.isFinite(requestedChunkSize)
+      ? Math.max(1, Math.floor(requestedChunkSize))
+      : FMP_BATCH_QUOTE_CHUNK_SIZE;
+    this.onChunk = deps.onChunk;
     this.onResponse = deps.onResponse;
   }
 
@@ -440,28 +478,43 @@ export class FmpEnterpriseClient {
     readonly requests: number;
     readonly lastSuccessAtMs: number | null;
     readonly lastError: string | null;
+    readonly batchMode: FmpBatchMode;
   } {
     return {
       configured: this.effectiveConfig().configured,
       requests: this.requests,
       lastSuccessAtMs: this.lastSuccessAtMs,
       lastError: this.lastError === null ? null : redactSecrets(this.lastError, this.currentSecrets()),
+      batchMode: this.lastBatchMode,
     };
   }
 
-  private async fetchRedacted(url: string): Promise<FmpHttpResult> {
+  private async fetchRawWithTiming(url: string): Promise<{
+    readonly response: FmpHttpResult;
+    readonly latencyMs: number | null;
+  }> {
     this.requests += 1;
     const startedAtMs = this.nowMsFn();
     try {
       const response = await this.fetchFn(url);
-      const latencyMs = this.nowMsFn() >= startedAtMs ? this.nowMsFn() - startedAtMs : null;
-      this.onResponse?.({ httpStatus: response.status, rows: 0, latencyMs });
-      return response;
+      const finishedAtMs = this.nowMsFn();
+      const latencyMs = finishedAtMs >= startedAtMs ? finishedAtMs - startedAtMs : null;
+      return { response, latencyMs };
     } catch (err: unknown) {
-      this.onResponse?.({ httpStatus: null, rows: 0, latencyMs: this.nowMsFn() - startedAtMs });
+      const finishedAtMs = this.nowMsFn();
+      const latencyMs = finishedAtMs >= startedAtMs ? finishedAtMs - startedAtMs : null;
+      this.onResponse?.({ httpStatus: null, rows: 0, latencyMs });
       const raw = err instanceof Error ? err.message : String(err);
-      throw new Error(redactSecrets(`FMP request failed: ${raw}`, this.currentSecrets()));
+      const redacted = redactSecrets(`FMP request failed: ${raw}`, this.currentSecrets());
+      this.lastError = redacted;
+      throw new Error(redacted);
     }
+  }
+
+  private async fetchRedacted(url: string): Promise<FmpHttpResult> {
+    const { response, latencyMs } = await this.fetchRawWithTiming(url);
+    this.onResponse?.({ httpStatus: response.status, rows: 0, latencyMs });
+    return response;
   }
 
   public async fetchHistorical(request: FmpHistoricalRequest): Promise<FmpHistoricalResult> {
@@ -512,7 +565,10 @@ export class FmpEnterpriseClient {
     };
   }
 
-  public async fetchBatchQuotes(symbols: readonly string[]): Promise<FmpBatchQuotesResult> {
+  public async fetchBatchQuotes(
+    symbols: readonly string[],
+    options?: FmpBatchQuotesOptions,
+  ): Promise<FmpBatchQuotesResult> {
     const config = this.effectiveConfig();
     const keySelection = this.apiKeyFor('QUOTES');
     if (!config.configured || keySelection === null) {
@@ -521,27 +577,128 @@ export class FmpEnterpriseClient {
     const clean = [...new Set(symbols.map(cleanSymbol).filter((symbol) => symbol !== ''))];
     if (clean.length === 0) throw new Error('FMP batch quote requires symbols');
     const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
-    const query = new URLSearchParams({ symbols: clean.join(',') });
-    const url = buildAuthUrl(`/stable/batch-quote?${query.toString()}`, keySelection.key);
-    const response = await this.fetchRedacted(url);
-    if (!response.ok) throw new Error(`FMP batch quote HTTP ${String(response.status)}`);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(response.text) as unknown;
-    } catch {
-      throw new Error('FMP batch quote returned invalid JSON');
+    const requestedChunkSize = options?.chunkSize ?? this.batchChunkSize;
+    const effectiveChunkSize = Number.isFinite(requestedChunkSize)
+      ? Math.max(1, Math.floor(requestedChunkSize))
+      : this.batchChunkSize;
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < clean.length; i += effectiveChunkSize) {
+      const slice = clean.slice(i, i + effectiveChunkSize);
+      if (slice.length > 0) chunks.push(slice);
     }
-    const normalized = parseFmpBatchQuotes(parsed);
-    this.recordResponse(true, normalized.quotes.length);
+
+    let batchMode: FmpBatchMode = chunks.length > 1 ? 'stable-single-pool' : 'stable-batch';
+    let source: FmpSource = 'FMP_STABLE';
+    const allQuotes: FmpBatchQuote[] = [];
+    const seenSymbols = new Set<string>();
+    let totalDiscarded = 0;
+    let lastHttpStatus: number | null = null;
+
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex];
+      if (chunk === undefined || chunk.length === 0) continue;
+
+      const buildUrl = (useLegacy: boolean): string => {
+        if (useLegacy) return buildLegacyBatchQuoteUrl(chunk, keySelection.key);
+        const query = new URLSearchParams({ symbols: chunk.join(',') });
+        return buildAuthUrl(`/stable/batch-quote?${query.toString()}`, keySelection.key);
+      };
+
+      let { response, latencyMs } = await this.fetchRawWithTiming(buildUrl(source === 'FMP_LEGACY'));
+      if (
+        source === 'FMP_STABLE' &&
+        !response.ok &&
+        (response.status === 402 || response.status === 403 || response.status === 404)
+      ) {
+        this.onResponse?.({
+          httpStatus: response.status,
+          rows: 0,
+          latencyMs,
+          chunkIndex,
+          totalChunks: chunks.length,
+          batchMode,
+        });
+        const legacyResult = await this.fetchRawWithTiming(buildUrl(true));
+        response = legacyResult.response;
+        latencyMs = legacyResult.latencyMs;
+        if (response.ok) {
+          source = 'FMP_LEGACY';
+          batchMode = 'v3-batch';
+        }
+      }
+
+      lastHttpStatus = response.status;
+      if (!response.ok) {
+        this.onResponse?.({
+          httpStatus: response.status,
+          rows: 0,
+          latencyMs,
+          chunkIndex,
+          totalChunks: chunks.length,
+          batchMode,
+        });
+        const errorMsg = `FMP batch quote HTTP ${String(response.status)}`;
+        this.lastError = errorMsg;
+        throw new Error(errorMsg);
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(response.text) as unknown;
+      } catch {
+        const errorMsg = 'FMP batch quote returned invalid JSON';
+        this.lastError = errorMsg;
+        throw new Error(errorMsg);
+      }
+
+      const normalized = parseFmpBatchQuotes(parsed);
+      totalDiscarded += normalized.discarded;
+      const chunkQuotes: FmpBatchQuote[] = [];
+      for (const quote of normalized.quotes) {
+        if (seenSymbols.has(quote.symbol)) {
+          totalDiscarded += 1;
+          continue;
+        }
+        seenSymbols.add(quote.symbol);
+        allQuotes.push(quote);
+        chunkQuotes.push(quote);
+      }
+
+      this.lastBatchMode = batchMode;
+      this.recordResponse(true, normalized.quotes.length);
+      this.onResponse?.({
+        httpStatus: response.status,
+        rows: normalized.quotes.length,
+        latencyMs,
+        chunkIndex,
+        totalChunks: chunks.length,
+        batchMode,
+      });
+
+      const chunkEvent: FmpBatchChunkEvent = {
+        quotes: chunkQuotes,
+        chunkIndex,
+        totalChunks: chunks.length,
+        batchMode,
+        httpStatus: response.status,
+        atMs: this.nowMsFn(),
+        latencyMs,
+      };
+      options?.onChunk?.(chunkEvent);
+      this.onChunk?.(chunkEvent);
+    }
+
     return {
-      quotes: normalized.quotes,
-      source: 'FMP_STABLE',
+      quotes: allQuotes,
+      source,
       endpoint: 'BATCH_QUOTE',
       requestedAtUtcSec,
-      httpStatus: response.status,
-      rows: normalized.quotes.length,
-      discarded: normalized.discarded,
+      httpStatus: lastHttpStatus,
+      rows: allQuotes.length,
+      discarded: totalDiscarded,
       keyEnvName: keySelection.envName,
+      batchMode,
     };
   }
 

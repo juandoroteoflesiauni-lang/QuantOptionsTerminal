@@ -16,6 +16,7 @@ import {
   probeFmpPlans,
 } from '../src/server/fmpPlanProbe.js';
 import {
+  FMP_BATCH_QUOTE_CHUNK_SIZE,
   FmpEnterpriseClient,
   loadFmpConfigFromEnv,
   resolveFmpConfig,
@@ -28,9 +29,12 @@ import {
   parseTradierDailyHistory,
   parseTradierTimesales,
   TRADIER_CORE_US_SYMBOLS,
+  TradierStocksStream,
 } from '../src/server/tradierStream.js';
 import {
+  formatTradierEnvironmentTelemetry,
   resolveTradierConfig,
+  resolveTradierSessionRetryConfig,
   switchTradierConfigToSandbox,
   TRADIER_PROD_REST_BASE,
   TRADIER_SANDBOX_REST_BASE,
@@ -51,7 +55,13 @@ import {
 } from '../src/server/arRealtimeBus.js';
 import { primaryFrameToMarketTickQuote } from '../src/server/argentinaMarketLoader.js';
 import { mergePrimaryMarketData } from '../src/server/primaryRofexLoader.js';
-import { FeedsHealthMonitor } from '../src/server/feedsHealthMonitor.js';
+import {
+  FMP_CHUNKED_STALE_THRESHOLD_MS,
+  FeedsHealthMonitor,
+  isFmpEnterpriseFeedConnected,
+  resolveFmpStaleThresholdMs,
+  type FmpBatchMode,
+} from '../src/server/feedsHealthMonitor.js';
 import { redactSecrets } from '../src/server/runtimeCache.js';
 import { MarketRuntime, ELECTORAL_GAP_START_UTC_SEC } from '../src/server/marketRuntime.js';
 import {
@@ -973,3 +983,379 @@ class OfflineIolStub {
   public stop(): void {}
   public getHealth(): never { throw new Error('offline stub'); }
 }
+
+interface HealthFixRoot {
+  readonly fmpStaleThresholds: readonly {
+    readonly batchMode: FmpBatchMode | null;
+    readonly overrideMs: number | null;
+    readonly expectedMs: number;
+  }[];
+  readonly fmpHealthCases: readonly {
+    readonly name: string;
+    readonly configured: boolean;
+    readonly activeSymbols: number;
+    readonly lastError: string | null;
+    readonly lastSuccessAtMs: number | null;
+    readonly lastHttpSuccessAtMs: number | null;
+    readonly lastTickAtMs: number | null;
+    readonly lastHttpFailureAtMs: number | null;
+    readonly batchMode: FmpBatchMode | null;
+    readonly staleThresholdMs: number | null;
+    readonly nowMs: number;
+    readonly expectedConnected: boolean;
+    readonly expectedState: 'CONNECTED' | 'DEGRADED';
+  }[];
+  readonly tradierRetryCases: readonly {
+    readonly name: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly httpStatus: number;
+    readonly expectedRetryApiEnv: 'prod' | 'sandbox' | null;
+    readonly expectedRestBaseUrl: string | null;
+    readonly expectedWsBaseUrl: string | null;
+    readonly expectedTelemetry: string;
+  }[];
+}
+
+const healthFixReference = JSON.parse(
+  readFileSync(resolve(__dirname, '..', 'fixtures', 'fmp_tradier_health_reference.json'), 'utf-8'),
+) as HealthFixRoot;
+
+describe('Pieza 41.4 — salud chunked FMP Enterprise y auto-negociación Tradier Live/Sandbox', () => {
+  it('calibra el umbral de frescura FMP a 45_000 ms para ciclos chunked y mantiene CONNECTED con 172 activos cada 15–20 s', () => {
+    expect(FMP_CHUNKED_STALE_THRESHOLD_MS).toBe(45_000);
+    for (const tc of healthFixReference.fmpStaleThresholds) {
+      expect(resolveFmpStaleThresholdMs(tc.batchMode, tc.overrideMs)).toBe(tc.expectedMs);
+    }
+
+    for (const item of healthFixReference.fmpHealthCases) {
+      expect(
+        isFmpEnterpriseFeedConnected({
+          configured: item.configured,
+          activeSymbols: item.activeSymbols,
+          lastError: item.lastError,
+          lastSuccessAtMs: item.lastSuccessAtMs,
+          lastHttpSuccessAtMs: item.lastHttpSuccessAtMs,
+          lastTickAtMs: item.lastTickAtMs,
+          lastHttpFailureAtMs: item.lastHttpFailureAtMs,
+          batchMode: item.batchMode,
+          staleThresholdMs: item.staleThresholdMs,
+          nowMs: item.nowMs,
+        }),
+      ).toBe(item.expectedConnected);
+
+      const symbols = Array.from({ length: item.activeSymbols }, (_, idx) => `SYM${String(idx)}`);
+      const monitor = new FeedsHealthMonitor({
+        getMassiveWs: () => ({
+          configured: true,
+          connected: false,
+          keySlot: null,
+          lastError: null,
+          telemetry: { ...EMPTY_TELEMETRY },
+          subscribedSymbols: [],
+          activeSymbolCount: 0,
+          subscribedOptionQuotes: 0,
+          lastWsMessageAgeMs: null,
+          stocksMode: 'STANDBY_TRADIER_FMP_PRIMARY',
+        }),
+        getMassiveRest: () => ({
+          configured: false,
+          poolSize: 0,
+          slots: [],
+          lastSlotIndex: null,
+          roundRobinRequests: 0,
+          telemetry: { ...EMPTY_TELEMETRY },
+        }),
+        getTradier: () => ({
+          configured: false,
+          connected: false,
+          sessionCreated: false,
+          reconnectAttempts: 0,
+          subscribedSymbols: [],
+          lastError: null,
+          telemetry: { ...EMPTY_TELEMETRY },
+          apiEnv: 'prod',
+          environment: 'LIVE',
+        }),
+        getFmp: () => ({
+          configured: item.configured,
+          lastSuccessAtMs: item.lastSuccessAtMs,
+          lastError: item.lastError,
+          requestCount: 4,
+          quoteCount: item.activeSymbols,
+          subscribedSymbols: symbols,
+          batchMode: item.batchMode,
+          staleThresholdMs: item.staleThresholdMs,
+          telemetry: {
+            ...EMPTY_TELEMETRY,
+            lastTickAtMs: item.lastTickAtMs,
+            lastHttpSuccessAtMs: item.lastHttpSuccessAtMs,
+            lastHttpFailureAtMs: item.lastHttpFailureAtMs,
+          },
+        }),
+        getOrats: () => ({
+          configured: false,
+          connected: false,
+          lastFetchAtUtcSec: null,
+          lastStatus: null,
+          planTier: null,
+          quotaRemaining: null,
+          quotaLimit: null,
+          quotaResetAtUtcSec: null,
+          circuitBreaker: { state: 'CLOSED', consecutiveFailures: 0, openedAtMs: null },
+          telemetry: { ...EMPTY_TELEMETRY },
+        }),
+        getPrimary: () => ({
+          configured: false,
+          authenticated: false,
+          wsConnected: false,
+          tokenValidUntilUtcSec: null,
+          tokenRenewCount: 0,
+          wsEnvironment: 'PRIMARY_REMARKETS_SANDBOX',
+          dlrSubscribedCount: 0,
+          liveDlrCount: 0,
+          liveDlrLastUpdateUtcSec: null,
+          lastError: null,
+          telemetry: { ...EMPTY_TELEMETRY },
+        }),
+        getBmb: () => ({
+          configured: false,
+          healthStatus: 'DISABLED_NO_PASSWORD',
+          connected: false,
+          lastUpdateUtcSec: null,
+          orderBookCount: 0,
+          caucionCount: 0,
+          optionCount: 0,
+          lastError: null,
+          signalRMode: false,
+          telemetry: { ...EMPTY_TELEMETRY },
+        }),
+        getIol: () => ({
+          configured: false,
+          connected: false,
+          authMethod: null,
+          passwordAuthCount: 0,
+          refreshAuthCount: 0,
+          tokenExpiresAtUtcSec: null,
+          lastAuthAtUtcSec: null,
+          quoteCount: 0,
+          lastError: null,
+          telemetry: { ...EMPTY_TELEMETRY },
+        }),
+        reconnectMassiveWs: () => Promise.resolve('ok'),
+        resyncMassiveRest: () => Promise.resolve('ok'),
+        reconnectTradier: () => Promise.resolve('ok'),
+        resyncOrats: () => Promise.resolve('ok'),
+        reconnectPrimary: () => Promise.resolve('ok'),
+        reconnectBmb: () => Promise.resolve('ok'),
+        reconnectIol: () => Promise.resolve('ok'),
+        nowMsFn: () => item.nowMs,
+        secrets: [],
+      });
+      const fmpHealth = monitor.getSnapshot().providers.find((p) => p.id === 'FMP_ENTERPRISE_REST');
+      expect(fmpHealth?.connected).toBe(item.expectedConnected);
+      expect(fmpHealth?.state).toBe(item.expectedState);
+    }
+  });
+
+  it('emite heartbeat incremental por cada chunk FMP (172 símbolos en stable-single-pool y fallback v3-batch)', async () => {
+    let clockMs = 1_795_104_000_000;
+    const responseEvents: { readonly httpStatus: number | null; readonly rows: number; readonly chunkIndex?: number }[] = [];
+    const chunkEvents: number[] = [];
+    const symbols = Array.from({ length: 172 }, (_, idx) => `T${String(idx)}`);
+
+    const client = new FmpEnterpriseClient({
+      config: loadFmpConfigFromEnv({ FMP_API_KEY: 'fmp-chunk-secret' }),
+      nowMsFn: () => clockMs,
+      onResponse: (ev) => {
+        responseEvents.push({
+          httpStatus: ev.httpStatus,
+          rows: ev.rows,
+          ...(ev.chunkIndex === undefined ? {} : { chunkIndex: ev.chunkIndex }),
+        });
+      },
+      fetchFn: async (url) => {
+        await Promise.resolve();
+        clockMs += 4_500;
+        const parsedUrl = new URL(url);
+        const batchSymbols = (parsedUrl.searchParams.get('symbols') ?? '').split(',').filter(Boolean);
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify(
+            batchSymbols.map((sym) => ({
+              symbol: sym,
+              price: 100,
+              previousClose: 99,
+              volume: 10,
+              exchange: 'NASDAQ',
+              timestamp: 1_795_104_000,
+            })),
+          ),
+        };
+      },
+    });
+
+    const result = await client.fetchBatchQuotes(symbols, {
+      onChunk: (ev) => {
+        chunkEvents.push(ev.chunkIndex);
+      },
+    });
+
+    const expectedChunks = Math.ceil(172 / FMP_BATCH_QUOTE_CHUNK_SIZE);
+    expect(result.batchMode).toBe('stable-single-pool');
+    expect(result.rows).toBe(172);
+    expect(chunkEvents).toEqual([0, 1, 2, 3]);
+    expect(responseEvents).toHaveLength(expectedChunks);
+    expect(responseEvents.every((ev) => ev.httpStatus === 200 && ev.rows > 0)).toBe(true);
+    expect(client.getDiagnostics().batchMode).toBe('stable-single-pool');
+    expect(client.getDiagnostics().lastSuccessAtMs).toBe(clockMs);
+
+    // Fallback v3-batch ante 403/402 en /stable/batch-quote
+    const v3Client = new FmpEnterpriseClient({
+      config: loadFmpConfigFromEnv({ FMP_API_KEY: 'fmp-v3-secret' }),
+      nowMsFn: () => clockMs,
+      fetchFn: async (url) => {
+        await Promise.resolve();
+        if (url.includes('/stable/batch-quote')) {
+          return { ok: false, status: 403, text: '' };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify([{ symbol: 'AAPL', price: 210, previousClose: 208, volume: 50, exchange: 'NASDAQ', timestamp: 1_795_104_000 }]),
+        };
+      },
+    });
+    const v3Result = await v3Client.fetchBatchQuotes(['AAPL']);
+    expect(v3Result.source).toBe('FMP_LEGACY');
+    expect(v3Result.batchMode).toBe('v3-batch');
+    expect(v3Result.rows).toBe(1);
+  });
+
+  it('coincide con la tabla de reintentos Live <-> Sandbox y telemetría', () => {
+    for (const tc of healthFixReference.tradierRetryCases) {
+      const config = resolveTradierConfig(tc.env, 'tests/.env-not-present');
+      const next = resolveTradierSessionRetryConfig(config, tc.httpStatus);
+      expect(next?.apiEnv ?? null).toBe(tc.expectedRetryApiEnv);
+      expect(next?.restBaseUrl ?? null).toBe(tc.expectedRestBaseUrl);
+      expect(next?.wsBaseUrl ?? null).toBe(tc.expectedWsBaseUrl);
+      const telemetry = formatTradierEnvironmentTelemetry(
+        (next ?? config).apiEnv === 'sandbox' ? 'SANDBOX' : 'LIVE',
+        (next ?? config).restBaseUrl,
+      );
+      expect(telemetry).toBe(tc.expectedTelemetry);
+    }
+  });
+
+  it('auto-negocia TRADIER_LIVE_WS de SANDBOX (401) -> LIVE (200), persiste LIVE en memoria y evita reintentar Sandbox al reconectar', async () => {
+    const sessionCalls: string[] = [];
+    const socketUrls: string[] = [];
+    const negotiatedEvents: string[] = [];
+    const socket: WsSocketLike = {
+      send: () => undefined,
+      close: () => undefined,
+      onOpen: null,
+      onMessage: null,
+      onClose: null,
+      onError: null,
+    };
+    const stream = new TradierStocksStream({
+      config: resolveTradierConfig(
+        { TRADIER_TOKEN: 'tradier-live-token-secret', TRADIER_USE_SANDBOX: 'true' },
+        'tests/.env-not-present',
+      ),
+      httpFn: async (url) => {
+        sessionCalls.push(url);
+        await Promise.resolve();
+        if (url.startsWith(TRADIER_SANDBOX_REST_BASE)) {
+          return { ok: false, status: 401, text: '' };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ stream: { sessionid: 'live-session-id', url: TRADIER_WS_BASE } }),
+        };
+      },
+      createSocketFn: (url) => {
+        socketUrls.push(url);
+        return socket;
+      },
+      onEnvironmentNegotiated: (nextConfig) => {
+        negotiatedEvents.push(`${nextConfig.apiEnv}:${nextConfig.restBaseUrl}`);
+      },
+      nowMsFn: () => 1_795_104_000_000,
+      reconnectBaseDelayMs: 30_000,
+      reconnectMaxDelayMs: 30_000,
+    });
+
+    try {
+      await stream.start();
+      socket.onOpen?.();
+
+      const statusAfterStart = stream.getStatus();
+      expect(sessionCalls).toEqual([
+        `${TRADIER_SANDBOX_REST_BASE}/markets/events/session`,
+        `${TRADIER_PROD_REST_BASE}/markets/events/session`,
+      ]);
+      expect(socketUrls).toEqual([TRADIER_WS_BASE]);
+      expect(negotiatedEvents).toEqual([`prod:${TRADIER_PROD_REST_BASE}`]);
+      expect(statusAfterStart.connected).toBe(true);
+      expect(statusAfterStart.state).toBe('CONNECTED');
+      expect(statusAfterStart.environment).toBe('LIVE');
+      expect(statusAfterStart.apiEnv).toBe('prod');
+      expect(statusAfterStart.restBaseUrl).toBe(TRADIER_PROD_REST_BASE);
+      expect(statusAfterStart.wsBaseUrl).toBe(TRADIER_WS_BASE);
+      expect(statusAfterStart.lastError).toBeNull();
+      expect(formatTradierEnvironmentTelemetry(statusAfterStart.environment, statusAfterStart.restBaseUrl)).toBe(
+        'LIVE · api.tradier.com/v1',
+      );
+      expect(JSON.stringify(statusAfterStart)).not.toContain('tradier-live-token-secret');
+
+      // Reconexión posterior usa LIVE directamente en memoria sin volver a sandbox.tradier.com
+      stream.stop();
+      await stream.start();
+      socket.onOpen?.();
+      expect(sessionCalls).toEqual([
+        `${TRADIER_SANDBOX_REST_BASE}/markets/events/session`,
+        `${TRADIER_PROD_REST_BASE}/markets/events/session`,
+        `${TRADIER_PROD_REST_BASE}/markets/events/session`,
+      ]);
+      expect(stream.getEffectiveConfig().apiEnv).toBe('prod');
+    } finally {
+      stream.stop();
+    }
+  });
+
+  it('no persiste el entorno alternativo si ambos (SANDBOX y LIVE) devuelven 401', async () => {
+    const sessionCalls: string[] = [];
+    const manager = new TradierLiveManager({
+      config: resolveTradierConfig(
+        { TRADIER_TOKEN: 'tradier-invalid-secret', TRADIER_USE_SANDBOX: 'true' },
+        'tests/.env-not-present',
+      ),
+      httpFn: async (url) => {
+        sessionCalls.push(url);
+        await Promise.resolve();
+        return { ok: false, status: 401, text: '' };
+      },
+      nowMsFn: () => 1_795_104_000_000,
+      reconnectBaseDelayMs: 30_000,
+      reconnectMaxDelayMs: 30_000,
+    });
+    try {
+      await manager.start(['SPY']);
+      const status = manager.getStatus();
+      expect(sessionCalls).toEqual([
+        `${TRADIER_SANDBOX_REST_BASE}/markets/events/session`,
+        `${TRADIER_PROD_REST_BASE}/markets/events/session`,
+      ]);
+      expect(status.connected).toBe(false);
+      expect(status.environment).toBe('SANDBOX');
+      expect(status.restBaseUrl).toBe(TRADIER_SANDBOX_REST_BASE);
+      expect(status.lastError).toBe('Tradier session HTTP 401');
+      expect(JSON.stringify(status)).not.toContain('tradier-invalid-secret');
+    } finally {
+      manager.stop();
+    }
+  });
+});

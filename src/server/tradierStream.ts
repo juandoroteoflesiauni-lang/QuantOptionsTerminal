@@ -84,6 +84,7 @@ export interface TradierStocksStreamDeps {
   readonly onTick?: (tick: TradierStreamTick) => void;
   readonly onStateChange?: (state: TradierStreamState) => void;
   readonly onError?: (message: string) => void;
+  readonly onEnvironmentNegotiated?: (config: TradierConfig) => void;
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
 }
@@ -319,9 +320,14 @@ export class TradierStocksStream {
       ...(deps.onTick === undefined ? {} : { onTick: deps.onTick }),
       ...(deps.onStateChange === undefined ? {} : { onStateChange: deps.onStateChange }),
       ...(deps.onError === undefined ? {} : { onError: deps.onError }),
+      ...(deps.onEnvironmentNegotiated === undefined ? {} : { onEnvironmentNegotiated: deps.onEnvironmentNegotiated }),
       ...(deps.reconnectBaseDelayMs === undefined ? {} : { reconnectBaseDelayMs: deps.reconnectBaseDelayMs }),
       ...(deps.reconnectMaxDelayMs === undefined ? {} : { reconnectMaxDelayMs: deps.reconnectMaxDelayMs }),
     });
+  }
+
+  public getEffectiveConfig(): TradierConfig {
+    return this.manager.getEffectiveConfig();
   }
 
   public getCoreSymbols(): readonly string[] {

@@ -12,7 +12,10 @@
 
 import { getBuenosAiresParts } from '../core/ggal/types.js';
 import { getMarketParts } from '../core/sessions.js';
+import type { FmpBatchMode } from './fmpClient.js';
 import { redactSecrets } from './runtimeCache.js';
+
+export type { FmpBatchMode };
 
 export type FeedProviderId =
   | 'MASSIVE_WS_STOCKS'
@@ -502,6 +505,74 @@ export function isBmbProviderReconnectable(healthStatus: string, signalRMode: bo
 /** Edad máxima del último mensaje recibido para considerar vivo el socket Massive (ms). */
 export const MASSIVE_WS_LIVE_MESSAGE_MAX_AGE_MS = 5_000;
 
+/** Ventana estándar de frescura para batch simples FMP REST (ms). */
+export const FMP_DEFAULT_STALE_THRESHOLD_MS = 10_000;
+
+/**
+ * Pieza 41.4: ventana ampliada para ciclos FMP chunked (`v3-batch` /
+ * `stable-single-pool`) donde la iteración completa de 173+ tickers puede
+ * tomar ~15–20 s sin constituir caída ni pérdida de conexión.
+ */
+export const FMP_CHUNKED_STALE_THRESHOLD_MS = 45_000;
+
+export function resolveFmpStaleThresholdMs(
+  batchMode: FmpBatchMode | null | undefined,
+  overrideMs?: number | null,
+): number {
+  if (overrideMs !== null && overrideMs !== undefined && Number.isFinite(overrideMs) && overrideMs > 0) {
+    return overrideMs;
+  }
+  if (batchMode === 'v3-batch' || batchMode === 'stable-single-pool') {
+    return FMP_CHUNKED_STALE_THRESHOLD_MS;
+  }
+  return FMP_DEFAULT_STALE_THRESHOLD_MS;
+}
+
+export function isFmpEnterpriseFeedConnected(input: {
+  readonly configured: boolean;
+  readonly activeSymbols: number;
+  readonly lastError: string | null;
+  readonly lastSuccessAtMs: number | null;
+  readonly lastHttpSuccessAtMs: number | null;
+  readonly lastTickAtMs: number | null;
+  readonly lastHttpFailureAtMs: number | null;
+  readonly batchMode?: FmpBatchMode | null;
+  readonly staleThresholdMs?: number | null;
+  readonly nowMs: number;
+}): boolean {
+  if (!input.configured || !Number.isFinite(input.nowMs) || input.nowMs < 0) {
+    return false;
+  }
+  if (!Number.isFinite(input.activeSymbols) || input.activeSymbols <= 0) {
+    return false;
+  }
+  const candidates: number[] = [];
+  for (const ts of [input.lastTickAtMs, input.lastHttpSuccessAtMs, input.lastSuccessAtMs]) {
+    if (ts !== null && Number.isFinite(ts) && ts >= 0 && ts <= input.nowMs) {
+      candidates.push(ts);
+    }
+  }
+  if (candidates.length === 0) {
+    return false;
+  }
+  const latestActivityMs = Math.max(...candidates);
+  const thresholdMs = resolveFmpStaleThresholdMs(input.batchMode, input.staleThresholdMs);
+  if (input.nowMs - latestActivityMs > thresholdMs) {
+    return false;
+  }
+  if (input.lastError !== null && input.lastError.trim() !== '') {
+    return false;
+  }
+  if (
+    input.lastHttpFailureAtMs !== null &&
+    Number.isFinite(input.lastHttpFailureAtMs) &&
+    input.lastHttpFailureAtMs > latestActivityMs
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Liveness del socket Massive de acciones (hotfix producción).
  *
@@ -638,6 +709,8 @@ export interface FmpEnterpriseFeedHealthSource {
   readonly quoteCount: number;
   readonly subscribedSymbols: readonly string[];
   readonly telemetry: FeedTelemetrySnapshot;
+  readonly batchMode?: FmpBatchMode | null;
+  readonly staleThresholdMs?: number | null;
 }
 
 export interface OratsFeedHealthSource {
@@ -849,16 +922,30 @@ export class FeedsHealthMonitor {
       },
     };
 
+    const fmpBatchMode: FmpBatchMode | null =
+      fmp.batchMode ??
+      (fmp.subscribedSymbols.length > 50 || fmp.quoteCount > 50 ? 'stable-single-pool' : null);
+
+    const fmpConnected = isFmpEnterpriseFeedConnected({
+      configured: fmp.configured,
+      activeSymbols: fmp.quoteCount,
+      lastError: fmp.lastError,
+      lastSuccessAtMs: fmp.lastSuccessAtMs,
+      lastHttpSuccessAtMs: fmp.telemetry.lastHttpSuccessAtMs,
+      lastTickAtMs: fmp.telemetry.lastTickAtMs,
+      lastHttpFailureAtMs: fmp.telemetry.lastHttpFailureAtMs,
+      batchMode: fmpBatchMode,
+      staleThresholdMs: fmp.staleThresholdMs ?? null,
+      nowMs,
+    });
+
     const fmpProvider: FeedProviderHealth = {
       ...commonProvider({
         id: 'FMP_ENTERPRISE_REST',
         region: 'US',
         role: 'Intradario/EOD + Batch Quotes US',
         configured: fmp.configured,
-        connected:
-          fmp.telemetry.lastHttpSuccessAtMs !== null &&
-          fmp.telemetry.lastHttpSuccessAtMs <= nowMs &&
-          nowMs - fmp.telemetry.lastHttpSuccessAtMs <= 10_000,
+        connected: fmpConnected,
         sessionMode: usSession,
         telemetry: fmp.telemetry,
         latencyKind: 'HTTP_ROUND_TRIP',

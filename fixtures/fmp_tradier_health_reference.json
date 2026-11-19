@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "fmpStaleThresholds": [
+    {
+      "batchMode": "stable-batch",
+      "overrideMs": null,
+      "expectedMs": 10000
+    },
+    {
+      "batchMode": "v3-batch",
+      "overrideMs": null,
+      "expectedMs": 45000
+    },
+    {
+      "batchMode": "stable-single-pool",
+      "overrideMs": null,
+      "expectedMs": 45000
+    },
+    {
+      "batchMode": null,
+      "overrideMs": null,
+      "expectedMs": 10000
+    },
+    {
+      "batchMode": "stable-batch",
+      "overrideMs": 30000,
+      "expectedMs": 30000
+    }
+  ],
+  "fmpHealthCases": [
+    {
+      "name": "172 activos stable-single-pool con ciclo 15s",
+      "configured": true,
+      "activeSymbols": 172,
+      "lastError": null,
+      "lastSuccessAtMs": 1795103985000,
+      "lastHttpSuccessAtMs": 1795103985000,
+      "lastTickAtMs": 1795103985000,
+      "lastHttpFailureAtMs": null,
+      "batchMode": "stable-single-pool",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED"
+    },
+    {
+      "name": "172 activos stable-single-pool con ciclo 20s",
+      "configured": true,
+      "activeSymbols": 172,
+      "lastError": null,
+      "lastSuccessAtMs": 1795103980000,
+      "lastHttpSuccessAtMs": 1795103980000,
+      "lastTickAtMs": 1795103980000,
+      "lastHttpFailureAtMs": null,
+      "batchMode": "stable-single-pool",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED"
+    },
+    {
+      "name": "172 activos v3-batch en borde exacto 45s",
+      "configured": true,
+      "activeSymbols": 172,
+      "lastError": null,
+      "lastSuccessAtMs": 1795103955000,
+      "lastHttpSuccessAtMs": 1795103955000,
+      "lastTickAtMs": 1795103955000,
+      "lastHttpFailureAtMs": null,
+      "batchMode": "v3-batch",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": true,
+      "expectedState": "CONNECTED"
+    },
+    {
+      "name": "172 activos stable-single-pool vencido > 45s",
+      "configured": true,
+      "activeSymbols": 172,
+      "lastError": null,
+      "lastSuccessAtMs": 1795103954999,
+      "lastHttpSuccessAtMs": 1795103954999,
+      "lastTickAtMs": 1795103954999,
+      "lastHttpFailureAtMs": null,
+      "batchMode": "stable-single-pool",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED"
+    },
+    {
+      "name": "0 activos dentro de ventana",
+      "configured": true,
+      "activeSymbols": 0,
+      "lastError": null,
+      "lastSuccessAtMs": 1795103995000,
+      "lastHttpSuccessAtMs": 1795103995000,
+      "lastTickAtMs": 1795103995000,
+      "lastHttpFailureAtMs": null,
+      "batchMode": "stable-single-pool",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED"
+    },
+    {
+      "name": "172 activos con error fatal",
+      "configured": true,
+      "activeSymbols": 172,
+      "lastError": "FMP batch quote HTTP 500",
+      "lastSuccessAtMs": 1795103995000,
+      "lastHttpSuccessAtMs": 1795103995000,
+      "lastTickAtMs": 1795103995000,
+      "lastHttpFailureAtMs": null,
+      "batchMode": "stable-single-pool",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED"
+    },
+    {
+      "name": "172 activos con fallo HTTP posterior al ultimo tick",
+      "configured": true,
+      "activeSymbols": 172,
+      "lastError": null,
+      "lastSuccessAtMs": 1795103990000,
+      "lastHttpSuccessAtMs": 1795103990000,
+      "lastTickAtMs": 1795103990000,
+      "lastHttpFailureAtMs": 1795103995000,
+      "batchMode": "v3-batch",
+      "staleThresholdMs": null,
+      "nowMs": 1795104000000,
+      "expectedConnected": false,
+      "expectedState": "DEGRADED"
+    }
+  ],
+  "tradierRetryCases": [
+    {
+      "name": "SANDBOX 401 con TRADIER_USE_SANDBOX=true conmuta a LIVE",
+      "env": {
+        "TRADIER_TOKEN": "synthetic-live-token",
+        "TRADIER_USE_SANDBOX": "true"
+      },
+      "httpStatus": 401,
+      "expectedRetryApiEnv": "prod",
+      "expectedRestBaseUrl": "https://api.tradier.com/v1",
+      "expectedWsBaseUrl": "wss://ws.tradier.com/v1/markets/events",
+      "expectedTelemetry": "LIVE · api.tradier.com/v1"
+    },
+    {
+      "name": "LIVE 401 con token dedicado conmuta a SANDBOX",
+      "env": {
+        "TRADIER_LIVE_TOKEN": "synthetic-sandbox-token"
+      },
+      "httpStatus": 401,
+      "expectedRetryApiEnv": "sandbox",
+      "expectedRestBaseUrl": "https://sandbox.tradier.com/v1",
+      "expectedWsBaseUrl": "wss://sandbox.tradier.com/v1/markets/events",
+      "expectedTelemetry": "SANDBOX · sandbox.tradier.com/v1"
+    },
+    {
+      "name": "LIVE 401 con TRADIER_USE_SANDBOX=false no conmuta",
+      "env": {
+        "TRADIER_TOKEN": "synthetic-live-token",
+        "TRADIER_USE_SANDBOX": "false"
+      },
+      "httpStatus": 401,
+      "expectedRetryApiEnv": null,
+      "expectedRestBaseUrl": null,
+      "expectedWsBaseUrl": null,
+      "expectedTelemetry": "LIVE · api.tradier.com/v1"
+    },
+    {
+      "name": "SANDBOX 500 no conmuta",
+      "env": {
+        "TRADIER_SANDBOX_TOKEN": "synthetic-sandbox-token"
+      },
+      "httpStatus": 500,
+      "expectedRetryApiEnv": null,
+      "expectedRestBaseUrl": null,
+      "expectedWsBaseUrl": null,
+      "expectedTelemetry": "SANDBOX · sandbox.tradier.com/v1"
+    }
+  ]
+}
