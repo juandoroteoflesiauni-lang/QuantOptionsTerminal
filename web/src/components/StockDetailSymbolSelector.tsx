@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { fmtNum } from '../data/marketData';
 import { CompanyLogo } from './common/CompanyLogo';
+import { resolveStockPickerOnOpenTransition } from '../../../src/core/stockDetailStability';
 
 export type StockDetailCategory = 'US_STOCKS' | 'PANEL_LIDER' | 'PANEL_GENERAL' | 'CEDEARS';
 
@@ -86,11 +87,8 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
     categoryForTicker(selectedTicker, items),
   );
   const listRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setActiveCategory(categoryForTicker(selectedTicker, items));
-  }, [items, open, selectedTicker]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const prevOpenRef = useRef(false);
 
   const categoryItems = useMemo(
     () => items.filter((item) => item.category === activeCategory),
@@ -109,14 +107,44 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
   }, [categoryItems, query]);
 
   useEffect(() => {
-    setActiveIndex(0);
-  }, [activeCategory, query]);
-
-  useEffect(() => {
-    if (!open) return;
-    const idx = filtered.findIndex((item) => item.ticker === selectedTicker);
-    setActiveIndex(idx >= 0 ? idx : 0);
-  }, [filtered, open, selectedTicker]);
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (!wasOpen && open) {
+      const selectedCat = categoryForTicker(selectedTicker, items);
+      const selectedCatItems = items.filter((item) => item.category === selectedCat);
+      const selectedIdx = selectedCatItems.findIndex(
+        (item) => item.selectionKey === selectedTicker || item.ticker === selectedTicker,
+      );
+      const next = resolveStockPickerOnOpenTransition({
+        wasOpen: false,
+        isOpen: true,
+        currentCategory: selectedCat,
+        selectedCategory: selectedCat,
+        currentQuery: '',
+        currentActiveIndex: 0,
+        filteredLength: selectedCatItems.length,
+        selectedItemIndex: selectedIdx,
+      });
+      setActiveCategory(next.activeCategory);
+      setQuery(next.query);
+      setActiveIndex(next.activeIndex);
+      if (next.shouldFocusInput) {
+        requestAnimationFrame(() => inputRef.current?.focus());
+      }
+      return;
+    }
+    if (wasOpen && open) {
+      setActiveIndex((cur) => {
+        const clamped = filtered.length > 0 ? Math.min(Math.max(0, cur), filtered.length - 1) : 0;
+        return clamped === cur ? cur : clamped;
+      });
+      return;
+    }
+    if (wasOpen && !open) {
+      setQuery('');
+      setActiveIndex(0);
+    }
+  }, [filtered.length, items, open, selectedTicker]);
 
   useEffect(() => {
     if (!open) return;
@@ -152,10 +180,6 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [activeIndex, filtered, onClose, onSelect, open]);
-
-  useEffect(() => {
-    if (!open) setQuery('');
-  }, [open]);
 
   if (!open) return null;
 
@@ -227,7 +251,11 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveCategory(tab.id)}
+                onClick={() => {
+                  setActiveCategory(tab.id);
+                  setActiveIndex(0);
+                  inputRef.current?.focus();
+                }}
                 title={tab.hint}
                 className={`rounded-full px-3 py-1.5 text-[11.5px] font-semibold transition-colors cursor-pointer ${
                   active
@@ -245,9 +273,12 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
         <div className="flex items-center gap-2 border-b border-[#1C1C24] bg-[#0A0A0D] px-4 py-2.5">
           <Search className="h-4 w-4 text-[#8B7CF6]" />
           <input
-            autoFocus
+            ref={inputRef}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActiveIndex(0);
+            }}
             placeholder="Buscar por ticker, empresa o sector…"
             aria-label="Buscar acción o CEDEAR"
             className="w-full bg-transparent font-mono-num text-[13px] text-white outline-none placeholder:text-[#6D7282]"
@@ -301,7 +332,7 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
                   >
                     {item.venue === 'OPRA' ? 'US · OPRA' : 'AR · BYMA'}
                   </span>
-                  {item.ticker === selectedTicker && (
+                  {(item.selectionKey === selectedTicker || item.ticker === selectedTicker) && (
                     <span className="rounded-full border border-[#8B7CF6]/40 bg-[#8B7CF6]/10 px-1.5 py-0.5 font-mono-num text-[9.5px] text-[#C4B5FD]">
                       activo
                     </span>

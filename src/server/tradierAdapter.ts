@@ -254,12 +254,93 @@ export interface TradierClientDeps {
   /** Secretos para redactar errores (incluye el token del caller). */
   readonly secrets?: readonly string[];
   readonly timeoutMs?: number;
+  readonly authBreaker?: TradierAuthCircuitBreaker;
+  readonly onEnvironmentNegotiated?: (config: TradierConfig) => void;
 }
 
 export class TradierNotConfiguredError extends Error {
   public constructor() {
     super('Tradier is not configured: TRADIER_API_TOKEN / TRADIER_SANDBOX_TOKEN (or legacy aliases) missing');
     this.name = 'TradierNotConfiguredError';
+  }
+}
+
+export class TradierAuthInvalidError extends Error {
+  public readonly code = 'AUTH_INVALID' as const;
+  public readonly httpStatus = 401 as const;
+
+  public constructor(message = 'Tradier authentication invalid (HTTP 401)') {
+    super(message);
+    this.name = 'TradierAuthInvalidError';
+  }
+}
+
+export interface TradierAuthCircuitBreakerStatus {
+  readonly authInvalid: boolean;
+  readonly openUntilMs: number | null;
+  readonly lastReason: string | null;
+  readonly trippedCount: number;
+}
+
+/**
+ * Circuit-breaker compartido para autenticación Tradier REST + WS.
+ * Tras recibir 401 tanto en Sandbox como en Live (o sin fallback permitido),
+ * detiene reintentos repetitivos durante `cooldownMs` (5 min por defecto).
+ */
+export class TradierAuthCircuitBreaker {
+  private readonly cooldownMs: number;
+  private openUntilMs: number | null = null;
+  private lastReason: string | null = null;
+  private negotiatedConfig: TradierConfig | null = null;
+  private trippedCount = 0;
+
+  public constructor(options?: { readonly cooldownMs?: number }) {
+    const raw = options?.cooldownMs;
+    this.cooldownMs =
+      raw !== undefined && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 300_000;
+  }
+
+  public isOpen(nowMs: number): boolean {
+    if (this.openUntilMs === null) return false;
+    if (!Number.isFinite(nowMs)) return true;
+    if (nowMs >= this.openUntilMs) {
+      this.openUntilMs = null;
+      return false;
+    }
+    return true;
+  }
+
+  public getNegotiatedConfig(): TradierConfig | null {
+    return this.negotiatedConfig;
+  }
+
+  public getStatus(nowMs: number): TradierAuthCircuitBreakerStatus {
+    return {
+      authInvalid: this.isOpen(nowMs),
+      openUntilMs: this.openUntilMs,
+      lastReason: this.lastReason,
+      trippedCount: this.trippedCount,
+    };
+  }
+
+  public recordSuccess(config: TradierConfig): void {
+    this.openUntilMs = null;
+    this.lastReason = null;
+    this.negotiatedConfig = config;
+  }
+
+  public recordAuthInvalid(reason: string, nowMs: number): void {
+    const safeNow = Number.isFinite(nowMs) ? nowMs : Date.now();
+    this.openUntilMs = safeNow + this.cooldownMs;
+    this.lastReason = reason;
+    this.trippedCount += 1;
+  }
+
+  public reset(): void {
+    this.openUntilMs = null;
+    this.lastReason = null;
+    this.negotiatedConfig = null;
+    this.trippedCount = 0;
   }
 }
 
@@ -324,21 +405,58 @@ function buildAuthHeaders(config: TradierConfig): Record<string, string> {
   };
 }
 
-async function tradierGet(
+export async function tradierGetWithNegotiation(
   deps: TradierClientDeps,
   path: string,
   query: string,
-): Promise<TradierHttpResponse> {
+  label: string,
+): Promise<{ readonly response: TradierHttpResponse; readonly configUsed: TradierConfig }> {
   if (!deps.config.configured || deps.config.accessToken === null) {
     throw new TradierNotConfiguredError();
   }
+  const nowMs = (deps.nowMsFn ?? (() => Date.now()))();
+  if (deps.authBreaker?.isOpen(nowMs) === true) {
+    throw new TradierAuthInvalidError(`Tradier ${label} HTTP 401 (AUTH_INVALID)`);
+  }
+  const activeConfig = deps.authBreaker?.getNegotiatedConfig() ?? deps.config;
   const httpFn = deps.httpFn ?? createDefaultTradierHttpFn(deps.timeoutMs);
-  const url = `${deps.config.restBaseUrl}${path}${query}`;
-  return httpFn(url, {
-    method: 'GET',
-    headers: buildAuthHeaders(deps.config),
-    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
-  });
+  const requestOnce = async (cfg: TradierConfig): Promise<TradierHttpResponse> =>
+    httpFn(`${cfg.restBaseUrl}${path}${query}`, {
+      method: 'GET',
+      headers: buildAuthHeaders(cfg),
+      ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+    });
+
+  const response = await requestOnce(activeConfig);
+  if (response.ok) {
+    deps.authBreaker?.recordSuccess(activeConfig);
+    return { response, configUsed: activeConfig };
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    const alternateConfig = resolveTradierSessionRetryConfig(activeConfig, response.status);
+    if (alternateConfig !== null) {
+      const retryResponse = await requestOnce(alternateConfig);
+      if (retryResponse.ok) {
+        deps.authBreaker?.recordSuccess(alternateConfig);
+        deps.onEnvironmentNegotiated?.(alternateConfig);
+        return { response: retryResponse, configUsed: alternateConfig };
+      }
+      if (retryResponse.status === 401) {
+        const reason = `Tradier ${label} HTTP 401`;
+        deps.authBreaker?.recordAuthInvalid(reason, nowMs);
+        throw new TradierAuthInvalidError(reason);
+      }
+      return { response: retryResponse, configUsed: alternateConfig };
+    }
+    if (response.status === 401) {
+      const reason = `Tradier ${label} HTTP 401`;
+      deps.authBreaker?.recordAuthInvalid(reason, nowMs);
+      throw new TradierAuthInvalidError(reason);
+    }
+  }
+
+  return { response, configUsed: activeConfig };
 }
 
 function parseJsonBody(text: string): unknown {
@@ -496,7 +614,12 @@ export async function fetchTradierQuotes(
   const secrets = [...(deps.secrets ?? [])];
   if (deps.config.accessToken !== null) secrets.push(deps.config.accessToken);
   try {
-    const response = await tradierGet(deps, '/markets/quotes', `?symbols=${encodeURIComponent(clean.join(','))}&greeks=true`);
+    const { response } = await tradierGetWithNegotiation(
+      deps,
+      '/markets/quotes',
+      `?symbols=${encodeURIComponent(clean.join(','))}&greeks=true`,
+      'quotes',
+    );
     if (!response.ok) {
       throw new Error(`Tradier quotes HTTP ${String(response.status)}`);
     }
@@ -538,6 +661,9 @@ export async function fetchTradierQuotes(
     };
   } catch (err: unknown) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err), secrets);
+    if (err instanceof TradierAuthInvalidError) {
+      throw new TradierAuthInvalidError(message);
+    }
     throw new Error(message);
   }
 }
@@ -657,10 +783,11 @@ export async function fetchTradierOptionChain(
   const secrets = [...(deps.secrets ?? [])];
   if (deps.config.accessToken !== null) secrets.push(deps.config.accessToken);
   try {
-    const response = await tradierGet(
+    const { response } = await tradierGetWithNegotiation(
       deps,
       '/markets/options/chains',
       `?symbol=${encodeURIComponent(cleanSymbol)}&expiration=${encodeURIComponent(cleanExpiration)}&greeks=true`,
+      'option chain',
     );
     if (!response.ok) {
       throw new Error(`Tradier option chain HTTP ${String(response.status)}`);
@@ -695,6 +822,9 @@ export async function fetchTradierOptionChain(
     };
   } catch (err: unknown) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err), secrets);
+    if (err instanceof TradierAuthInvalidError) {
+      throw new TradierAuthInvalidError(message);
+    }
     throw new Error(message);
   }
 }
@@ -1038,6 +1168,7 @@ export type TradierStreamState =
   | 'CONNECTING'
   | 'CONNECTED'
   | 'RECONNECTING'
+  | 'AUTH_INVALID'
   | 'CLOSED'
   | 'ERROR';
 
@@ -1045,6 +1176,7 @@ export interface TradierStreamStatus {
   readonly configured: boolean;
   readonly connected: boolean;
   readonly state: TradierStreamState;
+  readonly authInvalid?: boolean;
   readonly sessionCreated: boolean;
   readonly subscribedSymbols: readonly string[];
   readonly lastTickAtUtcSec: number | null;
@@ -1076,6 +1208,7 @@ export interface TradierLiveManagerDeps {
   readonly createSocketFn?: TradierSocketFactory;
   readonly nowMsFn?: () => number;
   readonly secrets?: readonly string[];
+  readonly authBreaker?: TradierAuthCircuitBreaker;
   readonly onTick?: (tick: TradierStreamTick) => void;
   readonly onError?: (message: string) => void;
   readonly onStateChange?: (state: TradierStreamState) => void;
@@ -1149,6 +1282,7 @@ export class TradierLiveManager {
   private readonly onErrorCb: TradierLiveManagerDeps['onError'];
   private readonly onStateChangeCb: TradierLiveManagerDeps['onStateChange'];
   private readonly onEnvironmentNegotiatedCb: TradierLiveManagerDeps['onEnvironmentNegotiated'];
+  private readonly authBreaker: TradierAuthCircuitBreaker | null;
   private readonly telemetry = new RollingFeedTelemetry({
     latencyKind: 'PROVIDER_EVENT_AGE',
   });
@@ -1156,6 +1290,7 @@ export class TradierLiveManager {
   private readonly reconnectMaxDelayMs: number;
 
   private negotiatedEnv: TradierApiEnv | null = null;
+  private authInvalidTripped = false;
 
   private readonly latest = new Map<string, MutableLiveQuoteState>();
   private readonly rejectedSymbols = new Set<string>();
@@ -1178,6 +1313,7 @@ export class TradierLiveManager {
     const secrets = [...(deps.secrets ?? [])];
     if (deps.config.accessToken !== null) secrets.push(deps.config.accessToken);
     this.secrets = secrets;
+    this.authBreaker = deps.authBreaker ?? null;
     this.onTickCb = deps.onTick;
     this.onErrorCb = deps.onError;
     this.onStateChangeCb = deps.onStateChange;
@@ -1191,10 +1327,15 @@ export class TradierLiveManager {
   }
 
   public getStatus(): TradierStreamStatus {
+    const authInvalid =
+      this.authInvalidTripped ||
+      this.state === 'AUTH_INVALID' ||
+      (this.authBreaker?.isOpen(this.nowMsFn()) === true);
     return {
       configured: this.config.configured,
       connected: this.state === 'CONNECTED',
       state: this.state,
+      authInvalid,
       sessionCreated: this.sessionCreated,
       subscribedSymbols: [...this.subscribedSymbols],
       lastTickAtUtcSec: this.lastTickAtUtcSec,
@@ -1222,6 +1363,8 @@ export class TradierLiveManager {
     if (symbols.length === 0) {
       throw new Error('TradierLiveManager.reconnect: no active symbol subscriptions');
     }
+    this.authInvalidTripped = false;
+    this.authBreaker?.reset();
     this.stop();
     this.stopped = false;
     await this.start(symbols);
@@ -1248,6 +1391,7 @@ export class TradierLiveManager {
       throw new TradierNotConfiguredError();
     }
     this.stopped = false;
+    this.authInvalidTripped = false;
     const clean = [
       ...new Set(
         symbols
@@ -1324,10 +1468,22 @@ export class TradierLiveManager {
 
   /** `POST /markets/events/session` -> `{ stream: { sessionid, url } }`. */
   private async createSession(): Promise<{ readonly sessionId: string; readonly wsUrl: string }> {
+    const nowMs = this.nowMsFn();
+    if (this.authBreaker?.isOpen(nowMs) === true) {
+      throw new TradierAuthInvalidError('Tradier session HTTP 401');
+    }
+    const breakerNegotiated = this.authBreaker?.getNegotiatedConfig() ?? null;
+    if (breakerNegotiated !== null && this.negotiatedEnv === null) {
+      this.config = breakerNegotiated;
+      this.negotiatedEnv = breakerNegotiated.apiEnv;
+    }
+
     const response = await this.postSessionRequest(this.config);
     if (response.ok) {
       const payload = this.parseSessionPayload(this.config, response.text, false);
       this.negotiatedEnv = this.config.apiEnv;
+      this.authInvalidTripped = false;
+      this.authBreaker?.recordSuccess(this.config);
       return payload;
     }
 
@@ -1339,13 +1495,25 @@ export class TradierLiveManager {
           const payload = this.parseSessionPayload(alternateConfig, retryResponse.text, true);
           this.config = alternateConfig;
           this.negotiatedEnv = alternateConfig.apiEnv;
+          this.authInvalidTripped = false;
+          this.authBreaker?.recordSuccess(this.config);
           this.onEnvironmentNegotiatedCb?.(this.config);
           return payload;
+        }
+        if (retryResponse.status === 401) {
+          this.authInvalidTripped = true;
+          this.authBreaker?.recordAuthInvalid('Tradier session HTTP 401', nowMs);
+          throw new TradierAuthInvalidError('Tradier session HTTP 401');
         }
         throw new Error(`Tradier session HTTP ${String(retryResponse.status)}`);
       }
     }
 
+    if (response.status === 401) {
+      this.authInvalidTripped = true;
+      this.authBreaker?.recordAuthInvalid('Tradier session HTTP 401', nowMs);
+      throw new TradierAuthInvalidError('Tradier session HTTP 401');
+    }
     throw new Error(`Tradier session HTTP ${String(response.status)}`);
   }
 
@@ -1371,6 +1539,7 @@ export class TradierLiveManager {
         socket.send(payload);
         this.reconnectAttempts = 0;
         this.lastError = null;
+        this.authInvalidTripped = false;
         this.setState('CONNECTED');
       };
       socket.onMessage = (data) => {
@@ -1390,6 +1559,15 @@ export class TradierLiveManager {
         this.scheduleReconnect(`socket error: ${message}`);
       };
     } catch (err: unknown) {
+      if (err instanceof TradierAuthInvalidError) {
+        this.authInvalidTripped = true;
+        this.reportError(err.message);
+        const current = this.socket;
+        this.socket = null;
+        current?.close(1000, 'auth_invalid');
+        this.setState('AUTH_INVALID');
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.scheduleReconnect(message);
     }

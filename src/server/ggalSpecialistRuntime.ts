@@ -156,6 +156,7 @@ import {
   MarketRuntime,
   RuntimeNoDataError,
   sanitizeFinite,
+  type FmpAdrFallbackQuote,
   type JsonSafeValue,
   type TerminalBarsResponse,
   type TerminalSnapshotResponse,
@@ -165,7 +166,7 @@ import {
   loadOratsClientConfigFromEnv,
   type OratsHttpFn,
 } from './oratsHybridClient.js';
-import type { TradierQuotesResult } from './tradierAdapter.js';
+import { TradierAuthInvalidError, type TradierQuotesResult } from './tradierAdapter.js';
 import { redactSecrets } from './runtimeCache.js';
 
 /** Pieza 32: ADRs US consultados por NBBO Tradier en el GGAL Specialist. */
@@ -538,6 +539,8 @@ interface MarketBundle {
   readonly cerHistory: readonly CerObservation[];
   readonly cerVarId: number;
   readonly tradierAdrQuotes: TradierQuotesResult | null;
+  readonly fmpAdrQuotes: readonly FmpAdrFallbackQuote[];
+  readonly tradierAuthInvalid: boolean;
   readonly errors: readonly string[];
 }
 
@@ -1851,19 +1854,41 @@ export class GgalSpecialistRuntime {
         }
       }
 
-      // Pieza 32: NBBO Tradier para ADRs US (respaldo/complemento explícito de
-      // Massive en el especialista GGAL; `null` cuando Tradier no está configurado).
-      const tradierAdrQuotes: TradierQuotesResult | null = this.runtime.isTradierConfigured()
-        ? await this.runtime
-            .fetchTradierQuotesSafe([...GGAL_TRADIER_ADR_SYMBOLS])
-            .catch(
-              (err: unknown): null => {
-                const msg = err instanceof Error ? err.message : String(err);
-                errors.push(redactSecrets(`Tradier ADR NBBO: ${msg}`, this.secrets));
-                return null;
-              },
-            )
-        : null;
+      // Pieza 32 / 43: NBBO Tradier para ADRs US cuando la auth está sana; si
+      // Tradier devuelve 401/AUTH_INVALID, cae automáticamente a FMP Enterprise
+      // sin spammear errores rojos cuando FMP entrega cotización válida.
+      let tradierAuthInvalid = this.runtime.isTradierAuthInvalid();
+      let tradierErrorMsg: string | null = null;
+      let tradierAdrQuotes: TradierQuotesResult | null = null;
+      if (this.runtime.isTradierConfigured() && !tradierAuthInvalid) {
+        try {
+          tradierAdrQuotes = await this.runtime.fetchTradierQuotesSafe([...GGAL_TRADIER_ADR_SYMBOLS]);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (err instanceof TradierAuthInvalidError || /HTTP\s*401/i.test(msg)) {
+            tradierAuthInvalid = true;
+          } else {
+            tradierErrorMsg = redactSecrets(`Tradier ADR NBBO: ${msg}`, this.secrets);
+          }
+        }
+      }
+      const tradierGgalQuote =
+        tradierAdrQuotes?.quotes.find((q) => q.symbol === 'GGAL') ?? null;
+      const tradierHasValidGgal =
+        tradierGgalQuote !== null &&
+        Number.isFinite(tradierGgalQuote.bid) &&
+        tradierGgalQuote.bid > 0 &&
+        Number.isFinite(tradierGgalQuote.ask) &&
+        tradierGgalQuote.ask >= tradierGgalQuote.bid;
+      const fmpAdrQuotes = !tradierHasValidGgal
+        ? await this.runtime.fetchFmpAdrQuotesSafe([...GGAL_TRADIER_ADR_SYMBOLS]).catch(() => [])
+        : [];
+      const fmpHasValidGgal = fmpAdrQuotes.some(
+        (q) => q.symbol === 'GGAL' && Number.isFinite(q.price) && q.price > 0,
+      );
+      if (tradierErrorMsg !== null && !tradierAuthInvalid && !fmpHasValidGgal) {
+        errors.push(tradierErrorMsg);
+      }
 
       const bundle: MarketBundle = {
         asOfUtcSec,
@@ -1887,6 +1912,8 @@ export class GgalSpecialistRuntime {
         cerHistory: histories.cerHistory,
         cerVarId: histories.cerVarId,
         tradierAdrQuotes,
+        fmpAdrQuotes,
+        tradierAuthInvalid,
         errors,
       };
 
@@ -1963,9 +1990,11 @@ export class GgalSpecialistRuntime {
 
     const allErrors = Array.from(
       new Set([...bundle.overview.providerErrors, ...bundle.ggalOptions.providerErrors, ...bundle.errors]),
-    );    const hideClosedOpenByma = isClosedSession || parity.sessionRegime === 'CLOSED';
+    );
+    const hideClosedOpenByma = isClosedSession || parity.sessionRegime === 'CLOSED';
     const hasContingentFeed =
       bundle.liveStocks.length > 0 || bundle.usSnapshot !== null || bundle.usBars !== null;
+    const hideTradier401Fallback = bundle.tradierAuthInvalid || bundle.fmpAdrQuotes.length > 0;
     const visibleErrors = allErrors.filter((err) => {
       if (hideClosedOpenByma && /open\.bymadata\.com\.ar/i.test(err)) {
         return false;
@@ -1976,8 +2005,18 @@ export class GgalSpecialistRuntime {
       ) {
         return false;
       }
+      if (hideTradier401Fallback && /Tradier ADR NBBO.*(?:401|AUTH_INVALID)/i.test(err)) {
+        return false;
+      }
       return true;
     });
+
+    const adrDiag =
+      bundle.tradierAdrQuotes !== null
+        ? `ADR NBBO GGAL: TRADIER (rows=${String(bundle.tradierAdrQuotes.provenance.rows)}, http=${String(bundle.tradierAdrQuotes.provenance.httpStatus ?? 'n/a')})`
+        : bundle.fmpAdrQuotes.length > 0
+          ? `ADR NBBO GGAL: FMP_ENTERPRISE (rows=${String(bundle.fmpAdrQuotes.length)}${bundle.tradierAuthInvalid ? ', Tradier AUTH_INVALID fallback' : ''})`
+          : 'ADR NBBO GGAL: MASSIVE (Tradier no configurado o sin respuesta)';
 
     return {
       asOfUtcSec,
@@ -1999,10 +2038,8 @@ export class GgalSpecialistRuntime {
       providerErrors: visibleErrors,
       sourceDiagnostics: [
         ...allErrors,
-        // Pieza 32: origen explícito del NBBO del ADR (Tradier Live vs Massive).
-        bundle.tradierAdrQuotes === null
-          ? 'ADR NBBO GGAL: MASSIVE (Tradier no configurado o sin respuesta)'
-          : `ADR NBBO GGAL: TRADIER (rows=${String(bundle.tradierAdrQuotes.provenance.rows)}, http=${String(bundle.tradierAdrQuotes.provenance.httpStatus ?? 'n/a')})`,
+        // Pieza 32 / 43: origen explícito del NBBO del ADR (Tradier Live vs FMP Enterprise vs Massive).
+        adrDiag,
       ],
     };
   }
@@ -2224,9 +2261,10 @@ export class GgalSpecialistRuntime {
         : null;
 
     // ADR NASDAQ desde Massive snapshot / bars o Data912 usa_adrs reflejado en ggalOverview.adrPrice.
-    // Pieza 32: cuando Tradier está configurado, las puntas NBBO del ADR se
-    // refrescan con Tradier Live (`provider: 'TRADIER'`); si las puntas no son
-    // válidas se mantiene explícitamente la referencia Massive (EOD/close).
+    // Pieza 32 / 43: cuando Tradier está configurado y sano, las puntas NBBO del ADR se
+    // refrescan con Tradier Live (`TRADIER_LIVE_NBBO`); si Tradier devuelve 401/AUTH_INVALID
+    // o puntas inválidas, cae automáticamente a FMP Enterprise (`FMP_ENTERPRISE`) y en último
+    // término a Massive (`MASSIVE`).
     const tradierGgal =
       bundle.tradierAdrQuotes?.quotes.find((q) => q.symbol === 'GGAL') ?? null;
     const tradierNbboValid =
@@ -2235,6 +2273,21 @@ export class GgalSpecialistRuntime {
       tradierGgal.bid > 0 &&
       Number.isFinite(tradierGgal.ask) &&
       tradierGgal.ask >= tradierGgal.bid;
+    const fmpGgal =
+      bundle.fmpAdrQuotes.find(
+        (q) =>
+          q.symbol === 'GGAL' &&
+          ((q.extendedPrice !== null && Number.isFinite(q.extendedPrice) && q.extendedPrice > 0) ||
+            (Number.isFinite(q.price) && q.price > 0)),
+      ) ?? null;
+    const fmpGgalPrice =
+      fmpGgal === null
+        ? null
+        : fmpGgal.extendedPrice !== null &&
+            Number.isFinite(fmpGgal.extendedPrice) &&
+            fmpGgal.extendedPrice > 0
+          ? fmpGgal.extendedPrice
+          : fmpGgal.price;
     const liveUsGgal = this.runtime.getLiveUsQuotes().find((q) => q.symbol === 'GGAL') ?? null;
     const extendedAdrSpot =
       liveUsGgal !== null &&
@@ -2252,6 +2305,7 @@ export class GgalSpecialistRuntime {
         : null;
     const adrSpot =
       extendedAdrSpot ??
+      fmpGgalPrice ??
       bundle.usSnapshot?.envelope.snapshot.metrics.spot ??
       lastAdrBarClose ??
       ggalOverview?.adrPrice ??
@@ -2264,9 +2318,11 @@ export class GgalSpecialistRuntime {
           isEodMode,
         )
       : makeBidAskQuote(null, null, adrSpot, true);
-    const adrQuoteSource: 'TRADIER_LIVE_NBBO' | 'MASSIVE' = tradierNbboValid
+    const adrQuoteSource: 'TRADIER_LIVE_NBBO' | 'FMP_ENTERPRISE' | 'MASSIVE' = tradierNbboValid
       ? 'TRADIER_LIVE_NBBO'
-      : 'MASSIVE';
+      : fmpGgal !== null
+        ? 'FMP_ENTERPRISE'
+        : 'MASSIVE';
 
     const basis: ExecutionPriceBasis =
       bymaBuilt.basis === 'LIVE_BID_ASK'

@@ -176,6 +176,7 @@ import { emptyFeedTelemetrySnapshot } from './feedsHealthMonitor.js';
 import { BmbFeedAdapter, isBymaL2SessionUtcSec } from './bmbFeedAdapter.js';
 import { IolFeedAdapter } from './iolFeedAdapter.js';
 import { resolveArIntradayFallback } from './wsCoalescerAndStability.js';
+import { normalizeStockDetailOrderBook } from '../core/stockDetailStability.js';
 import { ArRealtimeBus, realtimeQuoteKey } from './arRealtimeBus.js';
 import type { MarketTickQuote } from './massiveStocksStream.js';
 
@@ -2947,12 +2948,12 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
     }
     const cleanSym = sym.toUpperCase();
     const last = readNum(item, ['c', 'close', 'last', 'px_last', 'mark', 'trade', 'settlementPrice']);
-    const bid = readNum(item, ['px_bid', 'bid', 'bidPrice', 'ars_bid']);
+    const bid = sanitizePositive(readNum(item, ['px_bid', 'bid', 'bidPrice', 'ars_bid']));
     const bidSizeRaw = readNum(item, ['q_bid', 'bidSize', 'bid_size', 'bidQty']);
-    const ask = readNum(item, ['px_ask', 'ask', 'askPrice', 'ars_ask']);
+    const ask = sanitizePositive(readNum(item, ['px_ask', 'ask', 'askPrice', 'ars_ask']));
     const askSizeRaw = readNum(item, ['q_ask', 'askSize', 'ask_size', 'askQty']);
-    const bidSize = bidSizeRaw !== null && Number.isFinite(bidSizeRaw) && bidSizeRaw > 0 ? bidSizeRaw : null;
-    const askSize = askSizeRaw !== null && Number.isFinite(askSizeRaw) && askSizeRaw > 0 ? askSizeRaw : null;
+    const bidSize = bid !== null ? sanitizePositive(bidSizeRaw) : null;
+    const askSize = ask !== null ? sanitizePositive(askSizeRaw) : null;
     const prevCloseRaw = readNum(item, ['prev_close', 'previousClose', 'closingPrice', 'open', 'o']);
     const deltaPctRaw = readNum(item, ['pct_change', 'imbalance', 'variation', 'changePct', 'var']);
     const lowRaw = readNum(item, ['l', 'low', 'min', 'lowPrice']);
@@ -4939,8 +4940,8 @@ export class ArgentinaMarketRuntime {
         panel: meta.panel,
         color: meta.color,
         last: sanitizeFinite(last),
-        bid: sanitizeFinite(primary?.bid ?? d912?.bid),
-        ask: sanitizeFinite(primary?.ask ?? d912?.ask),
+        bid: sanitizePositive(primary?.bid ?? d912?.bid),
+        ask: sanitizePositive(primary?.ask ?? d912?.ask),
         deltaPct: sanitizeFinite(deltaPct),
         prevClose: sanitizeFinite(prevClose),
         low: sanitizeFinite(low),
@@ -7446,6 +7447,36 @@ export class ArgentinaMarketRuntime {
       };
     }
 
+    const normalizeDetailBook = (book: OrderBook5LevelsDto | null): OrderBook5LevelsDto | null => {
+      if (book === null) return null;
+      const norm = normalizeStockDetailOrderBook(book.bids, book.asks, 5);
+      const bidDepthSum = norm.bids.reduce((acc, lvl) => acc + lvl.size, 0);
+      const askDepthSum = norm.asks.reduce((acc, lvl) => acc + lvl.size, 0);
+      return {
+        ...book,
+        bids: norm.bids.map((lvl) => ({ price: lvl.price, size: lvl.size })),
+        asks: norm.asks.map((lvl) => ({ price: lvl.price, size: lvl.size })),
+        bestBid: sanitizeFinite(norm.bestBid),
+        bestAsk: sanitizeFinite(norm.bestAsk),
+        mid: sanitizeFinite(norm.mid),
+        spreadArs: sanitizeFinite(norm.spreadAbs),
+        spreadPct: sanitizeFinite(norm.spreadPct),
+        bidDepthSize: bidDepthSum > 0 ? sanitizeFinite(bidDepthSum) : null,
+        askDepthSize: askDepthSum > 0 ? sanitizeFinite(askDepthSum) : null,
+        obi5: sanitizeFinite(norm.obi5),
+      };
+    };
+    orderBook5Levels = normalizeDetailBook(orderBook5Levels);
+    const normalizedOrderBookCi = normalizeDetailBook(mervBookCi);
+    const normalizedStock: ArStockDto | null =
+      stock === null
+        ? null
+        : {
+            ...stock,
+            bid: sanitizePositive(stock.bid) ?? orderBook5Levels?.bestBid ?? null,
+            ask: sanitizePositive(stock.ask) ?? orderBook5Levels?.bestAsk ?? null,
+          };
+
     const rofexFrontContract =
       macroIfPrimary?.rofxFutures?.find((c) => c.category === 'OUTRIGHT' && c.price !== null) ??
       macroIfPrimary?.rofxFutures?.find((c) => (c.category === 'OUTRIGHT' || c.category === 'MINI') && c.price !== null) ??
@@ -7456,7 +7487,7 @@ export class ArgentinaMarketRuntime {
       feedStatus,
       symbol,
       assetType: isBond ? 'BOND' : isCedear ? 'CEDEAR' : 'STOCK',
-      stock,
+      stock: normalizedStock,
       bond,
       historicalBars,
       overlays: arIndicatorOverlays,
@@ -7486,7 +7517,7 @@ export class ArgentinaMarketRuntime {
       relatedOptionsCount,
       institutionalEngines,
       orderBook5Levels,
-      orderBookCi: mervBookCi,
+      orderBookCi: normalizedOrderBookCi,
       rofexFrontContract,
       providerErrors,
     };

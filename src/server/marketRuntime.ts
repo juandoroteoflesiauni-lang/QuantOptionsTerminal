@@ -276,6 +276,8 @@ import {
   overlayTradierChainOnCanonicalContracts,
   TRADIER_PROD_REST_BASE,
   TRADIER_WS_BASE,
+  TradierAuthCircuitBreaker,
+  TradierAuthInvalidError,
   TradierLiveManager,
   type TradierChainOverlaySummary,
   type TradierConfig,
@@ -410,10 +412,22 @@ export interface UsRestPoolProviderStatus {
   readonly activeRole: 'REST_LOADERS';
 }
 
+export interface FmpAdrFallbackQuote {
+  readonly symbol: string;
+  readonly price: number;
+  readonly previousClose: number | null;
+  readonly changePct: number | null;
+  readonly asOfUtcSec: number | null;
+  readonly extendedPrice: number | null;
+  readonly extendedChangePct: number | null;
+  readonly sessionPhase: UsEquitySessionPhase;
+}
+
 export interface UsTradierProviderStatus {
   readonly configured: boolean;
   readonly connected: boolean;
   readonly state: string;
+  readonly authInvalid?: boolean;
   readonly sessionCreated: boolean;
   readonly subscribedSymbols: readonly string[];
   readonly lastTickAtUtcSec: number | null;
@@ -3714,6 +3728,8 @@ export class MarketRuntime {
   private readonly fmpQuoteTicks = new Map<string, MarketTickQuote>();
   private readonly fmpExtendedQuoteTicks = new Map<string, MarketTickQuote>();
   private readonly fmpTelemetry = new RollingFeedTelemetry({ latencyKind: 'HTTP_ROUND_TRIP' });
+  private readonly tradierAuthBreaker = new TradierAuthCircuitBreaker();
+  private negotiatedTradierConfig: TradierConfig | null = null;
   private readonly tradierHistoricalClient: TradierHistoricalClient | null;
   private tradierStocksStream: TradierStocksStream | null = null;
   private readonly massiveStocksModeOverride: ReturnType<typeof resolveMassiveStocksMode> | null;
@@ -4300,12 +4316,13 @@ export class MarketRuntime {
       },
     });
     this.tradierHistoricalClient = new TradierHistoricalClient({
-      resolveConfigFn: (): TradierConfig =>
-        this.tradierStocksStream?.getEffectiveConfig() ??
-        this.tradierManager?.getEffectiveConfig() ??
-        this.tradierConfig,
+      resolveConfigFn: (): TradierConfig => this.getEffectiveTradierConfig(),
       ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
       secrets: this.secrets,
+      authBreaker: this.tradierAuthBreaker,
+      onEnvironmentNegotiated: (nextConfig) => {
+        this.negotiatedTradierConfig = nextConfig;
+      },
     });
     this.oratsClient =
       deps.oratsClient !== undefined
@@ -4978,7 +4995,7 @@ export class MarketRuntime {
    * núcleo líquido + leases; el manager inyectado por tests sigue soportado.
    */
   private ensureTradierLiveStream(symbols: readonly string[]): void {
-    if (!this.tradierConfig.configured || this.tradierManager !== null) {
+    if (!this.tradierConfig.configured || this.tradierManager !== null || this.isTradierAuthInvalid()) {
       return;
     }
     const equities = symbols
@@ -4992,11 +5009,15 @@ export class MarketRuntime {
       return;
     }
     const stream = new TradierStocksStream({
-      config: this.tradierConfig,
+      config: this.getEffectiveTradierConfig(),
       ...(this.tradierCreateSocketFn === undefined ? {} : { createSocketFn: this.tradierCreateSocketFn }),
       ...(this.tradierHttpFn === undefined ? {} : { httpFn: this.tradierHttpFn }),
       nowMsFn: this.nowMsFn,
       secrets: this.secrets,
+      authBreaker: this.tradierAuthBreaker,
+      onEnvironmentNegotiated: (nextConfig) => {
+        this.negotiatedTradierConfig = nextConfig;
+      },
       onTick: (tick) => {
         this.ingestTradierTick(tick);
       },
@@ -5004,7 +5025,7 @@ export class MarketRuntime {
         this.emitBroadcast({
           type: 'status',
           cluster: 'stocks',
-          state: state === 'CONNECTED' ? 'ready' : state === 'ERROR' ? 'error' : 'connecting',
+          state: state === 'CONNECTED' ? 'ready' : state === 'ERROR' || state === 'AUTH_INVALID' ? 'error' : 'connecting',
           message: `tradier stream state: ${state}`,
           time: Math.floor(this.nowMsFn() / 1_000),
         });
@@ -5594,6 +5615,22 @@ export class MarketRuntime {
     return this.lastUsPanelBase !== null ? 'MASSIVE_BATCH' : 'NO_DATA';
   }
 
+  private getEffectiveTradierConfig(): TradierConfig {
+    return (
+      this.negotiatedTradierConfig ??
+      this.tradierAuthBreaker.getNegotiatedConfig() ??
+      this.tradierStocksStream?.getEffectiveConfig() ??
+      this.tradierManager?.getEffectiveConfig() ??
+      this.tradierConfig
+    );
+  }
+
+  public isTradierAuthInvalid(): boolean {
+    if (this.tradierAuthBreaker.isOpen(this.nowMsFn())) return true;
+    const status = this.tradierStocksStream?.getStatus() ?? this.tradierManager?.getStatus() ?? null;
+    return status?.authInvalid === true;
+  }
+
   /** Pieza 32: Tradier configurado con token explícito. */
   public isTradierConfigured(): boolean {
     return this.tradierConfig.configured;
@@ -5605,30 +5642,35 @@ export class MarketRuntime {
       this.tradierStocksStream?.getStatus() ??
       this.tradierManager?.getStatus() ??
       null;
+    const effective = this.getEffectiveTradierConfig();
+    const authInvalid = this.isTradierAuthInvalid();
+    const breakerStatus = this.tradierAuthBreaker.getStatus(this.nowMsFn());
     if (status === null) {
       return {
-        configured: this.tradierConfig.configured,
+        configured: effective.configured,
         connected: false,
-        state: 'IDLE',
+        state: authInvalid ? 'AUTH_INVALID' : 'IDLE',
+        authInvalid,
         sessionCreated: false,
         subscribedSymbols: [],
         lastTickAtUtcSec: null,
-        lastError: null,
+        lastError: authInvalid ? breakerStatus.lastReason : null,
         activeRole: 'STANDBY',
-        apiEnv: this.tradierConfig.apiEnv,
-        environment: this.tradierConfig.apiEnv === 'sandbox' ? ('SANDBOX' as const) : ('LIVE' as const),
-        restBaseUrl: this.tradierConfig.restBaseUrl,
-        wsBaseUrl: this.tradierConfig.wsBaseUrl,
+        apiEnv: effective.apiEnv,
+        environment: effective.apiEnv === 'sandbox' ? ('SANDBOX' as const) : ('LIVE' as const),
+        restBaseUrl: effective.restBaseUrl,
+        wsBaseUrl: effective.wsBaseUrl,
       };
     }
     return {
       configured: status.configured,
       connected: status.connected,
-      state: status.state,
+      state: authInvalid ? 'AUTH_INVALID' : status.state,
+      authInvalid,
       sessionCreated: status.sessionCreated,
       subscribedSymbols: [...status.subscribedSymbols],
       lastTickAtUtcSec: status.lastTickAtUtcSec,
-      lastError: status.lastError,
+      lastError: status.lastError ?? (authInvalid ? breakerStatus.lastReason : null),
       activeRole: status.activeRole,
       apiEnv: status.apiEnv,
       environment: status.environment,
@@ -5735,20 +5777,22 @@ export class MarketRuntime {
       this.tradierStocksStream?.getStatus() ??
       this.tradierManager?.getStatus() ??
       null;
+    const effective = this.getEffectiveTradierConfig();
+    const authInvalid = this.isTradierAuthInvalid();
+    const breakerStatus = this.tradierAuthBreaker.getStatus(this.nowMsFn());
+    const apiEnv = status?.apiEnv ?? effective.apiEnv;
     return {
-      configured: this.tradierConfig.configured,
+      configured: effective.configured,
       connected: status?.connected ?? false,
+      authInvalid,
       sessionCreated: status?.sessionCreated ?? false,
       reconnectAttempts: status?.reconnectAttempts ?? 0,
       subscribedSymbols: status?.subscribedSymbols ?? [],
-      lastError: status?.lastError ?? null,
-      apiEnv: status?.apiEnv ?? this.tradierConfig.apiEnv,
-      environment:
-        (status?.apiEnv ?? this.tradierConfig.apiEnv) === 'sandbox'
-          ? ('SANDBOX' as const)
-          : ('LIVE' as const),
-      restBaseUrl: status?.restBaseUrl ?? this.tradierConfig.restBaseUrl,
-      wsBaseUrl: status?.wsBaseUrl ?? this.tradierConfig.wsBaseUrl,
+      lastError: status?.lastError ?? (authInvalid ? breakerStatus.lastReason : null),
+      apiEnv,
+      environment: apiEnv === 'sandbox' ? ('SANDBOX' as const) : ('LIVE' as const),
+      restBaseUrl: status?.restBaseUrl ?? effective.restBaseUrl,
+      wsBaseUrl: status?.wsBaseUrl ?? effective.wsBaseUrl,
       telemetry:
         this.tradierStocksStream?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
         this.tradierManager?.getFeedTelemetrySnapshot(this.nowMsFn()) ??
@@ -5795,6 +5839,8 @@ export class MarketRuntime {
     if (!this.tradierConfig.configured) {
       throw new Error('Tradier access token not configured');
     }
+    this.tradierAuthBreaker.reset();
+    this.negotiatedTradierConfig = null;
     if (this.tradierStocksStream !== null) {
       this.tradierStocksStream.stop();
       await this.tradierStocksStream.start();
@@ -5815,20 +5861,114 @@ export class MarketRuntime {
   }
 
   /**
-   * Pieza 32: cotizaciones NBBO Tradier para ADRs/acciones US (uso del GGAL
-   * Specialist). Devuelve `null` explícito cuando Tradier no está configurado.
+   * Pieza 32 / 43: cotizaciones NBBO Tradier para ADRs/acciones US con
+   * negociación Live↔Sandbox y circuit-breaker ante 401.
    */
   public async fetchTradierQuotesSafe(
     symbols: readonly string[],
   ): Promise<TradierQuotesResult | null> {
-    if (!this.tradierConfig.configured) {
+    const config = this.getEffectiveTradierConfig();
+    if (!config.configured) {
       return null;
     }
+    if (this.isTradierAuthInvalid()) {
+      throw new TradierAuthInvalidError('Tradier authentication invalid (HTTP 401 cooldown active)');
+    }
     return this.tradierQuotesFetchFn(symbols, {
-      config: this.tradierConfig,
+      config,
+      ...(this.tradierHttpFn === undefined ? {} : { httpFn: this.tradierHttpFn }),
       nowMsFn: this.nowMsFn,
       secrets: this.secrets,
+      authBreaker: this.tradierAuthBreaker,
+      onEnvironmentNegotiated: (nextConfig) => {
+        this.negotiatedTradierConfig = nextConfig;
+      },
     });
+  }
+
+  /**
+   * Pieza 43: respaldo de cotizaciones ADR/US vía FMP Enterprise (ticks vivos o
+   * consulta directa batch + extended hours) cuando Tradier está en AUTH_INVALID.
+   */
+  public async fetchFmpAdrQuotesSafe(
+    symbols: readonly string[],
+  ): Promise<readonly FmpAdrFallbackQuote[]> {
+    const clean = [
+      ...new Set(symbols.map((s) => s.trim().toUpperCase()).filter((s) => s !== '')),
+    ];
+    if (clean.length === 0) {
+      return [];
+    }
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const sessionPhase = getUsEquitySessionPhase(nowSec);
+    const outMap = new Map<string, FmpAdrFallbackQuote>();
+    const liveQuotes = new Map(this.getLiveUsQuotes().map((q) => [q.symbol, q]));
+    for (const symbol of clean) {
+      const live = liveQuotes.get(symbol);
+      if (live === undefined) continue;
+      const extPrice =
+        live.extendedPrice !== undefined &&
+        live.extendedPrice !== null &&
+        Number.isFinite(live.extendedPrice) &&
+        live.extendedPrice > 0
+          ? live.extendedPrice
+          : null;
+      const basePrice = Number.isFinite(live.price) && live.price > 0 ? live.price : extPrice;
+      if (basePrice === null) continue;
+      outMap.set(symbol, {
+        symbol,
+        price: basePrice,
+        previousClose: live.previousClose,
+        changePct: live.changePct,
+        asOfUtcSec: live.asOfUtcSec,
+        extendedPrice: extPrice,
+        extendedChangePct: live.extendedChangePct ?? null,
+        sessionPhase: live.sessionPhase ?? sessionPhase,
+      });
+    }
+
+    const missing = clean.filter((sym) => !outMap.has(sym));
+    if (missing.length > 0 && this.fmpConfig.configured) {
+      const batchRes = await this.fmpClient.fetchBatchQuotes(missing).catch(() => null);
+      const extRes = isExtendedHoursPhase(sessionPhase)
+        ? await this.fmpClient.fetchExtendedBatchQuotes(missing).catch(() => null)
+        : null;
+      const extBySym = new Map((extRes?.quotes ?? []).map((q) => [q.symbol, q]));
+      const regBySym = new Map((batchRes?.quotes ?? []).map((q) => [q.symbol, q]));
+      for (const symbol of missing) {
+        const reg = regBySym.get(symbol);
+        const ext = extBySym.get(symbol);
+        const extPrice = ext !== undefined && Number.isFinite(ext.price) && ext.price > 0 ? ext.price : null;
+        const regPrice = reg !== undefined && Number.isFinite(reg.price) && reg.price > 0 ? reg.price : null;
+        const price = extPrice !== null && isExtendedHoursPhase(sessionPhase) ? extPrice : regPrice ?? extPrice;
+        if (price === null) continue;
+        const previousClose =
+          reg?.previousClose !== null && reg?.previousClose !== undefined && Number.isFinite(reg.previousClose)
+            ? reg.previousClose
+            : null;
+        const extendedChangePct =
+          extPrice !== null && previousClose !== null && previousClose > 0
+            ? ((extPrice - previousClose) / previousClose) * 100
+            : null;
+        const changePct =
+          reg?.changePct !== null && reg?.changePct !== undefined && Number.isFinite(reg.changePct)
+            ? reg.changePct
+            : previousClose !== null && previousClose > 0
+              ? ((price - previousClose) / previousClose) * 100
+              : null;
+        outMap.set(symbol, {
+          symbol,
+          price,
+          previousClose,
+          changePct,
+          asOfUtcSec: ext?.asOfUtcSec ?? reg?.asOfUtcSec ?? null,
+          extendedPrice: extPrice,
+          extendedChangePct,
+          sessionPhase,
+        });
+      }
+    }
+    return [...outMap.values()];
   }
 
   private overlayLiveUsPanel(base: EquityPanelAnalyticsDto): EquityPanelAnalyticsDto {
@@ -6151,6 +6291,9 @@ export class MarketRuntime {
     symbol: string,
     expiration: string,
   ): Promise<TradierOptionChainResult> {
+    if (this.isTradierAuthInvalid()) {
+      throw new TradierAuthInvalidError('Tradier authentication invalid (HTTP 401 cooldown active)');
+    }
     const cacheKey = `${symbol}:${expiration}`;
     const nowMs = this.nowMsFn();
     const cached = this.tradierChainCache.get(cacheKey);
@@ -6162,9 +6305,14 @@ export class MarketRuntime {
       return inflight;
     }
     const promise = this.tradierChainFetchFn(symbol, expiration, {
-      config: this.tradierConfig,
+      config: this.getEffectiveTradierConfig(),
+      ...(this.tradierHttpFn === undefined ? {} : { httpFn: this.tradierHttpFn }),
       nowMsFn: this.nowMsFn,
       secrets: this.secrets,
+      authBreaker: this.tradierAuthBreaker,
+      onEnvironmentNegotiated: (nextConfig) => {
+        this.negotiatedTradierConfig = nextConfig;
+      },
     })
       .then((result) => {
         this.tradierChainCache.set(cacheKey, { atMs: nowMs, result });
@@ -6199,7 +6347,7 @@ export class MarketRuntime {
     readonly contracts: readonly OptionSnapshotContract[];
     readonly summary: TradierChainOverlaySummary | null;
   }> {
-    if (!this.tradierConfig.configured || isIndex || contracts.length === 0) {
+    if (!this.tradierConfig.configured || this.isTradierAuthInvalid() || isIndex || contracts.length === 0) {
       return { contracts, summary: null };
     }
     const expirations = [...new Set(contracts.map((c) => c.expirationDate))]
@@ -6221,6 +6369,9 @@ export class MarketRuntime {
           httpStatus = res.provenance.httpStatus;
         }
       } catch (err: unknown) {
+        if (err instanceof TradierAuthInvalidError) {
+          return { contracts, summary: null };
+        }
         errors.push(
           `Tradier chain ${expiration}: ${redactSecrets(extractErrorMessage(err, 'tradier chain failed'), this.secrets)}`,
         );

@@ -11,8 +11,8 @@
       "requestedTimeframe": "1m"
     },
     "5m": {
-      "effectiveTimeframe": "5m",
-      "fallbackReason": null,
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_5M_BARS_AR",
       "requestedTimeframe": "5m"
     }
   },

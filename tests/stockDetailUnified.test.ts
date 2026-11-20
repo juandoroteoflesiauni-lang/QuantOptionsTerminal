@@ -860,9 +860,11 @@ describe('Pieza 38 — /api/bars enruta velas reales ARS (Panel Líder / CEDEARs
     expect(missing.body['reason']).toBe('NO_BARS_DATA');
 
     const intraday = await fetchBars(base, 'symbol=GGAL&market=AR&timeframe=5m');
-    expect(intraday.status).toBe(503);
-    expect(intraday.body['reason']).toBe('NO_BARS_DATA');
-    expect(String(intraday.body['detail'])).toContain('disponible en 1D');
+    expect(intraday.status).toBe(200);
+    expect(intraday.body['requestedTimeframe']).toBe('5m');
+    expect(intraday.body['effectiveTimeframe']).toBe('1D');
+    expect(intraday.body['fallbackReason']).toBe('NO_5M_BARS_AR');
+    expect(Array.isArray(intraday.body['bars']) && intraday.body['bars'].length > 0).toBe(true);
 
     const invalidMarket = await fetchBars(base, 'symbol=GGAL&market=MERVAL&timeframe=1D');
     expect(invalidMarket.status).toBe(400);

@@ -21,7 +21,11 @@ import { redactSecrets } from './runtimeCache.js';
 import {
   createDefaultTradierHttpFn,
   resolveTradierConfig,
+  TradierAuthCircuitBreaker,
+  TradierAuthInvalidError,
+  tradierGetWithNegotiation,
   TradierLiveManager,
+  type TradierClientDeps,
   type TradierConfig,
   type TradierHttpFn,
   type TradierStreamState,
@@ -82,6 +86,7 @@ export interface TradierStocksStreamDeps {
   readonly httpFn?: TradierHttpFn;
   readonly nowMsFn?: () => number;
   readonly secrets?: readonly string[];
+  readonly authBreaker?: TradierAuthCircuitBreaker;
   readonly onTick?: (tick: TradierStreamTick) => void;
   readonly onStateChange?: (state: TradierStreamState) => void;
   readonly onError?: (message: string) => void;
@@ -231,6 +236,9 @@ export class TradierHistoricalClient {
   private readonly httpFn: TradierHttpFn;
   private readonly nowMsFn: () => number;
   private readonly secrets: readonly string[];
+  private readonly authBreaker: TradierAuthCircuitBreaker | null;
+  private readonly onEnvironmentNegotiated: ((config: TradierConfig) => void) | null;
+  private negotiatedConfig: TradierConfig | null = null;
 
   public constructor(deps: {
     readonly config?: TradierConfig;
@@ -238,6 +246,8 @@ export class TradierHistoricalClient {
     readonly httpFn?: TradierHttpFn;
     readonly nowMsFn?: () => number;
     readonly secrets?: readonly string[];
+    readonly authBreaker?: TradierAuthCircuitBreaker;
+    readonly onEnvironmentNegotiated?: (config: TradierConfig) => void;
   }) {
     this.configOverride = deps.config ?? null;
     this.resolveConfigFn = deps.resolveConfigFn ?? null;
@@ -245,9 +255,14 @@ export class TradierHistoricalClient {
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
     const secrets = [...(deps.secrets ?? [])];
     this.secrets = secrets;
+    this.authBreaker = deps.authBreaker ?? null;
+    this.onEnvironmentNegotiated = deps.onEnvironmentNegotiated ?? null;
   }
 
   private effectiveConfig(): TradierConfig {
+    if (this.negotiatedConfig !== null) return this.negotiatedConfig;
+    const breakerCfg = this.authBreaker?.getNegotiatedConfig() ?? null;
+    if (breakerCfg !== null) return breakerCfg;
     if (this.resolveConfigFn !== null) return this.resolveConfigFn();
     if (this.configOverride !== null) return this.configOverride;
     return resolveTradierConfig();
@@ -265,39 +280,66 @@ export class TradierHistoricalClient {
       throw new Error('Tradier historical request is invalid');
     }
     const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
-    const headers = {
-      Authorization: `Bearer ${config.accessToken}`,
-      Accept: 'application/json',
-    };
     const start = etDateKey(request.fromUtcSec);
     const end = etDateKey(request.toUtcSec);
-    if (interval === 'daily') {
-      const url = `${config.restBaseUrl}/markets/history?symbol=${encodeURIComponent(symbol)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&granularity=daily`;
-      const response = await this.httpFn(url, { method: 'GET', headers });
-      if (!response.ok) throw new Error(redactSecrets(`Tradier history HTTP ${String(response.status)}`, currentSecrets));
-      const normalized = parseTradierDailyHistory(JSON.parse(response.text) as unknown);
+    const clientDeps: TradierClientDeps = {
+      config,
+      httpFn: this.httpFn,
+      nowMsFn: this.nowMsFn,
+      secrets: currentSecrets,
+      ...(this.authBreaker !== null ? { authBreaker: this.authBreaker } : {}),
+      onEnvironmentNegotiated: (nextConfig) => {
+        this.negotiatedConfig = nextConfig;
+        this.onEnvironmentNegotiated?.(nextConfig);
+      },
+    };
+    try {
+      if (interval === 'daily') {
+        const { response } = await tradierGetWithNegotiation(
+          clientDeps,
+          '/markets/history',
+          `?symbol=${encodeURIComponent(symbol)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&granularity=daily`,
+          'history',
+        );
+        if (!response.ok) {
+          throw new Error(`Tradier history HTTP ${String(response.status)}`);
+        }
+        const normalized = parseTradierDailyHistory(JSON.parse(response.text) as unknown);
+        return {
+          bars: normalized.bars,
+          endpoint: 'HISTORY_DAILY',
+          requestedAtUtcSec,
+          httpStatus: response.status,
+          rows: normalized.bars.length,
+          discarded: normalized.discarded,
+        };
+      }
+      const sessionFilter = request.includeExtended === false ? 'open' : 'all';
+      const { response } = await tradierGetWithNegotiation(
+        clientDeps,
+        '/markets/timesales',
+        `?symbol=${encodeURIComponent(symbol)}&interval=${interval}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&session_filter=${sessionFilter}`,
+        'timesales',
+      );
+      if (!response.ok) {
+        throw new Error(`Tradier timesales HTTP ${String(response.status)}`);
+      }
+      const normalized = parseTradierTimesales(JSON.parse(response.text) as unknown);
       return {
-        bars: normalized.bars,
-        endpoint: 'HISTORY_DAILY',
+        bars: aggregateTradierBars(normalized.bars, request.timeframe),
+        endpoint: 'TIMESALES',
         requestedAtUtcSec,
         httpStatus: response.status,
         rows: normalized.bars.length,
         discarded: normalized.discarded,
       };
+    } catch (err: unknown) {
+      const message = redactSecrets(err instanceof Error ? err.message : String(err), currentSecrets);
+      if (err instanceof TradierAuthInvalidError) {
+        throw new TradierAuthInvalidError(message);
+      }
+      throw new Error(message);
     }
-    const sessionFilter = request.includeExtended === false ? 'open' : 'all';
-    const url = `${config.restBaseUrl}/markets/timesales?symbol=${encodeURIComponent(symbol)}&interval=${interval}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&session_filter=${sessionFilter}`;
-    const response = await this.httpFn(url, { method: 'GET', headers });
-    if (!response.ok) throw new Error(redactSecrets(`Tradier timesales HTTP ${String(response.status)}`, currentSecrets));
-    const normalized = parseTradierTimesales(JSON.parse(response.text) as unknown);
-    return {
-      bars: aggregateTradierBars(normalized.bars, request.timeframe),
-      endpoint: 'TIMESALES',
-      requestedAtUtcSec,
-      httpStatus: response.status,
-      rows: normalized.bars.length,
-      discarded: normalized.discarded,
-    };
   }
 }
 
@@ -319,6 +361,7 @@ export class TradierStocksStream {
       ...(deps.httpFn === undefined ? {} : { httpFn: deps.httpFn }),
       ...(deps.nowMsFn === undefined ? {} : { nowMsFn: deps.nowMsFn }),
       secrets,
+      ...(deps.authBreaker === undefined ? {} : { authBreaker: deps.authBreaker }),
       ...(deps.onTick === undefined ? {} : { onTick: deps.onTick }),
       ...(deps.onStateChange === undefined ? {} : { onStateChange: deps.onStateChange }),
       ...(deps.onError === undefined ? {} : { onError: deps.onError }),
@@ -378,6 +421,7 @@ export class TradierStocksStream {
     this.dynamicSymbols.clear();
     for (const symbol of next) this.dynamicSymbols.add(symbol);
     if (!changed || !this.started) return;
+    if (this.manager.getStatus().authInvalid === true) return;
     await this.manager.start(this.desiredSymbols());
   }
 

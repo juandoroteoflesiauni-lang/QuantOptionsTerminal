@@ -21,7 +21,7 @@ import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
 import {
   FeedsHealthDrawer,
-  useFeedsHealthPulse,
+  type FeedsHealthController,
   type FeedProviderId,
 } from './FeedsHealthDrawer';
 
@@ -68,6 +68,7 @@ export interface MarketTickerBarProps {
   onOpenShortcuts?: () => void;
   marqueeDurationSeconds?: number;
   liveFeedEnabled?: boolean;
+  feedsHealth: FeedsHealthController;
 }
 
 /* ============================================================================
@@ -325,9 +326,9 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   onOpenShortcuts,
   marqueeDurationSeconds = 48,
   liveFeedEnabled = true,
+  feedsHealth,
 }) => {
   const liveStream = useMarketLiveStream({ manageConnection: liveFeedEnabled });
-  const feedsHealth = useFeedsHealthPulse();
   const [feedsDrawerOpen, setFeedsDrawerOpen] = useState(false);
 
   useEffect(() => {

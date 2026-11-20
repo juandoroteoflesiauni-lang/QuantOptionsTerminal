@@ -12,6 +12,7 @@ import type {
   HighlightLevelId,
   StockExecutionDeckData,
 } from './stockDetailTypes';
+import { normalizeStockDetailOrderBook } from '../../../../src/core/stockDetailStability';
 
 export const ExecutionBottomDeck: React.FC<{
   readonly deck: StockExecutionDeckData;
@@ -41,8 +42,23 @@ export const ExecutionBottomDeck: React.FC<{
 
   const pxPrefix = deck.currencySymbol === 'USD' ? 'US$ ' : '$ ';
 
-  // Columna 1: Order Book L2 / L1
-  const book = deck.orderBook24h;
+  // Columna 1: Order Book L2 / L1 normalizado (`price > 0` estricto y spread válido)
+  const book = useMemo(() => {
+    const rawBook = deck.orderBook24h;
+    if (rawBook === null) return null;
+    const norm = normalizeStockDetailOrderBook(rawBook.bids, rawBook.asks, 5);
+    return {
+      ...rawBook,
+      bids: norm.bids,
+      asks: norm.asks,
+      bestBid: norm.bestBid,
+      bestAsk: norm.bestAsk,
+      mid: Number.isFinite(norm.mid) ? norm.mid : null,
+      spreadArs: Number.isFinite(norm.spreadAbs) ? norm.spreadAbs : null,
+      spreadPct: Number.isFinite(norm.spreadPct) ? norm.spreadPct : null,
+      obi5: Number.isFinite(norm.obi5) ? norm.obi5 : null,
+    };
+  }, [deck.orderBook24h]);
   const isL2Depth =
     book !== null &&
     (book.bids.some((b) => b.size > 0) || book.asks.some((a) => a.size > 0)) &&
@@ -176,11 +192,14 @@ export const ExecutionBottomDeck: React.FC<{
             </div>
           </div>
           <div className="px-2.5 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#1B1B28]">
-            <div className="text-[9px] uppercase text-[#767C99]">Spread %</div>
+            <div className="text-[9px] uppercase text-[#767C99]">Spread</div>
             <div className="font-semibold text-[#F0F2FA]">
-              {book?.spreadPct !== null && book?.spreadPct !== undefined
+              {book?.spreadPct !== null && book?.spreadPct !== undefined && Number.isFinite(book.spreadPct)
                 ? `${fmtNum(book.spreadPct, 3)} %`
                 : '—'}
+              {book?.spreadArs !== null && book?.spreadArs !== undefined && Number.isFinite(book.spreadArs)
+                ? ` · ${pxPrefix}${fmtNum(book.spreadArs, 2)}`
+                : ''}
             </div>
           </div>
           <div className="px-2.5 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#1B1B28]">

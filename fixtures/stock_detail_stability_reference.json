@@ -1,0 +1,419 @@
+{
+  "arIntradayFallback": {
+    "15m": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_15M_BARS_AR",
+      "requestedTimeframe": "15m"
+    },
+    "1D": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": null,
+      "requestedTimeframe": "1D"
+    },
+    "1h": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_1H_BARS_AR",
+      "requestedTimeframe": "1h"
+    },
+    "1m": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_1M_BARS_AR",
+      "requestedTimeframe": "1m"
+    },
+    "4h": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_4H_BARS_AR",
+      "requestedTimeframe": "4h"
+    },
+    "5m": {
+      "effectiveTimeframe": "1D",
+      "fallbackReason": "NO_5M_BARS_AR",
+      "requestedTimeframe": "5m"
+    }
+  },
+  "connectivityCases": [
+    {
+      "expected": {
+        "degradedOperationalCount": 0,
+        "label": "LIVE",
+        "operationalActiveCount": 4,
+        "tone": "LIVE"
+      },
+      "input": {
+        "feedStatus": "PARTIAL",
+        "isBackendConnected": true,
+        "providers": [
+          {
+            "configured": true,
+            "id": "MASSIVE_WS_STOCKS",
+            "state": "STANDBY_TRADIER_FMP_PRIMARY"
+          },
+          {
+            "configured": true,
+            "id": "MASSIVE_REST_POOL",
+            "state": "CONNECTED"
+          },
+          {
+            "configured": true,
+            "id": "TRADIER_LIVE_WS",
+            "state": "AUTH_INVALID"
+          },
+          {
+            "configured": true,
+            "id": "FMP_ENTERPRISE_REST",
+            "state": "CONNECTED"
+          },
+          {
+            "configured": true,
+            "id": "ORATS_API",
+            "state": "CONNECTED"
+          },
+          {
+            "configured": true,
+            "id": "PRIMARY_REMARKETS_DLR",
+            "state": "CONNECTED"
+          }
+        ],
+        "streamFresh": false
+      },
+      "name": "LIVE when FMP + Massive REST + Primary connected, Massive WS in standby and Tradier AUTH_INVALID"
+    },
+    {
+      "expected": {
+        "degradedOperationalCount": 0,
+        "label": "EOD · ÚLTIMO CIERRE",
+        "operationalActiveCount": 1,
+        "tone": "EOD"
+      },
+      "input": {
+        "feedStatus": "EOD_CIERRE",
+        "isBackendConnected": true,
+        "providers": [
+          {
+            "configured": true,
+            "id": "MASSIVE_WS_STOCKS",
+            "state": "STANDBY_TRADIER_FMP_PRIMARY"
+          },
+          {
+            "configured": true,
+            "id": "FMP_ENTERPRISE_REST",
+            "state": "CONNECTED"
+          },
+          {
+            "configured": true,
+            "id": "PRIMARY_REMARKETS_DLR",
+            "state": "ARMED_OUT_OF_SESSION"
+          }
+        ],
+        "streamFresh": false
+      },
+      "name": "EOD_CIERRE preserved cleanly over weekend"
+    },
+    {
+      "expected": {
+        "degradedOperationalCount": 0,
+        "label": "DESCONECTADO",
+        "operationalActiveCount": 0,
+        "tone": "OFFLINE"
+      },
+      "input": {
+        "feedStatus": "NO_DATA",
+        "isBackendConnected": false,
+        "providers": [],
+        "streamFresh": false
+      },
+      "name": "DESCONECTADO when backend is offline"
+    }
+  ],
+  "l2Cases": [
+    {
+      "asks": [
+        {
+          "price": 0,
+          "size": 30
+        },
+        {
+          "price": 11475.0,
+          "size": 90
+        },
+        {
+          "orderCount": 2,
+          "price": 11450.0,
+          "size": 30
+        }
+      ],
+      "bids": [
+        {
+          "price": 0,
+          "size": 50
+        },
+        {
+          "price": -10,
+          "size": 25
+        },
+        {
+          "price": 11420.0,
+          "size": 120
+        },
+        {
+          "orderCount": 3,
+          "price": 11435.5,
+          "size": 50
+        },
+        {
+          "price": 11410.0,
+          "size": 200
+        }
+      ],
+      "expectedBook": {
+        "asks": [
+          {
+            "orderCount": 2,
+            "price": 11450.0,
+            "size": 30.0
+          },
+          {
+            "price": 11475.0,
+            "size": 90.0
+          }
+        ],
+        "bestAsk": 11450.0,
+        "bestAskSize": 30.0,
+        "bestBid": 11435.5,
+        "bestBidSize": 50.0,
+        "bids": [
+          {
+            "orderCount": 3,
+            "price": 11435.5,
+            "size": 50.0
+          },
+          {
+            "price": 11420.0,
+            "size": 120.0
+          },
+          {
+            "price": 11410.0,
+            "size": 200.0
+          }
+        ],
+        "mid": 11442.75,
+        "obi5": 0.5102040816326531,
+        "spreadAbs": 14.5,
+        "spreadPct": 0.12663755458515283
+      },
+      "expectedHeader": {
+        "ask": 11450.0,
+        "askSize": 30.0,
+        "bid": 11435.5,
+        "bidSize": 50.0,
+        "spreadAbs": 14.5,
+        "spreadPct": 0.12663755458515283
+      },
+      "headerInput": {
+        "quoteAsk": null,
+        "quoteAskSize": 30,
+        "quoteBid": null,
+        "quoteBidSize": 50
+      },
+      "name": "filters invalid <=0 levels, orders L2, computes spread & prevents orphan BID size"
+    },
+    {
+      "asks": [
+        {
+          "price": 9500.0,
+          "size": 40
+        }
+      ],
+      "bids": [
+        {
+          "price": 0,
+          "size": 50
+        }
+      ],
+      "expectedBook": {
+        "asks": [
+          {
+            "price": 9500.0,
+            "size": 40.0
+          }
+        ],
+        "bestAsk": 9500.0,
+        "bestAskSize": 40.0,
+        "bestBid": null,
+        "bestBidSize": null,
+        "bids": [],
+        "mid": null,
+        "obi5": -1.0,
+        "spreadAbs": null,
+        "spreadPct": null
+      },
+      "expectedHeader": {
+        "ask": 9500.0,
+        "askSize": 40.0,
+        "bid": null,
+        "bidSize": null,
+        "spreadAbs": null,
+        "spreadPct": null
+      },
+      "headerInput": {
+        "quoteAsk": 9500.0,
+        "quoteAskSize": 40,
+        "quoteBid": 0,
+        "quoteBidSize": 50
+      },
+      "name": "orphan quoteBidSize 50 with empty L2 book yields bid=null bidSize=null"
+    },
+    {
+      "asks": [
+        {
+          "price": 8140.0,
+          "size": 300
+        }
+      ],
+      "bids": [
+        {
+          "price": 8100.0,
+          "size": 500
+        }
+      ],
+      "expectedBook": {
+        "asks": [
+          {
+            "price": 8140.0,
+            "size": 300.0
+          }
+        ],
+        "bestAsk": 8140.0,
+        "bestAskSize": 300.0,
+        "bestBid": 8100.0,
+        "bestBidSize": 500.0,
+        "bids": [
+          {
+            "price": 8100.0,
+            "size": 500.0
+          }
+        ],
+        "mid": 8120.0,
+        "obi5": 0.25,
+        "spreadAbs": 40.0,
+        "spreadPct": 0.4914004914004914
+      },
+      "expectedHeader": {
+        "ask": 8140.0,
+        "askSize": 300.0,
+        "bid": 8100.0,
+        "bidSize": 500.0,
+        "spreadAbs": 40.0,
+        "spreadPct": 0.4914004914004914
+      },
+      "headerInput": {
+        "quoteAsk": null,
+        "quoteAskSize": null,
+        "quoteBid": 8100.0,
+        "quoteBidSize": null
+      },
+      "name": "one-sided quote with valid bid and ask backfilled from L2 asks"
+    }
+  ],
+  "meta": {
+    "name": "Pieza 43 Stock Detail Stability, L2 Normalization, AR Fallback and Connectivity Reference",
+    "precisionTolerance": 1e-09
+  },
+  "pickerTransitions": [
+    {
+      "expected": {
+        "activeCategory": "PANEL_LIDER",
+        "activeIndex": 2,
+        "query": "",
+        "shouldFocusInput": true
+      },
+      "input": {
+        "currentActiveIndex": 4,
+        "currentCategory": "US_STOCKS",
+        "currentQuery": "NV",
+        "filteredLength": 20,
+        "isOpen": true,
+        "selectedCategory": "PANEL_LIDER",
+        "selectedItemIndex": 2,
+        "wasOpen": false
+      },
+      "name": "closed -> open initializes category to selected symbol category"
+    },
+    {
+      "expected": {
+        "activeCategory": "US_STOCKS",
+        "activeIndex": 0,
+        "query": "NVDA",
+        "shouldFocusInput": false
+      },
+      "input": {
+        "currentActiveIndex": 0,
+        "currentCategory": "US_STOCKS",
+        "currentQuery": "NVDA",
+        "filteredLength": 1,
+        "isOpen": true,
+        "selectedCategory": "PANEL_LIDER",
+        "selectedItemIndex": 0,
+        "wasOpen": true
+      },
+      "name": "open -> open preserves user US_STOCKS tab and query on live tick updates"
+    },
+    {
+      "expected": {
+        "activeCategory": "PANEL_GENERAL",
+        "activeIndex": 2,
+        "query": "HARG",
+        "shouldFocusInput": false
+      },
+      "input": {
+        "currentActiveIndex": 8,
+        "currentCategory": "PANEL_GENERAL",
+        "currentQuery": "HARG",
+        "filteredLength": 3,
+        "isOpen": true,
+        "selectedCategory": "PANEL_LIDER",
+        "selectedItemIndex": 0,
+        "wasOpen": true
+      },
+      "name": "open -> open preserves PANEL_GENERAL and clamps activeIndex when filtered list shrinks"
+    },
+    {
+      "expected": {
+        "activeCategory": "CEDEARS",
+        "activeIndex": 1,
+        "query": "AAPL",
+        "shouldFocusInput": false
+      },
+      "input": {
+        "currentActiveIndex": 1,
+        "currentCategory": "CEDEARS",
+        "currentQuery": "AAPL",
+        "filteredLength": 5,
+        "isOpen": true,
+        "selectedCategory": "PANEL_LIDER",
+        "selectedItemIndex": 0,
+        "wasOpen": true
+      },
+      "name": "open -> open preserves CEDEARS tab cleanly"
+    },
+    {
+      "expected": {
+        "activeCategory": "CEDEARS",
+        "activeIndex": 0,
+        "query": "",
+        "shouldFocusInput": false
+      },
+      "input": {
+        "currentActiveIndex": 2,
+        "currentCategory": "CEDEARS",
+        "currentQuery": "MSFT",
+        "filteredLength": 4,
+        "isOpen": false,
+        "selectedCategory": "PANEL_LIDER",
+        "selectedItemIndex": 0,
+        "wasOpen": true
+      },
+      "name": "open -> closed clears query while preserving category"
+    }
+  ]
+}

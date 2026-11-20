@@ -31,6 +31,7 @@ export type FeedProviderState =
   | 'CONNECTED'
   | 'ARMED_OUT_OF_SESSION'
   | 'STANDBY_TRADIER_FMP_PRIMARY'
+  | 'AUTH_INVALID'
   | 'DEGRADED'
   | 'NOT_CONFIGURED';
 
@@ -307,6 +308,7 @@ export interface TradierFeedDetails {
   readonly environment: 'LIVE' | 'SANDBOX';
   readonly restBaseUrl: string;
   readonly wsBaseUrl: string;
+  readonly authInvalid?: boolean;
 }
 
 export interface OratsCircuitBreakerDetails {
@@ -391,6 +393,8 @@ export interface FeedsHealthSummary {
   readonly armedOutOfSessionCount: number;
   /** Pieza 41: Standby explícito no se mezcla con activo/degradado. */
   readonly standbyCount?: number;
+  /** Pieza 43: Conteo explícito de proveedores en AUTH_INVALID (no degradan el panel global). */
+  readonly authInvalidCount?: number;
 }
 
 export interface FeedsHealthSnapshot {
@@ -605,11 +609,13 @@ function countStates(providers: readonly FeedProviderHealth[]): FeedsHealthSumma
   let notConfiguredCount = 0;
   let armedOutOfSessionCount = 0;
   let standbyCount = 0;
+  let authInvalidCount = 0;
   for (const provider of providers) {
     if (provider.state === 'CONNECTED') activeCount += 1;
     else if (provider.state === 'DEGRADED') degradedCount += 1;
     else if (provider.state === 'NOT_CONFIGURED') notConfiguredCount += 1;
     else if (provider.state === 'STANDBY_TRADIER_FMP_PRIMARY') standbyCount += 1;
+    else if (provider.state === 'AUTH_INVALID') authInvalidCount += 1;
     else armedOutOfSessionCount += 1;
     if (provider.configured) configuredCount += 1;
   }
@@ -621,6 +627,7 @@ function countStates(providers: readonly FeedProviderHealth[]): FeedsHealthSumma
     notConfiguredCount,
     armedOutOfSessionCount,
     standbyCount,
+    authInvalidCount,
   };
 }
 
@@ -690,6 +697,7 @@ export interface MassiveRestFeedHealthSource {
 export interface TradierFeedHealthSource {
   readonly configured: boolean;
   readonly connected: boolean;
+  readonly authInvalid?: boolean;
   readonly sessionCreated: boolean;
   readonly reconnectAttempts: number;
   readonly subscribedSymbols: readonly string[];
@@ -896,13 +904,14 @@ export class FeedsHealthMonitor {
       },
     };
 
+    const tradierAuthInvalid = tradier.configured && tradier.authInvalid === true;
     const tradierProvider: FeedProviderHealth = {
       ...commonProvider({
         id: 'TRADIER_LIVE_WS',
         region: 'US',
         role: 'Opciones Live + Griegas',
         configured: tradier.configured,
-        connected: tradier.connected,
+        connected: tradierAuthInvalid ? false : tradier.connected,
         sessionMode: usSession,
         telemetry: tradier.telemetry,
         latencyKind: 'PROVIDER_EVENT_AGE',
@@ -913,12 +922,19 @@ export class FeedsHealthMonitor {
         nowMs,
         secrets: this.secrets,
       }),
+      ...(tradierAuthInvalid
+        ? {
+            state: 'AUTH_INVALID' as const,
+            connected: false,
+          }
+        : {}),
       tradier: {
         sessionCreated: tradier.sessionCreated,
         reconnectAttempts: tradier.reconnectAttempts,
         environment: tradier.environment,
         restBaseUrl: tradier.restBaseUrl ?? '',
         wsBaseUrl: tradier.wsBaseUrl ?? '',
+        ...(tradierAuthInvalid ? { authInvalid: true } : {}),
       },
     };
 

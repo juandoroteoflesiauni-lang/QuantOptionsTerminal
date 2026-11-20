@@ -933,6 +933,9 @@ export interface UsTerminalBarsResponseDto {
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;
   readonly timeframe: TerminalTimeframe;
+  readonly requestedTimeframe?: TerminalTimeframe;
+  readonly effectiveTimeframe?: TerminalTimeframe;
+  readonly fallbackReason?: string | null;
   readonly barSeconds: number;
   readonly rthOnly: boolean;
   readonly asOfUtcSec: number;

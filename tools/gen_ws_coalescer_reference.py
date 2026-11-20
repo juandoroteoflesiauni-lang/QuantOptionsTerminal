@@ -58,18 +58,18 @@ def dynamic_leases(
 
 
 def ar_intraday_fallback(timeframe: str) -> Dict[str, Any]:
-    """1m AR no existe: fallback explícito a 1D; otros intradiarios no cambian."""
+    """Intradiario BYMA (1m/5m/15m/1h/4h) hace fallback explícito a 1D."""
     clean = timeframe.strip()
-    if clean == "1m":
-        return {
-            "requestedTimeframe": "1m",
-            "effectiveTimeframe": "1D",
-            "fallbackReason": "NO_1M_BARS_AR",
-        }
-    if clean in {"5m", "15m", "1h", "4h", "1D"}:
+    if clean in {"1m", "5m", "15m", "1h", "4h"}:
         return {
             "requestedTimeframe": clean,
-            "effectiveTimeframe": clean,
+            "effectiveTimeframe": "1D",
+            "fallbackReason": f"NO_{clean.upper()}_BARS_AR",
+        }
+    if clean == "1D":
+        return {
+            "requestedTimeframe": "1D",
+            "effectiveTimeframe": "1D",
             "fallbackReason": None,
         }
     raise ValueError(f"Unsupported AR timeframe {timeframe!r}")

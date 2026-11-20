@@ -18,6 +18,7 @@ export type FeedProviderState =
   | 'CONNECTED'
   | 'ARMED_OUT_OF_SESSION'
   | 'STANDBY_TRADIER_FMP_PRIMARY'
+  | 'AUTH_INVALID'
   | 'DEGRADED'
   | 'NOT_CONFIGURED';
 
@@ -52,6 +53,7 @@ interface TradierFeedDetails {
   readonly environment: 'LIVE' | 'SANDBOX';
   readonly restBaseUrl: string;
   readonly wsBaseUrl: string;
+  readonly authInvalid?: boolean;
 }
 
 interface OratsCircuitBreakerDetails {
@@ -135,6 +137,7 @@ export interface FeedsHealthSummary {
   readonly notConfiguredCount: number;
   readonly armedOutOfSessionCount: number;
   readonly standbyCount?: number;
+  readonly authInvalidCount?: number;
 }
 
 export interface FeedsHealthSnapshot {
@@ -216,9 +219,11 @@ function parsePulse(raw: unknown): FeedsHealthPulse | null {
           ? 'ARMED_OUT_OF_SESSION'
           : rawProvider['state'] === 'STANDBY_TRADIER_FMP_PRIMARY'
             ? 'STANDBY_TRADIER_FMP_PRIMARY'
-            : rawProvider['state'] === 'NOT_CONFIGURED'
-              ? 'NOT_CONFIGURED'
-              : 'DEGRADED',
+            : rawProvider['state'] === 'AUTH_INVALID'
+              ? 'AUTH_INVALID'
+              : rawProvider['state'] === 'NOT_CONFIGURED'
+                ? 'NOT_CONFIGURED'
+                : 'DEGRADED',
       sessionMode: rawProvider['sessionMode'] === 'IN_SESSION' ? 'IN_SESSION' : 'OUT_OF_SESSION',
       latencyMs: nullableNumber(rawProvider['latencyMs']),
       lastTickAgeMs: nullableNumber(rawProvider['lastTickAgeMs']),
@@ -238,6 +243,7 @@ function parsePulse(raw: unknown): FeedsHealthPulse | null {
       notConfiguredCount: nonNegativeInt(summaryRaw['notConfiguredCount']) ?? 0,
       armedOutOfSessionCount: nonNegativeInt(summaryRaw['armedOutOfSessionCount']) ?? 0,
       standbyCount: nonNegativeInt(summaryRaw['standbyCount']) ?? 0,
+      authInvalidCount: nonNegativeInt(summaryRaw['authInvalidCount']) ?? 0,
     },
     providers,
   };
@@ -477,6 +483,9 @@ function stateStyles(state: FeedProviderState): { readonly bg: string; readonly 
   if (state === 'STANDBY_TRADIER_FMP_PRIMARY') {
     return { bg: 'bg-[#101B33]', text: 'text-[#60A5FA]', border: 'border-[#22406F]' };
   }
+  if (state === 'AUTH_INVALID') {
+    return { bg: 'bg-[#2B1F0E]', text: 'text-[#F5B544]', border: 'border-[#664A1D]' };
+  }
   if (state === 'NOT_CONFIGURED') {
     return { bg: 'bg-[#131722]', text: 'text-[#787B86]', border: 'border-[#2A2E3D]' };
   }
@@ -552,6 +561,9 @@ const ProviderCard: React.FC<{
         <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
           <DetailRow label="Sesión creada" value={provider.tradier.sessionCreated ? 'SÍ' : 'NO'} />
           <DetailRow label="Entorno / REST" value={`${provider.tradier.environment} · ${tradierHost(provider.tradier.restBaseUrl)}`} />
+          {(provider.state === 'AUTH_INVALID' || provider.tradier.authInvalid === true) && (
+            <DetailRow label="Auth" value="INVÁLIDA (401 · fallback FMP)" />
+          )}
           <DetailRow label="Reconnects" value={formatCount(provider.tradier.reconnectAttempts)} />
         </div>
       )}

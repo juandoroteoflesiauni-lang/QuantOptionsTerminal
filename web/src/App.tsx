@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -55,6 +55,8 @@ import {
   SettingsAndDesignSystemModule,
 } from './components/MarketModules';
 import { MarketTickerBar, MarketSessionState } from './components/MarketTickerBar';
+import { useFeedsHealthPulse } from './components/FeedsHealthDrawer';
+import { resolveGlobalConnectivityStatus } from '../../src/core/stockDetailStability';
 import {
   OrderTicketDrawer,
   OrderTicketPreset,
@@ -104,6 +106,20 @@ export default function App() {
 
   // Estado vivo desde backend real (/api/ar/*, /api/snapshot, /ws)
   const liveMarket = useLiveMarketState();
+  const feedsHealth = useFeedsHealthPulse();
+  const globalConnectivity = useMemo(
+    () =>
+      resolveGlobalConnectivityStatus({
+        isBackendConnected: liveMarket.isBackendConnected,
+        feedStatus: liveMarket.feedStatus,
+        providers: (feedsHealth.snapshot?.providers ?? []).map((p) => ({
+          id: p.id,
+          state: p.state,
+          configured: p.configured,
+        })),
+      }),
+    [feedsHealth.snapshot?.providers, liveMarket.feedStatus, liveMarket.isBackendConnected],
+  );
   const [positions, setPositions] = useState<PortfolioPosition[]>(INITIAL_POSITIONS);
   const [alerts, setAlerts] = useState<AlertItem[]>(INITIAL_ALERTS);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -258,6 +274,7 @@ export default function App() {
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         onOpenShortcuts={() => setShortcutsOpen(true)}
         liveFeedEnabled={liveTicksEnabled}
+        feedsHealth={feedsHealth}
       />
 
       {/* Banner contextual si el usuario simula mercado cerrado / feriado */}
@@ -628,16 +645,16 @@ export default function App() {
                 <span
                   title={liveMarket.marketStateLabel}
                   className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[11px] font-mono-num font-semibold ${
-                    liveMarket.feedStatus === 'LIVE'
+                    globalConnectivity.tone === 'LIVE'
                       ? 'bg-[#0D221E] text-[#22C55E] border-[#164E3F]'
-                      : liveMarket.feedStatus === 'EOD_CIERRE'
+                      : globalConnectivity.tone === 'EOD'
                       ? 'bg-[#132033] text-[#38BDF8] border-[#1E3A5F]'
-                      : liveMarket.feedStatus === 'DIFERIDO_20M' || liveMarket.feedStatus === 'PARTIAL'
+                      : globalConnectivity.tone === 'PARTIAL'
                       ? 'bg-[#281E0E] text-[#F5B544] border-[#59411A]'
                       : 'bg-[#1A1318] text-[#F23645] border-[#4A2229]'
                   }`}
                 >
-                  {liveMarket.feedStatus === 'EOD_CIERRE' ? 'EOD · ÚLTIMO CIERRE' : liveMarket.feedStatus}
+                  {globalConnectivity.label}
                 </span>
                 <div className="hidden sm:flex items-center gap-1 p-1 rounded-[8px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)] text-[11px]">
                   <span className="px-2 text-[var(--text-tertiary)]">Densidad:</span>

@@ -43,6 +43,11 @@ import { CompanyLogo } from './common/CompanyLogo';
 import { projectLiveEma } from '../../../src/core/ema';
 import { projectLiveCandle } from '../../../src/core/realtimePropagation';
 import {
+  formatHeaderSideQuote,
+  normalizeStockDetailHeaderQuotes,
+  normalizeStockDetailOrderBook,
+} from '../../../src/core/stockDetailStability';
+import {
   computeAnchoredVwapSeries,
 } from '../../../src/core/ggal/technicalIndicators';
 import type { GgalChartBarPoint } from '../../../src/core/ggal/institutionalContracts';
@@ -322,7 +327,11 @@ export const StockDetailView: React.FC<{
   const [usBarsByKey, setUsBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
   // Pieza 38: velas reales ARS de /api/bars?market=AR para tickers argentinos.
   const [arBarsByKey, setArBarsByKey] = useState<Readonly<Record<string, UsTerminalBarsResponseDto>>>({});
-  const [ar1mFallbackActive, setAr1mFallbackActive] = useState(false);
+  const [arFallbackNotice, setArFallbackNotice] = useState<{
+    readonly requested: TerminalTimeframe;
+    readonly effective: '1D';
+    readonly reason: string | null;
+  } | null>(null);
   const loadingRequestIdRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -367,7 +376,7 @@ export const StockDetailView: React.FC<{
     setLoadError(null);
     setHighlightedLevel(null);
     setClickedAnchorTimeSec(null);
-    setAr1mFallbackActive(false);
+    setArFallbackNotice(null);
     if (!hasOverviewRef.current) void refreshOverview();
 
     const isCurrent = (): boolean => requestId === loadingRequestIdRef.current && !controller.signal.aborted;
@@ -375,45 +384,71 @@ export const StockDetailView: React.FC<{
     const load = async (): Promise<void> => {
       try {
         if (isArMarket) {
-          // Pieza 41: BYMA usa /api/bars?market=AR. En 1m la API resuelve 1D
-          // sin intentar convertir velas ADR; el detalle no bloquea el gráfico.
-          const requestTimeframe: TerminalTimeframe =
-            timeframe === '1m' && !ar1mFallbackActive ? '1m' : timeframe;
-          const barsPromise = requestTerminalBars(cleanTicker, requestTimeframe, {
-            visibleBars: requestTimeframe === '1D' ? 1_250 : 1_000,
+          // Pieza 41 + 43: BYMA usa /api/bars?market=AR con fallback no destructivo a 1D
+          // para todos los timeframes intradiarios (`1m`, `5m`, `15m`, `1h`, `4h`).
+          const detailPromise = requestStockDetail(cleanTicker, false, timeframe, controller.signal);
+          void detailPromise.catch(() => undefined);
+          let arBarsRes = await requestTerminalBars(cleanTicker, timeframe, {
+            visibleBars: 1_250,
             market: 'AR',
             signal: controller.signal,
-          });
-          const detailPromise = requestStockDetail(cleanTicker, false, timeframe, controller.signal);
-          let arBarsRes = await Promise.race([
-            barsPromise,
-            new Promise<UsTerminalBarsResponseDto | null>((resolve) => {
-              setTimeout(() => resolve(null), 250);
-            }),
-          ]);
+          }).catch(() => null);
           if (!isCurrent()) return;
-          if (arBarsRes === null && requestTimeframe === '1m') {
-            // Fallback inmediato del camino 1m a 1D si el primer request no pintó.
+
+          if ((arBarsRes === null || arBarsRes.bars.length === 0) && timeframe !== '1D') {
             arBarsRes = await requestTerminalBars(cleanTicker, '1D', {
               visibleBars: 1_250,
               market: 'AR',
               signal: controller.signal,
-            });
+            }).catch(() => null);
             if (!isCurrent()) return;
-            if (arBarsRes !== null) setAr1mFallbackActive(true);
+            if (arBarsRes !== null && arBarsRes.bars.length > 0) {
+              setArFallbackNotice({
+                requested: timeframe,
+                effective: '1D',
+                reason: arBarsRes.fallbackReason ?? `NO_${timeframe.toUpperCase()}_BARS_AR`,
+              });
+            }
+          } else if (
+            arBarsRes !== null &&
+            timeframe !== '1D' &&
+            arBarsRes.effectiveTimeframe === '1D'
+          ) {
+            setArFallbackNotice({
+              requested: timeframe,
+              effective: '1D',
+              reason: arBarsRes.fallbackReason ?? null,
+            });
           }
-          if (arBarsRes !== null) {
+
+          if (arBarsRes !== null && arBarsRes.bars.length > 0) {
+            const finalArBars = arBarsRes;
             setArBarsByKey((prev) => ({
               ...prev,
-              [`${currentStockKey}:${timeframe}`]: arBarsRes,
+              [`${currentStockKey}:${timeframe}`]: finalArBars,
+              ...(finalArBars.effectiveTimeframe === '1D' || timeframe === '1D'
+                ? { [`${currentStockKey}:1D`]: finalArBars }
+                : {}),
             }));
+            setLoadError(null);
+          } else {
+            const detailRes = await detailPromise.catch(() => null);
+            if (!isCurrent()) return;
+            if (detailRes !== null && detailRes.historicalBars.length > 0) {
+              if (timeframe !== '1D') {
+                setArFallbackNotice({
+                  requested: timeframe,
+                  effective: '1D',
+                  reason: `NO_${timeframe.toUpperCase()}_BARS_AR`,
+                });
+              }
+              setLoadError(null);
+            } else {
+              setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
+            }
           }
           setLoading(false);
           void requestOptionsChain(cleanTicker).catch(() => undefined);
-          if (arBarsRes === null) {
-            setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
-          }
-          void detailPromise.catch(() => undefined);
         } else {
           const barsPromise = requestTerminalBars(cleanTicker, timeframe, {
             visibleBars: timeframe === '1D' ? 1_250 : 1_000,
@@ -444,7 +479,7 @@ export const StockDetailView: React.FC<{
 
     void load();
     return () => controller.abort();
-  }, [ar1mFallbackActive, cleanTicker, currentStockKey, timeframe, isArMarket]);
+  }, [cleanTicker, currentStockKey, timeframe, isArMarket]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -627,8 +662,9 @@ export const StockDetailView: React.FC<{
   const arOptions = isArMarket ? runtime.optionsByUnderlying[cleanTicker] : undefined;
   const usSnap = !isArMarket ? runtime.usSnapshotsBySymbol[cleanTicker] : undefined;
   const usBarsResp = !isArMarket ? usBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
-  // Pieza 38: velas reales ARS servidas por /api/bars?market=AR (primario en 1D).
+  // Pieza 38 / 43: velas reales ARS servidas por /api/bars?market=AR (fallback automático a 1D).
   const arBarsResp = isArMarket ? arBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
+  const arBars1dResp = isArMarket ? arBarsByKey[`${currentStockKey}:1D`] : undefined;
 
   const contextInfo: StockContextBannerInfo = useMemo(() => {
     const cclMed = normalizeFiniteOrNull(runtime.overview?.cclMedian);
@@ -775,6 +811,43 @@ export const StockDetailView: React.FC<{
     };
   }, [cleanTicker, isArMarket, liveQuote, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, throttledLivePrice, usBarsResp, usSnap]);
 
+  const isArIntradayFallbackActive =
+    isArMarket &&
+    timeframe !== '1D' &&
+    (arBarsResp?.effectiveTimeframe === '1D' ||
+      arFallbackNotice !== null ||
+      ((arBarsResp?.bars.length ?? 0) === 0 &&
+        ((arBars1dResp?.bars.length ?? 0) > 0 || (stockDetail?.historicalBars.length ?? 0) > 0)));
+  const effectiveChartTimeframe: TerminalTimeframe = isArIntradayFallbackActive ? '1D' : timeframe;
+  const arFallbackInfoText = isArIntradayFallbackActive
+    ? `BYMA sin histórico ${timeframe.toUpperCase()} · mostrando 1D real`
+    : null;
+
+  const headerBook = useMemo(() => {
+    const rawBook = isArMarket ? stockDetail?.orderBook5Levels ?? null : null;
+    if (rawBook === null) return null;
+    return normalizeStockDetailOrderBook(rawBook.bids, rawBook.asks, 5);
+  }, [isArMarket, stockDetail?.orderBook5Levels]);
+
+  const headerQuotes = useMemo(() => {
+    return normalizeStockDetailHeaderQuotes({
+      quoteBid: isArMarket ? (stockDetail?.stock?.bid ?? null) : contextInfo.nbboBid,
+      quoteBidSize: isArMarket ? null : contextInfo.nbboBidSize,
+      quoteAsk: isArMarket ? (stockDetail?.stock?.ask ?? null) : contextInfo.nbboAsk,
+      quoteAskSize: isArMarket ? null : contextInfo.nbboAskSize,
+      book: isArMarket ? headerBook : null,
+    });
+  }, [
+    contextInfo.nbboAsk,
+    contextInfo.nbboAskSize,
+    contextInfo.nbboBid,
+    contextInfo.nbboBidSize,
+    headerBook,
+    isArMarket,
+    stockDetail?.stock?.ask,
+    stockDetail?.stock?.bid,
+  ]);
+
   const chartBundle: PanoramicChartBundle = useMemo(() => {
     let rawBars: readonly MinimalOhlcvBar[] = [];
     let intradayUnavailableReason: string | null = null;
@@ -782,10 +855,9 @@ export const StockDetailView: React.FC<{
     let ivAtmPct: number | null = null;
 
     if (isArMarket) {
-      // Pieza 38: 1D prioriza el histórico real ARS de /api/bars?market=AR
-      // (hasta 1.250 ruedas); `historicalBars` del detalle AR queda como
-      // respaldo si la petición de velas no respondió aún. El intradiario AR
-      // sigue viniendo convertido desde el ADR US (MASSIVE_ADR_CONVERTED).
+      // Pieza 38 / 43: 1D prioriza /api/bars?market=AR; cualquier timeframe
+      // intradiario BYMA sin velas locales cae automáticamente a 1D real sin
+      // dejar el canvas en negro ni disparar un error rojo destructivo.
       if (timeframe === '1D') {
         rawBars =
           arBarsResp !== undefined && arBarsResp.bars.length > 0
@@ -793,7 +865,13 @@ export const StockDetailView: React.FC<{
             : (stockDetail?.historicalBars ?? []);
       } else if (arBarsResp !== undefined && arBarsResp.bars.length > 0) {
         rawBars = arBarsResp.bars;
-      } else intradayUnavailableReason = `Sin feed intradiario BYMA para ${cleanTicker} (${timeframe}) — disponible en 1D`;
+      } else if (arBars1dResp !== undefined && arBars1dResp.bars.length > 0) {
+        rawBars = arBars1dResp.bars;
+      } else if ((stockDetail?.historicalBars.length ?? 0) > 0) {
+        rawBars = stockDetail?.historicalBars ?? [];
+      } else {
+        intradayUnavailableReason = `Sin histórico disponible para ${cleanTicker} (${timeframe})`;
+      }
       benchBars1d = dedupAndSortBars(stockDetail?.benchmarkBars1d ?? []);
       const frontExpiry = arOptions?.expiries.find((expiry) => expiry.ivAtm !== null && expiry.ivAtm > 0) ?? arOptions?.expiries[0];
       if (frontExpiry?.ivAtm != null && Number.isFinite(frontExpiry.ivAtm)) ivAtmPct = frontExpiry.ivAtm * 100;
@@ -834,7 +912,17 @@ export const StockDetailView: React.FC<{
               timeSec: liveTickTimeSec,
               volumeDelta: null,
             },
-            timeframe === '1D' ? 86_400 : timeframe === '4h' ? 14_400 : timeframe === '1h' ? 3_600 : timeframe === '15m' ? 900 : timeframe === '5m' ? 300 : 60,
+            effectiveChartTimeframe === '1D'
+              ? 86_400
+              : effectiveChartTimeframe === '4h'
+                ? 14_400
+                : effectiveChartTimeframe === '1h'
+                  ? 3_600
+                  : effectiveChartTimeframe === '15m'
+                    ? 900
+                    : effectiveChartTimeframe === '5m'
+                      ? 300
+                      : 60,
           )
         : null;
     const bars = projectedLiveBar === null
@@ -851,7 +939,7 @@ export const StockDetailView: React.FC<{
           },
         ];
     const closes = bars.map((bar) => bar.close);
-    const isIntraday = timeframe !== '1D';
+    const isIntraday = effectiveChartTimeframe !== '1D';
     const spot = contextInfo.spot;
     const ema9 = projectEmaSeries(computeEmaSeriesPure(closes, 9).map(normalizeFiniteOrNull), 9, spot);
     const ema21 = projectEmaSeries(computeEmaSeriesPure(closes, 21).map(normalizeFiniteOrNull), 21, spot);
@@ -896,7 +984,7 @@ export const StockDetailView: React.FC<{
       barsAvailable: bars.length > 0 && intradayUnavailableReason === null,
       intradayUnavailableReason,
     };
-  }, [arBarsResp, arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, isArMarket, liveQuote, liveStream.lastServerTimeSec, stockDetail, timeframe, usBarsResp, usSnap]);
+  }, [arBars1dResp, arBarsResp, arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, effectiveChartTimeframe, isArMarket, liveQuote, liveStream.lastServerTimeSec, stockDetail, timeframe, usBarsResp, usSnap]);
 
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];
@@ -1305,20 +1393,36 @@ export const StockDetailView: React.FC<{
         <div className="mt-2.5 grid grid-cols-2 gap-2 border-t border-[#1C1C24] pt-2.5 lg:grid-cols-4">
           <ContextCard
             label={isArMarket ? 'L2 / L1 BYMA' : 'NBBO'}
-            value={
+            value={`BID ${formatHeaderSideQuote(
+              headerQuotes.bid,
+              headerQuotes.bidSize,
+              (n) => fmtNum(n, 2),
+              (n) => fmtNum(n, 0),
+            )} · ASK ${formatHeaderSideQuote(
+              headerQuotes.ask,
+              headerQuotes.askSize,
+              (n) => fmtNum(n, 2),
+              (n) => fmtNum(n, 0),
+            )}`}
+            hint={
               isArMarket
-                ? `${fmtNum(stockDetail?.orderBook5Levels?.bestBid ?? Number.NaN, 2)} / ${fmtNum(stockDetail?.orderBook5Levels?.bestAsk ?? Number.NaN, 2)}`
-                : `${fmtNum(contextInfo.nbboBid ?? Number.NaN, 2)} / ${fmtNum(contextInfo.nbboAsk ?? Number.NaN, 2)}`
+                ? stockDetail?.orderBook5Levels?.source ?? '—'
+                : headerQuotes.bidSize !== null || headerQuotes.askSize !== null
+                  ? `x${headerQuotes.bidSize !== null ? fmtNum(headerQuotes.bidSize, 0) : '—'} / x${headerQuotes.askSize !== null ? fmtNum(headerQuotes.askSize, 0) : '—'}`
+                  : 'NBBO'
             }
-            hint={isArMarket ? stockDetail?.orderBook5Levels?.source ?? '—' : `x${fmtNum(contextInfo.nbboBidSize ?? Number.NaN, 0)} / x${fmtNum(contextInfo.nbboAskSize ?? Number.NaN, 0)}`}
           />
           <ContextCard
-            label="Spread %"
+            label="Spread"
             value={
-              contextInfo.nbboSpreadPct !== null
-                ? fmtPct(contextInfo.nbboSpreadPct, 3)
-                : stockDetail?.orderBook5Levels?.spreadPct != null
-                  ? fmtPct(stockDetail.orderBook5Levels.spreadPct, 3)
+              Number.isFinite(headerQuotes.spreadPct)
+                ? `${fmtPct(headerQuotes.spreadPct, 3)}${
+                    Number.isFinite(headerQuotes.spreadAbs)
+                      ? ` (${isArMarket ? '$' : 'US$'} ${fmtNum(headerQuotes.spreadAbs, 2)})`
+                      : ''
+                  }`
+                : contextInfo.nbboSpreadPct !== null
+                  ? fmtPct(contextInfo.nbboSpreadPct, 3)
                   : '—'
             }
             hint={isArMarket ? stockDetail?.orderBook5Levels?.settlement ?? '—' : 'NBBO'}
@@ -1398,7 +1502,12 @@ export const StockDetailView: React.FC<{
               </button>
             ))}
             {loading && <span className="ml-1 font-mono-num text-[10px] text-[#8B7CF6]">Sincronizando…</span>}
-            {loadError !== null && (
+            {arFallbackInfoText !== null && (
+              <span className="ml-1 inline-flex items-center rounded-full border border-[#F5B544]/35 bg-[#F5B544]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#F5B544]">
+                {arFallbackInfoText}
+              </span>
+            )}
+            {!chartBundle.barsAvailable && loadError !== null && (
               <span className="ml-1 font-mono-num text-[10px] text-[#F23645]">{loadError}</span>
             )}
           </div>
@@ -1419,9 +1528,9 @@ export const StockDetailView: React.FC<{
             </select>
             <ToolbarChip active={overlays.emas} label="EMA 9/21/50/200" onClick={() => handleToggleOverlay('emas')} />
             <ToolbarChip
-              active={overlays.sessionVwap && timeframe !== '1D'}
-              disabled={timeframe === '1D'}
-              label={timeframe === '1D' ? 'VWAP (solo intradiario)' : 'VWAP'}
+              active={overlays.sessionVwap && effectiveChartTimeframe !== '1D'}
+              disabled={effectiveChartTimeframe === '1D'}
+              label={effectiveChartTimeframe === '1D' ? 'VWAP (solo intradiario)' : 'VWAP'}
               onClick={() => handleToggleOverlay('sessionVwap')}
             />
             <ToolbarChip active={overlays.avwap} label={`AVWAP · ${chartBundle.avwapAnchorModeLabel}`} onClick={() => handleToggleOverlay('avwap')} />
@@ -1433,7 +1542,7 @@ export const StockDetailView: React.FC<{
 
         <PanoramicPriceChart
           bundle={chartBundle}
-          timeframe={timeframe}
+          timeframe={effectiveChartTimeframe}
           overlays={overlays}
           showAvwapBands={showAvwapBands}
           currencySymbol={contextInfo.currencySymbol}
@@ -1450,7 +1559,7 @@ export const StockDetailView: React.FC<{
       <SyncedLowerPaneChart
         ticker={cleanTicker}
         market={contextInfo.market}
-        timeframe={timeframe}
+        timeframe={effectiveChartTimeframe}
         mode={lowerMode}
         onChangeMode={setLowerMode}
         bundle={chartBundle}

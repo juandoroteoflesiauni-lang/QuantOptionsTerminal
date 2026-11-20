@@ -183,14 +183,14 @@ export function localSymbolForAdr(adrSymbol: string): string | null {
   return upper;
 }
 
-/** La API AR ya resuelve 1m -> 1D; la vista marca el timeframe efectivo. */
+/** La API AR resuelve todo intradiario (`1m`/`5m`/`15m`/`1h`/`4h`) hacia `1D` real sin error fatal. */
 export function resolveArTimeframeFallback(timeframe: '1m' | '5m' | '15m' | '1h' | '4h' | '1D'): {
   readonly requested: typeof timeframe;
   readonly effective: typeof timeframe;
   readonly fallback: boolean;
 } {
-  if (timeframe === '1m') {
-    return { requested: '1m', effective: '1D', fallback: true };
+  if (timeframe !== '1D') {
+    return { requested: timeframe, effective: '1D', fallback: true };
   }
   return { requested: timeframe, effective: timeframe, fallback: false };
 }

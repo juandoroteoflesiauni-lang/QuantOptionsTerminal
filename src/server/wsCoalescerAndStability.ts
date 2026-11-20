@@ -74,11 +74,21 @@ export interface ArIntradayFallback {
 
 export function resolveArIntradayFallback(rawTimeframe: string): ArIntradayFallback {
   const timeframe = rawTimeframe.trim();
-  if (timeframe === '1m') {
-    return { requestedTimeframe: '1m', effectiveTimeframe: '1D', fallbackReason: 'NO_1M_BARS_AR' };
+  if (
+    timeframe === '1m' ||
+    timeframe === '5m' ||
+    timeframe === '15m' ||
+    timeframe === '1h' ||
+    timeframe === '4h'
+  ) {
+    return {
+      requestedTimeframe: timeframe,
+      effectiveTimeframe: '1D',
+      fallbackReason: `NO_${timeframe.toUpperCase()}_BARS_AR`,
+    };
   }
-  if (timeframe === '5m' || timeframe === '15m' || timeframe === '1h' || timeframe === '4h' || timeframe === '1D') {
-    return { requestedTimeframe: timeframe, effectiveTimeframe: timeframe, fallbackReason: null };
+  if (timeframe === '1D') {
+    return { requestedTimeframe: '1D', effectiveTimeframe: '1D', fallbackReason: null };
   }
   throw new TypeError(`Unsupported AR timeframe "${rawTimeframe}"`);
 }
