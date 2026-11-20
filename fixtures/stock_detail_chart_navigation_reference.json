@@ -1,0 +1,350 @@
+{
+  "meta": {
+    "precisionTolerance": 1e-09
+  },
+  "fitKeyCases": [
+    {
+      "name": "qqq_daily_valid",
+      "ticker": " qqq ",
+      "timeframe": "1D",
+      "barsAvailable": true,
+      "firstBarTime": 1637366400,
+      "expected": "QQQ|1D|1637366400"
+    },
+    {
+      "name": "ggal_ar_intraday",
+      "ticker": "AR:GGAL",
+      "timeframe": "15m",
+      "barsAvailable": true,
+      "firstBarTime": 1760000400,
+      "expected": "AR:GGAL|15m|1760000400"
+    },
+    {
+      "name": "unavailable_bars",
+      "ticker": "QQQ",
+      "timeframe": "1m",
+      "barsAvailable": false,
+      "firstBarTime": 1760000400,
+      "expected": null
+    },
+    {
+      "name": "missing_first_bar",
+      "ticker": "QQQ",
+      "timeframe": "1D",
+      "barsAvailable": true,
+      "firstBarTime": null,
+      "expected": null
+    },
+    {
+      "name": "empty_ticker",
+      "ticker": "   ",
+      "timeframe": "1D",
+      "barsAvailable": true,
+      "firstBarTime": 1760000400,
+      "expected": null
+    }
+  ],
+  "viewportCases": [
+    {
+      "name": "initial_load_fits_once",
+      "input": {
+        "previousKey": null,
+        "nextKey": "QQQ|1D|1637366400",
+        "previousBarCount": 0,
+        "nextBarCount": 1250,
+        "previousFirstBarTime": null,
+        "nextFirstBarTime": 1637366400,
+        "previousLastBarTime": null,
+        "nextLastBarTime": 1795046400
+      },
+      "expected": {
+        "shouldFitContent": true,
+        "updateMode": "SET_DATA"
+      }
+    },
+    {
+      "name": "live_tick_forming_bar_preserves_zoom",
+      "input": {
+        "previousKey": "QQQ|1D|1637366400",
+        "nextKey": "QQQ|1D|1637366400",
+        "previousBarCount": 1250,
+        "nextBarCount": 1250,
+        "previousFirstBarTime": 1637366400,
+        "nextFirstBarTime": 1637366400,
+        "previousLastBarTime": 1795046400,
+        "nextLastBarTime": 1795046400
+      },
+      "expected": {
+        "shouldFitContent": false,
+        "updateMode": "UPDATE_LAST"
+      }
+    },
+    {
+      "name": "single_new_bar_rollover_preserves_zoom",
+      "input": {
+        "previousKey": "QQQ|1m|1794900000",
+        "nextKey": "QQQ|1m|1794900000",
+        "previousBarCount": 1000,
+        "nextBarCount": 1001,
+        "previousFirstBarTime": 1794900000,
+        "nextFirstBarTime": 1794900000,
+        "previousLastBarTime": 1794959940,
+        "nextLastBarTime": 1794960000
+      },
+      "expected": {
+        "shouldFitContent": false,
+        "updateMode": "UPDATE_LAST"
+      }
+    },
+    {
+      "name": "two_bar_catchup_set_data_without_refit",
+      "input": {
+        "previousKey": "QQQ|1m|1794900000",
+        "nextKey": "QQQ|1m|1794900000",
+        "previousBarCount": 1000,
+        "nextBarCount": 1002,
+        "previousFirstBarTime": 1794900000,
+        "nextFirstBarTime": 1794900000,
+        "previousLastBarTime": 1794959940,
+        "nextLastBarTime": 1794960060
+      },
+      "expected": {
+        "shouldFitContent": false,
+        "updateMode": "SET_DATA"
+      }
+    },
+    {
+      "name": "deeper_history_backfill_refits",
+      "input": {
+        "previousKey": "AR:GGAL|1D|1760000000",
+        "nextKey": "AR:GGAL|1D|1700000000",
+        "previousBarCount": 250,
+        "nextBarCount": 1250,
+        "previousFirstBarTime": 1760000000,
+        "nextFirstBarTime": 1700000000,
+        "previousLastBarTime": 1795046400,
+        "nextLastBarTime": 1795046400
+      },
+      "expected": {
+        "shouldFitContent": true,
+        "updateMode": "SET_DATA"
+      }
+    },
+    {
+      "name": "timeframe_switch_refits",
+      "input": {
+        "previousKey": "QQQ|1D|1637366400",
+        "nextKey": "QQQ|15m|1790000000",
+        "previousBarCount": 1250,
+        "nextBarCount": 1000,
+        "previousFirstBarTime": 1637366400,
+        "nextFirstBarTime": 1790000000,
+        "previousLastBarTime": 1795046400,
+        "nextLastBarTime": 1795046400
+      },
+      "expected": {
+        "shouldFitContent": true,
+        "updateMode": "SET_DATA"
+      }
+    },
+    {
+      "name": "ticker_switch_refits",
+      "input": {
+        "previousKey": "QQQ|1D|1637366400",
+        "nextKey": "SPY|1D|1637366400",
+        "previousBarCount": 1250,
+        "nextBarCount": 1250,
+        "previousFirstBarTime": 1637366400,
+        "nextFirstBarTime": 1637366400,
+        "previousLastBarTime": 1795046400,
+        "nextLastBarTime": 1795046400
+      },
+      "expected": {
+        "shouldFitContent": true,
+        "updateMode": "SET_DATA"
+      }
+    },
+    {
+      "name": "same_start_large_expansion_refits",
+      "input": {
+        "previousKey": "AR:YPFD|1D|1700000000",
+        "nextKey": "AR:YPFD|1D|1700000000",
+        "previousBarCount": 120,
+        "nextBarCount": 620,
+        "previousFirstBarTime": 1700000000,
+        "nextFirstBarTime": 1700000000,
+        "previousLastBarTime": 1740000000,
+        "nextLastBarTime": 1795046400
+      },
+      "expected": {
+        "shouldFitContent": true,
+        "updateMode": "SET_DATA"
+      }
+    },
+    {
+      "name": "bars_become_unavailable_clears",
+      "input": {
+        "previousKey": "QQQ|1D|1637366400",
+        "nextKey": null,
+        "previousBarCount": 1250,
+        "nextBarCount": 0,
+        "previousFirstBarTime": 1637366400,
+        "nextFirstBarTime": null,
+        "previousLastBarTime": 1795046400,
+        "nextLastBarTime": null
+      },
+      "expected": {
+        "shouldFitContent": false,
+        "updateMode": "CLEAR"
+      }
+    }
+  ],
+  "rangeApplyCases": [
+    {
+      "name": "apply_when_current_missing",
+      "current": null,
+      "incoming": {
+        "from": 900.25,
+        "to": 1249.5
+      },
+      "tolerance": 0.0001,
+      "expected": true
+    },
+    {
+      "name": "skip_when_within_jitter_tolerance",
+      "current": {
+        "from": 900.25,
+        "to": 1249.5
+      },
+      "incoming": {
+        "from": 900.25005,
+        "to": 1249.49996
+      },
+      "tolerance": 0.0001,
+      "expected": false
+    },
+    {
+      "name": "apply_when_user_scrolled_beyond_tolerance",
+      "current": {
+        "from": 900.25,
+        "to": 1249.5
+      },
+      "incoming": {
+        "from": 899.75,
+        "to": 1249.0
+      },
+      "tolerance": 0.0001,
+      "expected": true
+    },
+    {
+      "name": "reject_inverted_incoming_range",
+      "current": {
+        "from": 100.0,
+        "to": 200.0
+      },
+      "incoming": {
+        "from": 250.0,
+        "to": 200.0
+      },
+      "tolerance": 0.0001,
+      "expected": false
+    }
+  ],
+  "rangeEmitCases": [
+    {
+      "name": "emit_normal_user_pan",
+      "emitted": {
+        "from": 820.5,
+        "to": 1180.5
+      },
+      "isSuppressed": false,
+      "pendingExternal": null,
+      "tolerance": 0.001,
+      "expected": true
+    },
+    {
+      "name": "suppress_when_flag_active",
+      "emitted": {
+        "from": 820.5,
+        "to": 1180.5
+      },
+      "isSuppressed": true,
+      "pendingExternal": null,
+      "tolerance": 0.001,
+      "expected": false
+    },
+    {
+      "name": "suppress_echo_matching_pending_external_range",
+      "emitted": {
+        "from": 820.5004,
+        "to": 1180.4997
+      },
+      "isSuppressed": false,
+      "pendingExternal": {
+        "from": 820.5,
+        "to": 1180.5
+      },
+      "tolerance": 0.001,
+      "expected": false
+    },
+    {
+      "name": "emit_when_user_moved_away_from_pending_range",
+      "emitted": {
+        "from": 815.0,
+        "to": 1175.0
+      },
+      "isSuppressed": false,
+      "pendingExternal": {
+        "from": 820.5,
+        "to": 1180.5
+      },
+      "tolerance": 0.001,
+      "expected": true
+    },
+    {
+      "name": "suppress_null_range",
+      "emitted": null,
+      "isSuppressed": false,
+      "pendingExternal": null,
+      "tolerance": 0.001,
+      "expected": false
+    }
+  ],
+  "avwapClickCases": [
+    {
+      "name": "month_start_ignores_click",
+      "mode": "MONTH_START",
+      "clicked": 1794000000,
+      "current": 1793000000,
+      "expected": null
+    },
+    {
+      "name": "session_start_clears_anchor",
+      "mode": "SESSION_START",
+      "clicked": 1794000000,
+      "current": 1793000000,
+      "expected": null
+    },
+    {
+      "name": "clicked_candle_updates_on_click",
+      "mode": "CLICKED_CANDLE",
+      "clicked": 1794000000,
+      "current": 1793000000,
+      "expected": 1794000000.0
+    },
+    {
+      "name": "clicked_candle_keeps_existing_when_click_null",
+      "mode": "CLICKED_CANDLE",
+      "clicked": null,
+      "current": 1793000000,
+      "expected": 1793000000.0
+    },
+    {
+      "name": "clicked_candle_returns_none_when_both_null",
+      "mode": "CLICKED_CANDLE",
+      "clicked": null,
+      "current": null,
+      "expected": null
+    }
+  ]
+}

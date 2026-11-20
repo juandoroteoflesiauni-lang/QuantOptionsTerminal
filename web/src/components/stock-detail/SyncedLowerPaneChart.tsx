@@ -17,6 +17,12 @@ import {
 import { fmtNum, fmtPct } from '../../data/marketData';
 import type { TerminalTimeframe } from '../../data/liveTypes';
 import {
+  resolveChartFitKey,
+  resolveChartViewportTransition,
+  shouldApplyExternalLogicalRange,
+  shouldEmitLogicalRangeSync,
+} from '../../../../src/core/stockDetailChartNavigation';
+import {
   computeLeeReadyBarFlow,
   computeRelativeStrengthSeries,
   computeRollingRvSeries,
@@ -34,6 +40,7 @@ export const SyncedLowerPaneChart: React.FC<{
   readonly onCrosshairTimeSync: (timeSec: number | null) => void;
   readonly externalLogicalRangeRef: React.MutableRefObject<((range: LogicalRange) => void) | null>;
   readonly externalCrosshairTimeRef: React.MutableRefObject<((timeSec: number | null) => void) | null>;
+  readonly getMainVisibleLogicalRange?: () => LogicalRange | null;
 }> = ({
   ticker,
   market,
@@ -45,6 +52,7 @@ export const SyncedLowerPaneChart: React.FC<{
   onCrosshairTimeSync,
   externalLogicalRangeRef,
   externalCrosshairTimeRef,
+  getMainVisibleLogicalRange,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -53,15 +61,27 @@ export const SyncedLowerPaneChart: React.FC<{
   const baselineSeriesRef = useRef<ISeriesApi<'Baseline'> | null>(null);
   const ivPriceLineRef = useRef<IPriceLine | null>(null);
   const suppressingRangeEventRef = useRef(false);
+  const pendingExternalRangeRef = useRef<LogicalRange | null>(null);
+  const activeSeriesHasValuesRef = useRef(false);
+  const applyExternalRangeRef = useRef<((range: LogicalRange) => void) | null>(null);
   const latestBarsRef = useRef(bundle.bars);
   const modeRef = useRef(mode);
+  const prevModeRef = useRef<LowerPaneMode>(mode);
   const rangeCbRef = useRef(onLogicalRangeSync);
   const crosshairCbRef = useRef(onCrosshairTimeSync);
+  const getMainRangeCbRef = useRef(getMainVisibleLogicalRange);
+  const lastFitStateRef = useRef<{
+    key: string | null;
+    barCount: number;
+    firstBarTime: number | null;
+    lastBarTime: number | null;
+  }>({ key: null, barCount: 0, firstBarTime: null, lastBarTime: null });
 
   latestBarsRef.current = bundle.bars;
   modeRef.current = mode;
   rangeCbRef.current = onLogicalRangeSync;
   crosshairCbRef.current = onCrosshairTimeSync;
+  getMainRangeCbRef.current = getMainVisibleLogicalRange;
 
   const flowPoints = useMemo(() => computeLeeReadyBarFlow(bundle.bars), [bundle.bars]);
   const rsPoints = useMemo(
@@ -149,7 +169,15 @@ export const SyncedLowerPaneChart: React.FC<{
     baselineSeriesRef.current = baseline;
 
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
-      if (suppressingRangeEventRef.current) return;
+      if (
+        !shouldEmitLogicalRangeSync(
+          range,
+          suppressingRangeEventRef.current,
+          pendingExternalRangeRef.current,
+        )
+      ) {
+        return;
+      }
       rangeCbRef.current(range);
     };
 
@@ -166,20 +194,29 @@ export const SyncedLowerPaneChart: React.FC<{
 
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current) return;
-      chart.applyOptions({ width: containerRef.current.clientWidth, height: 190 });
+      const w = containerRef.current.clientWidth;
+      if (w > 0) {
+        chart.applyOptions({ width: w, height: 190 });
+      }
     });
     resizeObserver.observe(el);
 
-    externalLogicalRangeRef.current = (range: LogicalRange) => {
+    const applyExternalRange = (range: LogicalRange) => {
+      const current = chart.timeScale().getVisibleLogicalRange();
+      if (!shouldApplyExternalLogicalRange(current, range)) return;
       suppressingRangeEventRef.current = true;
+      pendingExternalRangeRef.current = range;
       try {
         chart.timeScale().setVisibleLogicalRange(range);
       } finally {
         window.requestAnimationFrame(() => {
           suppressingRangeEventRef.current = false;
+          pendingExternalRangeRef.current = null;
         });
       }
     };
+    applyExternalRangeRef.current = applyExternalRange;
+    externalLogicalRangeRef.current = applyExternalRange;
 
     externalCrosshairTimeRef.current = (timeSec: number | null) => {
       const m = modeRef.current;
@@ -188,9 +225,13 @@ export const SyncedLowerPaneChart: React.FC<{
         chart.clearCrosshairPosition();
         return;
       }
+      if (!activeSeriesHasValuesRef.current) return;
       const match = latestBarsRef.current.find((b) => b.time === timeSec);
-      if (match) {
+      if (!match || chart.timeScale().timeToIndex(timeSec as UTCTimestamp, false) === null) return;
+      try {
         chart.setCrosshairPosition(0, timeSec as UTCTimestamp, targetSeries);
+      } catch {
+        // Ignorar si la serie activa aún no tiene escala inicializada
       }
     };
 
@@ -203,10 +244,19 @@ export const SyncedLowerPaneChart: React.FC<{
       histSeriesRef.current = null;
       lineSeriesRef.current = null;
       baselineSeriesRef.current = null;
+      applyExternalRangeRef.current = null;
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
+      activeSeriesHasValuesRef.current = false;
+      lastFitStateRef.current = { key: null, barCount: 0, firstBarTime: null, lastBarTime: null };
     };
   }, [externalLogicalRangeRef, externalCrosshairTimeRef]);
+
+  useEffect(() => {
+    chartRef.current?.applyOptions({
+      timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false },
+    });
+  }, [timeframe]);
 
   // Alimentar datos manteniendo índice lógico 1:1 con Chart 1 mediante whitespace items
   useEffect(() => {
@@ -221,19 +271,37 @@ export const SyncedLowerPaneChart: React.FC<{
       ivPriceLineRef.current = null;
     }
 
-    chart.applyOptions({
-      timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false },
+    const firstBarTime = bundle.bars[0]?.time ?? null;
+    const lastBarTime = bundle.bars[bundle.bars.length - 1]?.time ?? null;
+    const nextKey = resolveChartFitKey(ticker, timeframe, bundle.barsAvailable, firstBarTime);
+    const transition = resolveChartViewportTransition({
+      previousKey: lastFitStateRef.current.key,
+      nextKey,
+      previousBarCount: lastFitStateRef.current.barCount,
+      nextBarCount: bundle.bars.length,
+      previousFirstBarTime: lastFitStateRef.current.firstBarTime,
+      nextFirstBarTime: firstBarTime,
+      previousLastBarTime: lastFitStateRef.current.lastBarTime,
+      nextLastBarTime: lastBarTime,
     });
+    lastFitStateRef.current = {
+      key: nextKey,
+      barCount: bundle.bars.length,
+      firstBarTime,
+      lastBarTime,
+    };
 
     if (!bundle.barsAvailable || bundle.bars.length === 0) {
+      activeSeriesHasValuesRef.current = false;
       hist.setData([]);
       line.setData([]);
       baseline.setData([]);
       return;
     }
 
+    // Poblar la serie activa antes de vaciar las inactivas para que el
+    // timeScale nunca quede sin puntos y preserve el rango visible al cambiar de modo.
     if (mode === 'CVD') {
-      baseline.setData([]);
       line.applyOptions({
         color: '#38BDF8',
         priceFormat: { type: 'volume' },
@@ -259,9 +327,9 @@ export const SyncedLowerPaneChart: React.FC<{
             : { time: pt.time as UTCTimestamp },
         ),
       );
+      baseline.setData([]);
+      activeSeriesHasValuesRef.current = flowPoints.some((pt) => Number.isFinite(pt.cvd));
     } else if (mode === 'RS') {
-      hist.setData([]);
-      line.setData([]);
       baseline.applyOptions({
         priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
       });
@@ -274,10 +342,11 @@ export const SyncedLowerPaneChart: React.FC<{
             : { time: b.time as UTCTimestamp };
         }),
       );
+      hist.setData([]);
+      line.setData([]);
+      activeSeriesHasValuesRef.current = rsPoints.some((r) => Number.isFinite(r.rsNormalizedPct));
     } else {
       // VOLATILITY: RV 30D (%) curva + línea horizontal IV ATM (%)
-      hist.setData([]);
-      baseline.setData([]);
       line.applyOptions({
         color: '#F5B544',
         priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
@@ -289,6 +358,11 @@ export const SyncedLowerPaneChart: React.FC<{
             ? { time: b.time as UTCTimestamp, value: rv }
             : { time: b.time as UTCTimestamp };
         }),
+      );
+      hist.setData([]);
+      baseline.setData([]);
+      activeSeriesHasValuesRef.current = rollingRvSeries.some(
+        (rv) => rv !== undefined && Number.isFinite(rv),
       );
       if (bundle.ivAtmPct !== null && Number.isFinite(bundle.ivAtmPct) && bundle.ivAtmPct > 0) {
         ivPriceLineRef.current = line.createPriceLine({
@@ -302,8 +376,36 @@ export const SyncedLowerPaneChart: React.FC<{
       }
     }
 
-    chart.timeScale().fitContent();
-  }, [bundle, timeframe, mode, flowPoints, rsPoints, rollingRvSeries]);
+    const modeChanged = prevModeRef.current !== mode;
+    prevModeRef.current = mode;
+    const mainRange = getMainRangeCbRef.current?.() ?? null;
+    if (modeChanged && !transition.shouldFitContent && mainRange !== null) {
+      // Al cambiar de modo (CVD/RS/VOL), el ancho del eje derecho puede variar
+      // en el RAF de dibujo; suprimimos ese micro-ajuste y re-alineamos con el principal.
+      suppressingRangeEventRef.current = true;
+      pendingExternalRangeRef.current = mainRange;
+      window.requestAnimationFrame(() => {
+        applyExternalRangeRef.current?.(mainRange);
+        window.requestAnimationFrame(() => {
+          suppressingRangeEventRef.current = false;
+          pendingExternalRangeRef.current = null;
+        });
+      });
+    } else if (!transition.shouldFitContent && mainRange !== null) {
+      applyExternalRangeRef.current?.(mainRange);
+    } else if (transition.shouldFitContent) {
+      suppressingRangeEventRef.current = true;
+      try {
+        if (getMainRangeCbRef.current === undefined) {
+          chart.timeScale().fitContent();
+        }
+      } finally {
+        window.requestAnimationFrame(() => {
+          suppressingRangeEventRef.current = false;
+        });
+      }
+    }
+  }, [bundle, ticker, timeframe, mode, flowPoints, rsPoints, rollingRvSeries]);
 
   const modes: readonly { readonly id: LowerPaneMode; readonly label: string }[] = [
     { id: 'CVD', label: 'CVD Lee-Ready (Flujo Agresor)' },

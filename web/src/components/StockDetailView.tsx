@@ -48,6 +48,13 @@ import {
   normalizeStockDetailOrderBook,
 } from '../../../src/core/stockDetailStability';
 import {
+  resolveAvwapClickAnchor,
+  resolveChartFitKey,
+  resolveChartViewportTransition,
+  shouldApplyExternalLogicalRange,
+  shouldEmitLogicalRangeSync,
+} from '../../../src/core/stockDetailChartNavigation';
+import {
   computeAnchoredVwapSeries,
 } from '../../../src/core/ggal/technicalIndicators';
 import type { GgalChartBarPoint } from '../../../src/core/ggal/institutionalContracts';
@@ -309,7 +316,10 @@ export const StockDetailView: React.FC<{
   const tickerRaw = ticker.trim().toUpperCase() || 'GGAL';
 
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [timeframe, setTimeframe] = useState<TerminalTimeframe>('1D');  const [avwapMode, setAvwapMode] = useState<PanoramicAvwapAnchorMode>('MONTH_START');
+  const [timeframe, setTimeframe] = useState<TerminalTimeframe>('1D');
+  const [avwapMode, setAvwapMode] = useState<PanoramicAvwapAnchorMode>('MONTH_START');
+  const avwapModeRef = useRef(avwapMode);
+  avwapModeRef.current = avwapMode;
   const [clickedAnchorTimeSec, setClickedAnchorTimeSec] = useState<number | null>(null);
   const [showAvwapBands, setShowAvwapBands] = useState(true);
   const [lowerMode, setLowerMode] = useState<LowerPaneMode>('CVD');
@@ -337,6 +347,7 @@ export const StockDetailView: React.FC<{
   const [loadError, setLoadError] = useState<string | null>(null);
   const mainLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
   const lowerLogicalRef = useRef<((range: LogicalRangeAlias) => void) | null>(null);
+  const getMainLogicalRangeRef = useRef<(() => LogicalRangeAlias | null) | null>(null);
   const mainCrosshairRef = useRef<((time: number | null) => void) | null>(null);
   const lowerCrosshairRef = useRef<((time: number | null) => void) | null>(null);
   const hasOverviewRef = useRef(Boolean(runtime.overview));
@@ -848,6 +859,9 @@ export const StockDetailView: React.FC<{
     stockDetail?.stock?.bid,
   ]);
 
+  const effectiveClickedAnchorTimeSec =
+    avwapMode === 'CLICKED_CANDLE' ? clickedAnchorTimeSec : null;
+
   const chartBundle: PanoramicChartBundle = useMemo(() => {
     let rawBars: readonly MinimalOhlcvBar[] = [];
     let intradayUnavailableReason: string | null = null;
@@ -947,7 +961,12 @@ export const StockDetailView: React.FC<{
     const ema200 = projectEmaSeries(computeEmaSeriesPure(closes, 200).map(normalizeFiniteOrNull), 200, spot);
     const sessionVwap = computeSessionVwapPure(bars, isIntraday, isArMarket ? -10_800 : -14_400).map(normalizeFiniteOrNull);
 
-    const anchorTimeSec = resolvePanoramicAnchorTime(bars, avwapMode, contextInfo.market, clickedAnchorTimeSec);
+    const anchorTimeSec = resolvePanoramicAnchorTime(
+      bars,
+      avwapMode,
+      contextInfo.market,
+      effectiveClickedAnchorTimeSec,
+    );
     const anchorIndex =
       avwapMode === 'CLICKED_CANDLE'
         ? bars.findIndex((bar) => bar.time === anchorTimeSec)
@@ -984,7 +1003,7 @@ export const StockDetailView: React.FC<{
       barsAvailable: bars.length > 0 && intradayUnavailableReason === null,
       intradayUnavailableReason,
     };
-  }, [arBars1dResp, arBarsResp, arOptions, avwapMode, clickedAnchorTimeSec, cleanTicker, contextInfo.market, contextInfo.spot, effectiveChartTimeframe, isArMarket, liveQuote, liveStream.lastServerTimeSec, stockDetail, timeframe, usBarsResp, usSnap]);
+  }, [arBars1dResp, arBarsResp, arOptions, avwapMode, cleanTicker, contextInfo.market, contextInfo.spot, effectiveChartTimeframe, effectiveClickedAnchorTimeSec, isArMarket, liveQuote, liveStream.lastServerTimeSec, stockDetail, timeframe, usBarsResp, usSnap]);
 
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];
@@ -1193,6 +1212,16 @@ export const StockDetailView: React.FC<{
 
   const handleToggleHighlight = useCallback((id: Exclude<HighlightLevelId, null>) => {
     setHighlightedLevel((prev) => (prev === id ? null : id));
+  }, []);
+
+  const handleAnchorCandleClick = useCallback((timeSec: number) => {
+    setClickedAnchorTimeSec((prev) =>
+      resolveAvwapClickAnchor(avwapModeRef.current, timeSec, prev),
+    );
+  }, []);
+
+  const handleGetMainLogicalRange = useCallback(() => {
+    return getMainLogicalRangeRef.current?.() ?? null;
   }, []);
 
   const handleMainRangeSync = useCallback((range: LogicalRangeAlias | null) => {
@@ -1541,6 +1570,7 @@ export const StockDetailView: React.FC<{
         </div>
 
         <PanoramicPriceChart
+          ticker={currentStockKey}
           bundle={chartBundle}
           timeframe={effectiveChartTimeframe}
           overlays={overlays}
@@ -1548,11 +1578,12 @@ export const StockDetailView: React.FC<{
           currencySymbol={contextInfo.currencySymbol}
           keyLevels={keyLevels}
           highlightedLevel={highlightedLevel}
-          onCrosshairTime={setClickedAnchorTimeSec}
+          onAnchorCandleClick={handleAnchorCandleClick}
           onLogicalRangeSync={handleMainRangeSync}
           onCrosshairTimeSync={handleMainCrosshairSync}
           externalLogicalRangeRef={mainLogicalRef}
           externalCrosshairTimeRef={mainCrosshairRef}
+          getLogicalRangeRef={getMainLogicalRangeRef}
         />
       </section>
 
@@ -1567,6 +1598,7 @@ export const StockDetailView: React.FC<{
         onCrosshairTimeSync={handleLowerCrosshairSync}
         externalLogicalRangeRef={lowerLogicalRef}
         externalCrosshairTimeRef={lowerCrosshairRef}
+        getMainVisibleLogicalRange={handleGetMainLogicalRange}
       />
 
       <section className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -1642,6 +1674,7 @@ const ToolbarChip: React.FC<{
 );
 
 const PanoramicPriceChart: React.FC<{
+  readonly ticker: string;
   readonly bundle: PanoramicChartBundle;
   readonly timeframe: TerminalTimeframe;
   readonly overlays: OverlayVisibilityState;
@@ -1649,12 +1682,14 @@ const PanoramicPriceChart: React.FC<{
   readonly currencySymbol: 'ARS' | 'USD';
   readonly keyLevels: ChartKeyLevels;
   readonly highlightedLevel: HighlightLevelId;
-  readonly onCrosshairTime: (timeSec: number | null) => void;
+  readonly onAnchorCandleClick: (timeSec: number) => void;
   readonly onLogicalRangeSync: (range: LogicalRangeAlias | null) => void;
   readonly onCrosshairTimeSync: (timeSec: number | null) => void;
   readonly externalLogicalRangeRef: React.MutableRefObject<((range: LogicalRangeAlias) => void) | null>;
   readonly externalCrosshairTimeRef: React.MutableRefObject<((timeSec: number | null) => void) | null>;
+  readonly getLogicalRangeRef: React.MutableRefObject<(() => LogicalRangeAlias | null) | null>;
 }> = ({
+  ticker,
   bundle,
   timeframe,
   overlays,
@@ -1662,11 +1697,12 @@ const PanoramicPriceChart: React.FC<{
   currencySymbol,
   keyLevels,
   highlightedLevel,
-  onCrosshairTime,
+  onAnchorCandleClick,
   onLogicalRangeSync,
   onCrosshairTimeSync,
   externalLogicalRangeRef,
   externalCrosshairTimeRef,
+  getLogicalRangeRef,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -1675,10 +1711,24 @@ const PanoramicPriceChart: React.FC<{
   const vwapRef = useRef<ISeriesApi<'Line'> | null>(null);
   const avwapRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const suppressingRangeEventRef = useRef(false);
+  const pendingExternalRangeRef = useRef<LogicalRangeAlias | null>(null);
   const latestBarsRef = useRef(bundle.bars);
+  const anchorClickCbRef = useRef(onAnchorCandleClick);
   const crosshairCbRef = useRef(onCrosshairTimeSync);
   const rangeCbRef = useRef(onLogicalRangeSync);
+  const lastFitStateRef = useRef<{
+    key: string | null;
+    barCount: number;
+    firstBarTime: number | null;
+    lastBarTime: number | null;
+  }>({ key: null, barCount: 0, firstBarTime: null, lastBarTime: null });
+  const lastRenderedRef = useRef<{
+    bars: readonly MinimalOhlcvBar[];
+    overlaySig: string;
+  }>({ bars: [], overlaySig: '' });
   latestBarsRef.current = bundle.bars;
+  anchorClickCbRef.current = onAnchorCandleClick;
   crosshairCbRef.current = onCrosshairTimeSync;
   rangeCbRef.current = onLogicalRangeSync;
 
@@ -1733,38 +1783,73 @@ const PanoramicPriceChart: React.FC<{
     avwapRefs.current = avwapSeries;
 
     const handleRangeChange = (range: LogicalRangeAlias | null): void => {
+      if (
+        !shouldEmitLogicalRangeSync(
+          range,
+          suppressingRangeEventRef.current,
+          pendingExternalRangeRef.current,
+        )
+      ) {
+        return;
+      }
       rangeCbRef.current(range);
     };
     const handleCrosshairMove = (param: { readonly time?: Time }): void => {
       if (param.time !== undefined && typeof param.time === 'number') {
-        onCrosshairTime(param.time);
         crosshairCbRef.current(param.time);
       } else {
         crosshairCbRef.current(null);
       }
     };
+    const handleChartClick = (param: { readonly time?: Time }): void => {
+      if (param.time !== undefined && typeof param.time === 'number' && Number.isFinite(param.time)) {
+        anchorClickCbRef.current(param.time);
+      }
+    };
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleRangeChange);
     chart.subscribeCrosshairMove(handleCrosshairMove);
+    chart.subscribeClick(handleChartClick);
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current) return;
-      chart.applyOptions({
-        width: containerRef.current.clientWidth,
-        height: containerRef.current.clientHeight,
-      });
+      const w = containerRef.current.clientWidth;
+      const h = containerRef.current.clientHeight;
+      if (w > 0 && h > 0) {
+        chart.applyOptions({ width: w, height: h });
+      }
     });
     resizeObserver.observe(element);
-    externalLogicalRangeRef.current = (range) => chart.timeScale().setVisibleLogicalRange(range);
+    externalLogicalRangeRef.current = (range) => {
+      const current = chart.timeScale().getVisibleLogicalRange();
+      if (!shouldApplyExternalLogicalRange(current, range)) return;
+      suppressingRangeEventRef.current = true;
+      pendingExternalRangeRef.current = range;
+      try {
+        chart.timeScale().setVisibleLogicalRange(range);
+      } finally {
+        window.requestAnimationFrame(() => {
+          suppressingRangeEventRef.current = false;
+          pendingExternalRangeRef.current = null;
+        });
+      }
+    };
+    getLogicalRangeRef.current = () => chart.timeScale().getVisibleLogicalRange();
     externalCrosshairTimeRef.current = (timeSec) => {
       if (timeSec === null) {
         chart.clearCrosshairPosition();
         return;
       }
       const match = latestBarsRef.current.find((bar) => bar.time === timeSec);
-      if (match) chart.setCrosshairPosition(match.close, timeSec as UTCTimestamp, candles);
+      if (!match || chart.timeScale().timeToIndex(timeSec as UTCTimestamp, false) === null) return;
+      try {
+        chart.setCrosshairPosition(match.close, timeSec as UTCTimestamp, candles);
+      } catch {
+        // Ignorar si el rango de escala aún no está inicializado
+      }
     };
 
     return () => {
       resizeObserver.disconnect();
+      chart.unsubscribeClick(handleChartClick);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeChange);
       chart.remove();
@@ -1775,28 +1860,96 @@ const PanoramicPriceChart: React.FC<{
       avwapRefs.current = [];
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
+      getLogicalRangeRef.current = null;
+      lastFitStateRef.current = { key: null, barCount: 0, firstBarTime: null, lastBarTime: null };
+      lastRenderedRef.current = { bars: [], overlaySig: '' };
     };
-  }, [externalCrosshairTimeRef, externalLogicalRangeRef, onCrosshairTime, bundle.barsAvailable]);
+  }, [externalCrosshairTimeRef, externalLogicalRangeRef, getLogicalRangeRef, bundle.barsAvailable]);
+
+  useEffect(() => {
+    chartRef.current?.applyOptions({
+      timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false },
+    });
+  }, [timeframe, bundle.barsAvailable]);
 
   useEffect(() => {
     const chart = chartRef.current;
     const candles = candleRef.current;
     if (!chart || !candles) return;
-    chart.applyOptions({ timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false } });
-    if (!bundle.barsAvailable || bundle.bars.length === 0) {
+
+    const firstBarTime = bundle.bars[0]?.time ?? null;
+    const lastBar = bundle.bars[bundle.bars.length - 1];
+    const lastBarTime = lastBar?.time ?? null;
+    const nextKey = resolveChartFitKey(ticker, timeframe, bundle.barsAvailable, firstBarTime);
+    const transition = resolveChartViewportTransition({
+      previousKey: lastFitStateRef.current.key,
+      nextKey,
+      previousBarCount: lastFitStateRef.current.barCount,
+      nextBarCount: bundle.bars.length,
+      previousFirstBarTime: lastFitStateRef.current.firstBarTime,
+      nextFirstBarTime: firstBarTime,
+      previousLastBarTime: lastFitStateRef.current.lastBarTime,
+      nextLastBarTime: lastBarTime,
+    });
+    lastFitStateRef.current = {
+      key: nextKey,
+      barCount: bundle.bars.length,
+      firstBarTime,
+      lastBarTime,
+    };
+
+    if (transition.updateMode === 'CLEAR' || !bundle.barsAvailable || bundle.bars.length === 0) {
       candles.setData([]);
       emaRefs.current.forEach((series) => series.setData([]));
       vwapRef.current?.setData([]);
       avwapRefs.current.forEach((series) => series.setData([]));
+      lastRenderedRef.current = { bars: [], overlaySig: '' };
       return;
     }
-    candles.setData(bundle.bars.map((bar) => ({
-      time: bar.time as UTCTimestamp,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    })));
+
+    const prevBars = lastRenderedRef.current.bars;
+    const prevPenultimate = prevBars.length >= 2 ? prevBars[prevBars.length - 2] : undefined;
+    const curPenultimate = bundle.bars.length >= 2 ? bundle.bars[bundle.bars.length - 2] : undefined;
+    const canIncrementalBars =
+      transition.updateMode === 'UPDATE_LAST' &&
+      prevBars.length > 0 &&
+      lastBar !== undefined &&
+      (bundle.bars.length === prevBars.length
+        ? prevPenultimate === undefined ||
+          (curPenultimate !== undefined &&
+            prevPenultimate.time === curPenultimate.time &&
+            prevPenultimate.open === curPenultimate.open &&
+            prevPenultimate.high === curPenultimate.high &&
+            prevPenultimate.low === curPenultimate.low &&
+            prevPenultimate.close === curPenultimate.close &&
+            prevPenultimate.volume === curPenultimate.volume)
+        : bundle.bars.length === prevBars.length + 1 &&
+          prevBars[prevBars.length - 1]?.time === curPenultimate?.time);
+
+    if (canIncrementalBars && lastBar !== undefined) {
+      candles.update({
+        time: lastBar.time as UTCTimestamp,
+        open: lastBar.open,
+        high: lastBar.high,
+        low: lastBar.low,
+        close: lastBar.close,
+      });
+    } else {
+      candles.setData(
+        bundle.bars.map((bar) => ({
+          time: bar.time as UTCTimestamp,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        })),
+      );
+    }
+
+    const avwapStartIdx = bundle.avwapSeries.findIndex((value) => value !== null && Number.isFinite(value));
+    const overlaySig = `${overlays.emas ? '1' : '0'}|${overlays.sessionVwap ? '1' : '0'}|${overlays.avwap ? '1' : '0'}|${showAvwapBands ? '1' : '0'}|${bundle.avwapAnchorModeLabel}|${String(avwapStartIdx)}`;
+    const canIncrementalOverlays = canIncrementalBars && lastRenderedRef.current.overlaySig === overlaySig;
+
     const toLineData = (values: readonly (number | null)[]) =>
       bundle.bars
         .map((bar, index) => {
@@ -1804,18 +1957,44 @@ const PanoramicPriceChart: React.FC<{
           return value != null && Number.isFinite(value) ? { time: bar.time as UTCTimestamp, value } : null;
         })
         .filter((point): point is { time: UTCTimestamp; value: number } => point !== null);
-    emaRefs.current[0]?.setData(overlays.emas ? toLineData(bundle.ema9) : []);
-    emaRefs.current[1]?.setData(overlays.emas ? toLineData(bundle.ema21) : []);
-    emaRefs.current[2]?.setData(overlays.emas ? toLineData(bundle.ema50) : []);
-    emaRefs.current[3]?.setData(overlays.emas ? toLineData(bundle.ema200) : []);
-    vwapRef.current?.setData(overlays.sessionVwap ? toLineData(bundle.sessionVwap) : []);
-    avwapRefs.current[0]?.setData(overlays.avwap ? toLineData(bundle.avwapSeries) : []);
-    avwapRefs.current[1]?.setData(overlays.avwap && showAvwapBands ? toLineData(bundle.avwapUpper1) : []);
-    avwapRefs.current[2]?.setData(overlays.avwap && showAvwapBands ? toLineData(bundle.avwapLower1) : []);
-    avwapRefs.current[3]?.setData(overlays.avwap && showAvwapBands ? toLineData(bundle.avwapUpper2) : []);
-    avwapRefs.current[4]?.setData(overlays.avwap && showAvwapBands ? toLineData(bundle.avwapLower2) : []);
-    chart.timeScale().fitContent();
-  }, [bundle, overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands, timeframe]);
+
+    const syncLineSeries = (
+      series: ISeriesApi<'Line'> | undefined | null,
+      enabled: boolean,
+      values: readonly (number | null)[],
+    ): void => {
+      if (!series) return;
+      if (!enabled) {
+        if (!canIncrementalOverlays) series.setData([]);
+        return;
+      }
+      if (canIncrementalOverlays && lastBar !== undefined) {
+        const lastVal = values[bundle.bars.length - 1];
+        if (lastVal !== undefined && lastVal !== null && Number.isFinite(lastVal)) {
+          series.update({ time: lastBar.time as UTCTimestamp, value: lastVal });
+        }
+        return;
+      }
+      series.setData(toLineData(values));
+    };
+
+    syncLineSeries(emaRefs.current[0], overlays.emas, bundle.ema9);
+    syncLineSeries(emaRefs.current[1], overlays.emas, bundle.ema21);
+    syncLineSeries(emaRefs.current[2], overlays.emas, bundle.ema50);
+    syncLineSeries(emaRefs.current[3], overlays.emas, bundle.ema200);
+    syncLineSeries(vwapRef.current, overlays.sessionVwap, bundle.sessionVwap);
+    syncLineSeries(avwapRefs.current[0], overlays.avwap, bundle.avwapSeries);
+    syncLineSeries(avwapRefs.current[1], overlays.avwap && showAvwapBands, bundle.avwapUpper1);
+    syncLineSeries(avwapRefs.current[2], overlays.avwap && showAvwapBands, bundle.avwapLower1);
+    syncLineSeries(avwapRefs.current[3], overlays.avwap && showAvwapBands, bundle.avwapUpper2);
+    syncLineSeries(avwapRefs.current[4], overlays.avwap && showAvwapBands, bundle.avwapLower2);
+
+    lastRenderedRef.current = { bars: bundle.bars, overlaySig };
+
+    if (transition.shouldFitContent) {
+      chart.timeScale().fitContent();
+    }
+  }, [bundle, ticker, timeframe, overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands]);
 
   useEffect(() => {
     const candles = candleRef.current;
