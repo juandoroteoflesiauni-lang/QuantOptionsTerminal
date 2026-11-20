@@ -5,6 +5,12 @@ import {
   type WhatIfCurvePoint,
   type WhatIfOptionLeg,
 } from '../../../../src/core/options/whatIfPayoff';
+import {
+  findBreakevens,
+  formatBreakevenLabel,
+  hoursToCloseEt,
+  timeYearsFromHours,
+} from '../../../../src/core/options/zeroDteFixes';
 
 export interface WhatIfPayoffSimulatorProps {
   readonly structureLabel: string;
@@ -20,6 +26,8 @@ export interface WhatIfPayoffSimulatorProps {
   readonly putWallStrike?: number | null;
   readonly zeroGammaSpot?: number | null;
   readonly breakevens?: readonly number[];
+  /** Pieza 46.1: dte === 0 (calendario ET) -> slider en Horas restantes hasta 16:00 ET. */
+  readonly zeroDte?: boolean;
 }
 
 function fmtSignedMoney(value: number, prefix: string): string {
@@ -65,20 +73,42 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
   putWallStrike = null,
   zeroGammaSpot = null,
   breakevens = [],
+  zeroDte = false,
 }) => {
-  const safeMaxDte = Math.max(1, Math.round(Number.isFinite(horizonDte) && horizonDte > 0 ? horizonDte : 1));
+  // 0DTE: horizonte en horas reales hasta el cierre (16:00 ET), mínimo 0.25 h.
+  const [startHours] = useState<number>(() => {
+    const h = hoursToCloseEt(Date.now());
+    return Math.max(0.25, Number.isFinite(h) && h > 0 ? h : 0.25);
+  });
+  const safeMaxDte = zeroDte
+    ? startHours / 24
+    : Math.max(1, Math.round(Number.isFinite(horizonDte) && horizonDte > 0 ? horizonDte : 1));
+  const [hoursRemainingRaw, setHoursRemainingRaw] = useState<number>(() => startHours);
   const [ivShiftPts, setIvShiftPts] = useState<number>(0);
   const [elapsedDaysRaw, setElapsedDaysRaw] = useState<number>(() => Math.max(0, Math.round(safeMaxDte * 0.45)));
   const [hoveredSpot, setHoveredSpot] = useState<number | null>(null);
   const clipId = useId().replace(/:/g, '_');
 
-  const elapsedDays = Math.min(Math.max(0, elapsedDaysRaw), safeMaxDte);
+  const hoursRemaining = Math.min(Math.max(0, hoursRemainingRaw), startHours);
+  const elapsedDays = zeroDte
+    ? (startHours - hoursRemaining) / 24
+    : Math.min(Math.max(0, elapsedDaysRaw), safeMaxDte);
+
+  // En 0DTE, alinear patas frontales a `startHours / (365 * 24)` para que T+n evalúe
+  // exactamente en `T = hoursRemaining / (365 * 24)`.
+  const effectiveLegs = useMemo(() => {
+    if (!zeroDte) return legs;
+    const t0Hours = timeYearsFromHours(startHours);
+    return legs.map((leg) =>
+      leg.timeToExpiry <= 1.01 / 365 ? { ...leg, timeToExpiry: t0Hours } : leg,
+    );
+  }, [zeroDte, legs, startHours]);
 
   const surface = useMemo(
     () =>
       simulateWhatIfPayoffSurface({
         referenceSpot: spot,
-        legs,
+        legs: effectiveLegs,
         rate,
         dividendYield,
         ivShiftPts,
@@ -88,6 +118,7 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
         contractMultiplier,
         gridSteps: 85,
         extraSpots: [
+          ...effectiveLegs.map((l) => l.strike),
           ...(callWallStrike !== null && callWallStrike > 0 ? [callWallStrike] : []),
           ...(putWallStrike !== null && putWallStrike > 0 ? [putWallStrike] : []),
           ...(zeroGammaSpot !== null && zeroGammaSpot > 0 ? [zeroGammaSpot] : []),
@@ -96,7 +127,7 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
       }),
     [
       spot,
-      legs,
+      effectiveLegs,
       rate,
       dividendYield,
       ivShiftPts,
@@ -117,7 +148,7 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
     }
     return evaluateWhatIfPoint({
       spot: hoveredSpot,
-      legs,
+      legs: effectiveLegs,
       rate,
       dividendYield,
       ivShiftPts,
@@ -129,7 +160,7 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
   }, [
     hoveredSpot,
     surface.atSpot,
-    legs,
+    effectiveLegs,
     rate,
     dividendYield,
     ivShiftPts,
@@ -197,6 +228,15 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
       pathExpiry: buildPath((p) => p.pnlExpiry),
     };
   }, [surface.curve]);
+
+  const breakevenLevels = useMemo(
+    () =>
+      findBreakevens(
+        surface.curve.map((p) => p.spot),
+        surface.curve.map((p) => p.pnlExpiry),
+      ),
+    [surface.curve],
+  );
 
   const handleMouseMove = (evt: React.MouseEvent<SVGSVGElement>): void => {
     if (!chartMetrics || surface.curve.length === 0) return;
@@ -310,27 +350,51 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
         <div className="rounded border border-slate-800/80 bg-[#0D131D] px-3 py-2">
           <div className="flex items-center justify-between text-[11px]">
             <label htmlFor={`${clipId}_days`} className="font-medium text-slate-300">
-              Días transcurridos (T+n)
+              {zeroDte ? 'Horas restantes' : 'Días transcurridos (T+n)'}
             </label>
             <span className="font-mono font-semibold text-amber-300">
-              T+{String(elapsedDays)}d (restan {String(remainingDteTn)}d)
+              {zeroDte
+                ? `${hoursRemaining.toFixed(2)} h (0DTE · cierre 16:00 ET)`
+                : `T+${String(elapsedDays)}d (restan ${String(remainingDteTn)}d)`}
             </span>
           </div>
-          <input
-            id={`${clipId}_days`}
-            type="range"
-            min={0}
-            max={safeMaxDte}
-            step={1}
-            value={elapsedDays}
-            onChange={(e) => setElapsedDaysRaw(Number(e.target.value))}
-            className="mt-1.5 w-full accent-amber-400"
-          />
-          <div className="mt-0.5 flex justify-between text-[9px] font-mono text-slate-500">
-            <span>T+0 (Hoy)</span>
-            <span>T+{String(Math.round(safeMaxDte / 2))}d</span>
-            <span>Vto ({String(safeMaxDte)}d)</span>
-          </div>
+          {zeroDte ? (
+            <>
+              <input
+                id={`${clipId}_days`}
+                type="range"
+                min={0}
+                max={startHours}
+                step={0.25}
+                value={hoursRemaining}
+                onChange={(e) => setHoursRemainingRaw(Number(e.target.value))}
+                className="mt-1.5 w-full accent-amber-400"
+              />
+              <div className="mt-0.5 flex justify-between text-[9px] font-mono text-slate-500">
+                <span>0 h (Vto)</span>
+                <span>{(startHours / 2).toFixed(2)} h</span>
+                <span>{startHours.toFixed(2)} h (Ahora)</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <input
+                id={`${clipId}_days`}
+                type="range"
+                min={0}
+                max={safeMaxDte}
+                step={1}
+                value={elapsedDays}
+                onChange={(e) => setElapsedDaysRaw(Number(e.target.value))}
+                className="mt-1.5 w-full accent-amber-400"
+              />
+              <div className="mt-0.5 flex justify-between text-[9px] font-mono text-slate-500">
+                <span>T+0 (Hoy)</span>
+                <span>T+{String(Math.round(safeMaxDte / 2))}d</span>
+                <span>Vto ({String(safeMaxDte)}d)</span>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -350,7 +414,7 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
 
         <div className="rounded border border-cyan-500/30 bg-[#0D131D] px-2.5 py-1.5">
           <div className="text-[10px] text-cyan-300/90">
-            P&amp;L T+{String(elapsedDays)} ({ivShiftPts >= 0 ? `+${String(ivShiftPts)}` : String(ivShiftPts)}p IV)
+            P&amp;L {zeroDte ? `${hoursRemaining.toFixed(2)}h` : `T+${String(elapsedDays)}`} ({ivShiftPts >= 0 ? `+${String(ivShiftPts)}` : String(ivShiftPts)}p IV)
           </div>
           <div className={`font-mono text-xs font-semibold ${pnlToneClass(activePoint.pnlTn)}`}>
             {fmtSignedMoney(activePoint.pnlTn, currencyPrefix)}
@@ -510,6 +574,36 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
                   strokeDasharray="4 4"
                 />
               )}
+
+            {/* Breakevens al vencimiento (cruces por cero) */}
+            {breakevenLevels.map((be, idx) => {
+              if (be < chartMetrics.minX || be > chartMetrics.maxX) return null;
+              const xPos = chartMetrics.toX(be);
+              const nearRight = xPos > chartMetrics.padL + chartMetrics.plotW - 72;
+              return (
+                <g key={`be-${be.toFixed(4)}`}>
+                  <line
+                    x1={xPos}
+                    y1={chartMetrics.padT}
+                    x2={xPos}
+                    y2={chartMetrics.padT + chartMetrics.plotH}
+                    stroke="#f59e0b"
+                    strokeWidth={1.2}
+                    strokeDasharray="3 3"
+                  />
+                  <text
+                    x={nearRight ? xPos - 3 : xPos + 3}
+                    y={chartMetrics.padT + (idx % 2 === 0 ? 10 : 21)}
+                    textAnchor={nearRight ? 'end' : 'start'}
+                    fill="#f59e0b"
+                    fontSize="9"
+                    fontFamily="monospace"
+                  >
+                    {formatBreakevenLabel(be)}
+                  </text>
+                </g>
+              );
+            })}
 
             {/* 3 Curvas simultáneas */}
             <g clipPath={`url(#${clipId})`}>

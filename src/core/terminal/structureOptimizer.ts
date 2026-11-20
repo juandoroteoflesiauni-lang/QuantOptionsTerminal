@@ -1077,6 +1077,12 @@ function evaluateCandidateBlueprint(
   if (Math.abs(grossDebitOrCredit) < minPerShareDebitOrCredit * lotSize - 1e-12) {
     return null;
   }
+  if (
+    (blueprint.kind === 'CALL_RATIO_1X2' || blueprint.kind === 'PUT_RATIO_1X2') &&
+    evaluatedLegs.some((lg) => lg.executionPrice <= 0.005)
+  ) {
+    return null;
+  }
 
   const liqMetrics = computeMultiLegBidAskPctOfMid(evaluatedLegs);
   if (!liqMetrics.allLegsHavePositiveBid) {

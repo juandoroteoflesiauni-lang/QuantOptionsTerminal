@@ -26,6 +26,7 @@ import {
   type OratsCircuitBreakerDetails,
 } from './feedsHealthMonitor.js';
 import { redactSecrets } from './runtimeCache.js';
+import { normalizeOratsVolDecimal } from '../core/options/zeroDteFixes.js';
 
 export type OratsHttpFn = (
   url: string,
@@ -122,6 +123,11 @@ function extractDataRows(payload: unknown): readonly Record<string, unknown>[] {
   return obj !== null ? [obj] : [];
 }
 
+/** Pieza 46.1: volatilidades ORATS siempre en decimal (0.3582 = 35.82 %), nunca en % (evita 3.582 %). */
+function readVol(row: Record<string, unknown>, key: string): number {
+  return normalizeOratsVolDecimal(readNum(row, key));
+}
+
 function readNum(row: Record<string, unknown>, key: string): number {
   const v = row[key];
   if (typeof v === 'number' && Number.isFinite(v)) {
@@ -168,11 +174,11 @@ export function parseOratsStrikeRow(row: Record<string, unknown>): OratsSurfaceS
     strike,
     expirDate,
     dte,
-    smvVol: readNum(row, 'smvVol'),
+    smvVol: readVol(row, 'smvVol'),
     callValue: readNum(row, 'callValue'),
     putValue: readNum(row, 'putValue'),
-    callMidIv: readNum(row, 'callMidIv'),
-    putMidIv: readNum(row, 'putMidIv'),
+    callMidIv: readVol(row, 'callMidIv'),
+    putMidIv: readVol(row, 'putMidIv'),
     delta: readNum(row, 'delta'),
     gamma: readNum(row, 'gamma'),
     theta: readNum(row, 'theta'),
@@ -207,7 +213,7 @@ export type OratsIvRankPayload =
 export function parseOratsIvRankRow(row: Record<string, unknown>): OratsIvRankRow | null {
   const ticker = readStr(row, 'ticker').toUpperCase();
   const tradeDate = readStr(row, 'tradeDate');
-  const iv = readNum(row, 'iv');
+  const iv = readVol(row, 'iv');
   const ivRank1y = readNum(row, 'ivRank1y');
   const ivPct1y = readNum(row, 'ivPct1y');
   const updatedAtMs = Date.parse(readStr(row, 'updatedAt'));
@@ -540,22 +546,22 @@ export class OratsHybridClient {
         stockPrice: readNum(coreRow, 'stockPrice'),
         massiveSpotPrice: input.massiveSpotPrice,
         massiveSpotSourceMode: input.massiveSpotSourceMode,
-        smvVol: readNum(coreRow, 'smvVol'),
-        iv10d: readNum(coreRow, 'iv10d'),
-        iv20d: readNum(coreRow, 'iv20d'),
-        iv30d: readNum(coreRow, 'iv30d'),
-        iv60d: readNum(coreRow, 'iv60d'),
-        iv90d: readNum(coreRow, 'iv90d'),
-        iv6m: readNum(coreRow, 'iv6m'),
-        iv1y: readNum(coreRow, 'iv1y'),
-        exErnIv10d: readNum(coreRow, 'exErnIv10d'),
-        exErnIv20d: readNum(coreRow, 'exErnIv20d'),
-        exErnIv30d: readNum(coreRow, 'exErnIv30d'),
-        exErnIv60d: readNum(coreRow, 'exErnIv60d'),
-        exErnIv90d: readNum(coreRow, 'exErnIv90d'),
-        fwd30_20: readNum(coreRow, 'fwd30_20'),
-        fwd60_30: readNum(coreRow, 'fwd60_30'),
-        fwd90_60: readNum(coreRow, 'fwd90_60'),
+        smvVol: readVol(coreRow, 'smvVol'),
+        iv10d: readVol(coreRow, 'iv10d'),
+        iv20d: readVol(coreRow, 'iv20d'),
+        iv30d: readVol(coreRow, 'iv30d'),
+        iv60d: readVol(coreRow, 'iv60d'),
+        iv90d: readVol(coreRow, 'iv90d'),
+        iv6m: readVol(coreRow, 'iv6m'),
+        iv1y: readVol(coreRow, 'iv1y'),
+        exErnIv10d: readVol(coreRow, 'exErnIv10d'),
+        exErnIv20d: readVol(coreRow, 'exErnIv20d'),
+        exErnIv30d: readVol(coreRow, 'exErnIv30d'),
+        exErnIv60d: readVol(coreRow, 'exErnIv60d'),
+        exErnIv90d: readVol(coreRow, 'exErnIv90d'),
+        fwd30_20: readVol(coreRow, 'fwd30_20'),
+        fwd60_30: readVol(coreRow, 'fwd60_30'),
+        fwd90_60: readVol(coreRow, 'fwd90_60'),
         impliedMove: readNum(coreRow, 'impliedMove'),
         annIdiv: readNum(coreRow, 'annIdiv'),
         impliedNextDiv: readNum(coreRow, 'impliedNextDiv'),

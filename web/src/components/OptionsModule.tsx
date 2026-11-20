@@ -104,6 +104,13 @@ import {
 import { computeActiveExpiryVrpAndRegime } from '../../../src/core/options/volAnalyticsSuite';
 import { classifyDealerGammaRegimeFromSummary } from '../../../src/core/options/exposure';
 import { extractRiskNeutralDistributionQ } from '../../../src/core/options/probabilisticDivergence';
+import {
+  SHORT_PREMIUM_RISK_MESSAGE,
+  buildHardenedBlDensity,
+  evaluateShortPremiumBreaker,
+  formatDteLabel,
+  hoursToCloseEt,
+} from '../../../src/core/options/zeroDteFixes';
 import type { WhatIfOptionLeg } from '../../../src/core/options/whatIfPayoff';
 import { WhatIfPayoffSimulator } from './options/WhatIfPayoffSimulator';
 
@@ -462,7 +469,11 @@ function buildWhatIfLegsFromPricedLegs(
     });
   }
   const horizonDte =
-    validDaysList.length > 0 ? Math.max(1, Math.min(...validDaysList)) : Math.max(1, Math.round(defaultDays || 1));
+    validDaysList.length > 0
+      ? Math.min(...validDaysList)
+      : Number.isFinite(defaultDays) && defaultDays > 0
+        ? defaultDays
+        : 1;
   return { legs, horizonDte };
 }
 
@@ -1035,7 +1046,19 @@ export const OptionsModule: React.FC<{
   };
 
   // Header 1-sigma, VI ATM y TIR sintética sincronizados al vencimiento seleccionado
-  const activeDays = activeExpiry?.daysToExpiry ?? 0;
+  // Pieza 46.1: DTE calendario ET (0 = 0DTE). `activeDays` conserva un piso intradiario real
+  // (horas hasta el cierre 16:00 ET) para que T nunca sea 0 en las fórmulas de tiempo.
+  const activeDte = activeExpiry?.daysToExpiry ?? Number.NaN;
+  const activeDays =
+    activeExpiry === undefined || activeExpiry === null
+      ? 0
+      : activeExpiry.daysToExpiry > 0
+        ? activeExpiry.daysToExpiry
+        : Math.max(
+            Number.isFinite(hoursToCloseEt(Date.now())) ? hoursToCloseEt(Date.now()) / 24 : 0,
+            0.25 / 24,
+          );
+  const isZeroDte = activeDte === 0;
   const activeVolSuite = useMemo(
     () =>
       resolveActiveVolAnalyticsSuite({
@@ -1067,10 +1090,10 @@ export const OptionsModule: React.FC<{
         .slice(0, 2);
       const nearIvs: number[] = [];
       for (const r of sortedNear) {
-        if (r.strike >= displaySpot - 1e-6 && Number.isFinite(r.callIV) && r.callIV > 0) {
+        if (r.strike >= displaySpot - 1e-6 && Number.isFinite(r.callIV) && r.callIV > 0 && r.callIV < 999) {
           nearIvs.push(r.callIV / 100);
         }
-        if (r.strike <= displaySpot + 1e-6 && Number.isFinite(r.putIV) && r.putIV > 0) {
+        if (r.strike <= displaySpot + 1e-6 && Number.isFinite(r.putIV) && r.putIV > 0 && r.putIV < 999) {
           nearIvs.push(r.putIV / 100);
         }
       }
@@ -1179,7 +1202,19 @@ export const OptionsModule: React.FC<{
       ? liveOptions.dividendYield
       : 0;
 
-  const activeRegimeCode = useMemo(() => {
+  // Pieza 46.1: circuit breaker de venta de prima (dte <= 1 o Short Gamma bajo el Put Wall).
+  const shortPremiumBreaker = useMemo(
+    () =>
+      evaluateShortPremiumBreaker({
+        dte: activeDte,
+        spot: displaySpot,
+        putWall: liveOptions?.exposureSummary?.putWallStrike ?? activeQuantEngines?.flowAdjustedGex?.putWallStrike ?? null,
+        netGex: liveOptions?.exposureSummary?.netGex ?? Number.NaN,
+      }),
+    [activeDte, displaySpot, liveOptions?.exposureSummary, activeQuantEngines?.flowAdjustedGex],
+  );
+
+  const baseRegimeCode = useMemo(() => {
     const precomputed = (
       activeVolSuiteExpiry as
         | { readonly activeExpiryVrp?: { readonly operativeRegime?: { readonly code?: string } } }
@@ -1190,6 +1225,7 @@ export const OptionsModule: React.FC<{
       precomputed === 'VENTA_PRIMA_CUBIERTA' ||
       precomputed === 'COMPRA_CONVEXIDAD_CALENDAR' ||
       precomputed === 'NEUTRAL_SELECTIVO' ||
+      precomputed === 'NO_SHORT_PREMIUM_RISK' ||
       precomputed === 'NO_DATA'
     ) {
       return precomputed;
@@ -1206,80 +1242,88 @@ export const OptionsModule: React.FC<{
     if (ivPct === null && rvRef === null) return 'NO_DATA' as const;
     return computeActiveExpiryVrpAndRegime({
       expiryCode: activeExpiry?.id ?? null,
-      daysToExpiry: activeDays,
+      daysToExpiry: Number.isFinite(activeDte) ? activeDte : activeDays,
       ivAtmActiveExpiryPct: ivPct,
       sameExpiryFallbackIvAtmPct: ivPct,
       rvReferencePct: rvRef,
       rvReferenceLabel:
         rv23 !== null && rv23 !== undefined && Number.isFinite(rv23) ? 'RV23d' : 'RV20d',
       historicalRvSeriesPct: [],
+      spot: displaySpot,
+      putWallStrike:
+        liveOptions?.exposureSummary?.putWallStrike ??
+        activeQuantEngines?.flowAdjustedGex?.putWallStrike ??
+        null,
+      netGex: liveOptions?.exposureSummary?.netGex ?? null,
     }).operativeRegime.code;
-  }, [activeVolSuiteExpiry, activeVolSuite, liveOptions, activeAtmIvDec, activeExpiry?.id, activeDays]);
+  }, [
+    activeVolSuiteExpiry,
+    activeVolSuite,
+    liveOptions,
+    activeAtmIvDec,
+    activeExpiry?.id,
+    activeDte,
+    activeDays,
+    displaySpot,
+    activeQuantEngines?.flowAdjustedGex?.putWallStrike,
+  ]);
+
+  const activeRegimeCode =
+    shortPremiumBreaker.blocked && baseRegimeCode === 'VENTA_PRIMA_CUBIERTA'
+      ? ('NO_SHORT_PREMIUM_RISK' as const)
+      : baseRegimeCode;
 
   const spreadModeToken = `${upperUnderlying}:${activeExpiry?.id ?? ''}`;
   const autoSpreadMode: SpreadExecutionMode = useMemo(
-    () => resolveDefaultSpreadModeFromRegime(activeRegimeCode),
-    [activeRegimeCode],
+    () =>
+      shortPremiumBreaker.autoSelectCreditMode
+        ? resolveDefaultSpreadModeFromRegime(activeRegimeCode)
+        : 'DEBIT',
+    [activeRegimeCode, shortPremiumBreaker.autoSelectCreditMode],
   );
   const activeSpreadMode: SpreadExecutionMode =
     spreadModeOverride?.token === spreadModeToken ? spreadModeOverride.mode : autoSpreadMode;
 
   const activeBlDensityNodes = useMemo(() => {
-    const qRaw = (
-      activeQuantEngines?.qDistribution as
-        | { readonly status?: string; readonly nodes?: readonly { readonly strike: number; readonly densityQ: number }[] }
-        | null
-        | undefined
-    );
-    const fromBackend = (qRaw?.nodes ?? []).filter(
-      (n) => Number.isFinite(n.strike) && n.strike > 0 && Number.isFinite(n.densityQ) && n.densityQ >= 0,
-    );
-    if (fromBackend.length >= 5) {
-      return fromBackend;
-    }
+    // Pieza 46.1: serie suavizada exclusivamente (filtro iv/bid/spread -> PCHIP en w(k) -> grilla uniforme
+    // proporcional a expectedMove -> max(0, pdf) -> área = 1). Sin fallback a densidad cruda.
     if (
       !activeExpiry ||
       activeExpiry.rows.length < 5 ||
       !Number.isFinite(displaySpot) ||
       displaySpot <= 0 ||
       activeDays <= 0 ||
-      !Number.isFinite(effectiveRateDec)
+      !Number.isFinite(effectiveRateDec) ||
+      !Number.isFinite(activeAtmIvDec) ||
+      activeAtmIvDec <= 0
     ) {
       return [];
     }
-    const otmNodes: { strike: number; iv: number; bid: number }[] = [];
+    const nodes: { strike: number; iv: number | null; bid: number; ask?: number }[] = [];
     for (const r of activeExpiry.rows) {
-      const ivPct = r.strike >= displaySpot ? r.callIV : r.putIV;
-      const bid = r.strike >= displaySpot ? r.callBid : r.putBid;
-      if (Number.isFinite(r.strike) && r.strike > 0 && Number.isFinite(ivPct) && ivPct > 0) {
-        otmNodes.push({
-          strike: r.strike,
-          iv: ivPct / 100,
-          bid: Number.isFinite(bid) && bid > 0 ? bid : 1,
-        });
-      }
+      const isCall = r.strike >= displaySpot;
+      const ivPct = isCall ? r.callIV : r.putIV;
+      const bid = isCall ? r.callBid : r.putBid;
+      const ask = isCall ? r.callAsk : r.putAsk;
+      nodes.push({
+        strike: r.strike,
+        iv: Number.isFinite(ivPct) && ivPct > 0 ? ivPct / 100 : null,
+        bid,
+        ...(Number.isFinite(ask) ? { ask } : {}),
+      });
     }
-    if (otmNodes.length < 5) return [];
-    const extracted = extractRiskNeutralDistributionQ({
+    const tYears = activeDays / 365;
+    const extracted = buildHardenedBlDensity({
       spot: displaySpot,
-      timeToExpiry: activeDays / 365,
       rate: effectiveRateDec,
       dividendYield: activeDividendYield,
-      nodes: otmNodes,
-      smoothTotalVariancePchip: true,
+      timeToExpiry: tYears,
+      dte: Number.isFinite(activeDte) ? activeDte : activeDays,
+      expectedMove: displaySpot * activeAtmIvDec * Math.sqrt(Math.max(tYears, 1 / (252 * 6.5))),
+      nodes,
     });
-    if (extracted.status !== 'OK') return [];
-    return extracted.nodes
-      .filter((n) => Number.isFinite(n.strike) && n.strike > 0 && Number.isFinite(n.densityQ) && n.densityQ >= 0)
-      .map((n) => ({ strike: n.strike, densityQ: n.densityQ }));
-  }, [
-    activeQuantEngines?.qDistribution,
-    activeExpiry,
-    displaySpot,
-    activeDays,
-    effectiveRateDec,
-    activeDividendYield,
-  ]);
+    return extracted.status === 'OK' ? extracted.nodes : [];
+  }, [activeExpiry, displaySpot, activeDays, activeDte, effectiveRateDec, activeDividendYield, activeAtmIvDec]);
 
   const creditRankingResult = useMemo(() => {
     const quotes: CreditOptionQuoteInput[] = [];
@@ -1755,7 +1799,7 @@ export const OptionsModule: React.FC<{
                 title="Seleccionar vencimiento (con Forward IV consecutiva)"
               >
                 <span>
-                  {activeExpiry ? `${activeExpiry.label} · ${activeExpiry.daysToExpiry}d` : 'Sin vtos · —'}
+                  {activeExpiry ? `${activeExpiry.label} · ${formatDteLabel(activeExpiry.daysToExpiry)}` : 'Sin vtos · —'}
                 </span>
                 {activeExpiry && (() => {
                   const fwdSeg = forwardSegmentByFarCode.get(activeExpiry.id);
@@ -1812,7 +1856,7 @@ export const OptionsModule: React.FC<{
                         >
                           <div className="flex flex-col">
                             <span className="font-bold">{exp.label}</span>
-                            <span className="text-[10px] text-[#787B86]">{exp.daysToExpiry}d al vto</span>
+                            <span className="text-[10px] text-[#787B86]">{exp.daysToExpiry === 0 ? `${formatDteLabel(0)} (vence hoy)` : `${String(exp.daysToExpiry)}d al vto`}</span>
                           </div>
                           <div className="text-right flex flex-col items-end">
                             <span className="text-[#EAB308] font-semibold">
@@ -2232,7 +2276,7 @@ export const OptionsModule: React.FC<{
 
                   <p className="text-[12.5px] text-[#9CA3AF]">
                     {activeExpiry && Number.isFinite(headerOneSigmaAbs)
-                      ? `Vencimiento elegido: ${activeExpiry.label} (${activeExpiry.daysToExpiry} días). Desvío esperado 1σ = $${fmtNum(headerOneSigmaAbs, 0)}.`
+                      ? `Vencimiento elegido: ${activeExpiry.label} (${activeExpiry.daysToExpiry === 0 ? '0DTE — vence hoy' : `${String(activeExpiry.daysToExpiry)} días`}). Desvío esperado 1σ = $${fmtNum(headerOneSigmaAbs, 0)}.`
                       : 'Esperando cotizaciones reales de opciones para calcular 1σ.'}
                   </p>
                 </div>
@@ -2290,12 +2334,13 @@ export const OptionsModule: React.FC<{
                       </button>
                     </div>
                     <WhatIfPayoffSimulator
-                      key={`strat-whatif-${upperUnderlying}-${focusedStrategyCard.id}-${String(horizonDte)}`}
+                      key={`strat-whatif-${upperUnderlying}-${focusedStrategyCard.id}-${String(horizonDte)}-${isZeroDte ? '0dte' : 'dte'}`}
                       structureLabel={focusedStrategyCard.title}
                       spot={displaySpot}
                       rate={Number.isFinite(effectiveRateDec) ? effectiveRateDec : 0}
                       dividendYield={activeDividendYield}
                       horizonDte={horizonDte}
+                      zeroDte={isZeroDte}
                       legs={whatIfLegs}
                       currencyPrefix={isUsMarket ? 'US$' : '$'}
                       contractMultiplier={Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : LOT}
@@ -2531,19 +2576,28 @@ export const OptionsModule: React.FC<{
                 {activeRegimeCode !== 'NO_DATA' && (
                   <span
                     className={`rounded-full border px-2.5 py-0.5 font-mono-num text-[10.5px] font-semibold ${
-                      activeRegimeCode === 'VENTA_PRIMA_CUBIERTA'
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                        : activeRegimeCode === 'COMPRA_CONVEXIDAD_CALENDAR'
-                          ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
-                          : 'border-[#232733] bg-[#0B0E14] text-[#9CA3AF]'
+                      activeRegimeCode === 'NO_SHORT_PREMIUM_RISK'
+                        ? 'border-rose-500/50 bg-rose-500/15 text-rose-300'
+                        : activeRegimeCode === 'VENTA_PRIMA_CUBIERTA'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                          : activeRegimeCode === 'COMPRA_CONVEXIDAD_CALENDAR'
+                            ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                            : 'border-[#232733] bg-[#0B0E14] text-[#9CA3AF]'
                     }`}
                   >
                     Régimen:{' '}
-                    {activeRegimeCode === 'VENTA_PRIMA_CUBIERTA'
-                      ? 'Venta de Prima Cubierta → Crédito'
-                      : activeRegimeCode === 'COMPRA_CONVEXIDAD_CALENDAR'
-                        ? 'Compra de Convexidad → Débito'
-                        : 'Neutral Selectivo'}
+                    {activeRegimeCode === 'NO_SHORT_PREMIUM_RISK'
+                      ? SHORT_PREMIUM_RISK_MESSAGE
+                      : activeRegimeCode === 'VENTA_PRIMA_CUBIERTA'
+                        ? 'Venta de Prima Cubierta → Crédito'
+                        : activeRegimeCode === 'COMPRA_CONVEXIDAD_CALENDAR'
+                          ? 'Compra de Convexidad → Débito'
+                          : 'Neutral Selectivo'}
+                  </span>
+                )}
+                {shortPremiumBreaker.blocked && activeRegimeCode !== 'NO_SHORT_PREMIUM_RISK' && (
+                  <span className="rounded-full border border-rose-500/50 bg-rose-500/15 px-2.5 py-0.5 font-mono-num text-[10.5px] font-semibold text-rose-300">
+                    {SHORT_PREMIUM_RISK_MESSAGE}
                   </span>
                 )}
               </div>
@@ -2717,12 +2771,13 @@ export const OptionsModule: React.FC<{
                       </button>
                     </div>
                     <WhatIfPayoffSimulator
-                      key={`cred-whatif-${upperUnderlying}-${focusedCreditCandidate.id}`}
+                      key={`cred-whatif-${upperUnderlying}-${focusedCreditCandidate.id}-${isZeroDte ? '0dte' : 'dte'}`}
                       structureLabel={focusedCreditCandidate.label}
                       spot={displaySpot}
                       rate={Number.isFinite(effectiveRateDec) ? effectiveRateDec : 0}
                       dividendYield={activeDividendYield}
                       horizonDte={Math.max(1, Math.round(activeDays || 1))}
+                      zeroDte={isZeroDte}
                       legs={creditWhatIfLegs}
                       currencyPrefix={isUsMarket ? 'US$' : '$'}
                       contractMultiplier={mult}
@@ -2984,12 +3039,13 @@ export const OptionsModule: React.FC<{
             if (debitWhatIfLegs.length === 0) return null;
             return (
               <WhatIfPayoffSimulator
-                key={`deb-whatif-${upperUnderlying}-${debCell.side}-${String(debCell.longStrike)}-${String(debCell.shortStrike)}`}
+                key={`deb-whatif-${upperUnderlying}-${debCell.side}-${String(debCell.longStrike)}-${String(debCell.shortStrike)}-${isZeroDte ? '0dte' : 'dte'}`}
                 structureLabel={`${debCell.side === 'CALL' ? 'Bull Call' : 'Bear Put'} ${String(debCell.longStrike)}/${String(debCell.shortStrike)}`}
                 spot={displaySpot}
                 rate={Number.isFinite(effectiveRateDec) ? effectiveRateDec : 0}
                 dividendYield={activeDividendYield}
                 horizonDte={Math.max(1, Math.round(activeDays || 1))}
+                      zeroDte={isZeroDte}
                 legs={debitWhatIfLegs}
                 currencyPrefix={isUsMarket ? 'US$' : '$'}
                 contractMultiplier={Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : LOT}
@@ -4051,7 +4107,7 @@ export const OptionsModule: React.FC<{
                         )}
                         <span className="font-bold text-[14px] text-[#F3F4F6] tracking-tight">
                           {summary.formattedDate} ·{' '}
-                          <span className="font-mono-num text-[#9CA3AF]">{exp.daysToExpiry}d</span>
+                          <span className="font-mono-num text-[#9CA3AF]">{formatDteLabel(exp.daysToExpiry)}</span>
                         </span>
                       </div>
 

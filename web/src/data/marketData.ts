@@ -11,6 +11,11 @@ import type {
   EquityPanelAnalyticsDto,
   UsSnapshotResponseDto,
 } from './liveTypes';
+import {
+  computeFallbackGreeks,
+  extrinsicValue,
+  isIvUnreliable,
+} from '../../../src/core/options/zeroDteFixes';
 
 const toNumOrNaN = (v: number | null | undefined): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN;
@@ -1023,6 +1028,7 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
             c.iv !== undefined &&
             Number.isFinite(c.iv) &&
             c.iv > 0 &&
+            c.iv < 9.99 &&
             (c.contractType === 'call' ? c.strike >= spot - 1e-6 : c.strike <= spot + 1e-6),
         )
         .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))
@@ -1034,7 +1040,7 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
     }
     const sigmaBandAbs =
       Number.isFinite(spot) && Number.isFinite(atmIvDec)
-        ? spot * atmIvDec * Math.sqrt(Math.max(exp.days, 1) / 365)
+        ? spot * atmIvDec * Math.sqrt(isUsMarket ? Math.max(exp.days / 365, 1 / (252 * 6.5)) : Math.max(exp.days, 1) / 365)
         : Number.NaN;
     const oneSigmaLow =
       Number.isFinite(sigmaBandAbs)
@@ -1069,8 +1075,44 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         if (Number.isFinite(pLast)) totalNotionalArs += pVol * res.lotSize * pLast;
       }
 
-      const cIvPct = c?.iv !== null && c?.iv !== undefined && Number.isFinite(c.iv) ? c.iv * 100 : Number.NaN;
-      const pIvPct = p?.iv !== null && p?.iv !== undefined && Number.isFinite(p.iv) ? p.iv * 100 : Number.NaN;
+      // Pieza 46.1: IV capada (>= 999 %) o extrinsico <= 0.01 -> iv null ("—") y griegas con IV ATM
+      // del vencimiento activo (deep ITM: delta ±1, gamma/vega/theta 0).
+      const tYears = Math.max(exp.days / 365, 1 / (252 * 6.5));
+      const contRateNum = toNumOrNaN(res.continuousRate);
+      const rateTnaNum = toNumOrNaN(res.rateTna);
+      const rateDec = Number.isFinite(contRateNum)
+        ? contRateNum
+        : Number.isFinite(rateTnaNum)
+          ? Math.log(1 + rateTnaNum / 100)
+          : Number.NaN;
+      const divYield = toNumOrNaN(res.dividendYield);
+      const sideQuote = (cc: ArOptionContractDto | undefined, side: 'call' | 'put') => {
+        const ivRaw = cc?.iv !== null && cc?.iv !== undefined && Number.isFinite(cc.iv) ? cc.iv : Number.NaN;
+        const midRaw = toNumOrNaN(cc?.mark);
+        const ext = Number.isFinite(midRaw) ? extrinsicValue(side, spot, strike, midRaw) : toNumOrNaN(cc?.extrinsic);
+        const unreliable = isUsMarket && Number.isFinite(ext) && isIvUnreliable(ivRaw, ext);
+        const capped = Number.isFinite(ivRaw) && ivRaw >= 9.99;
+        const ivPct = unreliable || capped ? Number.NaN : Number.isFinite(ivRaw) ? ivRaw * 100 : Number.NaN;
+        const fb =
+          unreliable || capped
+            ? computeFallbackGreeks({
+                side,
+                spot,
+                strike,
+                timeToExpiry: tYears,
+                rate: rateDec,
+                dividendYield: divYield,
+                contractIv: null,
+                extrinsic: Number.isFinite(ext) ? ext : Number.NaN,
+                ivAtm: atmIvDec,
+              })
+            : null;
+        return { ivPct, fb };
+      };
+      const cQ = sideQuote(c, 'call');
+      const pQ = sideQuote(p, 'put');
+      const cIvPct = cQ.ivPct;
+      const pIvPct = pQ.ivPct;
       const cRank: 'barata' | 'rango' | 'cara' =
         Number.isFinite(cIvPct) && Number.isFinite(atmIvDec)
           ? cIvPct < atmIvDec * 100 - 3
@@ -1107,10 +1149,10 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         callLast: cLast,
         callDeltaPct: Number.NaN,
         callIV: cIvPct,
-        callDelta: toNumOrNaN(c?.delta),
-        callGamma: toNumOrNaN(c?.gamma),
-        callTheta: toNumOrNaN(c?.thetaDaily),
-        callVega: toNumOrNaN(c?.vegaPer1Pct),
+        callDelta: cQ.fb ? cQ.fb.delta : toNumOrNaN(c?.delta),
+        callGamma: cQ.fb ? cQ.fb.gamma : toNumOrNaN(c?.gamma),
+        callTheta: cQ.fb ? cQ.fb.theta / 365 : toNumOrNaN(c?.thetaDaily),
+        callVega: cQ.fb ? cQ.fb.vega / 100 : toNumOrNaN(c?.vegaPer1Pct),
         callTimeValue: cExtrinsic,
         callTimeValuePct:
           Number.isFinite(cExtrinsic) && Number.isFinite(spot) && spot > 0 ? (cExtrinsic / spot) * 100 : Number.NaN,
@@ -1123,10 +1165,10 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         putLast: pLast,
         putDeltaPct: Number.NaN,
         putIV: pIvPct,
-        putDelta: toNumOrNaN(p?.delta),
-        putGamma: toNumOrNaN(p?.gamma),
-        putTheta: toNumOrNaN(p?.thetaDaily),
-        putVega: toNumOrNaN(p?.vegaPer1Pct),
+        putDelta: pQ.fb ? pQ.fb.delta : toNumOrNaN(p?.delta),
+        putGamma: pQ.fb ? pQ.fb.gamma : toNumOrNaN(p?.gamma),
+        putTheta: pQ.fb ? pQ.fb.theta / 365 : toNumOrNaN(p?.thetaDaily),
+        putVega: pQ.fb ? pQ.fb.vega / 100 : toNumOrNaN(p?.vegaPer1Pct),
         putTimeValue: pExtrinsic,
         putTimeValuePct:
           Number.isFinite(pExtrinsic) && Number.isFinite(spot) && spot > 0 ? (pExtrinsic / spot) * 100 : Number.NaN,

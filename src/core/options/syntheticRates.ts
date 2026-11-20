@@ -7,6 +7,8 @@
  * Funciones 100 % puras: cero red, cero E/S, cero UI y cero mutación de argumentos.
  */
 
+import { annualizeEffectiveRate, type BuyWriteRateStatus } from './zeroDteFixes.js';
+
 const DEFAULT_NEAR_ATM_COUNT = 5;
 const DEFAULT_MODERATE_BORROW_THRESHOLD = 0.02;
 const DEFAULT_HARD_TO_BORROW_THRESHOLD = 0.05;
@@ -128,6 +130,9 @@ export interface BuyWriteResult {
   readonly maxAssignedProfitPerShare: number;
   readonly maxAssignedReturnPct: number;
   readonly assignedAnnualizedTna: number;
+  /** Pieza 46.1: tasa efectiva anualizada compuesta; null si DTE < 3 (BLOCKED_SHORT_DTE). */
+  readonly annualizedRate?: number | null;
+  readonly rateStatus?: BuyWriteRateStatus;
 }
 
 export interface CalendarRollInput {
@@ -195,6 +200,8 @@ const NO_DATA_BUY_WRITE: BuyWriteResult = Object.freeze({
   maxAssignedProfitPerShare: Number.NaN,
   maxAssignedReturnPct: Number.NaN,
   assignedAnnualizedTna: Number.NaN,
+  annualizedRate: null,
+  rateStatus: 'NO_DATA',
 });
 
 const NO_DATA_CALENDAR_ROLL: CalendarRollResult = Object.freeze({
@@ -541,11 +548,12 @@ export function evaluateBuyWrite(input: BuyWriteInput): BuyWriteResult {
 
   const staticProfitPerShare = Math.min(spotAsk, strike) + dividendCash - netCostBasis;
   const staticReturnPct = (staticProfitPerShare / netCostBasis) * 100;
-  const staticAnnualizedTna = staticReturnPct / timeToExpiry;
-
   const maxAssignedProfitPerShare = strike + dividendCash - netCostBasis;
   const maxAssignedReturnPct = (maxAssignedProfitPerShare / netCostBasis) * 100;
-  const assignedAnnualizedTna = maxAssignedReturnPct / timeToExpiry;
+  const annualized = annualizeEffectiveRate(staticReturnPct / 100, timeToExpiry * 365);
+  const blocked = annualized.rateStatus === 'BLOCKED_SHORT_DTE';
+  const staticAnnualizedTna = blocked ? Number.NaN : staticReturnPct / timeToExpiry;
+  const assignedAnnualizedTna = blocked ? Number.NaN : maxAssignedReturnPct / timeToExpiry;
 
   return {
     status: 'OK',
@@ -556,6 +564,8 @@ export function evaluateBuyWrite(input: BuyWriteInput): BuyWriteResult {
     staticProfitPerShare,
     staticReturnPct,
     staticAnnualizedTna,
+    annualizedRate: annualized.annualizedRate,
+    rateStatus: annualized.rateStatus,
     maxAssignedProfitPerShare,
     maxAssignedReturnPct,
     assignedAnnualizedTna,

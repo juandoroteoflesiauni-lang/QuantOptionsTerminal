@@ -28,6 +28,7 @@ import {
   hydrateFromUsSnapshot,
 } from './marketData';
 import { parseOptionsUnderlyingKey } from './optionsUnderlying';
+import { calendarDteEt, formatDteLabel } from '../../../src/core/options/zeroDteFixes';
 
 export interface LiveTickerUpdate {
   readonly id: string;
@@ -427,7 +428,11 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       const slice = sliceMap.get(expDate);
       const firstRow = rows[0];
       const expSec = slice?.expirySec ?? firstRow?.expiryUtcSec ?? snap.asOfUtcSec;
-      const days = slice?.timeToExpiryDays ?? Math.max(1, Math.round((expSec - snap.asOfUtcSec) / 86_400));
+      // Pieza 46.1: DTE calendario real en America/New_York (expiry == hoy ET -> 0, etiqueta 0DTE).
+      const dteEt = calendarDteEt(expDate, snap.asOfUtcSec * 1000);
+      const days = Number.isFinite(dteEt)
+        ? dteEt
+        : (slice?.timeToExpiryDays ?? Math.max(1, Math.round((expSec - snap.asOfUtcSec) / 86_400)));
       const strikeSet = new Set<number>();
       const calls: ArOptionsResponse['expiries'][number]['calls'][number][] = [];
       const puts: ArOptionsResponse['expiries'][number]['puts'][number][] = [];
@@ -449,7 +454,7 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
           expiryCode: expDate,
           expirationDate: expDate,
           expiryUtcSec: r.expiryUtcSec,
-          daysToExpiry: Math.max(1, Math.round(days)),
+          daysToExpiry: Number.isFinite(dteEt) ? dteEt : Math.max(1, Math.round(days)),
           bid: r.bid,
           ask: r.ask,
           last: r.lastPrice,
@@ -486,6 +491,7 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
               c.iv !== null &&
               Number.isFinite(c.iv) &&
               c.iv > 0 &&
+              c.iv < 9.99 &&
               (c.contractType === 'call' ? c.strike >= spot - 1e-6 : c.strike <= spot + 1e-6),
           )
           .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))
@@ -496,12 +502,13 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
         }
       }
 
+      const resolvedDays = Number.isFinite(dteEt) ? dteEt : Math.max(0, Math.round(days));
       return {
         expiryCode: expDate,
-        expiryLabel: `${expDate} (${Math.max(1, Math.round(days))}d)`,
+        expiryLabel: `${expDate} (${formatDteLabel(resolvedDays)})`,
         expirationDate: expDate,
         expiryUtcSec: expSec,
-        days: Math.max(1, Math.round(days)),
+        days: resolvedDays,
         ivAtm: resolvedIvAtmDec,
         riskReversal25: slice?.riskReversal25 ?? null,
         butterfly25: slice?.butterfly25 ?? null,
@@ -517,12 +524,15 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
     (snap.volSurfaceSummary?.slices ?? []).some((s) => s.ivAtm !== null && s.ivAtm > 0)
       ? (snap.volSurfaceSummary?.slices ?? [])
           .filter((s) => s.ivAtm !== null && s.ivAtm > 0)
-          .map((s) => ({
-            days: Math.max(1, Math.round(s.timeToExpiryDays)),
-            label: s.expirationDate,
-            expiryCode: s.expirationDate,
-            atm: s.ivAtm as number,
-          }))
+          .map((s) => {
+            const sDteEt = calendarDteEt(s.expirationDate, snap.asOfUtcSec * 1_000);
+            return {
+              days: Number.isFinite(sDteEt) ? sDteEt : Math.max(0, Math.round(s.timeToExpiryDays)),
+              label: s.expirationDate,
+              expiryCode: s.expirationDate,
+              atm: s.ivAtm as number,
+            };
+          })
       : expiries
           .filter((e) => e.ivAtm !== null && Number.isFinite(e.ivAtm) && e.ivAtm > 0)
           .map((e) => ({

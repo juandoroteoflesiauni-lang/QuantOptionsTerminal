@@ -158,6 +158,16 @@ import {
   type VolAnalyticsSuiteResult,
 } from '../core/options/volAnalyticsSuite.js';
 import {
+  IV_CAP_DECIMAL,
+  MIN_EXPECTED_MOVE_T_YEARS,
+  calendarDteEt,
+  computeFallbackGreeks,
+  expectedMoveSigma,
+  extrinsicValue,
+  intrinsicValue,
+  isIvUnreliable,
+} from '../core/options/zeroDteFixes.js';
+import {
   computeYangZhangVol,
   type YangZhangOhlcBar,
 } from '../core/ggal/l2AndRegimeEngines.js';
@@ -1601,7 +1611,10 @@ export function selectUsOptionExpirations(
     const nearCalls = validCalls.filter((c) => isNearAtm(c, spot));
     const nearPuts = validPuts.filter((c) => isNearAtm(c, spot));
     const sampleExpirationTime = list[0]?.expirationTime ?? nowSec + 86_400;
-    const daysToExpiry = Math.max(1, Math.floor((sampleExpirationTime - nowSec) / 86_400));
+    const dteEt = calendarDteEt(expirationDate, nowSec * 1_000);
+    const approxDays = Math.max(0, Math.floor((sampleExpirationTime - nowSec) / 86_400));
+    const daysToExpiry =
+      Number.isFinite(dteEt) && Math.abs(dteEt - approxDays) <= 2 ? dteEt : approxDays;
     const hasCompleteAtmChain = nearCalls.length >= 2 && nearPuts.length >= 2;
     available.push({
       expirationDate,
@@ -3935,6 +3948,8 @@ export class MarketRuntime {
     readonly validSlices: readonly SlicePackage[];
     readonly expiryParityMap: ReadonlyMap<number, ExpiryParityEvaluation>;
     readonly qDistributionFront: RiskNeutralDistributionResult | null;
+    readonly putWallStrike?: number | null;
+    readonly netGex?: number | null;
   }): VolAnalyticsSuiteResult | null {
     const {
       canonicalSymbol,
@@ -3953,6 +3968,8 @@ export class MarketRuntime {
       validSlices,
       expiryParityMap,
       qDistributionFront,
+      putWallStrike = null,
+      netGex = null,
     } = params;
 
     if (!Number.isFinite(spot) || spot <= 0) {
@@ -4040,8 +4057,11 @@ export class MarketRuntime {
       const list = contractsByDate.get(expDate) ?? [];
       if (list.length === 0) continue;
       const sampleExpTime = list[0]?.expirationTime ?? nowSec + 86_400;
-      const tExp = Math.max(1 / 365, timeToExpiryYears(nowSec, sampleExpTime));
-      const days = Math.max(1, Math.round((sampleExpTime - nowSec) / 86_400));
+      const tExp = Math.max(MIN_EXPECTED_MOVE_T_YEARS, timeToExpiryYears(nowSec, sampleExpTime));
+      const dteEt = calendarDteEt(expDate, nowSec * 1_000);
+      const days = Number.isFinite(dteEt)
+        ? dteEt
+        : Math.max(0, Math.round((sampleExpTime - nowSec) / 86_400));
       expDaysMap.set(expDate, days);
 
       const slicePkg = validSliceByDate.get(expDate);
@@ -4054,12 +4074,13 @@ export class MarketRuntime {
 
       const smileContracts = list.map((c) => {
         const ownIv = contractOwnIvMap.get(c.ticker);
-        const iv =
+        const rawIv =
           ownIv !== undefined && Number.isFinite(ownIv) && ownIv > 0
             ? ownIv
             : Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
               ? c.impliedVolatility
               : null;
+        const iv = rawIv !== null && rawIv < IV_CAP_DECIMAL ? rawIv : null;
         const mid = resolveQuoteMid(c);
         return {
           strike: c.strikePrice,
@@ -4118,11 +4139,24 @@ export class MarketRuntime {
         qDistForExp = qDistributionFront;
       } else if (slicePkg !== undefined) {
         const qInputs: RiskNeutralInputNode[] = [];
-        for (const n of slicePkg.slice.nodes) {
-          if (Number.isFinite(n.iv) && n.iv > 0) {
-            qInputs.push({ strike: n.strike, iv: n.iv, bid: 1 });
+        for (const c of list) {
+          const ivRaw = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+          if (Number.isFinite(ivRaw) && ivRaw > 0 && ivRaw < IV_CAP_DECIMAL) {
+            const bid = Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0 ? c.lastQuote.bid : null;
+            const ask = Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0 ? c.lastQuote.ask : null;
+            qInputs.push({
+              strike: c.strikePrice,
+              iv: ivRaw,
+              bid,
+              ...(ask !== null ? { ask } : {}),
+            });
           }
         }
+        const atmIvForQ =
+          Number.isFinite(smileOtmOnly.atmIvPct) && smileOtmOnly.atmIvPct > 0
+            ? smileOtmOnly.atmIvPct / 100
+            : slicePkg.metrics.ivAtm;
+        const em = expectedMoveSigma(spot, atmIvForQ, slicePkg.parity.timeToExpiry);
         if (qInputs.length >= 5) {
           qDistForExp = extractRiskNeutralDistributionQ({
             spot,
@@ -4131,6 +4165,9 @@ export class MarketRuntime {
             dividendYield: slicePkg.parity.dividendYield,
             nodes: qInputs,
             smoothTotalVariancePchip: true,
+            dte: days,
+            ...(Number.isFinite(em) ? { expectedMove: em } : {}),
+            smoothShortDteDensity: true,
           });
         }
       }
@@ -4173,7 +4210,7 @@ export class MarketRuntime {
       const contractIvPct = (c: OptionSnapshotContract | undefined): number | null => {
         if (c === undefined) return null;
         const raw = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
-        return Number.isFinite(raw) && raw > 0 ? raw * 100 : null;
+        return Number.isFinite(raw) && raw > 0 && raw < IV_CAP_DECIMAL ? raw * 100 : null;
       };
       const cleanQuote = (x: number): number | null => (Number.isFinite(x) && x > 0 ? x : null);
       const contractMid = (c: OptionSnapshotContract | undefined): number | null => {
@@ -4225,6 +4262,10 @@ export class MarketRuntime {
         };
       });
 
+      const ratioAtmIvPct =
+        Number.isFinite(smileOtmOnly.atmIvPct) && smileOtmOnly.atmIvPct > 0
+          ? smileOtmOnly.atmIvPct
+          : smileAll.atmIvPct;
       const ratiosAndStructures = computeRatiosAndStructureCosts({
         spot,
         daysToExpiry: days,
@@ -4232,11 +4273,17 @@ export class MarketRuntime {
         dividendYield,
         strikes: ratioStrikes,
         historicalVolPctSeries: histVolSeriesForCost,
+        ...(Number.isFinite(ratioAtmIvPct) && ratioAtmIvPct > 0
+          ? { ivAtmDec: ratioAtmIvPct / 100 }
+          : {}),
       });
 
       const activeExpiryVrp = computeActiveExpiryVrpAndRegime({
         expiryCode: expDate,
         daysToExpiry: days,
+        spot,
+        putWallStrike,
+        netGex,
         ivAtmActiveExpiryPct: Number.isFinite(smileOtmOnly.atmIvPct)
           ? smileOtmOnly.atmIvPct
           : null,
@@ -7162,6 +7209,34 @@ export class MarketRuntime {
         },
       );
 
+      const expiryAtmIvMap = new Map<number, number>();
+      for (const sp of validSlices) {
+        if (Number.isFinite(sp.metrics.ivAtm) && sp.metrics.ivAtm > 0 && sp.metrics.ivAtm < IV_CAP_DECIMAL) {
+          expiryAtmIvMap.set(sp.parity.expirySec, sp.metrics.ivAtm);
+        }
+      }
+      for (const c of contracts) {
+        if (expiryAtmIvMap.has(c.expirationTime)) continue;
+        const nearContracts = contracts
+          .filter((row) => row.expirationTime === c.expirationTime)
+          .sort((a, b) => Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot));
+        const nearOtmIvs: number[] = [];
+        for (const row of nearContracts.slice(0, 4)) {
+          const isOtm = row.contractType === 'call' ? row.strikePrice >= spot - 1e-6 : row.strikePrice <= spot + 1e-6;
+          if (!isOtm) continue;
+          const ivVal = contractOwnIvMap.get(row.ticker) ?? row.impliedVolatility;
+          if (Number.isFinite(ivVal) && ivVal > 0 && ivVal < IV_CAP_DECIMAL) {
+            nearOtmIvs.push(ivVal);
+          }
+        }
+        if (nearOtmIvs.length > 0) {
+          expiryAtmIvMap.set(
+            c.expirationTime,
+            nearOtmIvs.reduce((acc, v) => acc + v, 0) / nearOtmIvs.length,
+          );
+        }
+      }
+
       const serializedContracts: SerializedOptionContractRow[] = [...contracts]
         .filter((c) => c.expirationTime > nowSec + 60)
         .sort((a, b) => {
@@ -7178,23 +7253,70 @@ export class MarketRuntime {
           const tExp = timeToExpiryYears(nowSec, c.expirationTime);
           const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
           const provIv = c.impliedVolatility;
-          const usedIv =
+          const mid = resolveQuoteMid(c);
+          const spotInt = intrinsicValue(c.contractType, spot, c.strikePrice);
+          const rawExt = extrinsicValue(c.contractType, spot, c.strikePrice, mid);
+          const effectiveExt = Number.isFinite(mid) && mid >= spotInt - 0.01 ? rawExt : Number.NaN;
+          const rawUsedIv =
             Number.isFinite(ownIv) && ownIv > 0
               ? ownIv
               : Number.isFinite(provIv) && provIv > 0
                 ? provIv
                 : Number.NaN;
+          const unreliableIv =
+            (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, effectiveExt)) ||
+            (Number.isFinite(effectiveExt) && effectiveExt <= 0.01);
+          const cleanOwnIv =
+            !unreliableIv && Number.isFinite(ownIv) && ownIv > 0 && ownIv < IV_CAP_DECIMAL
+              ? ownIv
+              : Number.NaN;
+          const cleanProvIv =
+            !unreliableIv && Number.isFinite(provIv) && provIv > 0 && provIv < IV_CAP_DECIMAL
+              ? provIv
+              : Number.NaN;
+          const usedIv = Number.isFinite(cleanOwnIv)
+            ? cleanOwnIv
+            : Number.isFinite(cleanProvIv)
+              ? cleanProvIv
+              : Number.NaN;
           const ivSource: 'OWN' | 'PROVIDER' | 'NONE' =
-            Number.isFinite(ownIv) && ownIv > 0
+            Number.isFinite(cleanOwnIv)
               ? 'OWN'
-              : Number.isFinite(provIv) && provIv > 0
+              : Number.isFinite(cleanProvIv)
                 ? 'PROVIDER'
                 : 'NONE';
 
           const effTExp = Number.isFinite(tExp) && tExp > 0 ? Math.max(tExp, 1e-4) : Number.NaN;
           const effUsedIv = Number.isFinite(usedIv) && usedIv > 0 ? Math.max(usedIv, 1e-4) : Number.NaN;
+          const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
+          const fallbackGreeks =
+            unreliableIv && Number.isFinite(effTExp)
+              ? computeFallbackGreeks({
+                  side: c.contractType,
+                  spot,
+                  strike: c.strikePrice,
+                  timeToExpiry: effTExp,
+                  rate: parity.rate,
+                  dividendYield: parity.dividendYield,
+                  contractIv: null,
+                  extrinsic: effectiveExt,
+                  ivAtm: fallbackAtmIv,
+                })
+              : null;
           const rawGreeks =
-            Number.isFinite(effUsedIv) && Number.isFinite(effTExp)
+            fallbackGreeks !== null
+              ? fallbackGreeks.source === 'NO_DATA'
+                ? null
+                : {
+                    delta: fallbackGreeks.delta,
+                    gamma: fallbackGreeks.gamma,
+                    thetaDaily: fallbackGreeks.theta / 365,
+                    vegaPer1Pct: fallbackGreeks.vega / 100,
+                    rho: 0,
+                    vanna: 0,
+                    charm: 0,
+                  }
+              : Number.isFinite(effUsedIv) && Number.isFinite(effTExp)
               ? isIndex
                 ? greeksBsm({
                     spot,
@@ -7216,6 +7338,7 @@ export class MarketRuntime {
                   })
               : null;
           const needUsBsmFallback =
+            fallbackGreeks === null &&
             rawGreeks !== null &&
             (!Number.isFinite(rawGreeks.gamma) ||
               !Number.isFinite(rawGreeks.delta) ||
@@ -7260,12 +7383,12 @@ export class MarketRuntime {
             expiryUtcSec: c.expirationTime,
             bid: sanitizeFinite(c.lastQuote.bid),
             ask: sanitizeFinite(c.lastQuote.ask),
-            mid: sanitizeFinite(resolveQuoteMid(c)),
+            mid: sanitizeFinite(mid),
             lastPrice: sanitizeFinite(c.lastTrade.price),
             openInterest: sanitizeFinite(c.openInterest),
             volume: sanitizeFinite(c.day.volume),
-            ownIv: sanitizeFinite(ownIv),
-            providerIv: sanitizeFinite(provIv),
+            ownIv: sanitizeFinite(cleanOwnIv),
+            providerIv: sanitizeFinite(cleanProvIv),
             ivSource,
             delta: sanitizeFinite(greeks?.delta),
             gamma: sanitizeFinite(greeks?.gamma),
@@ -7761,42 +7884,53 @@ export class MarketRuntime {
       const qNodeMap = new Map<number, RiskNeutralInputNode>();
       for (const c of frontContractsUs) {
         const ivVal = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
-        if (Number.isFinite(ivVal) && ivVal > 0) {
+        if (Number.isFinite(ivVal) && ivVal > 0 && ivVal < IV_CAP_DECIMAL) {
           const isOtmSide =
             (c.strikePrice >= spot && c.contractType === 'call') ||
             (c.strikePrice < spot && c.contractType === 'put');
           if (!qNodeMap.has(c.strikePrice) || isOtmSide) {
+            const bid = Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0 ? c.lastQuote.bid : null;
+            const ask = Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0 ? c.lastQuote.ask : null;
             qNodeMap.set(c.strikePrice, {
               strike: c.strikePrice,
               iv: ivVal,
-              bid:
-                Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0
-                  ? c.lastQuote.bid
-                  : null,
+              bid,
+              ...(ask !== null ? { ask } : {}),
             });
           }
         }
       }
+      const frontDteEt =
+        frontSlice !== undefined
+          ? calendarDteEt(frontSlice.parity.expirationDate, evalSecUs * 1_000)
+          : Number.NaN;
+      const frontDteCalendar = Number.isFinite(frontDteEt)
+        ? frontDteEt
+        : frontSlice !== undefined
+          ? Math.max(0, Math.round((frontSlice.parity.expirySec - evalSecUs) / 86_400))
+          : 21;
       const qNodesUs = [...qNodeMap.values()].sort((a, b) => a.strike - b.strike);
       if (frontSlice !== undefined && qNodesUs.length >= 5) {
         const liquidBidCount = qNodesUs.filter(
           (n) => n.bid !== null && n.bid !== undefined && n.bid > 0,
         ).length;
+        const frontTForQ = Math.max(MIN_EXPECTED_MOVE_T_YEARS, frontSlice.parity.timeToExpiry);
+        const frontEm = expectedMoveSigma(spot, frontSlice.metrics.ivAtm, frontTForQ);
         qDistributionUs = extractRiskNeutralDistributionQ({
           spot,
           rate: evalRateUs,
           dividendYield: evalDivUs,
-          timeToExpiry: Math.max(1 / 365, frontSlice.parity.timeToExpiry),
+          timeToExpiry: frontTForQ,
           nodes: qNodesUs,
           smoothTotalVariancePchip: true,
           requirePositiveBid: liquidBidCount >= 5,
+          dte: frontDteCalendar,
+          ...(Number.isFinite(frontEm) ? { expectedMove: frontEm } : {}),
+          smoothShortDteDensity: true,
         });
       }
 
-      const frontDteUs =
-        frontSlice !== undefined
-          ? Math.max(1, Math.round((frontSlice.parity.expirySec - evalSecUs) / 86_400))
-          : 21;
+      const frontDteUs = Math.max(1, frontDteCalendar);
       if (closedDailyUs.length >= frontDteUs + 5) {
         pDistributionUs = analyzeEmpiricalDistributionP(
           closedDailyUs.map((b) => ({ time: b.time, open: b.open, close: b.close })),
@@ -8231,6 +8365,8 @@ export class MarketRuntime {
       validSlices,
       expiryParityMap,
       qDistributionFront: qDistributionUs,
+      putWallStrike: exposureResult?.putWallStrike ?? flowAdjustedGexUs?.putWallStrike ?? null,
+      netGex: exposureResult?.netGex ?? null,
     });
 
     const terminalEngines: SerializedTerminalEngines = sanitizeJsonValue({

@@ -5,6 +5,11 @@ import type { StratLeg } from './engine';
 import { computeActiveExpiryVrpAndRegime } from '../../../../src/core/options/volAnalyticsSuite';
 import { computeForwardIvTermStructure } from '../../../../src/core/options/volSurface';
 import {
+  BLOCKED_SHORT_DTE_TOOLTIP,
+  formatDteLabel,
+  oratsVolToPct,
+} from '../../../../src/core/options/zeroDteFixes';
+import {
   type UnifiedQuantEnginesDto,
   type VolAnalyticsExpirySuiteDto,
   type VolAnalyticsSuiteDto,
@@ -69,6 +74,8 @@ function regimePillStyle(code: VolSuiteOperativeRegimeCode): string {
       return 'bg-[#E5C76B]/10 text-[#E5C76B] border-[#E5C76B]/30';
     case 'COMPRA_CONVEXIDAD_CALENDAR':
       return 'bg-[#38BDF8]/10 text-[#38BDF8] border-[#38BDF8]/30';
+    case 'NO_SHORT_PREMIUM_RISK':
+      return 'bg-[#F43F5E]/10 text-[#F43F5E] border-[#F43F5E]/40';
     case 'NEUTRAL_SELECTIVO':
       return 'bg-[#B794F4]/10 text-[#B794F4] border-[#B794F4]/30';
     default:
@@ -163,6 +170,7 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
     [activeQuantEngines, usSnapshot],
   );
 
+
   const displaySpot =
     suite?.spot !== null && suite?.spot !== undefined && Number.isFinite(suite.spot)
       ? suite.spot
@@ -226,8 +234,17 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
       historicalRvMaxPct: hist?.quantiles.maxPct ?? null,
       fallbackIvRank: hist?.ivRank ?? null,
       fallbackIvPercentile: hist?.ivPercentile ?? null,
+      spot: displaySpot,
+      putWallStrike:
+        usSnapshot?.exposureSummary?.putWallStrike ??
+        liveOptions?.exposureSummary?.putWallStrike ??
+        null,
+      netGex:
+        usSnapshot?.exposureSummary?.netGex ??
+        liveOptions?.exposureSummary?.netGex ??
+        null,
     });
-  }, [expirySuite, activeSmile, activeExpiry, hist]);
+  }, [expirySuite, activeSmile, activeExpiry, hist, displaySpot, usSnapshot, liveOptions]);
   const marketTag = suite?.market ?? (usSnapshot ? 'US' : 'BYMA');
   const currencyPrefix = marketTag === 'US' ? 'US$' : '$';
   const oratsSurface =
@@ -279,13 +296,13 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
               </h2>
               {hist && (
                 <span
-                  title={`Régimen alineado al vencimiento activo (${Number.isFinite(activeVrp.daysToExpiry) ? `${activeVrp.daysToExpiry}d` : '—'}) · VRP: ${fmtSignedNullable(activeVrp.vrpActiveExpiryPts, 1, ' pts')} vs ${activeVrp.rvReferenceLabel} (${fmtNullableNumber(activeVrp.rvReferencePct, 1, '%')})`}
+                  title={`Régimen alineado al vencimiento activo (${formatDteLabel(activeVrp.daysToExpiry)}) · VRP: ${fmtSignedNullable(activeVrp.vrpActiveExpiryPts, 1, ' pts')} vs ${activeVrp.rvReferenceLabel} (${fmtNullableNumber(activeVrp.rvReferencePct, 1, '%')})`}
                   className={`px-2.5 py-0.5 rounded-full border text-[10.5px] font-semibold ${regimePillStyle(
                     activeVrp.operativeRegime.code,
                   )}`}
                 >
                   {activeVrp.operativeRegime.label}
-                  {Number.isFinite(activeVrp.daysToExpiry) ? ` · ${activeVrp.daysToExpiry}d` : ''}
+                  {Number.isFinite(activeVrp.daysToExpiry) ? ` · ${formatDteLabel(activeVrp.daysToExpiry)}` : ''}
                 </span>
               )}
             </div>
@@ -331,7 +348,7 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
                   >
                     <div className="text-[11px] font-bold leading-tight">{exp.label}</div>
                     <div className="text-[10px] font-mono-num text-[#6B7280]">
-                      {exp.daysToExpiry}d · <span className="text-[#E5C76B]">{atmLabel}</span>
+                      {formatDteLabel(exp.daysToExpiry)} · <span className="text-[#E5C76B]">{atmLabel}</span>
                       {fwdSeg && (
                         <>
                           {' '}·{' '}
@@ -358,7 +375,11 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
               {fmtNullableNumber(activeVrp.ivAtmActiveExpiryPct, 1, '%')}
             </div>
             <div className="text-[10px] text-[#9CA3AF] font-mono-num">
-              {Number.isFinite(activeVrp.daysToExpiry) ? `${activeVrp.daysToExpiry}d al vto` : '—'}
+              {Number.isFinite(activeVrp.daysToExpiry)
+                ? activeVrp.daysToExpiry === 0
+                  ? '0DTE (vence hoy)'
+                  : `${String(activeVrp.daysToExpiry)}d al vto`
+                : '—'}
             </div>
           </div>
           <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
@@ -372,7 +393,7 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
           </div>
           <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">
-              VRP ({Number.isFinite(activeVrp.daysToExpiry) ? `VI ${activeVrp.daysToExpiry}d` : 'VI'} − {activeVrp.rvReferenceLabel})
+              VRP ({Number.isFinite(activeVrp.daysToExpiry) ? `VI ${formatDteLabel(activeVrp.daysToExpiry)}` : 'VI'} − {activeVrp.rvReferenceLabel})
             </div>
             <div className="text-[16px] font-extrabold font-mono-num text-[#F3F4F6]">
               {fmtSignedNullable(activeVrp.vrpActiveExpiryPts, 1, ' pts')}
@@ -423,11 +444,18 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
               <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS Ex-Earnings IV 30D</div>
               <div className="text-[15px] font-extrabold font-mono-num text-[#38BDF8]">
                 {fmtNullableNumber(
-                  oratsSurface?.exErnIv30d != null ? oratsSurface.exErnIv30d * 100 : null,
-                  1,
+                  Number.isFinite(oratsVolToPct(oratsSurface?.exErnIv30d))
+                    ? oratsVolToPct(oratsSurface?.exErnIv30d)
+                    : null,
+                  2,
                   '%',
                 )}
               </div>
+              {oratsSurface?.iv20d != null && Number.isFinite(oratsVolToPct(oratsSurface.iv20d)) && (
+                <div className="text-[10px] font-mono-num text-[#9CA3AF]">
+                  IV 20D: {fmtNullableNumber(oratsVolToPct(oratsSurface.iv20d), 2, '%')}
+                </div>
+              )}
             </div>
             <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS Superficie smvVol</div>
@@ -488,6 +516,16 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
           unifiedQuant={unifiedQuant}
           spot={displaySpot}
           currencyPrefix={currencyPrefix}
+          putWallStrike={
+            usSnapshot?.exposureSummary?.putWallStrike ??
+            liveOptions?.exposureSummary?.putWallStrike ??
+            null
+          }
+          netGex={
+            usSnapshot?.exposureSummary?.netGex ??
+            liveOptions?.exposureSummary?.netGex ??
+            null
+          }
         />
       )}
 
@@ -552,7 +590,13 @@ const Tab1ResumenCono: React.FC<{
   readonly unifiedQuant: UnifiedQuantEnginesDto | null;
   readonly spot: number;
   readonly currencyPrefix: string;
-}> = ({ suite, expirySuite, unifiedQuant, spot, currencyPrefix }) => {
+  readonly putWallStrike: number | null;
+  readonly netGex: number | null;
+}> = ({ suite, expirySuite, unifiedQuant, spot, currencyPrefix, putWallStrike, netGex }) => {
+  // Pieza 46.1: gate DTE < 3 para anualización Buy-Write / Cobertura Sintética.
+  const buyWriteRateBlocked =
+    (expirySuite?.daysToExpiry != null && expirySuite.daysToExpiry < 3) ||
+    unifiedQuant?.buyWrite?.rateStatus === 'BLOCKED_SHORT_DTE';
   const hist = suite.historicalConditional;
   const cone = expirySuite?.expectedCone ?? null;
   const tab1Vrp = useMemo(
@@ -568,8 +612,11 @@ const Tab1ResumenCono: React.FC<{
         historicalRvMaxPct: hist.quantiles.maxPct,
         fallbackIvRank: hist.ivRank,
         fallbackIvPercentile: hist.ivPercentile,
+        spot,
+        putWallStrike,
+        netGex,
       }),
-    [expirySuite, suite.activeExpiryCode, hist],
+    [expirySuite, suite.activeExpiryCode, hist, spot, putWallStrike, netGex],
   );
   const ivPctRank = Number.isFinite(tab1Vrp.ivPercentileActiveExpiry)
     ? tab1Vrp.ivPercentileActiveExpiry
@@ -582,14 +629,20 @@ const Tab1ResumenCono: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="text-[11px] uppercase tracking-wider text-[#6B7280] font-semibold">
-              Lectura Empírica de Régimen ({Number.isFinite(tab1Vrp.daysToExpiry) ? `Vto ${tab1Vrp.daysToExpiry}d` : 'Vto activo'} vs {tab1Vrp.rvReferenceLabel})
+              Lectura Empírica de Régimen ({Number.isFinite(tab1Vrp.daysToExpiry) ? `Vto ${formatDteLabel(tab1Vrp.daysToExpiry)}` : 'Vto activo'} vs {tab1Vrp.rvReferenceLabel})
             </div>
-            <div className="text-[14px] font-bold text-[#F3F4F6] mt-0.5">{tab1Vrp.operativeRegime.label}</div>
+            <div
+              className={`text-[14px] font-bold mt-0.5 ${
+                tab1Vrp.operativeRegime.code === 'NO_SHORT_PREMIUM_RISK' ? 'text-[#F43F5E]' : 'text-[#F3F4F6]'
+              }`}
+            >
+              {tab1Vrp.operativeRegime.label}
+            </div>
             <p className="text-[12px] text-[#9CA3AF] mt-0.5">{tab1Vrp.operativeRegime.rationale}</p>
           </div>
           <div className="text-right font-mono-num text-[11px] text-[#9CA3AF]">
             <div>
-              VI ATM ({Number.isFinite(tab1Vrp.daysToExpiry) ? `${tab1Vrp.daysToExpiry}d` : 'activo'}):{' '}
+              VI ATM ({Number.isFinite(tab1Vrp.daysToExpiry) ? formatDteLabel(tab1Vrp.daysToExpiry) : 'activo'}):{' '}
               <strong className="text-[#E5C76B]">{fmtNullableNumber(tab1Vrp.ivAtmActiveExpiryPct, 1, '%')}</strong>
               {' · '}VRP:{' '}
               <strong className="text-[#F3F4F6]">{fmtSignedNullable(tab1Vrp.vrpActiveExpiryPts, 1, ' pts')}</strong>
@@ -683,17 +736,34 @@ const Tab1ResumenCono: React.FC<{
           </div>
           <div className="flex justify-between text-[#9CA3AF]">
             <span>Tasa Estática Anualizada</span>
-            <span className="text-[#38BDF8]">
-              {unifiedQuant?.buyWrite?.staticAnnualizedTna != null
-                ? `${fmtNum(unifiedQuant.buyWrite.staticAnnualizedTna * 100, 1)}%`
+            <span
+              className="text-[#38BDF8]"
+              title={buyWriteRateBlocked ? BLOCKED_SHORT_DTE_TOOLTIP : undefined}
+            >
+              {!buyWriteRateBlocked && unifiedQuant?.buyWrite?.staticAnnualizedTna != null
+                ? `${fmtNum(unifiedQuant.buyWrite.staticAnnualizedTna, 1)}%`
                 : '—'}
             </span>
           </div>
           <div className="flex justify-between text-[#9CA3AF]">
             <span>Tasa Ejercida Anualizada</span>
-            <span className="text-[#34D399]">
-              {unifiedQuant?.buyWrite?.assignedAnnualizedTna != null
-                ? `${fmtNum(unifiedQuant.buyWrite.assignedAnnualizedTna * 100, 1)}%`
+            <span
+              className="text-[#34D399]"
+              title={buyWriteRateBlocked ? BLOCKED_SHORT_DTE_TOOLTIP : undefined}
+            >
+              {!buyWriteRateBlocked && unifiedQuant?.buyWrite?.assignedAnnualizedTna != null
+                ? `${fmtNum(unifiedQuant.buyWrite.assignedAnnualizedTna, 1)}%`
+                : '—'}
+            </span>
+          </div>
+          <div className="flex justify-between text-[#9CA3AF]">
+            <span>Tasa Efectiva Anualizada</span>
+            <span
+              className="text-[#E5C76B]"
+              title={buyWriteRateBlocked ? BLOCKED_SHORT_DTE_TOOLTIP : undefined}
+            >
+              {!buyWriteRateBlocked && unifiedQuant?.buyWrite?.annualizedRate != null
+                ? `${fmtNum(unifiedQuant.buyWrite.annualizedRate * 100, 1)}%`
                 : '—'}
             </span>
           </div>
@@ -719,7 +789,7 @@ const Tab1ResumenCono: React.FC<{
             <span>Roll Yield Anual s/ Spot</span>
             <span className="text-[#38BDF8]">
               {unifiedQuant?.calendarRoll?.annualizedRollYieldOnSpot != null
-                ? `${fmtNum(unifiedQuant.calendarRoll.annualizedRollYieldOnSpot * 100, 1)}%`
+                ? `${fmtNum(unifiedQuant.calendarRoll.annualizedRollYieldOnSpot, 1)}%`
                 : '—'}
             </span>
           </div>
@@ -895,7 +965,7 @@ const ExpectedConeChart: React.FC<{
           Hoy
         </text>
         <text x={w - padR} y={h - 8} textAnchor="end" fill="#6B7280" fontSize="9.5" className="font-mono-num">
-          T+{daysToExpiry}d
+          {daysToExpiry === 0 ? '0DTE' : `T+${String(daysToExpiry)}d`}
         </text>
       </svg>
     </div>
@@ -2135,14 +2205,22 @@ const Tab5EstructurasCosto: React.FC<{
       {/* Tablas de Ratios 1:N Call & Put */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <RatioTable
-          title="Ratios 1:N Calls (Financiación OTM +5% / +10% / +15%)"
+          title={
+            (expirySuite?.smileOtmOnly.atmIvPct ?? expirySuite?.smileAll.atmIvPct ?? 0) > 0
+              ? 'Ratios 1:N Calls (Financiación OTM +1σ / +2σ)'
+              : 'Ratios 1:N Calls (Financiación OTM +5% / +10% / +15%)'
+          }
           accentColor="text-[#E5C76B]"
           rows={rs.callRatios}
           currencyPrefix={currencyPrefix}
           onSendToBuilder={onSendToBuilder}
         />
         <RatioTable
-          title="Ratios 1:N Puts (Financiación OTM −5% / −10% / −15%)"
+          title={
+            (expirySuite?.smileOtmOnly.atmIvPct ?? expirySuite?.smileAll.atmIvPct ?? 0) > 0
+              ? 'Ratios 1:N Puts (Financiación OTM −1σ / −2σ)'
+              : 'Ratios 1:N Puts (Financiación OTM −5% / −10% / −15%)'
+          }
           accentColor="text-[#B794F4]"
           rows={rs.putRatios}
           currencyPrefix={currencyPrefix}
@@ -2159,25 +2237,31 @@ const RatioTable: React.FC<{
   readonly rows: readonly VolSuiteRatioRowDto[];
   readonly currencyPrefix: string;
   readonly onSendToBuilder: (legs: StratLeg[]) => void;
-}> = ({ title, accentColor, rows, currencyPrefix, onSendToBuilder }) => (
-  <div className="rounded-[14px] bg-[#0A0A0D] border border-[#1C1C24] p-4 space-y-2 overflow-x-auto">
-    <h3 className={`text-[12.5px] font-bold ${accentColor}`}>{title}</h3>
-    {rows.length === 0 ? (
-      <div className="py-6 text-center text-[12px] text-[#6B7280]">Sin combinaciones OTM válidas.</div>
-    ) : (
-      <table className="w-full text-[11.5px] font-mono-num border-collapse">
-        <thead>
-          <tr className="border-b border-[#1C1C24] text-[#6B7280]">
-            <th className="py-1.5 px-2 text-right">Compra</th>
-            <th className="py-1.5 px-2 text-right">Venta ({rows[0]?.side})</th>
-            <th className="py-1.5 px-2 text-right">Lotes OTM / 1</th>
-            <th className="py-1.5 px-2 text-right">Neto 1x2</th>
-            <th className="py-1.5 px-2 text-right">BE Extremo</th>
-            <th className="py-1.5 px-2 text-right">Acción</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
+}> = ({ title, accentColor, rows, currencyPrefix, onSendToBuilder }) => {
+  const validRows = rows.filter(
+    (r) =>
+      ((r.longPrice ?? 0) > 0.005 || (r.shortPrice ?? 0) > 0.005) &&
+      (r.shortPrice ?? 0) > 0.005,
+  );
+  return (
+    <div className="rounded-[14px] bg-[#0A0A0D] border border-[#1C1C24] p-4 space-y-2 overflow-x-auto">
+      <h3 className={`text-[12.5px] font-bold ${accentColor}`}>{title}</h3>
+      {validRows.length === 0 ? (
+        <div className="py-6 text-center text-[12px] text-[#6B7280]">Sin primas válidas en este vencimiento</div>
+      ) : (
+        <table className="w-full text-[11.5px] font-mono-num border-collapse">
+          <thead>
+            <tr className="border-b border-[#1C1C24] text-[#6B7280]">
+              <th className="py-1.5 px-2 text-right">Compra</th>
+              <th className="py-1.5 px-2 text-right">Venta ({validRows[0]?.side})</th>
+              <th className="py-1.5 px-2 text-right">Lotes OTM / 1</th>
+              <th className="py-1.5 px-2 text-right">Neto 1x2</th>
+              <th className="py-1.5 px-2 text-right">BE Extremo</th>
+              <th className="py-1.5 px-2 text-right">Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            {validRows.map((r) => (
             <tr key={`${r.side}-${r.longStrike}-${r.shortStrike}`} className="border-b border-[#15151E]">
               <td className="py-1.5 px-2 text-right text-[#F3F4F6]">
                 {currencyPrefix}
@@ -2212,9 +2296,10 @@ const RatioTable: React.FC<{
           ))}
         </tbody>
       </table>
-    )}
-  </div>
-);
+      )}
+    </div>
+  );
+};
 
 // ============================================================================
 // Tab 6: Superficie Dual BYMA vs OPRA (ADR)

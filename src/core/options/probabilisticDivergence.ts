@@ -16,6 +16,11 @@
 
 import { MAX_TIME_SECONDS } from '../sessions.js';
 import { priceBsm } from './blackScholes.js';
+import {
+  DEFAULT_BL_GRID_STEP_FRACTION,
+  DEFAULT_BL_MAX_RELATIVE_SPREAD,
+  IV_CAP_DECIMAL,
+} from './zeroDteFixes.js';
 
 const STRIKE_DEDUP_TOLERANCE = 1e-9;
 const MIN_Q_STRIKES = 5;
@@ -34,6 +39,7 @@ export interface RiskNeutralInputNode {
   readonly strike: number;
   readonly iv: number;
   readonly bid?: number | null;
+  readonly ask?: number | null;
 }
 
 export interface RiskNeutralDistributionInput {
@@ -50,6 +56,11 @@ export interface RiskNeutralDistributionInput {
   readonly smoothTotalVariancePchip?: boolean;
   readonly uniformGridSteps?: number;
   readonly requirePositiveBid?: boolean;
+  /** Pieza 46.1: parámetros opcionales para grilla proporcional a expectedMove y suavizado <= 1DTE. */
+  readonly dte?: number;
+  readonly expectedMove?: number;
+  readonly maxRelativeSpread?: number;
+  readonly smoothShortDteDensity?: boolean;
 }
 
 export interface RiskNeutralNode {
@@ -572,14 +583,26 @@ export function extractRiskNeutralDistributionQ(
 
   const usePchip = input.smoothTotalVariancePchip === true;
   const requireBid = input.requirePositiveBid ?? usePchip;
+  const maxRelSpread = input.maxRelativeSpread ?? DEFAULT_BL_MAX_RELATIVE_SPREAD;
 
   const cleanSorted = nodes
     .filter((n) => {
-      if (!isPositiveFinite(n.strike) || !isPositiveFinite(n.iv)) {
+      if (!isPositiveFinite(n.strike) || !isPositiveFinite(n.iv) || n.iv >= IV_CAP_DECIMAL) {
         return false;
       }
       if (requireBid && n.bid !== undefined) {
-        return n.bid !== null && isPositiveFinite(n.bid);
+        if (n.bid === null || !isPositiveFinite(n.bid)) {
+          return false;
+        }
+      }
+      if (n.bid !== undefined && n.bid !== null && isPositiveFinite(n.bid) && n.ask !== undefined && n.ask !== null) {
+        if (!Number.isFinite(n.ask) || n.ask < n.bid) {
+          return false;
+        }
+        const mid = 0.5 * (n.bid + n.ask);
+        if (mid <= 0 || (n.ask - n.bid) / mid > maxRelSpread) {
+          return false;
+        }
       }
       return true;
     })
@@ -598,6 +621,22 @@ export function extractRiskNeutralDistributionQ(
     return NO_DATA_Q_RESULT;
   }
 
+  let resolvedUniformGridSteps = input.uniformGridSteps;
+  if (
+    usePchip &&
+    resolvedUniformGridSteps === undefined &&
+    input.expectedMove !== undefined &&
+    isPositiveFinite(input.expectedMove)
+  ) {
+    const k0 = uniqueRawNodes[0]?.strike;
+    const k1 = uniqueRawNodes[uniqueRawNodes.length - 1]?.strike;
+    if (k0 !== undefined && k1 !== undefined && k1 > k0) {
+      const targetStep = input.expectedMove * DEFAULT_BL_GRID_STEP_FRACTION;
+      const steps = Math.floor((k1 - k0) / targetStep + 1e-9) + 1;
+      resolvedUniformGridSteps = Math.max(DEFAULT_UNIFORM_Q_GRID_STEPS, Math.min(2000, steps));
+    }
+  }
+
   const uniqueNodes: readonly RiskNeutralInputNode[] = usePchip
     ? buildTotalVariancePchipGrid({
         uniqueNodes: uniqueRawNodes,
@@ -605,8 +644,8 @@ export function extractRiskNeutralDistributionQ(
         rate,
         dividendYield,
         timeToExpiry,
-        ...(input.uniformGridSteps !== undefined
-          ? { uniformGridSteps: input.uniformGridSteps }
+        ...(resolvedUniformGridSteps !== undefined
+          ? { uniformGridSteps: resolvedUniformGridSteps }
           : {}),
       })
     : uniqueRawNodes;
@@ -708,14 +747,28 @@ export function extractRiskNeutralDistributionQ(
     });
   }
 
-  const rawArea = integrateTrapezoid(strikes, rawDensities);
+  const isShortDteTarget =
+    (input.dte !== undefined && Number.isFinite(input.dte) && input.dte <= 1) ||
+    (input.smoothShortDteDensity === true && timeToExpiry <= 1.01 / DAYS_PER_YEAR);
+  const effectiveRawDensities =
+    usePchip && isShortDteTarget && rawDensities.length >= 3
+      ? rawDensities.map((d, idx) => {
+          if (idx === 0 || idx === rawDensities.length - 1) return d;
+          const prev = rawDensities[idx - 1] ?? d;
+          const next = rawDensities[idx + 1] ?? d;
+          return 0.25 * prev + 0.5 * d + 0.25 * next;
+        })
+      : rawDensities;
+
+  const rawArea = integrateTrapezoid(strikes, effectiveRawDensities);
   if (!Number.isFinite(rawArea) || rawArea <= 0) {
     return NO_DATA_Q_RESULT;
   }
 
-  const normalizedDensities = rawDensities.map((d) => d / rawArea);
+  const normalizedDensities = effectiveRawDensities.map((d) => d / rawArea);
   const resultNodes: RiskNeutralNode[] = intermediate.map((node, idx) => ({
     ...node,
+    rawDensityQ: effectiveRawDensities[idx] ?? node.rawDensityQ,
     densityQ: normalizedDensities[idx] ?? Number.NaN,
   }));
 

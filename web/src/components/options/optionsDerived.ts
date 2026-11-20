@@ -1609,6 +1609,7 @@ export type VolSuiteOperativeRegimeCode =
   | 'VENTA_PRIMA_CUBIERTA'
   | 'COMPRA_CONVEXIDAD_CALENDAR'
   | 'NEUTRAL_SELECTIVO'
+  | 'NO_SHORT_PREMIUM_RISK'
   | 'NO_DATA';
 
 export interface VolSuiteSeasonalityRowDto {

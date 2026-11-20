@@ -124,6 +124,7 @@ import {
   type VolAnalyticsPriorSmileSnapshot,
   type VolAnalyticsSuiteResult,
 } from '../core/options/volAnalyticsSuite.js';
+import { IV_CAP_DECIMAL, expectedMoveSigma } from '../core/options/zeroDteFixes.js';
 import {
   computeStructureCostPercentile,
   detectSpatialConfluenceClusters,
@@ -6343,6 +6344,10 @@ export class ArgentinaMarketRuntime {
         };
       });
 
+      const ratioAtmIvPct =
+        Number.isFinite(smileOtmOnly.atmIvPct) && smileOtmOnly.atmIvPct > 0
+          ? smileOtmOnly.atmIvPct
+          : smileAll.atmIvPct;
       const ratiosAndStructures = computeRatiosAndStructureCosts({
         spot,
         daysToExpiry: exp.days,
@@ -6350,6 +6355,9 @@ export class ArgentinaMarketRuntime {
         dividendYield,
         strikes: ratioStrikes,
         historicalVolPctSeries: histVolSeriesForCost,
+        ...(Number.isFinite(ratioAtmIvPct) && ratioAtmIvPct > 0
+          ? { ivAtmDec: ratioAtmIvPct / 100 }
+          : {}),
       });
 
       const activeExpiryVrp = computeActiveExpiryVrpAndRegime({
@@ -8401,7 +8409,7 @@ export class ArgentinaMarketRuntime {
             const frontTExp = Math.max(1 / 365, frontExp.days / 365);
             const nodeMap = new Map<number, RiskNeutralInputNode>();
             for (const c of [...frontExp.calls, ...frontExp.puts]) {
-              if (c.iv !== null && c.iv > 0) {
+              if (c.iv !== null && c.iv > 0 && c.iv < IV_CAP_DECIMAL) {
                 const isOtmSide =
                   (c.strike >= spot && c.contractType === 'call') ||
                   (c.strike < spot && c.contractType === 'put');
@@ -8410,6 +8418,7 @@ export class ArgentinaMarketRuntime {
                     strike: c.strike,
                     iv: c.iv,
                     bid: c.bid !== null && Number.isFinite(c.bid) && c.bid > 0 ? c.bid : null,
+                    ask: c.ask !== null && Number.isFinite(c.ask) && c.ask > 0 ? c.ask : null,
                   });
                 }
               }
@@ -8419,6 +8428,8 @@ export class ArgentinaMarketRuntime {
               const liquidBidCount = nodes.filter(
                 (n) => n.bid !== null && n.bid !== undefined && n.bid > 0,
               ).length;
+              const frontIvAtm = frontExp.ivAtm ?? Number.NaN;
+              const frontEm = expectedMoveSigma(spot, frontIvAtm, frontTExp);
               qDistribution = extractRiskNeutralDistributionQ({
                 spot,
                 rate: evalRate,
@@ -8427,6 +8438,9 @@ export class ArgentinaMarketRuntime {
                 nodes,
                 smoothTotalVariancePchip: true,
                 requirePositiveBid: liquidBidCount >= 5,
+                dte: frontExp.days,
+                ...(Number.isFinite(frontEm) ? { expectedMove: frontEm } : {}),
+                smoothShortDteDensity: true,
               });
             }
           }

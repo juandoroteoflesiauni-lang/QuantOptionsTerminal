@@ -19,6 +19,18 @@ import { normPdf } from './math.js';
 import { MIN_SYNTHETIC_RATE_DTE, type ImpliedRateStatus } from './syntheticRates.js';
 import type { OptionContractType } from './types.js';
 import { DEFAULT_MIN_SPREAD_DEBIT, isValidButterflyStrikes } from './verticalSpreads.js';
+import {
+  EXTRINSIC_EPS,
+  MIN_EXPECTED_MOVE_T_YEARS,
+  MIN_RATIO_PREMIUM,
+  SHORT_PREMIUM_RISK_MESSAGE,
+  evaluateShortPremiumBreaker,
+  expectedMoveSigma,
+  extrinsicValue,
+  intrinsicValue,
+  isIvUnreliable,
+  isRatioCardValid,
+} from './zeroDteFixes.js';
 
 const TRADING_DAYS_PER_YEAR = 252;
 const CALENDAR_DAYS_PER_YEAR = 365;
@@ -265,7 +277,8 @@ export function buildSeparatedOtmSmile(
   if (
     !isPositiveFinite(input.spot) ||
     !isPositiveFinite(input.timeToExpiryYears) ||
-    !isPositiveFinite(input.daysToExpiry) ||
+    !Number.isFinite(input.daysToExpiry) ||
+    input.daysToExpiry < 0 ||
     !Number.isFinite(input.rate) ||
     !Number.isFinite(input.dividendYield) ||
     !isRuntimeArray(input.contracts)
@@ -483,7 +496,7 @@ export function buildNormalizedMoneynessMatrix(
   }
 
   const sortedSlices = slices
-    .filter((s) => isPositiveFinite(s.daysToExpiry))
+    .filter((s) => Number.isFinite(s.daysToExpiry) && s.daysToExpiry >= 0)
     .slice()
     .sort((a, b) => a.daysToExpiry - b.daysToExpiry);
 
@@ -582,6 +595,7 @@ export type OperativeRegimeCode =
   | 'VENTA_PRIMA_CUBIERTA'
   | 'COMPRA_CONVEXIDAD_CALENDAR'
   | 'NEUTRAL_SELECTIVO'
+  | 'NO_SHORT_PREMIUM_RISK'
   | 'NO_DATA';
 
 export interface OperativeRegimeSuggestion {
@@ -688,6 +702,9 @@ export interface ActiveExpiryVrpInput {
   readonly historicalRvSeriesPct?: readonly number[];
   readonly fallbackIvRank?: number | null;
   readonly fallbackIvPercentile?: number | null;
+  readonly spot?: number | null;
+  readonly putWallStrike?: number | null;
+  readonly netGex?: number | null;
 }
 
 export interface ActiveExpiryVrpResult {
@@ -714,7 +731,10 @@ export function computeActiveExpiryVrpAndRegime(
   input: ActiveExpiryVrpInput,
 ): ActiveExpiryVrpResult {
   const rvReferenceLabel = input.rvReferenceLabel ?? 'RV23d';
-  const daysToExpiry = isPositiveFinite(input.daysToExpiry) ? input.daysToExpiry : Number.NaN;
+  const daysToExpiry =
+    Number.isFinite(input.daysToExpiry) && (input.daysToExpiry as number) >= 0
+      ? (input.daysToExpiry as number)
+      : Number.NaN;
 
   let ivAtmActiveExpiryPct = Number.NaN;
   let ivSource: ActiveExpiryIvSource = 'NO_DATA';
@@ -803,7 +823,7 @@ export function computeActiveExpiryVrpAndRegime(
     ivPercentileActiveExpiry = clampPct(input.fallbackIvPercentile);
   }
 
-  const operativeRegime = Number.isFinite(ivRankActiveExpiry)
+  const rawOperativeRegime: OperativeRegimeSuggestion = Number.isFinite(ivRankActiveExpiry)
     ? computeOperativeRegimeSuggestion({
         ivRank: ivRankActiveExpiry,
         vrpPts: vrpActiveExpiryPts,
@@ -825,6 +845,25 @@ export function computeActiveExpiryVrpAndRegime(
             label: 'NEUTRAL / SELECTIVO',
             rationale: `VRP activo alineado con ${rvReferenceLabel}.`,
           };
+
+  // Pieza 46.1: circuit breaker 0DTE (dte <= 1) o Short Gamma bajo Put Wall sobre VENTA DE PRIMA CUBIERTA.
+  const breaker = evaluateShortPremiumBreaker({
+    dte: daysToExpiry,
+    spot: input.spot ?? Number.NaN,
+    putWall: input.putWallStrike ?? null,
+    netGex: input.netGex ?? Number.NaN,
+  });
+  const operativeRegime: OperativeRegimeSuggestion =
+    rawOperativeRegime.code === 'VENTA_PRIMA_CUBIERTA' && breaker.blocked
+      ? {
+          code: 'NO_SHORT_PREMIUM_RISK',
+          label: SHORT_PREMIUM_RISK_MESSAGE,
+          rationale:
+            daysToExpiry <= 1
+              ? 'Vencimiento 0DTE/1DTE: riesgo de gamma y pin; se desactiva la venta de prima cubierta.'
+              : 'Spot bajo Put Wall con GEX neto negativo (Short Gamma): se desactiva la venta de prima cubierta.',
+        }
+      : rawOperativeRegime;
 
   return {
     status: 'OK',
@@ -1306,7 +1345,8 @@ export function buildExpectedConeAndLognormalSummary(
   if (
     !isPositiveFinite(spot) ||
     !isPositiveFinite(atmIvPct) ||
-    !isPositiveFinite(daysToExpiry) ||
+    !Number.isFinite(daysToExpiry) ||
+    daysToExpiry < 0 ||
     !Number.isFinite(rate) ||
     !Number.isFinite(dividendYield)
   ) {
@@ -1314,7 +1354,7 @@ export function buildExpectedConeAndLognormalSummary(
   }
 
   const sigma = atmIvPct / 100;
-  const t = daysToExpiry / CALENDAR_DAYS_PER_YEAR;
+  const t = daysToExpiry > 0 ? daysToExpiry / CALENDAR_DAYS_PER_YEAR : MIN_EXPECTED_MOVE_T_YEARS;
   const sqrtT = Math.sqrt(t);
   const dailyMovePct = (sigma / Math.sqrt(TRADING_DAYS_PER_YEAR)) * 100;
   const dailyMoveAbs = (spot * sigma) / Math.sqrt(TRADING_DAYS_PER_YEAR);
@@ -1465,7 +1505,8 @@ export function computeParityAndSyntheticRatesByStrike(input: {
 
   if (
     !isPositiveFinite(input.spotMid) ||
-    !isPositiveFinite(input.daysToExpiry) ||
+    !Number.isFinite(input.daysToExpiry) ||
+    input.daysToExpiry < 0 ||
     !Number.isFinite(input.dividendYield) ||
     !isRuntimeArray(input.pairs)
   ) {
@@ -1473,7 +1514,10 @@ export function computeParityAndSyntheticRatesByStrike(input: {
   }
 
   const isShortDteBlocked = input.daysToExpiry < MIN_SYNTHETIC_RATE_DTE;
-  const t = input.daysToExpiry / CALENDAR_DAYS_PER_YEAR;
+  const t =
+    input.daysToExpiry > 0
+      ? input.daysToExpiry / CALENDAR_DAYS_PER_YEAR
+      : MIN_EXPECTED_MOVE_T_YEARS;
   const spotMid = input.spotMid;
   const spotBid = isPositiveFinite(input.spotBid) ? input.spotBid : spotMid;
   const spotAsk = isPositiveFinite(input.spotAsk) ? input.spotAsk : spotMid;
@@ -1491,11 +1535,56 @@ export function computeParityAndSyntheticRatesByStrike(input: {
     .slice()
     .sort((a, b) => a.strike - b.strike);
 
+  const dfCandidates: number[] = [];
+  for (const p of sortedPairs) {
+    const cM = resolveOptionSidePrice({ bid: p.callBid, ask: p.callAsk, mid: p.callMid }, 'mid').price;
+    const pM = resolveOptionSidePrice({ bid: p.putBid, ask: p.putAsk, mid: p.putMid }, 'mid').price;
+    if (isPositiveFinite(cM) && isPositiveFinite(pM)) {
+      const capM = discSpotMid - (cM - pM);
+      if (isPositiveFinite(capM)) {
+        const ratio = capM / p.strike;
+        if (Number.isFinite(ratio) && ratio > 0.5 && ratio <= 1.05) {
+          dfCandidates.push(ratio);
+        }
+      }
+    }
+  }
+  const impliedDf = dfCandidates.length > 0 ? medianValues(dfCandidates) : 1.0;
+
+  const effectiveExtrinsic = (
+    side: 'call' | 'put',
+    strike: number,
+    midPrice: number,
+  ): number => {
+    if (!Number.isFinite(midPrice)) return Number.NaN;
+    const spotInt = intrinsicValue(side, spotMid, strike);
+    if (midPrice >= spotInt - EXTRINSIC_EPS) {
+      return extrinsicValue(side, spotMid, strike, midPrice);
+    }
+    const discInt = Math.max(
+      0,
+      side === 'call' ? discSpotMid - strike * impliedDf : strike * impliedDf - discSpotMid,
+    );
+    return midPrice - discInt;
+  };
+
   const rows: ParitySyntheticStrikeRow[] = [];
 
   for (const p of sortedPairs) {
-    const callIvPct = isPositiveFinite(p.callIvPct) ? p.callIvPct : Number.NaN;
-    const putIvPct = isPositiveFinite(p.putIvPct) ? p.putIvPct : Number.NaN;
+    // Pieza 46.1: IV capada (>= 999 %) o extrínseco <= 0.01 -> no calculable (excluida de C-P).
+    const rawCallMid = resolveOptionSidePrice({ bid: p.callBid, ask: p.callAsk, mid: p.callMid }, 'mid').price;
+    const rawPutMid = resolveOptionSidePrice({ bid: p.putBid, ask: p.putAsk, mid: p.putMid }, 'mid').price;
+    const callReliable = !isIvUnreliable(
+      (p.callIvPct ?? Number.NaN) / 100,
+      effectiveExtrinsic('call', p.strike, rawCallMid),
+    );
+    const putReliable = !isIvUnreliable(
+      (p.putIvPct ?? Number.NaN) / 100,
+      effectiveExtrinsic('put', p.strike, rawPutMid),
+    );
+    const callIvPct =
+      callReliable && isPositiveFinite(p.callIvPct) ? p.callIvPct : Number.NaN;
+    const putIvPct = putReliable && isPositiveFinite(p.putIvPct) ? p.putIvPct : Number.NaN;
     const ivSpreadPp =
       Number.isFinite(callIvPct) && Number.isFinite(putIvPct) ? callIvPct - putIvPct : Number.NaN;
 
@@ -1748,6 +1837,8 @@ export function computeRatiosAndStructureCosts(input: {
   readonly dividendYield: number;
   readonly strikes: readonly StructureChainStrikeInput[];
   readonly historicalVolPctSeries?: readonly number[];
+  /** Pieza 46.1: IV ATM del vencimiento activo (decimal). Si es válida, los strikes 1x2 se escalan a ±1σ/±2σ. */
+  readonly ivAtmDec?: number;
 }): RatiosAndStructureCostsResult {
   const emptyOut: RatiosAndStructureCostsResult = {
     status: 'NO_DATA',
@@ -1757,7 +1848,8 @@ export function computeRatiosAndStructureCosts(input: {
   };
   if (
     !isPositiveFinite(input.spot) ||
-    !isPositiveFinite(input.daysToExpiry) ||
+    !Number.isFinite(input.daysToExpiry) ||
+    input.daysToExpiry < 0 ||
     !Number.isFinite(input.rate) ||
     !Number.isFinite(input.dividendYield) ||
     !isRuntimeArray(input.strikes) ||
@@ -1767,7 +1859,13 @@ export function computeRatiosAndStructureCosts(input: {
   }
 
   const { spot, daysToExpiry, rate, dividendYield } = input;
-  const tExp = daysToExpiry / CALENDAR_DAYS_PER_YEAR;
+  const tExp =
+    daysToExpiry > 0 ? daysToExpiry / CALENDAR_DAYS_PER_YEAR : MIN_EXPECTED_MOVE_T_YEARS;
+  const sigmaMove =
+    input.ivAtmDec !== undefined && isPositiveFinite(input.ivAtmDec)
+      ? expectedMoveSigma(spot, input.ivAtmDec, tExp)
+      : Number.NaN;
+  const useSigma = Number.isFinite(sigmaMove);
   const sorted = input.strikes
     .filter((s) => isPositiveFinite(s.strike))
     .slice()
@@ -1799,8 +1897,9 @@ export function computeRatiosAndStructureCosts(input: {
   if (anchorCallRow !== undefined) {
     const longLeg = getLeg(anchorCallRow, 'call', 'buy');
     const seenCallShortStrikes = new Set<number>();
-    for (const targetPct of [5, 10, 15] as const) {
-      const targetK = spot * (1 + targetPct / 100);
+    const callTargets: readonly number[] = useSigma ? [1, 2] : [5, 10, 15];
+    for (const targetPct of callTargets) {
+      const targetK = useSigma ? spot + targetPct * sigmaMove : spot * (1 + targetPct / 100);
       const shortRow = sorted
         .filter(
           (s) =>
@@ -1812,10 +1911,13 @@ export function computeRatiosAndStructureCosts(input: {
       if (shortRow === undefined) continue;
       seenCallShortStrikes.add(shortRow.strike);
       const shortLeg = getLeg(shortRow, 'call', 'sell');
+      if (!isRatioCardValid(longLeg.price, shortLeg.price) || (useSigma && shortLeg.price <= MIN_RATIO_PREMIUM)) {
+        continue;
+      }
       const netCash1x2 = 2 * shortLeg.price - longLeg.price;
       callRatios.push({
         side: 'CALL',
-        targetOffsetPct: targetPct,
+        targetOffsetPct: useSigma ? (targetK / spot - 1) * 100 : targetPct,
         longStrike: anchorCallRow.strike,
         longPrice: longLeg.price,
         shortStrike: shortRow.strike,
@@ -1837,8 +1939,9 @@ export function computeRatiosAndStructureCosts(input: {
   if (anchorPutRow !== undefined) {
     const longLeg = getLeg(anchorPutRow, 'put', 'buy');
     const seenPutShortStrikes = new Set<number>();
-    for (const targetPct of [-5, -10, -15] as const) {
-      const targetK = spot * (1 + targetPct / 100);
+    const putTargets: readonly number[] = useSigma ? [-1, -2] : [-5, -10, -15];
+    for (const targetPct of putTargets) {
+      const targetK = useSigma ? spot + targetPct * sigmaMove : spot * (1 + targetPct / 100);
       const shortRow = sorted
         .filter(
           (s) =>
@@ -1850,10 +1953,13 @@ export function computeRatiosAndStructureCosts(input: {
       if (shortRow === undefined) continue;
       seenPutShortStrikes.add(shortRow.strike);
       const shortLeg = getLeg(shortRow, 'put', 'sell');
+      if (!isRatioCardValid(longLeg.price, shortLeg.price) || (useSigma && shortLeg.price <= MIN_RATIO_PREMIUM)) {
+        continue;
+      }
       const netCash1x2 = 2 * shortLeg.price - longLeg.price;
       putRatios.push({
         side: 'PUT',
-        targetOffsetPct: targetPct,
+        targetOffsetPct: useSigma ? (targetK / spot - 1) * 100 : targetPct,
         longStrike: anchorPutRow.strike,
         longPrice: longLeg.price,
         shortStrike: shortRow.strike,

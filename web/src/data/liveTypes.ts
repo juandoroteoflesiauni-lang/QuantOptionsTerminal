@@ -606,6 +606,8 @@ export interface BuyWriteDto {
   readonly staticAnnualizedTna: number | null;
   readonly maxAssignedReturnPct: number | null;
   readonly assignedAnnualizedTna: number | null;
+  readonly annualizedRate?: number | null;
+  readonly rateStatus?: 'OK' | 'BLOCKED_SHORT_DTE' | 'NO_DATA';
 }
 
 export interface CalendarRollDto {

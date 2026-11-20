@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { calendarDteEt } from '../../../src/core/options/zeroDteFixes';
 import type { LogicalRange } from 'lightweight-charts';
 import {
   CandlestickSeries,
@@ -1195,11 +1196,19 @@ export const StockDetailView: React.FC<{
           }
         : null,
       nextExpiry: frontSlice
-        ? {
-            expiryCode: frontSlice.expirationDate,
-            expirationDate: frontSlice.expirationDate,
-            daysToExpiry: Math.round(frontSlice.timeToExpiryDays),
-          }
+        ? (() => {
+            const dteEt = calendarDteEt(
+              frontSlice.expirationDate,
+              (usSnap?.asOfUtcSec ?? Math.floor(Date.now() / 1000)) * 1_000,
+            );
+            return {
+              expiryCode: frontSlice.expirationDate,
+              expirationDate: frontSlice.expirationDate,
+              daysToExpiry: Number.isFinite(dteEt)
+                ? dteEt
+                : Math.max(0, Math.round(frontSlice.timeToExpiryDays)),
+            };
+          })()
         : null,
       marketCclMedian: contextInfo.marketCclMedian,
       currencySymbol: 'USD',
