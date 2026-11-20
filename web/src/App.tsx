@@ -319,9 +319,10 @@ export default function App() {
         feedsHealth={feedsHealth}
       />
 
-      {/* Banner contextual si el usuario simula mercado cerrado / feriado */}
+      {/* Banner contextual si el usuario simula mercado cerrado / feriado.
+          Pieza 49.1: overlay fijo (no empuja el layout → CLS 0). */}
       {arMarketStatus !== 'Abierto' && (
-        <div className="bg-[#35280F] border-b border-[#F5B544]/40 px-4 py-1.5 flex items-center justify-between text-[12px] text-[#F5B544]">
+        <div className="fixed left-0 right-0 top-[50px] z-30 bg-[#35280F] border-b border-[#F5B544]/40 px-4 py-1.5 flex items-center justify-between text-[12px] text-[#F5B544] shadow-[0_4px_16px_-6px_rgba(0,0,0,0.6)]">
           <span>
             Estado BYMA ({liveMarket.feedStatus}): <strong>{arMarketStatus}</strong> — {liveMarket.marketStateLabel}
           </span>
@@ -671,19 +672,22 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
-                {(!liveMarket.isBackendConnected || liveMarket.warmupStatus === 'WARMING_UP') && (
-                  <span
-                    title={
-                      !liveMarket.isBackendConnected
-                        ? 'Reconectando con el servidor backend...'
-                        : 'Precargando universo 24/7 EOD e indicadores...'
-                    }
-                    className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-[8px] border border-[#2A3347] bg-[#121722] text-[#9CA3AF] text-[10.5px] font-mono-num"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#EAB308] animate-pulse" />
-                    {!liveMarket.isBackendConnected ? 'CONECTANDO...' : 'PRECARGANDO EOD...'}
-                  </span>
-                )}
+                {/* Pieza 49.1: slot de altura/ancho reservado (invisible al conectar) → CLS 0 */}
+                <span
+                  title={
+                    !liveMarket.isBackendConnected
+                      ? 'Reconectando con el servidor backend...'
+                      : liveMarket.warmupStatus === 'WARMING_UP'
+                        ? 'Precargando universo 24/7 EOD e indicadores...'
+                        : 'Backend conectado y warmup completo'
+                  }
+                  className={`hidden sm:inline-flex items-center justify-center gap-1.5 min-w-[148px] px-2 py-1 rounded-[8px] border border-[#2A3347] bg-[#121722] text-[#9CA3AF] text-[10.5px] font-mono-num ${
+                    !liveMarket.isBackendConnected || liveMarket.warmupStatus === 'WARMING_UP' ? '' : 'invisible'
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#EAB308]" />
+                  {!liveMarket.isBackendConnected ? 'CONECTANDO...' : 'PRECARGANDO EOD...'}
+                </span>
                 <span
                   title={liveMarket.marketStateLabel}
                   className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[11px] font-mono-num font-semibold ${

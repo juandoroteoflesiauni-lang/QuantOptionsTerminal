@@ -666,7 +666,7 @@ export const MainPriceAmtChart: React.FC<{
             );
           })}
           {loading && (
-            <span className="ml-2 text-[10px] font-mono-num text-[#8B7CF6] animate-pulse">
+            <span className="ml-2 text-[10px] font-mono-num text-[#8B7CF6]">
               Cargando...
             </span>
           )}

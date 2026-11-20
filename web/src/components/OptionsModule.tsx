@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronDown,
@@ -47,6 +47,7 @@ import {
   useMarketStreamMeta,
 } from '../api/useMarketLiveStream';
 import { VirtualizedOptionChainTable } from './options/VirtualizedOptionChainTable';
+import { VirtualizedRows } from './common/VirtualizedRows';
 import {
   HelpTooltip,
   InsightBanner,
@@ -601,6 +602,36 @@ type DetailedSpreadRow = {
   readonly sigmaMarkerAfter?: string;
 };
 
+/* Pieza 49.1: escalera de spreads virtualizada (div-grid) — solo se montan las
+   filas visibles + overscan. Grid y ancho mínimo reproducen la tabla anterior. */
+const SPREAD_GRID_CLASS: Readonly<Record<'pares' | 'escalera', string>> = {
+  pares: 'grid grid-cols-[minmax(200px,1fr)_120px_minmax(200px,1fr)]',
+  escalera: 'grid grid-cols-[repeat(4,minmax(118px,1fr))_120px_repeat(4,minmax(118px,1fr))]',
+};
+
+const SPREAD_MIN_WIDTH_CLASS: Readonly<Record<'pares' | 'escalera', string>> = {
+  pares: 'min-w-[640px]',
+  escalera: 'min-w-[1160px]',
+};
+
+type SpreadLadderEntry =
+  | { readonly kind: 'row'; readonly key: string; readonly row: DetailedSpreadRow }
+  | {
+      readonly kind: 'marker';
+      readonly key: string;
+      readonly tone: 'spot' | 'sigma';
+      readonly label: string;
+    };
+
+type FlowTableEntry =
+  | {
+      readonly kind: 'row';
+      readonly key: string;
+      readonly row: BidirectionalFlowRow;
+    }
+  | { readonly kind: 'zeroGamma'; readonly key: string; readonly spot: number };
+
+
 function buildDetailedSpreadMatrix(
   rows: readonly OptionChainRow[],
   spot: number,
@@ -1147,6 +1178,80 @@ export const OptionsModule: React.FC<{
     [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, liveMarket.version],
   );
 
+  // Pieza 49.1: ventana virtual de la escalera de spreads (>50 filas → solo visibles).
+  const spreadLadderEntries = useMemo<readonly SpreadLadderEntry[]>(() => {
+    const list: SpreadLadderEntry[] = [];
+    for (const row of detailedSpreadRows) {
+      list.push({ kind: 'row', key: `spread-${String(row.strikeNum)}`, row });
+      if (row.spotMarkerAfter !== undefined) {
+        list.push({
+          kind: 'marker',
+          key: `spread-spot-${String(row.strikeNum)}`,
+          tone: 'spot',
+          label: row.spotMarkerAfter,
+        });
+      }
+      if (row.sigmaMarkerAfter !== undefined) {
+        list.push({
+          kind: 'marker',
+          key: `spread-sigma-${String(row.strikeNum)}`,
+          tone: 'sigma',
+          label: row.sigmaMarkerAfter,
+        });
+      }
+    }
+    return list;
+  }, [detailedSpreadRows]);
+
+  // Delegación de clicks: un solo handler en el contenedor en vez de cientos de
+  // botones con onClick/onDoubleClick propios (Pieza 49.1).
+  const spreadMetricByKey = useMemo(() => {
+    const map = new Map<string, SpreadCellMetric>();
+    for (const row of detailedSpreadRows) {
+      for (const cell of [row.c1, row.c2, row.c3, row.c4, row.p1, row.p2, row.p3, row.p4]) {
+        if (cell !== null) {
+          map.set(
+            `${cell.side}|${String(cell.longStrike)}|${String(cell.shortStrike)}|${String(cell.widthBases)}`,
+            cell,
+          );
+        }
+      }
+    }
+    return map;
+  }, [detailedSpreadRows]);
+  const spreadMetricByKeyRef = useRef(spreadMetricByKey);
+  spreadMetricByKeyRef.current = spreadMetricByKey;
+
+  const spreadScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const handleSpreadLadderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-spread-key]');
+    if (!target) return;
+    const key = target.dataset['spreadKey'];
+    if (key === undefined) return;
+    const cell = spreadMetricByKeyRef.current.get(key);
+    if (cell !== undefined) setSelectedSpreadCell(cell);
+  }, []);
+
+  const handleSpreadLadderDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-spread-key]');
+      if (!target) return;
+      const key = target.dataset['spreadKey'];
+      if (key === undefined) return;
+      const cell = spreadMetricByKeyRef.current.get(key);
+      if (cell === undefined) return;
+      onOpenOrderTicket({
+        ticker: `${cell.side}-SPREAD-${String(cell.longStrike)}-${String(cell.shortStrike)}`,
+        side: 'Compra',
+        price: cell.debit * LOT,
+        qty: 10,
+        instrumentLabel: `${cell.side === 'CALL' ? 'Bull Call' : 'Bear Put'} ${upperUnderlying} ${String(cell.longStrike)}/${String(cell.shortStrike)} (${String(cell.widthBases)} bases)`,
+      });
+    },
+    [onOpenOrderTicket, upperUnderlying],
+  );
+
   const spreadSummaryStats = useMemo(() => {
     const allCells: SpreadCellMetric[] = [];
     for (const r of detailedSpreadRows) {
@@ -1555,6 +1660,28 @@ export const OptionsModule: React.FC<{
     [activeExpiry, displaySpot, flowUnit, underlyingMeta.market, contractMultiplier, liveMarket.version]
   );
 
+  // Pieza 49.1: ventana virtual del flujo por base (marcador Zero Gamma incluido como entrada).
+  const flowTableScrollRef = useRef<HTMLDivElement | null>(null);
+  const flowEntries = useMemo<readonly FlowTableEntry[]>(() => {
+    const list: FlowTableEntry[] = [];
+    const zg = dealerGammaReport.zeroGammaSpot;
+    for (let i = 0; i < flowSummary.rows.length; i += 1) {
+      const row = flowSummary.rows[i];
+      if (row === undefined) continue;
+      const prevRow = i > 0 ? flowSummary.rows[i - 1] : undefined;
+      if (
+        Number.isFinite(zg) &&
+        prevRow !== undefined &&
+        Math.min(prevRow.strikeNum, row.strikeNum) < zg &&
+        Math.max(prevRow.strikeNum, row.strikeNum) >= zg
+      ) {
+        list.push({ kind: 'zeroGamma', key: `flow-zg-${String(row.strikeNum)}`, spot: zg });
+      }
+      list.push({ kind: 'row', key: `flow-${String(row.strikeNum)}`, row });
+    }
+    return list;
+  }, [flowSummary.rows, dealerGammaReport.zeroGammaSpot]);
+
   const builderAnalytics = useMemo(
     () =>
       computeBuilderAnalytics(
@@ -1644,7 +1771,7 @@ export const OptionsModule: React.FC<{
       {/* =====================================================================
           1. HEADER DEL ACTIVO SUBYACENTE Y DATOS CLAVE
           ===================================================================== */}
-      <div className="rounded-[12px] bg-[#0D1017] border border-[#1E222D] px-5 py-3.5 flex flex-col gap-3">
+      <div className="rounded-[12px] bg-[#0D1017] border border-[#1E222D] px-5 py-3.5 flex flex-col gap-3 min-h-[168px]">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-6">
             <div className="flex items-center gap-3">
@@ -3075,47 +3202,81 @@ export const OptionsModule: React.FC<{
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-center font-mono-num text-[12.5px]">
-                <thead>
-                  <tr className="border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider">
-                    <th colSpan={spreadViewMode === 'pares' ? 1 : 4} className="py-2.5 bg-[#2B2819] text-[#EAB308]">
+            <div
+              ref={spreadScrollRef}
+              onClick={handleSpreadLadderClick}
+              onDoubleClick={handleSpreadLadderDoubleClick}
+              className="perf-table-viewport max-h-[64vh] overflow-auto bg-[#0A0A0D] text-center font-mono-num text-[12.5px]"
+            >
+              <div className={SPREAD_MIN_WIDTH_CLASS[spreadViewMode]}>
+                <div className="sticky top-0 z-20 bg-[#13161F]">
+                  <div className={`${SPREAD_GRID_CLASS[spreadViewMode]} border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider`}>
+                    <div className={`py-2.5 bg-[#2B2819] text-[#EAB308] ${spreadViewMode === 'escalera' ? 'col-span-4' : ''}`}>
                       CALL
-                    </th>
-                    <th className="py-2.5 bg-[#161922] text-[#9CA3AF] w-28" />
-                    <th colSpan={spreadViewMode === 'pares' ? 1 : 4} className="py-2.5 bg-[#261D30] text-[#C084FC]">
+                    </div>
+                    <div className="py-2.5 bg-[#161922] text-[#9CA3AF]" />
+                    <div className={`py-2.5 bg-[#261D30] text-[#C084FC] ${spreadViewMode === 'escalera' ? 'col-span-4' : ''}`}>
                       PUT
-                    </th>
-                  </tr>
-                  <tr className="border-b border-[#232733] bg-[#13161F] text-[11.5px] font-medium text-[#9CA3AF]">
-                    {spreadViewMode === 'escalera' && (
+                    </div>
+                  </div>
+                  <div className={`${SPREAD_GRID_CLASS[spreadViewMode]} border-b border-[#232733] bg-[#13161F] text-[11.5px] font-medium text-[#9CA3AF]`}>
+                    {spreadViewMode === 'escalera' ? (
                       <>
-                        <th className="py-2.5 px-3">4 bases</th>
-                        <th className="py-2.5 px-3">3 bases</th>
-                        <th className="py-2.5 px-3">2 bases</th>
+                        <div className="py-2.5 px-3">4 bases</div>
+                        <div className="py-2.5 px-3">3 bases</div>
+                        <div className="py-2.5 px-3">2 bases</div>
+                        <div className="py-2.5 px-3">1 base</div>
+                        <div className="py-2.5 px-4 bg-[#1C202B] text-[#D1D4DC] font-semibold">BASE</div>
+                        <div className="py-2.5 px-3">1 base</div>
+                        <div className="py-2.5 px-3">2 bases</div>
+                        <div className="py-2.5 px-3">3 bases</div>
+                        <div className="py-2.5 px-3">4 bases</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="py-2.5 px-3">1 base</div>
+                        <div className="py-2.5 px-4 bg-[#1C202B] text-[#D1D4DC] font-semibold">BASE</div>
+                        <div className="py-2.5 px-3">1 base</div>
                       </>
                     )}
-                    <th className="py-2.5 px-3">1 base</th>
-                    <th className="py-2.5 px-4 bg-[#1C202B] text-[#D1D4DC] font-semibold">BASE</th>
-                    <th className="py-2.5 px-3">1 base</th>
-                    {spreadViewMode === 'escalera' && (
-                      <>
-                        <th className="py-2.5 px-3">2 bases</th>
-                        <th className="py-2.5 px-3">3 bases</th>
-                        <th className="py-2.5 px-3">4 bases</th>
-                      </>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {detailedSpreadRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={spreadViewMode === 'pares' ? 3 : 9} className="py-8 text-[#787B86]">
-                        Sin puntas ni referencias de cierre suficientes en {upperUnderlying} para construir spreads verticales.
-                      </td>
-                    </tr>
-                  ) : (
-                    detailedSpreadRows.map((row) => {
+                  </div>
+                </div>
+                {detailedSpreadRows.length === 0 ? (
+                  <div className="py-8 text-[#787B86]">
+                    Sin puntas ni referencias de cierre suficientes en {upperUnderlying} para construir spreads verticales.
+                  </div>
+                ) : (
+                  <VirtualizedRows
+                    scrollRef={spreadScrollRef}
+                    items={spreadLadderEntries}
+                    getKey={(entry) => entry.key}
+                    estimateSize={(_, entry) => (entry.kind === 'row' ? 66 : 22)}
+                    overscan={8}
+                  >
+                    {(entry) => {
+                      if (entry.kind === 'marker') {
+                        return (
+                          <div className="relative flex w-full items-center justify-center">
+                            <div
+                              className={
+                                entry.tone === 'spot'
+                                  ? 'absolute inset-x-0 top-0 border-t border-[#EAB308]/80'
+                                  : 'absolute inset-x-0 top-0 border-t border-dashed border-[#6D7282]'
+                              }
+                            />
+                            <span
+                              className={
+                                entry.tone === 'spot'
+                                  ? 'relative -top-2 px-2 py-0.2 rounded-full bg-[#EAB308] text-[#0B0E14] font-mono-num font-extrabold text-[10.5px] shadow'
+                                  : 'relative -top-2 px-2 py-0.2 rounded-full bg-[#1C202B] border border-[#6D7282] text-[#D1D4DC] font-mono-num font-bold text-[10px]'
+                              }
+                            >
+                              {entry.label}
+                            </span>
+                          </div>
+                        );
+                      }
+                      const row = entry.row;
                       const isAtmRow =
                         Number.isFinite(displaySpot) &&
                         displaySpot > 0 &&
@@ -3140,20 +3301,11 @@ export const OptionsModule: React.FC<{
                             ];
 
                       const renderSpreadCell = (cell: SpreadCellMetric | null, key: string) => (
-                        <td key={key} className="py-2 px-1.5 align-top">
+                        <div key={key} className="py-2 px-1.5">
                           {cell !== null ? (
                             <button
                               type="button"
-                              onClick={() => setSelectedSpreadCell(cell)}
-                              onDoubleClick={() =>
-                                onOpenOrderTicket({
-                                  ticker: `${cell.side}-SPREAD-${cell.longStrike}-${cell.shortStrike}`,
-                                  side: 'Compra',
-                                  price: cell.debit * LOT,
-                                  qty: 10,
-                                  instrumentLabel: `${cell.side === 'CALL' ? 'Bull Call' : 'Bear Put'} ${upperUnderlying} ${cell.longStrike}/${cell.shortStrike} (${cell.widthBases} bases)`,
-                                })
-                              }
+                              data-spread-key={`${cell.side}|${String(cell.longStrike)}|${String(cell.shortStrike)}|${String(cell.widthBases)}`}
                               title={`Long ${cell.longStrike} / Short ${cell.shortStrike} · Débito $${fmtNum(cell.debit, 2)} · R/B ${fmtNum(cell.ratio, 2)}x · BE $${fmtNum(cell.breakeven, 1)} (${fmtPct(cell.beDistPct, 1)}) · Prob ${fmtNum(cell.probBePct, 1)}% · Edge ${fmtPct(cell.edgePct, 1)} (Click para inspeccionar · Doble click para operar)`}
                               className={`w-full rounded-[6px] px-1.5 py-1 flex flex-col items-center gap-0.5 cursor-pointer transition-all hover:bg-[#1E2434] ${
                                 selectedSpreadCell?.longStrike === cell.longStrike &&
@@ -3197,50 +3349,26 @@ export const OptionsModule: React.FC<{
                           ) : (
                             <span className="text-[#6D7282] inline-block py-2">—</span>
                           )}
-                        </td>
+                        </div>
                       );
 
                       return (
-                        <React.Fragment key={row.strikeNum}>
-                          <tr className={`border-b border-[#1A1E29] ${isAtmRow ? 'bg-[#1B1F2A]' : 'hover:bg-[#161A24]'}`}>
-                            {callCols.map((c, cIdx) => renderSpreadCell(c.metric, `c-${cIdx}`))}
+                        <div
+                          className={`${SPREAD_GRID_CLASS[spreadViewMode]} items-stretch border-b border-[#1A1E29] ${isAtmRow ? 'bg-[#1B1F2A]' : 'hover:bg-[#161A24]'}`}
+                        >
+                          {callCols.map((c, cIdx) => renderSpreadCell(c.metric, `c-${cIdx}`))}
 
-                            <td className={`py-2.5 px-4 font-bold text-[#FFFFFF] align-middle ${isAtmRow ? 'bg-[#2A2F3D]' : 'bg-[#1C202B]'}`}>
-                              {row.base}
-                            </td>
+                          <div className={`flex items-center justify-center py-2.5 px-4 font-bold text-[#FFFFFF] ${isAtmRow ? 'bg-[#2A2F3D]' : 'bg-[#1C202B]'}`}>
+                            {row.base}
+                          </div>
 
-                            {putCols.map((p, pIdx) => renderSpreadCell(p.metric, `p-${pIdx}`))}
-                          </tr>
-
-                          {row.spotMarkerAfter && (
-                            <tr>
-                              <td colSpan={spreadViewMode === 'pares' ? 3 : 9} className="p-0 relative h-0">
-                                <div className="w-full border-t border-[#EAB308]/80 relative flex justify-center items-center">
-                                  <span className="-top-2.5 px-2 py-0.2 rounded-full bg-[#EAB308] text-[#0B0E14] font-mono-num font-extrabold text-[10.5px] shadow">
-                                    {row.spotMarkerAfter}
-                                  </span>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-
-                          {row.sigmaMarkerAfter && (
-                            <tr>
-                              <td colSpan={spreadViewMode === 'pares' ? 3 : 9} className="p-0 relative h-0">
-                                <div className="w-full border-t border-dashed border-[#6D7282] relative flex justify-center items-center">
-                                  <span className="-top-2.5 px-2 py-0.2 rounded-full bg-[#1C202B] border border-[#6D7282] text-[#D1D4DC] font-mono-num font-bold text-[10px]">
-                                    {row.sigmaMarkerAfter}
-                                  </span>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
+                          {putCols.map((p, pIdx) => renderSpreadCell(p.metric, `p-${pIdx}`))}
+                        </div>
                       );
-                    })
-                  )}
-                </tbody>
-              </table>
+                    }}
+                  </VirtualizedRows>
+                )}
+              </div>
             </div>
           </div>
             </>
@@ -3598,19 +3726,38 @@ export const OptionsModule: React.FC<{
               </div>
             </div>
 
-            <div className="grid grid-cols-12 border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider text-center">
-              <div className="col-span-4 py-2.5 bg-[#2B2819] text-[#EAB308]">CALL</div>
-              <div className="col-span-4 py-2.5 bg-[#161922] text-[#9CA3AF]">BASE · WALLS / GEX</div>
-              <div className="col-span-4 py-2.5 bg-[#261D30] text-[#C084FC]">PUT</div>
-            </div>
+            <div ref={flowTableScrollRef} className="perf-table-viewport max-h-[68vh] overflow-auto">
+              <div className="grid grid-cols-12 border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider text-center sticky top-0 z-20 bg-[#0A0A0D]">
+                <div className="col-span-4 py-2.5 bg-[#2B2819] text-[#EAB308]">CALL</div>
+                <div className="col-span-4 py-2.5 bg-[#161922] text-[#9CA3AF]">BASE · WALLS / GEX</div>
+                <div className="col-span-4 py-2.5 bg-[#261D30] text-[#C084FC]">PUT</div>
+              </div>
 
-            <div className="divide-y divide-[#1A1E29] font-mono-num text-[12px]">
               {flowSummary.rows.length === 0 ? (
-                <div className="py-8 text-center text-[#787B86]">
+                <div className="py-8 text-center text-[#787B86] font-mono-num text-[12px]">
                   Sin flujo operado reportado para {upperUnderlying}.
                 </div>
               ) : (
-                flowSummary.rows.map((r: BidirectionalFlowRow, rIdx: number) => {
+                <VirtualizedRows
+                  scrollRef={flowTableScrollRef}
+                  items={flowEntries}
+                  getKey={(entry) => entry.key}
+                  estimateSize={(_, entry) => (entry.kind === 'row' ? 46 : 26)}
+                  overscan={10}
+                  className="font-mono-num text-[12px]"
+                >
+                  {(entry) => {
+                    if (entry.kind === 'zeroGamma') {
+                      return (
+                        <div className="flex items-center justify-center gap-2 py-1 bg-cyan-950/35 border-y border-cyan-500/45 text-[10.5px] font-bold text-[#38BDF8]">
+                          <span>ZERO GAMMA (Gamma Flip)</span>
+                          <span className="px-1.5 py-0.2 rounded bg-[#0B0E14] border border-cyan-500/40 text-[#FFFFFF]">
+                            {formatStrike(entry.spot)}
+                          </span>
+                        </div>
+                      );
+                    }
+                    const r = entry.row;
                   const gexRow = exposureByStrikeMap.get(r.strikeNum);
                   const netGexStrike = gexRow?.netGex ?? null;
                   const isCallWall =
@@ -3622,13 +3769,6 @@ export const OptionsModule: React.FC<{
                   const pinK = activeQuantEngines?.gexCharmPin?.gexCharmPinStrike ?? null;
                   const isPinStrike =
                     pinK !== null && Number.isFinite(pinK) && Math.abs(r.strikeNum - pinK) < 1e-6;
-                  const zgSpot = dealerGammaReport.zeroGammaSpot;
-                  const prevRow = rIdx > 0 ? flowSummary.rows[rIdx - 1] : undefined;
-                  const showZeroGammaBefore =
-                    Number.isFinite(zgSpot) &&
-                    prevRow !== undefined &&
-                    Math.min(prevRow.strikeNum, r.strikeNum) < zgSpot &&
-                    Math.max(prevRow.strikeNum, r.strikeNum) >= zgSpot;
                   const gexLabel =
                     netGexStrike !== null && Number.isFinite(netGexStrike)
                       ? `${netGexStrike >= 0 ? '+' : '-'}${
@@ -3641,20 +3781,11 @@ export const OptionsModule: React.FC<{
                       : null;
 
                   return (
-                    <React.Fragment key={r.strikeNum}>
-                      {showZeroGammaBefore && (
-                        <div className="flex items-center justify-center gap-2 py-1 bg-cyan-950/35 border-y border-cyan-500/45 text-[10.5px] font-bold text-[#38BDF8]">
-                          <span>ZERO GAMMA (Gamma Flip)</span>
-                          <span className="px-1.5 py-0.2 rounded bg-[#0B0E14] border border-cyan-500/40 text-[#FFFFFF]">
-                            {formatStrike(zgSpot)}
-                          </span>
-                        </div>
-                      )}
-                      <div
-                        className={`grid grid-cols-12 items-center min-h-9 py-1 ${
-                          r.isAtm ? 'bg-[#1E222E]' : 'hover:bg-[#151922]'
-                        }`}
-                      >
+                    <div
+                      className={`grid grid-cols-12 items-center min-h-9 py-1 border-b border-[#1A1E29] ${
+                        r.isAtm ? 'bg-[#1E222E]' : 'hover:bg-[#151922]'
+                      }`}
+                    >
                         <div className="col-span-4 flex items-center h-full px-3 gap-2">
                           <span
                             className={`w-14 text-right font-bold shrink-0 ${
@@ -3747,9 +3878,9 @@ export const OptionsModule: React.FC<{
                           </span>
                         </div>
                       </div>
-                    </React.Fragment>
-                  );
-                })
+                    );
+                  }}
+                </VirtualizedRows>
               )}
             </div>
           </div>

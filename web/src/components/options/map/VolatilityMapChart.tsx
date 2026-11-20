@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'motion/react';
 import { Market, MapGoal, Evaluation, HIST_VOL, atmIv, dateAt, fk, money, pct } from '../engine';
 import { MapGeometry, PointerStore } from './mapShared';
@@ -88,16 +88,8 @@ const AxisBadge: React.FC<{ x: number; y: number; text: string; tone: 'amber' | 
 
 const GoalPin: React.FC<{ x: number; y: number }> = ({ x, y }) => (
   <g pointerEvents="none">
-    <motion.circle
-      cx={x}
-      cy={y}
-      fill="none"
-      stroke={AMBER}
-      strokeWidth="1.5"
-      initial={{ r: 8, opacity: 0.55 }}
-      animate={{ r: 22, opacity: 0 }}
-      transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
-    />
+    {/* Marcador estático: antes era un motion.circle con repeat: Infinity (Pieza 49.1). */}
+    <circle cx={x} cy={y} r="20" fill="none" stroke={AMBER} strokeWidth="1" strokeOpacity="0.22" />
     <circle cx={x} cy={y} r="13" fill={AMBER} fillOpacity="0.14" />
     <circle cx={x} cy={y} r="7" fill="#0B0E14" stroke={AMBER} strokeWidth="2.5" />
     <circle cx={x} cy={y} r="2.6" fill={AMBER} />
@@ -129,21 +121,59 @@ export const VolatilityMapChart: React.FC<{
     const rangeTap = useRef<number | null>(null);
     const frame = useRef(0);
     const latest = useRef<{ x: number; y: number } | null>(null);
+    const invCtmRef = useRef<DOMMatrix | null>(null);
+    const ctmFrameRef = useRef(0);
 
-    useEffect(() => () => cancelAnimationFrame(frame.current), []);
+    const refreshCtm = useCallback(() => {
+      const svg = svgRef.current;
+      const ctm = svg?.getScreenCTM();
+      invCtmRef.current = ctm ? ctm.inverse() : null;
+    }, []);
+
+    useEffect(() => {
+      refreshCtm();
+      const svg = svgRef.current;
+      if (!svg) return;
+      const scheduleCtm = () => {
+        if (ctmFrameRef.current) return;
+        ctmFrameRef.current = requestAnimationFrame(() => {
+          ctmFrameRef.current = 0;
+          refreshCtm();
+        });
+      };
+      const resizeObserver = new ResizeObserver(scheduleCtm);
+      resizeObserver.observe(svg);
+      window.addEventListener('scroll', scheduleCtm, { passive: true });
+      window.addEventListener('resize', scheduleCtm, { passive: true });
+      return () => {
+        resizeObserver.disconnect();
+        window.removeEventListener('scroll', scheduleCtm);
+        window.removeEventListener('resize', scheduleCtm);
+        if (ctmFrameRef.current) cancelAnimationFrame(ctmFrameRef.current);
+      };
+    }, [refreshCtm]);
+
+    useEffect(
+      () => () => {
+        cancelAnimationFrame(frame.current);
+        cancelAnimationFrame(ctmFrameRef.current);
+      },
+      [],
+    );
 
     const { L, T, B, xToday, xExp, xStrip, xAxis, yMin, yMax, pToY, dayToX } = geo;
     const sigma = atmIv(mkt.days);
 
     /* ------------------------------ Interacción ------------------------------ */
+    // La matriz se cachea en un ref (ResizeObserver/scroll) para no forzar layout
+    // en cada pointermove del SVG.
     const toSvg = (cx: number, cy: number) => {
-      const svg = svgRef.current;
-      const ctm = svg?.getScreenCTM();
-      if (!svg || !ctm) return null;
-      const pt = svg.createSVGPoint();
-      pt.x = cx;
-      pt.y = cy;
-      return pt.matrixTransform(ctm.inverse());
+      let inv = invCtmRef.current;
+      if (inv === null) {
+        refreshCtm();
+        inv = invCtmRef.current;
+      }
+      return inv ? new DOMPoint(cx, cy).matrixTransform(inv) : null;
     };
     const snapStep = mkt.market === 'US' || mkt.spot < 1000 ? (mkt.spot < 50 ? 0.5 : 1) : 10;
     const priceAt = (y: number) =>
@@ -414,6 +444,7 @@ export const VolatilityMapChart: React.FC<{
         viewBox={`0 0 ${geo.W} ${geo.H}`}
         className="w-full h-auto select-none touch-none"
         style={{ cursor: 'crosshair' }}
+        onPointerEnter={refreshCtm}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

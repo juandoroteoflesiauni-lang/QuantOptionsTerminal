@@ -387,7 +387,7 @@ const MarketSessionStatusPill: React.FC<{
       >
         <span className="relative flex h-2 w-2">
           {isOpen && (
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#22C55E] opacity-75" />
+            <span className="absolute inline-flex h-full w-full rounded-full bg-[#22C55E] opacity-20" />
           )}
           <span
             className={`relative inline-flex rounded-full h-2 w-2 ${

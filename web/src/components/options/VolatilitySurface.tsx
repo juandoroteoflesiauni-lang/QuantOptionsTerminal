@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Market,
@@ -60,6 +60,40 @@ export const VolatilitySurface: React.FC<{
   const [visible, setVisible] = useState<boolean[]>([true, true, true]);
   const [hoverStrike, setHoverStrike] = useState<number | null>(null);
   const [hoverCell, setHoverCell] = useState<{ r: number; c: number } | null>(null);
+
+  // Pieza 49.1: matriz pantalla→SVG cacheada (ResizeObserver/scroll/rAF) para no
+  // forzar layout con getScreenCTM() en cada pointermove.
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const invCtmRef = useRef<DOMMatrix | null>(null);
+  const ctmFrameRef = useRef(0);
+
+  const refreshCtm = useCallback(() => {
+    const ctm = svgRef.current?.getScreenCTM();
+    invCtmRef.current = ctm ? ctm.inverse() : null;
+  }, []);
+
+  useEffect(() => {
+    refreshCtm();
+    const svg = svgRef.current;
+    if (!svg) return undefined;
+    const scheduleCtm = () => {
+      if (ctmFrameRef.current) return;
+      ctmFrameRef.current = requestAnimationFrame(() => {
+        ctmFrameRef.current = 0;
+        refreshCtm();
+      });
+    };
+    const resizeObserver = new ResizeObserver(scheduleCtm);
+    resizeObserver.observe(svg);
+    window.addEventListener('scroll', scheduleCtm, { passive: true });
+    window.addEventListener('resize', scheduleCtm, { passive: true });
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('scroll', scheduleCtm);
+      window.removeEventListener('resize', scheduleCtm);
+      if (ctmFrameRef.current) cancelAnimationFrame(ctmFrameRef.current);
+    };
+  }, [refreshCtm]);
 
   const term = useMemo(() => {
     if (expiries && expiries.length > 0) {
@@ -282,17 +316,19 @@ export const VolatilitySurface: React.FC<{
 
         <div className="relative px-2">
           <svg
+            ref={svgRef}
             viewBox={`0 0 ${SW} ${SH}`}
             className="w-full h-auto select-none"
+            onPointerEnter={refreshCtm}
             onPointerMove={(e) => {
               if (strikes.length === 0) return;
-              const svg = e.currentTarget;
-              const pt = svg.createSVGPoint();
-              pt.x = e.clientX;
-              pt.y = e.clientY;
-              const ctm = svg.getScreenCTM();
-              if (!ctm) return;
-              const p = pt.matrixTransform(ctm.inverse());
+              let inv = invCtmRef.current;
+              if (inv === null) {
+                refreshCtm();
+                inv = invCtmRef.current;
+              }
+              if (inv === null) return;
+              const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(inv);
               if (p.x < SL - 10 || p.x > SR + 10) return setHoverStrike(null);
               let bestK: number | null = null;
               let bestDist = Infinity;
