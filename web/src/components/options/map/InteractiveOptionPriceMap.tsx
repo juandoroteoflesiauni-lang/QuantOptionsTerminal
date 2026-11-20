@@ -18,6 +18,7 @@ import {
   goalCenter,
   goalGain,
   goalReady,
+  isUsOptionsTicker,
   pickThree,
   probAbove,
   signedMoney,
@@ -60,15 +61,21 @@ export const InteractiveOptionPriceMap: React.FC<{
   onGoToBuilder: (legs: PricedLeg[], units: number) => void;
   onGoToSheet: () => void;
 }> = ({ mkt, onGoToBuilder, onGoToSheet }) => {
+  const isUsMarket = isUsOptionsTicker(mkt.ticker, mkt.market);
   const [goal, setGoal] = useState<MapGoal>({ mode: 'precio', price: null, range: null, move: null });
   const [timing, setTiming] = useState<MapTiming>('vto');
   const [targetDate, setTargetDate] = useState<number>(mkt.days);
   const [showPayoff, setShowPayoff] = useState(true);
   const [layers, setLayers] = useState<MapLayers>({ gain: true, loss: true, cone: true, hist: true });
   const [zoom, setZoom] = useState(1);
-  const [budget, setBudget] = useState(250_000);
+  const [budget, setBudget] = useState(() => (isUsMarket ? 2_500 : 250_000));
   const [isCustom, setIsCustom] = useState(false);
   const [selectedId, setSelectedId] = useState<string>('medio');
+
+  useEffect(() => {
+    setBudget(isUsMarket ? 2_500 : 250_000);
+    setIsCustom(false);
+  }, [isUsMarket]);
 
   const liveMarket = useLiveMarketState();
   const store = useMemo(() => createPointerStore(), []);

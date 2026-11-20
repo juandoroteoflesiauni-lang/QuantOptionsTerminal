@@ -6,6 +6,7 @@ import { MapGeometry, PointerStore, TooltipInfo, usePointer } from './mapShared'
 
 const pctTxt = (p: number) => `${Math.round(p * 100)}%`;
 const moveTxt = (m: number) => `${m >= 0 ? '+' : '-'}${fmtNum(Math.abs(m), 1)}%`;
+const snapMapPrice = (p: number) => (p < 1000 ? Math.round(p * 2) / 2 : Math.round(p / 10) * 10);
 
 /** Capa SVG: mira horizontal/vertical, ícono de cursor y badge punteado en el eje. */
 export const MapCrosshair: React.FC<{ store: PointerStore; geo: MapGeometry }> = memo(({ store, geo }) => {
@@ -23,7 +24,7 @@ export const MapCrosshair: React.FC<{ store: PointerStore; geo: MapGeometry }> =
       <g transform={`translate(${geo.xAxis - 58}, ${p.y - 10})`}>
         <rect width="58" height="20" rx="5" fill="#0B0E14" stroke="rgba(255,255,255,0.6)" strokeDasharray="3 2" />
         <text x="29" y="14" textAnchor="middle" fill="#FFFFFF" fontSize="11.5" fontWeight="700" className="font-mono-num">
-          {fk(Math.round(p.price / 10) * 10)}
+          {fk(snapMapPrice(p.price))}
         </text>
       </g>
     </g>
@@ -57,7 +58,7 @@ export const MapTooltip: React.FC<{
           }}
         >
           <div className="text-[#D1D4DC]">
-            <span className="font-mono-num font-bold text-white">{fk(Math.round(info.price / 10) * 10)}</span> el{' '}
+            <span className="font-mono-num font-bold text-white">{fk(snapMapPrice(info.price))}</span> el{' '}
             {info.date}{' '}
             <span className={`font-mono-num ${info.movePct >= 0 ? 'text-[var(--fx-gain-2)]' : 'text-[var(--fx-loss-2)]'}`}>
               {moveTxt(info.movePct)}
@@ -103,7 +104,7 @@ export const MapReadout: React.FC<{
   const i = inspect(p.price, p.elapsed);
   return (
     <>
-      {fk(Math.round(i.price / 10) * 10)} el {i.date}, {moveTxt(i.movePct)}:{' '}
+      {fk(snapMapPrice(i.price))} el {i.date}, {moveTxt(i.movePct)}:{' '}
       <strong className="text-white">{pctTxt(i.prob)}</strong> de terminar {i.above ? 'arriba' : 'abajo'} (la historia,{' '}
       {pctTxt(i.probHist)}).
       {i.strat && (

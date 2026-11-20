@@ -2,7 +2,7 @@ import React, { memo, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, Check, Share2 } from 'lucide-react';
 import { fmtNum } from '../../../data/marketData';
-import { FX_EASE, Market, MapGoal, PricedLeg, Sized, dateAt, fk, money, signedMoney } from '../engine';
+import { FX_EASE, Market, MapGoal, PricedLeg, Sized, dateAt, fk, isUsOptionsTicker, money, signedMoney } from '../engine';
 
 /** Ficha desglosada de la estrategia elegida en "Tres maneras". */
 export const StrategyDetailPanel: React.FC<{
@@ -14,6 +14,8 @@ export const StrategyDetailPanel: React.FC<{
   onGoToSheet: () => void;
 }> = memo(({ mkt, goal, sized, label, onGoToBuilder, onGoToSheet }) => {
   const [copied, setCopied] = useState(false);
+  const isUs = isUsOptionsTicker(mkt.ticker, mkt.market);
+  const currencyPrefix: 'US$' | '$' = isUs ? 'US$' : '$';
 
   const data = useMemo(() => {
     if (!sized) return null;
@@ -23,10 +25,10 @@ export const StrategyDetailPanel: React.FC<{
     const riskCopy =
       total < 0
         ? maxLoss != null && Math.abs(maxLoss + total) < Math.abs(total) * 0.02
-          ? `Pagás ${money(-total)} con comisiones, y es lo más que podés perder.`
-          : `Pagás ${money(-total)} con comisiones. Podés perder hasta ${maxLoss == null ? 'sin techo' : money(maxLoss)}.`
-        : `Cobrás ${money(total)} neto de comisiones. ${
-            maxLoss == null ? 'La pérdida no tiene techo.' : `Podés perder hasta ${money(maxLoss)}.`
+          ? `Pagás ${money(-total, 0, currencyPrefix)} con comisiones, y es lo más que podés perder.`
+          : `Pagás ${money(-total, 0, currencyPrefix)} con comisiones. Podés perder hasta ${maxLoss == null ? 'sin techo' : money(maxLoss, 0, currencyPrefix)}.`
+        : `Cobrás ${money(total, 0, currencyPrefix)} neto de comisiones. ${
+            maxLoss == null ? 'La pérdida no tiene techo.' : `Podés perder hasta ${money(maxLoss, 0, currencyPrefix)}.`
           }`;
 
     const rows: { label: string; price: number; be?: boolean }[] = [];
@@ -103,7 +105,7 @@ export const StrategyDetailPanel: React.FC<{
                   <span className="font-mono-num text-white">
                     {l.ratio * data.units} {l.code}
                   </span>
-                  <span className="font-mono-num text-[#D1D4DC]">a ${fmtNum(l.premium, 2)}</span>
+                  <span className="font-mono-num text-[#D1D4DC]">a {currencyPrefix}{fmtNum(l.premium, 2)}</span>
                 </div>
               ))}
             </div>
@@ -121,13 +123,13 @@ export const StrategyDetailPanel: React.FC<{
                 return (
                   <div key={r.label} className="grid grid-cols-[1fr_90px_130px] gap-3 py-2 text-[13px] border-b border-[var(--fx-line)] last:border-0">
                     <span className="text-[#D1D4DC]">{r.label}</span>
-                    <span className="text-right font-mono-num text-[#9CA3AF]">{fk(Math.round(r.price))}</span>
+                    <span className="text-right font-mono-num text-[#9CA3AF]">{fk(isUs ? Math.round(r.price * 100) / 100 : Math.round(r.price))}</span>
                     <span
                       className={`text-right font-mono-num font-bold ${
                         r.be ? 'text-white' : v >= 0 ? 'text-[var(--fx-gain-2)]' : 'text-[var(--fx-loss-2)]'
                       }`}
                     >
-                      {r.be ? '$0' : signedMoney(v)}
+                      {r.be ? `${currencyPrefix}0` : signedMoney(v, currencyPrefix)}
                     </span>
                   </div>
                 );

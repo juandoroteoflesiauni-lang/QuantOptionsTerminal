@@ -145,8 +145,9 @@ export const VolatilityMapChart: React.FC<{
       pt.y = cy;
       return pt.matrixTransform(ctm.inverse());
     };
+    const snapStep = mkt.market === 'US' || mkt.spot < 1000 ? (mkt.spot < 50 ? 0.5 : 1) : 10;
     const priceAt = (y: number) =>
-      Math.round(Math.max(yMin, Math.min(yMax, geo.yToP(Math.max(T, Math.min(B, y))))) / 10) * 10;
+      Math.round(Math.max(yMin, Math.min(yMax, geo.yToP(Math.max(T, Math.min(B, y))))) / snapStep) * snapStep;
     const dayAt = (x: number) =>
       Math.max(1, Math.min(mkt.days, Math.round(geo.xToDay(Math.max(xToday, Math.min(xExp, x))))));
 
@@ -159,13 +160,13 @@ export const VolatilityMapChart: React.FC<{
         onGoal({ ...g, price });
         if (timingRef.current === 'antes') onTargetDate(dayAt(x));
       } else if (d.kind === 'mueve') {
-        onGoal({ ...g, move: Math.max(10, Math.abs(price - mkt.spot)) });
+        onGoal({ ...g, move: Math.max(snapStep, Math.abs(price - mkt.spot)) });
       } else if (d.kind === 'new') {
         onGoal({ ...g, range: [Math.min(d.anchor, price), Math.max(d.anchor, price)] });
       } else if (d.kind === 'lo' && g.range) {
-        onGoal({ ...g, range: [Math.min(price, g.range[1] - 10), g.range[1]] });
+        onGoal({ ...g, range: [Math.min(price, g.range[1] - snapStep), g.range[1]] });
       } else if (d.kind === 'hi' && g.range) {
-        onGoal({ ...g, range: [g.range[0], Math.max(price, g.range[0] + 10)] });
+        onGoal({ ...g, range: [g.range[0], Math.max(price, g.range[0] + snapStep)] });
       }
     };
 

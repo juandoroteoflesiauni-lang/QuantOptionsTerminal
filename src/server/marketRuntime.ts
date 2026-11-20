@@ -107,6 +107,7 @@ import {
   type VolConeAndRankResult,
 } from '../core/options/probabilisticDivergence.js';
 import {
+  MIN_SYNTHETIC_RATE_T,
   computeSyntheticImpliedRates,
   evaluateBuyWrite,
   evaluateCalendarRoll,
@@ -138,6 +139,7 @@ import {
   buildExpectedConeAndLognormalSummary,
   buildNormalizedMoneynessMatrix,
   buildSeparatedOtmSmile,
+  computeActiveExpiryVrpAndRegime,
   computeHistoricalVolConditionalTable,
   computeParityAndSyntheticRatesByStrike,
   computeRatiosAndStructureCosts,
@@ -2139,12 +2141,15 @@ function evaluateParityForExpiry(
       dividendYield: 0,
     };
   }
-  const dividendYield = impliedDividendYieldFromForward({
-    spot,
-    forward: parity.forward,
-    timeToExpiry,
-    rate,
-  });
+  const dividendYield =
+    timeToExpiry < MIN_SYNTHETIC_RATE_T - 1e-12
+      ? 0
+      : impliedDividendYieldFromForward({
+          spot,
+          forward: parity.forward,
+          timeToExpiry,
+          rate,
+        });
   if (!Number.isFinite(dividendYield)) {
     return {
       expirySec,
@@ -4069,16 +4074,17 @@ export class MarketRuntime {
         const qInputs: RiskNeutralInputNode[] = [];
         for (const n of slicePkg.slice.nodes) {
           if (Number.isFinite(n.iv) && n.iv > 0) {
-            qInputs.push({ strike: n.strike, iv: n.iv });
+            qInputs.push({ strike: n.strike, iv: n.iv, bid: 1 });
           }
         }
-        if (qInputs.length >= 3) {
+        if (qInputs.length >= 5) {
           qDistForExp = extractRiskNeutralDistributionQ({
             spot,
             timeToExpiry: slicePkg.parity.timeToExpiry,
             rate: slicePkg.parity.rate,
             dividendYield: slicePkg.parity.dividendYield,
             nodes: qInputs,
+            smoothTotalVariancePchip: true,
           });
         }
       }
@@ -4182,6 +4188,36 @@ export class MarketRuntime {
         historicalVolPctSeries: histVolSeriesForCost,
       });
 
+      const activeExpiryVrp = computeActiveExpiryVrpAndRegime({
+        expiryCode: expDate,
+        daysToExpiry: days,
+        ivAtmActiveExpiryPct: Number.isFinite(smileOtmOnly.atmIvPct)
+          ? smileOtmOnly.atmIvPct
+          : null,
+        sameExpiryFallbackIvAtmPct: Number.isFinite(smileAll.atmIvPct)
+          ? smileAll.atmIvPct
+          : fallbackAtm,
+        rvReferencePct: Number.isFinite(historicalConditional.latestRv23Pct)
+          ? historicalConditional.latestRv23Pct
+          : Number.isFinite(historicalConditional.latestRv20Pct)
+            ? historicalConditional.latestRv20Pct
+            : null,
+        rvReferenceLabel: Number.isFinite(historicalConditional.latestRv23Pct) ? 'RV23d' : 'RV20d',
+        historicalRvSeriesPct: histVolSeriesForCost,
+        historicalRvMinPct: Number.isFinite(historicalConditional.quantiles.minPct)
+          ? historicalConditional.quantiles.minPct
+          : null,
+        historicalRvMaxPct: Number.isFinite(historicalConditional.quantiles.maxPct)
+          ? historicalConditional.quantiles.maxPct
+          : null,
+        fallbackIvRank: Number.isFinite(historicalConditional.ivRank)
+          ? historicalConditional.ivRank
+          : null,
+        fallbackIvPercentile: Number.isFinite(historicalConditional.ivPercentile)
+          ? historicalConditional.ivPercentile
+          : null,
+      });
+
       expiriesByCode[expDate] = {
         expiryCode: expDate,
         expirationDate: expDate,
@@ -4192,6 +4228,7 @@ export class MarketRuntime {
         expectedCone,
         parity,
         ratiosAndStructures,
+        activeExpiryVrp,
       };
     }
 
@@ -7643,19 +7680,34 @@ export class MarketRuntime {
       for (const c of frontContractsUs) {
         const ivVal = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
         if (Number.isFinite(ivVal) && ivVal > 0) {
-          if (!qNodeMap.has(c.strikePrice) || (c.strikePrice >= spot && c.contractType === 'call') || (c.strikePrice < spot && c.contractType === 'put')) {
-            qNodeMap.set(c.strikePrice, { strike: c.strikePrice, iv: ivVal });
+          const isOtmSide =
+            (c.strikePrice >= spot && c.contractType === 'call') ||
+            (c.strikePrice < spot && c.contractType === 'put');
+          if (!qNodeMap.has(c.strikePrice) || isOtmSide) {
+            qNodeMap.set(c.strikePrice, {
+              strike: c.strikePrice,
+              iv: ivVal,
+              bid:
+                Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0
+                  ? c.lastQuote.bid
+                  : null,
+            });
           }
         }
       }
       const qNodesUs = [...qNodeMap.values()].sort((a, b) => a.strike - b.strike);
       if (frontSlice !== undefined && qNodesUs.length >= 5) {
+        const liquidBidCount = qNodesUs.filter(
+          (n) => n.bid !== null && n.bid !== undefined && n.bid > 0,
+        ).length;
         qDistributionUs = extractRiskNeutralDistributionQ({
           spot,
           rate: evalRateUs,
           dividendYield: evalDivUs,
           timeToExpiry: Math.max(1 / 365, frontSlice.parity.timeToExpiry),
           nodes: qNodesUs,
+          smoothTotalVariancePchip: true,
+          requirePositiveBid: liquidBidCount >= 5,
         });
       }
 
@@ -7749,6 +7801,7 @@ export class MarketRuntime {
             riskFreeRate: evalRateUs,
             dividendYield: evalDivUs,
             timeToExpiry: frontT,
+            dte: frontDteUs,
             pairs: synthPairs,
           });
         }

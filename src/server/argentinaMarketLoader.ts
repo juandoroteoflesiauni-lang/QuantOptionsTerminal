@@ -110,6 +110,7 @@ import {
   buildExpectedConeAndLognormalSummary,
   buildNormalizedMoneynessMatrix,
   buildSeparatedOtmSmile,
+  computeActiveExpiryVrpAndRegime,
   computeCclVolAndAdrCorrelation,
   computeDualBymaVsOpraSurface,
   computeHistoricalVolConditionalTable,
@@ -6324,6 +6325,38 @@ export class ArgentinaMarketRuntime {
         historicalVolPctSeries: histVolSeriesForCost,
       });
 
+      const activeExpiryVrp = computeActiveExpiryVrpAndRegime({
+        expiryCode: exp.expiryCode,
+        daysToExpiry: exp.days,
+        ivAtmActiveExpiryPct: Number.isFinite(smileOtmOnly.atmIvPct)
+          ? smileOtmOnly.atmIvPct
+          : null,
+        sameExpiryFallbackIvAtmPct: Number.isFinite(smileAll.atmIvPct)
+          ? smileAll.atmIvPct
+          : exp.ivAtm !== null && exp.ivAtm > 0
+            ? exp.ivAtm * 100
+            : null,
+        rvReferencePct: Number.isFinite(historicalConditional.latestRv23Pct)
+          ? historicalConditional.latestRv23Pct
+          : Number.isFinite(historicalConditional.latestRv20Pct)
+            ? historicalConditional.latestRv20Pct
+            : null,
+        rvReferenceLabel: Number.isFinite(historicalConditional.latestRv23Pct) ? 'RV23d' : 'RV20d',
+        historicalRvSeriesPct: histVolSeriesForCost,
+        historicalRvMinPct: Number.isFinite(historicalConditional.quantiles.minPct)
+          ? historicalConditional.quantiles.minPct
+          : null,
+        historicalRvMaxPct: Number.isFinite(historicalConditional.quantiles.maxPct)
+          ? historicalConditional.quantiles.maxPct
+          : null,
+        fallbackIvRank: Number.isFinite(historicalConditional.ivRank)
+          ? historicalConditional.ivRank
+          : null,
+        fallbackIvPercentile: Number.isFinite(historicalConditional.ivPercentile)
+          ? historicalConditional.ivPercentile
+          : null,
+      });
+
       expiriesByCode[exp.expiryCode] = {
         expiryCode: exp.expiryCode,
         expirationDate: exp.expirationDate,
@@ -6334,6 +6367,7 @@ export class ArgentinaMarketRuntime {
         expectedCone,
         parity,
         ratiosAndStructures,
+        activeExpiryVrp,
       };
     }
 
@@ -8322,26 +8356,38 @@ export class ArgentinaMarketRuntime {
               ? computeGexCharmPin(allExposureInputs, marketExp, { maxPinDte: 60 })
               : null;
 
-          // 3) Divergencia Probabilística Q vs P & Cono Vol (Pieza 17)
+          // 3) Divergencia Probabilística Q vs P & Cono Vol (Pieza 17 + Pieza 45 PCHIP)
           let qDistribution: RiskNeutralDistributionResult | null = null;
           if (frontExp !== undefined) {
             const frontTExp = Math.max(1 / 365, frontExp.days / 365);
             const nodeMap = new Map<number, RiskNeutralInputNode>();
             for (const c of [...frontExp.calls, ...frontExp.puts]) {
               if (c.iv !== null && c.iv > 0) {
-                if (!nodeMap.has(c.strike) || (c.strike >= spot && c.contractType === 'call') || (c.strike < spot && c.contractType === 'put')) {
-                  nodeMap.set(c.strike, { strike: c.strike, iv: c.iv });
+                const isOtmSide =
+                  (c.strike >= spot && c.contractType === 'call') ||
+                  (c.strike < spot && c.contractType === 'put');
+                if (!nodeMap.has(c.strike) || isOtmSide) {
+                  nodeMap.set(c.strike, {
+                    strike: c.strike,
+                    iv: c.iv,
+                    bid: c.bid !== null && Number.isFinite(c.bid) && c.bid > 0 ? c.bid : null,
+                  });
                 }
               }
             }
             const nodes = [...nodeMap.values()].sort((a, b) => a.strike - b.strike);
             if (nodes.length >= 5) {
+              const liquidBidCount = nodes.filter(
+                (n) => n.bid !== null && n.bid !== undefined && n.bid > 0,
+              ).length;
               qDistribution = extractRiskNeutralDistributionQ({
                 spot,
                 rate: evalRate,
                 dividendYield,
                 timeToExpiry: frontTExp,
                 nodes,
+                smoothTotalVariancePchip: true,
+                requirePositiveBid: liquidBidCount >= 5,
               });
             }
           }
@@ -8440,6 +8486,7 @@ export class ArgentinaMarketRuntime {
                 riskFreeRate: evalRate,
                 dividendYield,
                 timeToExpiry: frontTExp,
+                dte: frontExp.days,
                 pairs,
               });
             }
@@ -8793,11 +8840,24 @@ export class ArgentinaMarketRuntime {
         if (volAnalyticsSuiteBase !== null) {
           for (const [code, qe] of Object.entries(quantEnginesByExpiry)) {
             if (qe !== null) {
+              const expVrp = volAnalyticsSuiteBase.expiriesByCode[code]?.activeExpiryVrp;
               quantEnginesByExpiry[code] = sanitizeJsonPayload({
                 ...qe,
                 volAnalyticsSuite: {
                   ...volAnalyticsSuiteBase,
                   activeExpiryCode: code,
+                  ...(expVrp !== undefined
+                    ? {
+                        historicalConditional: {
+                          ...volAnalyticsSuiteBase.historicalConditional,
+                          currentEvalVolPct: expVrp.ivAtmActiveExpiryPct,
+                          vrpVsRv23Pts: expVrp.vrpActiveExpiryPts,
+                          ivRank: expVrp.ivRankActiveExpiry,
+                          ivPercentile: expVrp.ivPercentileActiveExpiry,
+                          operativeRegime: expVrp.operativeRegime,
+                        },
+                      }
+                    : {}),
                 },
               });
             }

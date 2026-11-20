@@ -6,7 +6,17 @@ import type {
   SerializedTerminalEnginesDto,
   UsSnapshotResponseDto,
 } from '../../data/liveTypes';
-import { type OptionChainRow, type OptionExpiryGroup, fmtMoneyCompact, fmtNum } from '../../data/marketData';
+import {
+  GGAL_OPTION_EXPIRIES,
+  type OptionChainRow,
+  type OptionExpiryGroup,
+  fmtMoneyCompact,
+  fmtNum,
+} from '../../data/marketData';
+import {
+  DEFAULT_MIN_SPREAD_DEBIT,
+  type LiquiditySemaphore,
+} from '../../../../src/core/options/verticalSpreads';
 import {
   COMMISSION_RATE,
   Evaluation,
@@ -82,6 +92,8 @@ export interface VisualPayoffCardData {
   };
   netPrice: number;
   pricedLegs: PricedLeg[];
+  bidAskPctOfMid?: number;
+  liquiditySemaphore?: LiquiditySemaphore;
 }
 
 export interface StrategyComparisonRow {
@@ -101,6 +113,8 @@ export interface StrategyComparisonRow {
   relacion: string;
   empates: [string, string?];
   pricedLegs: PricedLeg[];
+  bidAskPctOfMid?: number;
+  liquiditySemaphore?: LiquiditySemaphore;
 }
 
 export interface SpreadLadderRow {
@@ -185,15 +199,82 @@ function mapEngineFamilyToUi(ev: Evaluation): { family: StrategyFamilyId; bias: 
   if (f === 'Cóndor') return { family: 'condores', bias: 'Lateral' };
   if (f === 'Cono') return { family: 'conos', bias: 'Se mueve' };
   if (f === 'Cuña') return { family: 'cunas', bias: 'Se mueve' };
+  if (f === 'Calendario') return { family: 'calendarios', bias: 'Lateral' };
   const firstLeg = ev.legs[0];
   if (firstLeg?.type === 'P') return { family: 'compradas', bias: 'Bajista' };
   return { family: 'compradas', bias: 'Alcista' };
 }
 
 function isFamilyMatch(cardFamily: StrategyFamilyId, selected: StrategyFamilyId): boolean {
+  if (selected === 'calendarios') return cardFamily === 'calendarios';
   if (selected === 'sugeridas') return true;
   if (cardFamily === selected) return true;
   return false;
+}
+
+export function buildCalendarStrategies(
+  mkt: Market,
+  expiries: readonly OptionExpiryGroup[] = GGAL_OPTION_EXPIRIES,
+): Strategy[] {
+  if (!Number.isFinite(mkt.spot) || mkt.spot <= 0 || mkt.strikes.length === 0) {
+    return [];
+  }
+  const farExpiries = expiries
+    .filter((e) => e.id !== mkt.expiryCode && e.daysToExpiry > mkt.days)
+    .sort((a, b) => a.daysToExpiry - b.daysToExpiry);
+  const farExp = farExpiries[0];
+  if (!farExp) {
+    return [];
+  }
+
+  const farStrikeSet = new Set(farExp.rows.map((r) => r.strike));
+  const sharedNearAtm = [...new Set(mkt.strikes)]
+    .filter((k) => Number.isFinite(k) && k > 0 && (farStrikeSet.size === 0 || farStrikeSet.has(k)))
+    .sort((a, b) => Math.abs(a - mkt.spot) - Math.abs(b - mkt.spot))
+    .slice(0, 6)
+    .sort((a, b) => a - b);
+
+  const candidateStrikes =
+    sharedNearAtm.length > 0
+      ? sharedNearAtm
+      : [...new Set(mkt.strikes)]
+          .filter((k) => Number.isFinite(k) && k > 0)
+          .sort((a, b) => Math.abs(a - mkt.spot) - Math.abs(b - mkt.spot))
+          .slice(0, 4)
+          .sort((a, b) => a - b);
+
+  const out: Strategy[] = [];
+  for (const k of candidateStrikes) {
+    for (const type of ['C', 'P'] as const) {
+      out.push({
+        id: `cal-${type}-${k}-${mkt.expiryCode}-${farExp.id}`,
+        family: 'Calendario',
+        name: `Calendario ${type === 'C' ? 'calls' : 'puts'} ${fk(k)} (${mkt.days}d/${farExp.daysToExpiry}d)`,
+        desc: `Vendés corto (${mkt.expiryLabel}) y comprás largo (${farExp.label}) en la misma base para capturar diferencial de Theta`,
+        legs: [
+          {
+            side: -1,
+            type,
+            K: k,
+            ratio: 1,
+            expiryCode: mkt.expiryCode,
+            expiryLabel: mkt.expiryLabel,
+            days: mkt.days,
+          },
+          {
+            side: 1,
+            type,
+            K: k,
+            ratio: 1,
+            expiryCode: farExp.id,
+            expiryLabel: farExp.label,
+            days: farExp.daysToExpiry,
+          },
+        ],
+      });
+    }
+  }
+  return out;
 }
 
 function buildStrategyPool(
@@ -201,8 +282,12 @@ function buildStrategyPool(
   strategyMode: 'familia' | 'objetivo',
   selectedFamily: StrategyFamilyId,
   marketBias: 'Alcista' | 'Lateral' | 'Bajista' | 'Se mueve',
-  targetPrice: number
+  targetPrice: number,
+  expiries: readonly OptionExpiryGroup[] = GGAL_OPTION_EXPIRIES,
 ): Strategy[] {
+  if (selectedFamily === 'calendarios' && strategyMode === 'familia') {
+    return buildCalendarStrategies(mkt, expiries);
+  }
   if (strategyMode === 'objetivo') {
     const goalSpot = Number.isFinite(targetPrice) && targetPrice > 0 ? targetPrice : mkt.spot;
     return [
@@ -276,6 +361,7 @@ export function buildLiveStrategyCardsAndRows(
     selectedFamily: StrategyFamilyId;
     marketBias: 'Alcista' | 'Lateral' | 'Bajista' | 'Se mueve';
     targetPrice: number;
+    expiries?: readonly OptionExpiryGroup[];
   }
 ): { cards: VisualPayoffCardData[]; rows: StrategyComparisonRow[] } {
   const sig = atmIv(mkt.days);
@@ -297,7 +383,8 @@ export function buildLiveStrategyCardsAndRows(
     opts.strategyMode,
     opts.selectedFamily,
     opts.marketBias,
-    evalSpot
+    evalSpot,
+    opts.expiries ?? GGAL_OPTION_EXPIRIES,
   );
 
   const seenIds = new Set<string>();
@@ -306,10 +393,14 @@ export function buildLiveStrategyCardsAndRows(
     if (seenIds.has(st.id)) continue;
     seenIds.add(st.id);
     const ev = evaluate(mkt, st, evalSpot);
-    if (!Number.isFinite(ev.cash) || !Number.isFinite(ev.pop)) continue;
+    if (!Number.isFinite(ev.cash) || !Number.isFinite(ev.pop) || !ev.eligibleForAutoRanking) continue;
     if (opts.strategyMode === 'familia' && opts.selectedFamily !== 'sugeridas') {
       const mapped = mapEngineFamilyToUi(ev);
       if (!isFamilyMatch(mapped.family, opts.selectedFamily)) continue;
+      if (opts.selectedFamily === 'calendarios') {
+        const expSet = new Set(ev.legs.map((l) => l.expiryCode ?? mkt.expiryCode));
+        if (expSet.size < 2 || ev.strategy.family !== 'Calendario') continue;
+      }
     }
     evaluated.push(ev);
     if (evaluated.length >= 60) break;
@@ -334,6 +425,7 @@ export function buildLiveStrategyCardsAndRows(
       ? Math.max(5, Math.min(95, ((opts.targetPrice - loPrice) / xRange) * 100))
       : undefined;
 
+  const currencyPrefix = mkt.currencyPrefix ?? (mkt.market === 'US' ? 'US$' : '$');
   const cards: VisualPayoffCardData[] = evaluated.slice(0, 6).map((ev) => {
     const mapped = mapEngineFamilyToUi(ev);
     const sampleSpots: number[] = [];
@@ -351,8 +443,8 @@ export function buildLiveStrategyCardsAndRows(
     });
 
     const scaleK = Math.round(maxAbsPnl / 1000);
-    const yTop = `$${Math.max(1, scaleK)}k`;
-    const yBot = `-$${Math.max(1, scaleK)}k`;
+    const yTop = `${currencyPrefix}${Math.max(1, scaleK)}k`;
+    const yBot = `-${currencyPrefix}${Math.max(1, scaleK)}k`;
 
     const breakevenLabels = ev.breakevens
       .filter((be) => Number.isFinite(be) && be > loPrice && be < hiPrice)
@@ -365,11 +457,11 @@ export function buildLiveStrategyCardsAndRows(
     const maxGainLabel =
       ev.maxGain === null
         ? 'Ilimitada'
-        : `$${fmtNum(ev.maxGain / 1000, 1)}k`;
+        : `${currencyPrefix}${fmtNum(ev.maxGain / 1000, 1)}k`;
     const maxLossLabel =
       ev.maxLoss === null
         ? 'Ilimitada'
-        : `-$${fmtNum(ev.maxLoss / 1000, 1)}k`;
+        : `-${currencyPrefix}${fmtNum(ev.maxLoss / 1000, 1)}k`;
     const rewardRisk =
       ev.maxGain !== null && ev.maxLoss !== null && ev.maxLoss > 0
         ? `${fmtNum(ev.maxGain / ev.maxLoss, 2)}x`
@@ -383,7 +475,7 @@ export function buildLiveStrategyCardsAndRows(
       bias: mapped.bias,
       mode: 'both',
       yLabels: [yTop, '0', yBot],
-      xLabels: [0, 0.33, 0.66, 1].map((f) => `$${fk(loPrice + xRange * f)}`),
+      xLabels: [0, 0.33, 0.66, 1].map((f) => `${currencyPrefix}${fk(loPrice + xRange * f)}`),
       ...(breakevenLabels.length > 0 ? { breakevenLabels } : {}),
       ...(targetLinePct !== undefined ? { targetLinePct } : {}),
       spotLinePct,
@@ -403,6 +495,8 @@ export function buildLiveStrategyCardsAndRows(
       },
       netPrice: Math.abs(ev.cash) / LOT,
       pricedLegs: ev.legs,
+      bidAskPctOfMid: ev.bidAskPctOfMid,
+      liquiditySemaphore: ev.liquiditySemaphore,
     };
   });
 
@@ -444,6 +538,8 @@ export function buildLiveStrategyCardsAndRows(
       relacion: ratio,
       empates: be1 !== undefined ? [be0, be1] : [be0],
       pricedLegs: ev.legs,
+      bidAskPctOfMid: ev.bidAskPctOfMid,
+      liquiditySemaphore: ev.liquiditySemaphore,
     };
   });
 
@@ -452,11 +548,21 @@ export function buildLiveStrategyCardsAndRows(
 
 function callSpreadRatio(baseRow: OptionChainRow, longIdxRow: OptionChainRow | undefined): number {
   if (!longIdxRow) return Number.NaN;
+  if (
+    !Number.isFinite(baseRow.callBid) ||
+    baseRow.callBid <= 0 ||
+    !Number.isFinite(baseRow.callAsk) ||
+    baseRow.callAsk < baseRow.callBid ||
+    !Number.isFinite(longIdxRow.callBid) ||
+    longIdxRow.callBid <= 0 ||
+    !Number.isFinite(longIdxRow.callAsk) ||
+    longIdxRow.callAsk < longIdxRow.callBid
+  ) {
+    return Number.NaN;
+  }
   const width = Math.abs(longIdxRow.strike - baseRow.strike);
-  const longPx = Number.isFinite(baseRow.callAsk) && baseRow.callAsk > 0 ? baseRow.callAsk : baseRow.callLast;
-  const shortPx = Number.isFinite(longIdxRow.callBid) && longIdxRow.callBid > 0 ? longIdxRow.callBid : longIdxRow.callLast;
-  const debit = longPx - shortPx;
-  if (!Number.isFinite(width) || !Number.isFinite(debit) || width <= 0 || debit <= 0.05) {
+  const debit = baseRow.callAsk - longIdxRow.callBid;
+  if (!Number.isFinite(width) || !Number.isFinite(debit) || width <= 0 || debit < DEFAULT_MIN_SPREAD_DEBIT - 1e-12) {
     return Number.NaN;
   }
   const r = width / debit;
@@ -465,11 +571,21 @@ function callSpreadRatio(baseRow: OptionChainRow, longIdxRow: OptionChainRow | u
 
 function putSpreadRatio(baseRow: OptionChainRow, longIdxRow: OptionChainRow | undefined): number {
   if (!longIdxRow) return Number.NaN;
+  if (
+    !Number.isFinite(longIdxRow.putBid) ||
+    longIdxRow.putBid <= 0 ||
+    !Number.isFinite(longIdxRow.putAsk) ||
+    longIdxRow.putAsk < longIdxRow.putBid ||
+    !Number.isFinite(baseRow.putBid) ||
+    baseRow.putBid <= 0 ||
+    !Number.isFinite(baseRow.putAsk) ||
+    baseRow.putAsk < baseRow.putBid
+  ) {
+    return Number.NaN;
+  }
   const width = Math.abs(baseRow.strike - longIdxRow.strike);
-  const longPx = Number.isFinite(longIdxRow.putAsk) && longIdxRow.putAsk > 0 ? longIdxRow.putAsk : longIdxRow.putLast;
-  const shortPx = Number.isFinite(baseRow.putBid) && baseRow.putBid > 0 ? baseRow.putBid : baseRow.putLast;
-  const debit = longPx - shortPx;
-  if (!Number.isFinite(width) || !Number.isFinite(debit) || width <= 0 || debit <= 0.05) {
+  const debit = longIdxRow.putAsk - baseRow.putBid;
+  if (!Number.isFinite(width) || !Number.isFinite(debit) || width <= 0 || debit < DEFAULT_MIN_SPREAD_DEBIT - 1e-12) {
     return Number.NaN;
   }
   const r = width / debit;
@@ -1599,6 +1715,7 @@ export interface VolSuiteParityStrikeDto {
 
 export interface VolSuiteParityDto {
   readonly status: 'OK' | 'NO_DATA';
+  readonly impliedRateStatus?: 'OK' | 'BLOCKED_SHORT_DTE' | 'NO_DATA';
   readonly daysToExpiry: number;
   readonly benchmarkTeaPct: number | null;
   readonly benchmarkLabel: string;
@@ -1686,6 +1803,24 @@ export interface VolSuiteDualSurfaceDto {
   readonly nodes: readonly VolSuiteDualSurfaceNodeDto[];
 }
 
+export interface VolSuiteActiveExpiryVrpDto {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly expiryCode: string | null;
+  readonly daysToExpiry: number | null;
+  readonly ivAtmActiveExpiryPct: number | null;
+  readonly ivSource: 'INTERPOLATED_ATM' | 'SAME_EXPIRY_FALLBACK' | 'NO_DATA';
+  readonly rvReferencePct: number | null;
+  readonly rvReferenceLabel: string;
+  readonly vrpActiveExpiryPts: number | null;
+  readonly ivRankActiveExpiry: number | null;
+  readonly ivPercentileActiveExpiry: number | null;
+  readonly operativeRegime: {
+    readonly code: VolSuiteOperativeRegimeCode;
+    readonly label: string;
+    readonly rationale: string;
+  };
+}
+
 export interface VolAnalyticsExpirySuiteDto {
   readonly expiryCode: string;
   readonly expirationDate: string;
@@ -1701,6 +1836,7 @@ export interface VolAnalyticsExpirySuiteDto {
   readonly expectedCone: VolSuiteExpectedConeDto;
   readonly parity: VolSuiteParityDto;
   readonly ratiosAndStructures: VolSuiteRatiosStructuresDto;
+  readonly activeExpiryVrp?: VolSuiteActiveExpiryVrpDto;
 }
 
 export interface VolAnalyticsSuiteDto {

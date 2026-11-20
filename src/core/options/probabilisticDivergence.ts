@@ -19,6 +19,8 @@ import { priceBsm } from './blackScholes.js';
 
 const STRIKE_DEDUP_TOLERANCE = 1e-9;
 const MIN_Q_STRIKES = 5;
+const DEFAULT_UNIFORM_Q_GRID_STEPS = 41;
+const MIN_TOTAL_VARIANCE_FLOOR = 1e-8;
 const DEFAULT_MIN_HISTORY_BARS = 30;
 const DEFAULT_TAIL_SIGMA_THRESHOLD = 3.0;
 const DEFAULT_MIN_EDGE_SPREAD = 0.05;
@@ -31,6 +33,7 @@ export type ProbabilisticEngineStatus = 'OK' | 'NO_DATA';
 export interface RiskNeutralInputNode {
   readonly strike: number;
   readonly iv: number;
+  readonly bid?: number | null;
 }
 
 export interface RiskNeutralDistributionInput {
@@ -39,6 +42,14 @@ export interface RiskNeutralDistributionInput {
   readonly dividendYield: number;
   readonly timeToExpiry: number;
   readonly nodes: readonly RiskNeutralInputNode[];
+  /**
+   * Pieza 45: Suavizado de sonrisa en varianza total w(k) = iv(k)^2 * T mediante
+   * spline cúbico monótono PCHIP (Fritsch-Carlson) en log-moneyness k = ln(K / F)
+   * sobre strikes con bid > 0 y evaluación BSM sobre grilla uniforme de strikes.
+   */
+  readonly smoothTotalVariancePchip?: boolean;
+  readonly uniformGridSteps?: number;
+  readonly requirePositiveBid?: boolean;
 }
 
 export interface RiskNeutralNode {
@@ -318,6 +329,229 @@ function computeMeanAndSampleVariance(values: readonly number[]): {
   };
 }
 
+function computePchipSlopes(
+  xs: readonly number[],
+  ys: readonly number[],
+): readonly number[] {
+  const m = xs.length;
+  if (m < 2 || ys.length !== m) {
+    return [];
+  }
+  const h: number[] = [];
+  const delta: number[] = [];
+  for (let i = 0; i < m - 1; i += 1) {
+    const x0 = xs[i];
+    const x1 = xs[i + 1];
+    const y0 = ys[i];
+    const y1 = ys[i + 1];
+    if (x0 === undefined || x1 === undefined || y0 === undefined || y1 === undefined) {
+      return [];
+    }
+    const hi = x1 - x0;
+    if (!isPositiveFinite(hi)) {
+      return [];
+    }
+    h.push(hi);
+    delta.push((y1 - y0) / hi);
+  }
+
+  if (m === 2) {
+    const d0 = delta[0] ?? 0;
+    return [d0, d0];
+  }
+
+  const d: number[] = new Array<number>(m).fill(0);
+
+  // Endpoint d[0] — PCHIP one-sided three-point formula with monotonicity limiter
+  const h0 = h[0] ?? 1;
+  const h1 = h[1] ?? 1;
+  const del0 = delta[0] ?? 0;
+  const del1 = delta[1] ?? 0;
+  let d0 = ((2 * h0 + h1) * del0 - h0 * del1) / (h0 + h1);
+  if (d0 * del0 <= 0) {
+    d0 = 0;
+  } else if (del0 * del1 < 0 && Math.abs(d0) > 3 * Math.abs(del0)) {
+    d0 = 3 * del0;
+  }
+  d[0] = d0;
+
+  // Interior slopes d[1..m-2] — Fritsch-Carlson / Brodlie weighted harmonic mean
+  for (let i = 1; i < m - 1; i += 1) {
+    const delPrev = delta[i - 1] ?? 0;
+    const delCurr = delta[i] ?? 0;
+    if (delPrev * delCurr <= 0) {
+      d[i] = 0;
+    } else {
+      const hPrev = h[i - 1] ?? 1;
+      const hCurr = h[i] ?? 1;
+      const w1 = 2 * hCurr + hPrev;
+      const w2 = hCurr + 2 * hPrev;
+      d[i] = (w1 + w2) / (w1 / delPrev + w2 / delCurr);
+    }
+  }
+
+  // Endpoint d[m-1]
+  const hm2 = h[m - 2] ?? 1;
+  const hm3 = h[m - 3] ?? 1;
+  const delm2 = delta[m - 2] ?? 0;
+  const delm3 = delta[m - 3] ?? 0;
+  let dm1 = ((2 * hm2 + hm3) * delm2 - hm2 * delm3) / (hm2 + hm3);
+  if (dm1 * delm2 <= 0) {
+    dm1 = 0;
+  } else if (delm2 * delm3 < 0 && Math.abs(dm1) > 3 * Math.abs(delm2)) {
+    dm1 = 3 * delm2;
+  }
+  d[m - 1] = dm1;
+
+  return d;
+}
+
+function evaluatePchipAt(
+  xs: readonly number[],
+  ys: readonly number[],
+  slopes: readonly number[],
+  xTarget: number,
+): number {
+  const m = xs.length;
+  if (m === 0 || ys.length !== m || slopes.length !== m || !Number.isFinite(xTarget)) {
+    return Number.NaN;
+  }
+  const firstX = xs[0];
+  const lastX = xs[m - 1];
+  if (firstX === undefined || lastX === undefined) {
+    return Number.NaN;
+  }
+  if (xTarget <= firstX) {
+    return ys[0] ?? Number.NaN;
+  }
+  if (xTarget >= lastX) {
+    return ys[m - 1] ?? Number.NaN;
+  }
+
+  let idx = 0;
+  for (let i = 0; i < m - 1; i += 1) {
+    const xi = xs[i];
+    const xi1 = xs[i + 1];
+    if (xi !== undefined && xi1 !== undefined && xTarget >= xi && xTarget <= xi1) {
+      idx = i;
+      break;
+    }
+  }
+
+  const x0 = xs[idx];
+  const x1 = xs[idx + 1];
+  const y0 = ys[idx];
+  const y1 = ys[idx + 1];
+  const d0 = slopes[idx];
+  const d1 = slopes[idx + 1];
+  if (
+    x0 === undefined ||
+    x1 === undefined ||
+    y0 === undefined ||
+    y1 === undefined ||
+    d0 === undefined ||
+    d1 === undefined
+  ) {
+    return Number.NaN;
+  }
+  const h = x1 - x0;
+  if (!isPositiveFinite(h)) {
+    return y0;
+  }
+  const t = (xTarget - x0) / h;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+  return h00 * y0 + h10 * h * d0 + h01 * y1 + h11 * h * d1;
+}
+
+/**
+ * Construye una grilla uniforme de strikes con volatilidad implícita interpolada y
+ * suavizada en varianza total w(k) = iv(k)^2 * T mediante spline cúbico monótono PCHIP
+ * en log-moneyness k = ln(K / F).
+ */
+export function buildTotalVariancePchipGrid(params: {
+  readonly uniqueNodes: readonly RiskNeutralInputNode[];
+  readonly spot: number;
+  readonly rate: number;
+  readonly dividendYield: number;
+  readonly timeToExpiry: number;
+  readonly uniformGridSteps?: number;
+}): readonly RiskNeutralInputNode[] {
+  const { uniqueNodes, spot, rate, dividendYield, timeToExpiry } = params;
+  const gridSteps = Math.max(
+    MIN_Q_STRIKES,
+    Math.floor(params.uniformGridSteps ?? DEFAULT_UNIFORM_Q_GRID_STEPS),
+  );
+  const m = uniqueNodes.length;
+  if (
+    m < MIN_Q_STRIKES ||
+    !isPositiveFinite(spot) ||
+    !Number.isFinite(rate) ||
+    !Number.isFinite(dividendYield) ||
+    !isPositiveFinite(timeToExpiry)
+  ) {
+    return [];
+  }
+
+  const forward = spot * Math.exp((rate - dividendYield) * timeToExpiry);
+  if (!isPositiveFinite(forward)) {
+    return [];
+  }
+
+  const ksLog: number[] = [];
+  const rawTotalVar: number[] = [];
+  for (const node of uniqueNodes) {
+    const kLog = Math.log(node.strike / forward);
+    const w = node.iv * node.iv * timeToExpiry;
+    if (!Number.isFinite(kLog) || !isPositiveFinite(w)) {
+      return [];
+    }
+    ksLog.push(kLog);
+    rawTotalVar.push(w);
+  }
+
+  // Suavizado binomial de 3 puntos en varianza total interior para eliminar micro-serrucho
+  const smoothedTotalVar: number[] = rawTotalVar.map((w, i) => {
+    if (i === 0 || i === m - 1) {
+      return w;
+    }
+    const wPrev = rawTotalVar[i - 1] ?? w;
+    const wNext = rawTotalVar[i + 1] ?? w;
+    return 0.25 * wPrev + 0.5 * w + 0.25 * wNext;
+  });
+
+  const slopes = computePchipSlopes(ksLog, smoothedTotalVar);
+  if (slopes.length !== m) {
+    return [];
+  }
+
+  const kMin = uniqueNodes[0]?.strike;
+  const kMax = uniqueNodes[m - 1]?.strike;
+  if (kMin === undefined || kMax === undefined || !(kMax > kMin)) {
+    return [];
+  }
+
+  const stepK = (kMax - kMin) / (gridSteps - 1);
+  const uniformGrid: RiskNeutralInputNode[] = [];
+  for (let j = 0; j < gridSteps; j += 1) {
+    const strike = j === gridSteps - 1 ? kMax : kMin + j * stepK;
+    const kTarget = Math.log(strike / forward);
+    const wInterp = evaluatePchipAt(ksLog, smoothedTotalVar, slopes, kTarget);
+    const wClamped = Math.max(MIN_TOTAL_VARIANCE_FLOOR, wInterp);
+    const iv = Math.sqrt(wClamped / timeToExpiry);
+    if (!isPositiveFinite(strike) || !isPositiveFinite(iv)) {
+      return [];
+    }
+    uniformGrid.push({ strike, iv });
+  }
+
+  return uniformGrid;
+}
+
 /**
  * Extrae la distribución neutral al riesgo (ℚ) usando la identidad de Breeden-Litzenberger (1978)
  * evaluada por diferencias finitas sobre una grilla ordenada de strikes e IVs suavizadas.
@@ -336,18 +570,46 @@ export function extractRiskNeutralDistributionQ(
     return NO_DATA_Q_RESULT;
   }
 
+  const usePchip = input.smoothTotalVariancePchip === true;
+  const requireBid = input.requirePositiveBid ?? usePchip;
+
   const cleanSorted = nodes
-    .filter((n) => isPositiveFinite(n.strike) && isPositiveFinite(n.iv))
+    .filter((n) => {
+      if (!isPositiveFinite(n.strike) || !isPositiveFinite(n.iv)) {
+        return false;
+      }
+      if (requireBid && n.bid !== undefined) {
+        return n.bid !== null && isPositiveFinite(n.bid);
+      }
+      return true;
+    })
     .slice()
     .sort((a, b) => a.strike - b.strike);
 
-  const uniqueNodes: RiskNeutralInputNode[] = [];
+  const uniqueRawNodes: RiskNeutralInputNode[] = [];
   for (const node of cleanSorted) {
-    const prev = uniqueNodes[uniqueNodes.length - 1];
+    const prev = uniqueRawNodes[uniqueRawNodes.length - 1];
     if (prev === undefined || node.strike - prev.strike > STRIKE_DEDUP_TOLERANCE) {
-      uniqueNodes.push(node);
+      uniqueRawNodes.push(node);
     }
   }
+
+  if (uniqueRawNodes.length < MIN_Q_STRIKES) {
+    return NO_DATA_Q_RESULT;
+  }
+
+  const uniqueNodes: readonly RiskNeutralInputNode[] = usePchip
+    ? buildTotalVariancePchipGrid({
+        uniqueNodes: uniqueRawNodes,
+        spot,
+        rate,
+        dividendYield,
+        timeToExpiry,
+        ...(input.uniformGridSteps !== undefined
+          ? { uniformGridSteps: input.uniformGridSteps }
+          : {}),
+      })
+    : uniqueRawNodes;
 
   const m = uniqueNodes.length;
   if (m < MIN_Q_STRIKES) {
@@ -495,6 +757,21 @@ export function extractRiskNeutralDistributionQ(
     excessKurtosisQ,
     nodes: resultNodes,
   };
+}
+
+/**
+ * Extrae la distribución neutral al riesgo (ℚ) de Breeden-Litzenberger suavizando previamente
+ * la sonrisa de IV en varianza total w(k) = iv(k)^2 * T con spline cúbico monótono PCHIP
+ * sobre strikes líquidos (bid > 0) y evaluando precios Call BSM sobre una grilla uniforme.
+ */
+export function extractSmoothedRiskNeutralDistributionQ(
+  input: RiskNeutralDistributionInput,
+): RiskNeutralDistributionResult {
+  return extractRiskNeutralDistributionQ({
+    ...input,
+    smoothTotalVariancePchip: true,
+    requirePositiveBid: input.requirePositiveBid ?? true,
+  });
 }
 
 /**

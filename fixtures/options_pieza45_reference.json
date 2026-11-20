@@ -1,0 +1,1390 @@
+{
+  "vrpCases": [
+    {
+      "name": "qqq_4d_neutral_vrp",
+      "input": {
+        "expiryCode": "2026-11-23",
+        "daysToExpiry": 4,
+        "ivAtmActiveExpiryPct": 21.6,
+        "sameExpiryFallbackIvAtmPct": 21.8,
+        "rvReferencePct": 21.3,
+        "rvReferenceLabel": "RV23d",
+        "historicalRvSeriesPct": [
+          13.5,
+          14.2,
+          15.0,
+          15.8,
+          16.4,
+          17.1,
+          18.0,
+          18.9,
+          19.5,
+          20.2,
+          21.0,
+          21.8,
+          22.5,
+          23.4,
+          24.1,
+          25.0,
+          26.2,
+          27.5,
+          29.0,
+          32.0
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "expiryCode": "2026-11-23",
+        "daysToExpiry": 4.0,
+        "ivAtmActiveExpiryPct": 21.6,
+        "ivSource": "INTERPOLATED_ATM",
+        "rvReferencePct": 21.3,
+        "rvReferenceLabel": "RV23d",
+        "vrpActiveExpiryPts": 0.3000000000000007,
+        "ivRankActiveExpiry": 43.78378378378379,
+        "ivPercentileActiveExpiry": 55.00000000000001,
+        "operativeRegime": {
+          "code": "NEUTRAL_SELECTIVO",
+          "label": "NEUTRAL / SELECTIVO"
+        }
+      }
+    },
+    {
+      "name": "spy_30d_high_vrp_sell_premium",
+      "input": {
+        "expiryCode": "2026-12-19",
+        "daysToExpiry": 30,
+        "ivAtmActiveExpiryPct": 28.4,
+        "sameExpiryFallbackIvAtmPct": 28.0,
+        "rvReferencePct": 18.1,
+        "rvReferenceLabel": "RV23d",
+        "historicalRvSeriesPct": [
+          13.5,
+          14.2,
+          15.0,
+          15.8,
+          16.4,
+          17.1,
+          18.0,
+          18.9,
+          19.5,
+          20.2,
+          21.0,
+          21.8,
+          22.5,
+          23.4,
+          24.1,
+          25.0,
+          26.2,
+          27.5,
+          29.0,
+          32.0
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "expiryCode": "2026-12-19",
+        "daysToExpiry": 30.0,
+        "ivAtmActiveExpiryPct": 28.4,
+        "ivSource": "INTERPOLATED_ATM",
+        "rvReferencePct": 18.1,
+        "rvReferenceLabel": "RV23d",
+        "vrpActiveExpiryPts": 10.299999999999997,
+        "ivRankActiveExpiry": 80.54054054054053,
+        "ivPercentileActiveExpiry": 90.0,
+        "operativeRegime": {
+          "code": "VENTA_PRIMA_CUBIERTA",
+          "label": "VENTA DE PRIMA CUBIERTA"
+        }
+      }
+    },
+    {
+      "name": "nvda_45d_low_rank_buy_convexity",
+      "input": {
+        "expiryCode": "2027-01-03",
+        "daysToExpiry": 45,
+        "ivAtmActiveExpiryPct": 15.2,
+        "sameExpiryFallbackIvAtmPct": 15.5,
+        "rvReferencePct": 20.5,
+        "rvReferenceLabel": "RV23d",
+        "historicalRvSeriesPct": [
+          13.5,
+          14.2,
+          15.0,
+          15.8,
+          16.4,
+          17.1,
+          18.0,
+          18.9,
+          19.5,
+          20.2,
+          21.0,
+          21.8,
+          22.5,
+          23.4,
+          24.1,
+          25.0,
+          26.2,
+          27.5,
+          29.0,
+          32.0
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "expiryCode": "2027-01-03",
+        "daysToExpiry": 45.0,
+        "ivAtmActiveExpiryPct": 15.2,
+        "ivSource": "INTERPOLATED_ATM",
+        "rvReferencePct": 20.5,
+        "rvReferenceLabel": "RV23d",
+        "vrpActiveExpiryPts": -5.300000000000001,
+        "ivRankActiveExpiry": 9.189189189189186,
+        "ivPercentileActiveExpiry": 15.0,
+        "operativeRegime": {
+          "code": "COMPRA_CONVEXIDAD_CALENDAR",
+          "label": "COMPRA DE CONVEXIDAD / CALENDAR"
+        }
+      }
+    },
+    {
+      "name": "iren_same_expiry_fallback",
+      "input": {
+        "expiryCode": "2026-11-27",
+        "daysToExpiry": 8,
+        "ivAtmActiveExpiryPct": null,
+        "sameExpiryFallbackIvAtmPct": 24.5,
+        "rvReferencePct": 21.0,
+        "rvReferenceLabel": "RV23d",
+        "historicalRvSeriesPct": [
+          13.5,
+          14.2,
+          15.0,
+          15.8,
+          16.4,
+          17.1,
+          18.0,
+          18.9,
+          19.5,
+          20.2,
+          21.0,
+          21.8,
+          22.5,
+          23.4,
+          24.1,
+          25.0,
+          26.2,
+          27.5,
+          29.0,
+          32.0
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "expiryCode": "2026-11-27",
+        "daysToExpiry": 8.0,
+        "ivAtmActiveExpiryPct": 24.5,
+        "ivSource": "SAME_EXPIRY_FALLBACK",
+        "rvReferencePct": 21.0,
+        "rvReferenceLabel": "RV23d",
+        "vrpActiveExpiryPts": 3.5,
+        "ivRankActiveExpiry": 59.45945945945946,
+        "ivPercentileActiveExpiry": 75.0,
+        "operativeRegime": {
+          "code": "NEUTRAL_SELECTIVO",
+          "label": "NEUTRAL / SELECTIVO"
+        }
+      }
+    },
+    {
+      "name": "missing_atm_no_data",
+      "input": {
+        "expiryCode": "2026-11-27",
+        "daysToExpiry": 8,
+        "ivAtmActiveExpiryPct": null,
+        "sameExpiryFallbackIvAtmPct": null,
+        "rvReferencePct": 21.0,
+        "rvReferenceLabel": "RV23d",
+        "historicalRvSeriesPct": [
+          13.5,
+          14.2,
+          15.0,
+          15.8,
+          16.4,
+          17.1,
+          18.0,
+          18.9,
+          19.5,
+          20.2,
+          21.0,
+          21.8,
+          22.5,
+          23.4,
+          24.1,
+          25.0,
+          26.2,
+          27.5,
+          29.0,
+          32.0
+        ]
+      },
+      "expected": {
+        "status": "NO_DATA",
+        "expiryCode": "2026-11-27",
+        "daysToExpiry": 8.0,
+        "ivAtmActiveExpiryPct": null,
+        "ivSource": "NO_DATA",
+        "rvReferencePct": 21.0,
+        "rvReferenceLabel": "RV23d",
+        "vrpActiveExpiryPts": null,
+        "ivRankActiveExpiry": null,
+        "ivPercentileActiveExpiry": null,
+        "operativeRegime": {
+          "code": "NO_DATA",
+          "label": "\u2014"
+        }
+      }
+    }
+  ],
+  "dteGateSynthCases": [
+    {
+      "name": "spy_1dte_blocked",
+      "input": {
+        "spot": 585.0,
+        "riskFreeRate": 0.045,
+        "dividendYield": 0.0,
+        "timeToExpiry": 0.0027397260273972603,
+        "dte": 1,
+        "pairs": [
+          {
+            "strike": 580.0,
+            "callMid": 5.1,
+            "putMid": 0.37
+          },
+          {
+            "strike": 585.0,
+            "callMid": 1.42,
+            "putMid": 1.69
+          },
+          {
+            "strike": 590.0,
+            "callMid": 0.21,
+            "putMid": 5.48
+          }
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "impliedRateStatus": "BLOCKED_SHORT_DTE",
+        "medianImpliedRate": null,
+        "medianImpliedTna": null,
+        "impliedBorrowRate": null,
+        "htbAlert": false,
+        "borrowRegime": "NO_DATA",
+        "strikes": [
+          {
+            "strike": 580.0,
+            "callMid": 5.1,
+            "putMid": 0.37,
+            "syntheticForward": 579.7301256311717,
+            "impliedRateContinuous": null,
+            "impliedTna": null,
+            "absLogMoneyness": 0.008583743691391442
+          },
+          {
+            "strike": 585.0,
+            "callMid": 1.42,
+            "putMid": 1.69,
+            "syntheticForward": 584.7301245578964,
+            "impliedRateContinuous": null,
+            "impliedTna": null,
+            "absLogMoneyness": 0.0
+          },
+          {
+            "strike": 590.0,
+            "callMid": 0.21,
+            "putMid": 5.48,
+            "syntheticForward": 589.7301235028038,
+            "impliedRateContinuous": null,
+            "impliedTna": null,
+            "absLogMoneyness": 0.00851068966790861
+          }
+        ]
+      }
+    },
+    {
+      "name": "qqq_2dte_blocked",
+      "input": {
+        "spot": 502.0,
+        "riskFreeRate": 0.045,
+        "dividendYield": 0.0,
+        "timeToExpiry": 0.005479452054794521,
+        "dte": 2,
+        "pairs": [
+          {
+            "strike": 500.0,
+            "callMid": 3.15,
+            "putMid": 1.54
+          },
+          {
+            "strike": 502.0,
+            "callMid": 1.92,
+            "putMid": 2.31
+          },
+          {
+            "strike": 505.0,
+            "callMid": 0.74,
+            "putMid": 4.13
+          }
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "impliedRateStatus": "BLOCKED_SHORT_DTE",
+        "medianImpliedRate": null,
+        "medianImpliedTna": null,
+        "impliedBorrowRate": null,
+        "htbAlert": false,
+        "borrowRegime": "NO_DATA",
+        "strikes": [
+          {
+            "strike": 500.0,
+            "callMid": 3.15,
+            "putMid": 1.54,
+            "syntheticForward": 499.610303962909,
+            "impliedRateContinuous": null,
+            "impliedTna": null,
+            "absLogMoneyness": 0.00399202126953745
+          },
+          {
+            "strike": 502.0,
+            "callMid": 1.92,
+            "putMid": 2.31,
+            "syntheticForward": 501.61030275284145,
+            "impliedRateContinuous": null,
+            "impliedTna": null,
+            "absLogMoneyness": 0.0
+          },
+          {
+            "strike": 505.0,
+            "callMid": 0.74,
+            "putMid": 4.13,
+            "syntheticForward": 504.6103009556976,
+            "impliedRateContinuous": null,
+            "impliedTna": null,
+            "absLogMoneyness": 0.005958309583630625
+          }
+        ]
+      }
+    },
+    {
+      "name": "spy_5dte_allowed",
+      "input": {
+        "spot": 585.0,
+        "riskFreeRate": 0.045,
+        "dividendYield": 0.012,
+        "timeToExpiry": 0.0136986301369863,
+        "dte": 5,
+        "pairs": [
+          {
+            "strike": 580.0,
+            "callMid": 6.45,
+            "putMid": 1.21
+          },
+          {
+            "strike": 585.0,
+            "callMid": 3.22,
+            "putMid": 2.98
+          },
+          {
+            "strike": 590.0,
+            "callMid": 1.18,
+            "putMid": 5.93
+          }
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "impliedRateStatus": "OK",
+        "medianImpliedRate": 0.04232161564708506,
+        "medianImpliedTna": 0.04233388595759075,
+        "impliedBorrowRate": 0.0026783843529149393,
+        "htbAlert": false,
+        "borrowRegime": "EASY_TO_BORROW",
+        "strikes": [
+          {
+            "strike": 580.0,
+            "callMid": 6.45,
+            "putMid": 1.21,
+            "syntheticForward": 580.3363514226767,
+            "impliedRateContinuous": 0.04232161564708506,
+            "impliedTna": 0.04233388595759075,
+            "absLogMoneyness": 0.008583743691391442
+          },
+          {
+            "strike": 585.0,
+            "callMid": 3.22,
+            "putMid": 2.98,
+            "syntheticForward": 585.3363497555426,
+            "impliedRateContinuous": 0.04195978845868438,
+            "impliedTna": 0.04197184983694869,
+            "absLogMoneyness": 0.0
+          },
+          {
+            "strike": 590.0,
+            "callMid": 1.18,
+            "putMid": 5.93,
+            "syntheticForward": 590.3463596913467,
+            "impliedRateContinuous": 0.042842099670858586,
+            "impliedTna": 0.04285467367509012,
+            "absLogMoneyness": 0.00851068966790861
+          }
+        ]
+      }
+    }
+  ],
+  "dteGateParityCases": [
+    {
+      "name": "qqq_1dte_parity_blocked",
+      "input": {
+        "spotMid": 502.0,
+        "spotBid": 501.95,
+        "spotAsk": 502.05,
+        "daysToExpiry": 1,
+        "dividendYield": 0.0,
+        "benchmarkTeaPct": 4.65,
+        "pairs": [
+          {
+            "strike": 500.0,
+            "callBid": 3.05,
+            "callAsk": 3.25,
+            "callMid": 3.15,
+            "callIvPct": 22.1,
+            "putBid": 1.45,
+            "putAsk": 1.63,
+            "putMid": 1.54,
+            "putIvPct": 23.0
+          },
+          {
+            "strike": 502.0,
+            "callBid": 1.85,
+            "callAsk": 1.99,
+            "callMid": 1.92,
+            "callIvPct": 21.5,
+            "putBid": 2.22,
+            "putAsk": 2.4,
+            "putMid": 2.31,
+            "putIvPct": 22.2
+          }
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "impliedRateStatus": "BLOCKED_SHORT_DTE",
+        "daysToExpiry": 1.0,
+        "medianMidTeaPct": null,
+        "medianTeaTomadoraPct": null,
+        "medianTeaColocadoraPct": null,
+        "bestColocadoraStrike": null,
+        "bestColocadoraTeaPct": null,
+        "bestTomadoraStrike": null,
+        "bestTomadoraTeaPct": null,
+        "strikes": [
+          {
+            "strike": 500.0,
+            "syntheticForwardMid": 501.60874517876056,
+            "midImpliedTeaPct": null,
+            "teaTomadoraPct": null,
+            "teaColocadoraPct": null
+          },
+          {
+            "strike": 502.0,
+            "syntheticForwardMid": 501.6103027528414,
+            "midImpliedTeaPct": null,
+            "teaTomadoraPct": null,
+            "teaColocadoraPct": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "qqq_5dte_parity_allowed",
+      "input": {
+        "spotMid": 502.0,
+        "spotBid": 501.95,
+        "spotAsk": 502.05,
+        "daysToExpiry": 5,
+        "dividendYield": 0.006,
+        "benchmarkTeaPct": 4.65,
+        "pairs": [
+          {
+            "strike": 500.0,
+            "callBid": 5.3,
+            "callAsk": 5.42,
+            "callMid": 5.36,
+            "callIvPct": 21.8,
+            "putBid": 3.08,
+            "putAsk": 3.18,
+            "putMid": 3.13,
+            "putIvPct": 22.1
+          },
+          {
+            "strike": 502.0,
+            "callBid": 4.1,
+            "callAsk": 4.2,
+            "callMid": 4.15,
+            "callIvPct": 21.4,
+            "putBid": 3.88,
+            "putAsk": 3.98,
+            "putMid": 3.93,
+            "putIvPct": 21.6
+          }
+        ]
+      },
+      "expected": {
+        "status": "OK",
+        "impliedRateStatus": "OK",
+        "daysToExpiry": 5.0,
+        "medianMidTeaPct": 3.9571295371989224,
+        "medianTeaTomadoraPct": 6.333546590255068,
+        "medianTeaColocadoraPct": 1.6345950995838021,
+        "bestColocadoraStrike": 500.0,
+        "bestColocadoraTeaPct": 1.6378846512101086,
+        "bestTomadoraStrike": 502.0,
+        "bestTomadoraTeaPct": 6.165440066947081,
+        "strikes": [
+          {
+            "strike": 500.0,
+            "syntheticForwardMid": 502.23121046996033,
+            "midImpliedTeaPct": 4.040961812360844,
+            "teaTomadoraPct": 6.501653113563055,
+            "teaColocadoraPct": 1.6378846512101086
+          },
+          {
+            "strike": 502.0,
+            "syntheticForwardMid": 502.22011455541,
+            "midImpliedTeaPct": 3.873297262037001,
+            "teaTomadoraPct": 6.165440066947081,
+            "teaColocadoraPct": 1.6313055479574956
+          }
+        ]
+      }
+    }
+  ],
+  "smoothedBlDensityCase": {
+    "name": "spy_noisy_smile_pchip_41",
+    "input": {
+      "spot": 580.0,
+      "rate": 0.045,
+      "dividendYield": 0.012,
+      "timeToExpiry": 0.057534246575342465,
+      "uniformGridSteps": 41,
+      "nodes": [
+        {
+          "strike": 530.0,
+          "iv": 0.285,
+          "bid": 0.0
+        },
+        {
+          "strike": 540.0,
+          "iv": 0.248,
+          "bid": 0.85
+        },
+        {
+          "strike": 550.0,
+          "iv": 0.231,
+          "bid": 1.45
+        },
+        {
+          "strike": 560.0,
+          "iv": 0.219,
+          "bid": 2.6
+        },
+        {
+          "strike": 570.0,
+          "iv": 0.204,
+          "bid": 4.7
+        },
+        {
+          "strike": 575.0,
+          "iv": 0.209,
+          "bid": 6.1
+        },
+        {
+          "strike": 580.0,
+          "iv": 0.196,
+          "bid": 8.2
+        },
+        {
+          "strike": 585.0,
+          "iv": 0.193,
+          "bid": 5.8
+        },
+        {
+          "strike": 590.0,
+          "iv": 0.189,
+          "bid": 3.75
+        },
+        {
+          "strike": 600.0,
+          "iv": 0.186,
+          "bid": 1.55
+        },
+        {
+          "strike": 610.0,
+          "iv": 0.188,
+          "bid": 0.62
+        },
+        {
+          "strike": 620.0,
+          "iv": 0.24,
+          "bid": null
+        }
+      ]
+    },
+    "expected": {
+      "status": "OK",
+      "rawArea": 0.7974783031926047,
+      "normalizedArea": 1.0,
+      "meanQ": 579.9896688066987,
+      "varianceQ": 299.94966662363464,
+      "stdDevQ": 17.319055015318668,
+      "skewnessQ": -0.3313553367050926,
+      "excessKurtosisQ": -0.7968175594350413,
+      "nodes": [
+        {
+          "strike": 540.0,
+          "iv": 0.248,
+          "callPrice": 42.736663117520436,
+          "dCdK": -0.9206527728968338,
+          "d2CdK2": 0.0038608760940554987,
+          "probAboveQ": 0.9230394690549324,
+          "rawDensityQ": 0.0038708850120882797,
+          "densityQ": 0.004853906365341446
+        },
+        {
+          "strike": 541.75,
+          "iv": 0.24518053969740264,
+          "callPrice": 41.12552076495098,
+          "dCdK": -0.9172745063145352,
+          "d2CdK2": 0.0038608760940554987,
+          "probAboveQ": 0.9196524446693551,
+          "rawDensityQ": 0.0038708850120882797,
+          "densityQ": 0.004853906365341446
+        },
+        {
+          "strike": 543.5,
+          "iv": 0.24240111830304506,
+          "callPrice": 39.52620234541956,
+          "dCdK": -0.9101988191467366,
+          "d2CdK2": 0.00422562352628475,
+          "probAboveQ": 0.9125584145215793,
+          "rawDensityQ": 0.004236578013940309,
+          "densityQ": 0.005312468059607012
+        },
+        {
+          "strike": 545.25,
+          "iv": 0.23966476778105644,
+          "callPrice": 37.9398248979374,
+          "dCdK": -0.9024574031926055,
+          "d2CdK2": 0.0046217089927225175,
+          "probAboveQ": 0.9047969297551229,
+          "rawDensityQ": 0.004633690290581506,
+          "densityQ": 0.0058104280355103155
+        },
+        {
+          "strike": 547.0,
+          "iv": 0.23697460061874326,
+          "callPrice": 36.367601434245444,
+          "dCdK": -0.8939941754195421,
+          "d2CdK2": 0.00505055131934995,
+          "probAboveQ": 0.8963117619479818,
+          "rawDensityQ": 0.0050636443461511875,
+          "densityQ": 0.006349570045830113
+        },
+        {
+          "strike": 548.75,
+          "iv": 0.23433380932743378,
+          "callPrice": 34.810845283969,
+          "dCdK": -0.8848014190720213,
+          "d2CdK2": 0.005455455934958664,
+          "probAboveQ": 0.887095174339748,
+          "rawDensityQ": 0.00546959863468646,
+          "densityQ": 0.006858617485628895
+        },
+        {
+          "strike": 550.5,
+          "iv": 0.2317403946900626,
+          "callPrice": 33.27079646749337,
+          "dCdK": -0.8755759666615534,
+          "d2CdK2": 0.005087918248433354,
+          "probAboveQ": 0.877845805907439,
+          "rawDensityQ": 0.005101108145095531,
+          "densityQ": 0.0063965478743106645
+        },
+        {
+          "strike": 552.25,
+          "iv": 0.22912314047793053,
+          "callPrice": 31.746329400653565,
+          "dCdK": -0.866084858319141,
+          "d2CdK2": 0.005759062714323804,
+          "probAboveQ": 0.8683300928579276,
+          "rawDensityQ": 0.005773992482917534,
+          "densityQ": 0.00724031294619813
+        },
+        {
+          "strike": 554.0,
+          "iv": 0.22650751211943718,
+          "callPrice": 30.239499463376376,
+          "dCdK": -0.8549165960190847,
+          "d2CdK2": 0.007004665628597806,
+          "probAboveQ": 0.857132878004304,
+          "rawDensityQ": 0.007022824492652424,
+          "densityQ": 0.008806289104715983
+        },
+        {
+          "strike": 555.75,
+          "iv": 0.22395859700992585,
+          "callPrice": 28.75412131458677,
+          "dCdK": -0.8414053193371761,
+          "d2CdK2": 0.008436793436439771,
+          "probAboveQ": 0.8435865747487544,
+          "rawDensityQ": 0.008458664942260651,
+          "densityQ": 0.010606764984573804
+        },
+        {
+          "strike": 557.5,
+          "iv": 0.22154319696991812,
+          "callPrice": 27.29458084569626,
+          "dCdK": -0.8252216486043024,
+          "d2CdK2": 0.010058830258273588,
+          "probAboveQ": 0.827360949539775,
+          "rawDensityQ": 0.010084906725144858,
+          "densityQ": 0.012645995113310538
+        },
+        {
+          "strike": 559.25,
+          "iv": 0.2193296432386435,
+          "callPrice": 25.86584554447171,
+          "dCdK": -0.8062565534921922,
+          "d2CdK2": 0.011615564155567526,
+          "probAboveQ": 0.808346689399356,
+          "rawDensityQ": 0.011645676292477744,
+          "densityQ": 0.014603126186450132
+        },
+        {
+          "strike": 561.0,
+          "iv": 0.21736975198930547,
+          "callPrice": 24.472682908473587,
+          "dCdK": -0.7859116693061067,
+          "d2CdK2": 0.01163573205710211,
+          "probAboveQ": 0.7879490632258966,
+          "rawDensityQ": 0.011665896477190664,
+          "densityQ": 0.014628481339853016
+        },
+        {
+          "strike": 562.75,
+          "iv": 0.215602516454687,
+          "callPrice": 23.115154701900337,
+          "dCdK": -0.7656284899865113,
+          "d2CdK2": 0.011545044308149066,
+          "probAboveQ": 0.7676133018823491,
+          "rawDensityQ": 0.011574973629720148,
+          "densityQ": 0.014514468397925296
+        },
+        {
+          "strike": 564.5,
+          "iv": 0.21396840198787512,
+          "callPrice": 21.792983193520797,
+          "dCdK": -0.7455495229950202,
+          "d2CdK2": 0.011402346539268748,
+          "probAboveQ": 0.7474822822660379,
+          "rawDensityQ": 0.011431905931777776,
+          "densityQ": 0.014335068284631155
+        },
+        {
+          "strike": 566.25,
+          "iv": 0.2124131463999081,
+          "callPrice": 20.505731371417767,
+          "dCdK": -0.7258369982815144,
+          "d2CdK2": 0.011126253133309838,
+          "probAboveQ": 0.7277186548910454,
+          "rawDensityQ": 0.01115509678249991,
+          "densityQ": 0.013987962729320503
+        },
+        {
+          "strike": 568.0,
+          "iv": 0.21088180207179322,
+          "callPrice": 19.252553699535497,
+          "dCdK": -0.7067172366633453,
+          "d2CdK2": 0.010724903001739783,
+          "probAboveQ": 0.7085493272878043,
+          "rawDensityQ": 0.010752706192631927,
+          "densityQ": 0.013483383998768132
+        },
+        {
+          "strike": 569.75,
+          "iv": 0.2093188254273203,
+          "callPrice": 18.032221043096058,
+          "dCdK": -0.6870237797704541,
+          "d2CdK2": 0.011781904875849847,
+          "probAboveQ": 0.6888048171647599,
+          "rawDensityQ": 0.011812448233704292,
+          "densityQ": 0.014812250297487256
+        },
+        {
+          "strike": 571.5,
+          "iv": 0.20776055507402372,
+          "callPrice": 16.847970470338907,
+          "dCdK": -0.6655456695570072,
+          "d2CdK2": 0.01276450679666219,
+          "probAboveQ": 0.6672710271938206,
+          "rawDensityQ": 0.012797597447370555,
+          "densityQ": 0.01604758072556579
+        },
+        {
+          "strike": 573.25,
+          "iv": 0.2062365814585847,
+          "callPrice": 15.702811199646533,
+          "dCdK": -0.6455311308790215,
+          "d2CdK2": 0.010109251692464127,
+          "probAboveQ": 0.6472046029146884,
+          "rawDensityQ": 0.010135458871637377,
+          "densityQ": 0.012709385109364523
+        },
+        {
+          "strike": 575.0,
+          "iv": 0.20456905924406066,
+          "callPrice": 14.588611512262332,
+          "dCdK": -0.6300857301661316,
+          "d2CdK2": 0.007542634836552153,
+          "probAboveQ": 0.6317191616136126,
+          "rawDensityQ": 0.0075621883295913335,
+          "densityQ": 0.009482625795983487
+        },
+        {
+          "strike": 576.75,
+          "iv": 0.2025961546188737,
+          "callPrice": 13.497511144065072,
+          "dCdK": -0.614887657235142,
+          "d2CdK2": 0.009826591370293514,
+          "probAboveQ": 0.6164816892658801,
+          "rawDensityQ": 0.009852065782103398,
+          "densityQ": 0.012354023604983213
+        },
+        {
+          "strike": 578.5,
+          "iv": 0.20043031173280876,
+          "callPrice": 12.436504711939335,
+          "dCdK": -0.5937683651898656,
+          "d2CdK2": 0.01430974239573679,
+          "probAboveQ": 0.5953076476617363,
+          "rawDensityQ": 0.014346838908346886,
+          "densityQ": 0.017990256099646988
+        },
+        {
+          "strike": 580.25,
+          "iv": 0.19829827783607332,
+          "callPrice": 11.419321865900542,
+          "dCdK": -0.5696655364682296,
+          "d2CdK2": 0.013236347571847329,
+          "probAboveQ": 0.5711423348740085,
+          "rawDensityQ": 0.013270661420484949,
+          "densityQ": 0.016640780529523516
+        },
+        {
+          "strike": 582.0,
+          "iv": 0.19611595785921537,
+          "callPrice": 10.442675334300532,
+          "dCdK": -0.5440365879191599,
+          "d2CdK2": 0.016053879341375143,
+          "probAboveQ": 0.5454469459525867,
+          "rawDensityQ": 0.0160954973468541,
+          "densityQ": 0.020182990913254678
+        },
+        {
+          "strike": 583.75,
+          "iv": 0.19401665567410833,
+          "callPrice": 9.515193808183483,
+          "dCdK": -0.5104960917656091,
+          "d2CdK2": 0.022278116262682612,
+          "probAboveQ": 0.5118194995658242,
+          "rawDensityQ": 0.02233586995230277,
+          "densityQ": 0.02800812243152435
+        },
+        {
+          "strike": 585.5,
+          "iv": 0.1923286100186529,
+          "callPrice": 8.6559390131209,
+          "dCdK": -0.4743234806610011,
+          "d2CdK2": 0.019062010714012256,
+          "probAboveQ": 0.4755531147448996,
+          "rawDensityQ": 0.019111426985896844,
+          "densityQ": 0.023964823756817754
+        },
+        {
+          "strike": 587.25,
+          "iv": 0.19086802510040637,
+          "callPrice": 7.855061625869979,
+          "dCdK": -0.4399621996919336,
+          "d2CdK2": 0.020208024679208236,
+          "probAboveQ": 0.4411027557437113,
+          "rawDensityQ": 0.02026041187260458,
+          "densityQ": 0.025405596354777998
+        },
+        {
+          "strike": 589.0,
+          "iv": 0.18970388791862955,
+          "callPrice": 7.116071314199132,
+          "dCdK": -0.40211782458897816,
+          "d2CdK2": 0.02304268972416912,
+          "probAboveQ": 0.4031602730508773,
+          "rawDensityQ": 0.023102425490633915,
+          "densityQ": 0.028969346749806536
+        },
+        {
+          "strike": 590.75,
+          "iv": 0.1890197919687559,
+          "callPrice": 6.447649239808555,
+          "dCdK": -0.3672993527399545,
+          "d2CdK2": 0.016749849531857652,
+          "probAboveQ": 0.3682515379501269,
+          "rawDensityQ": 0.016793271767366297,
+          "densityQ": 0.021057966969303784
+        },
+        {
+          "strike": 592.5,
+          "iv": 0.18848198001942143,
+          "callPrice": 5.830523579609292,
+          "dCdK": -0.33948863038209864,
+          "d2CdK2": 0.01503383316283502,
+          "probAboveQ": 0.34036871919919054,
+          "rawDensityQ": 0.015072806805132684,
+          "densityQ": 0.018900585438864713
+        },
+        {
+          "strike": 594.25,
+          "iv": 0.1880149631522898,
+          "callPrice": 5.25943903347121,
+          "dCdK": -0.3132908540223817,
+          "d2CdK2": 0.01490648267684147,
+          "probAboveQ": 0.3141030278404325,
+          "rawDensityQ": 0.01494512617630505,
+          "densityQ": 0.018740479981052906
+        },
+        {
+          "strike": 596.0,
+          "iv": 0.18764116187186397,
+          "callPrice": 4.7340055905309555,
+          "dCdK": -0.2874276365713594,
+          "d2CdK2": 0.014651480124326932,
+          "probAboveQ": 0.28817276269939757,
+          "rawDensityQ": 0.01468946255630632,
+          "densityQ": 0.018419889917379438
+        },
+        {
+          "strike": 597.75,
+          "iv": 0.18738266649450203,
+          "callPrice": 4.253442305471452,
+          "dCdK": -0.26212184788861187,
+          "d2CdK2": 0.014269421227384393,
+          "probAboveQ": 0.26280137140249976,
+          "rawDensityQ": 0.014306413211576795,
+          "densityQ": 0.017939564191656196
+        },
+        {
+          "strike": 599.5,
+          "iv": 0.18726111772406326,
+          "callPrice": 3.816579122920814,
+          "dCdK": -0.2380700261280221,
+          "d2CdK2": 0.013218375070432442,
+          "probAboveQ": 0.23868719780603742,
+          "rawDensityQ": 0.013252642327237243,
+          "densityQ": 0.016618185440509095
+        },
+        {
+          "strike": 601.25,
+          "iv": 0.18725789887279118,
+          "callPrice": 3.420197214023375,
+          "dCdK": -0.21666561248293956,
+          "d2CdK2": 0.011243811952519112,
+          "probAboveQ": 0.2172272954541188,
+          "rawDensityQ": 0.011272960360669802,
+          "densityQ": 0.01413575807083392
+        },
+        {
+          "strike": 603.0,
+          "iv": 0.1872837511998667,
+          "callPrice": 3.0582494792305255,
+          "dCdK": -0.1974098432924864,
+          "d2CdK2": 0.0107627814079988,
+          "probAboveQ": 0.1979216076931676,
+          "rawDensityQ": 0.01079068279470304,
+          "densityQ": 0.013531004858068102
+        },
+        {
+          "strike": 604.75,
+          "iv": 0.187351918562208,
+          "callPrice": 2.7292627624996726,
+          "dCdK": -0.1789745952605902,
+          "d2CdK2": 0.010306073485596756,
+          "probAboveQ": 0.1794385682061793,
+          "rawDensityQ": 0.010332790904712065,
+          "densityQ": 0.012956830127347701
+        },
+        {
+          "strike": 606.5,
+          "iv": 0.1874815948432029,
+          "callPrice": 2.4318383958184597,
+          "dCdK": -0.1613909169199498,
+          "d2CdK2": 0.009789558903706697,
+          "probAboveQ": 0.16180930601593096,
+          "rawDensityQ": 0.009814937312714732,
+          "densityQ": 0.012307466263874337
+        },
+        {
+          "strike": 608.25,
+          "iv": 0.18769153666606367,
+          "callPrice": 2.1643945532798483,
+          "dCdK": -0.1447549585494252,
+          "d2CdK2": 0.009222964948321422,
+          "probAboveQ": 0.14513022066083833,
+          "rawDensityQ": 0.00924687452167683,
+          "densityQ": 0.011595142444199577
+        },
+        {
+          "strike": 610.0,
+          "iv": 0.188,
+          "callPrice": 1.9251960408954716,
+          "dCdK": -0.13668486421964385,
+          "d2CdK2": 0.009222964948321422,
+          "probAboveQ": 0.137039205454371,
+          "rawDensityQ": 0.00924687452167683,
+          "densityQ": 0.011595142444199577
+        }
+      ]
+    }
+  },
+  "verticalSpreadCases": [
+    {
+      "name": "nvda_liquid_green_spread",
+      "input": {
+        "side": "CALL",
+        "longLeg": {
+          "strike": 140.0,
+          "bid": 4.8,
+          "ask": 4.95,
+          "last": 4.9
+        },
+        "shortLeg": {
+          "strike": 145.0,
+          "bid": 2.75,
+          "ask": 2.85,
+          "last": 2.8
+        },
+        "spot": 142.0,
+        "daysToExpiry": 14,
+        "rateDec": 0.045,
+        "atmIvDec": 0.42
+      },
+      "expected": {
+        "valid": true,
+        "eligibleForAutoRanking": true,
+        "reason": null,
+        "width": 5.0,
+        "debit": 2.2,
+        "maxProfit": 2.8,
+        "rewardRiskRatio": 1.2727272727272725,
+        "breakeven": 142.2,
+        "breakevenDistPct": 0.1408450704225272,
+        "probAtBreakevenPct": 48.514082425004965,
+        "edgePct": 4.514082425004956,
+        "longBidAskPctOfMid": 3.076923076923084,
+        "shortBidAskPctOfMid": 3.5714285714285747,
+        "bidAskPctOfMid": 3.3241758241758292,
+        "liquiditySemaphore": "GREEN"
+      }
+    },
+    {
+      "name": "nvda_yellow_spread",
+      "input": {
+        "side": "PUT",
+        "longLeg": {
+          "strike": 140.0,
+          "bid": 3.2,
+          "ask": 3.5,
+          "last": 3.35
+        },
+        "shortLeg": {
+          "strike": 135.0,
+          "bid": 1.6,
+          "ask": 1.8,
+          "last": 1.7
+        },
+        "spot": 142.0,
+        "daysToExpiry": 14,
+        "rateDec": 0.045,
+        "atmIvDec": 0.42
+      },
+      "expected": {
+        "valid": true,
+        "eligibleForAutoRanking": true,
+        "reason": null,
+        "width": 5.0,
+        "debit": 1.9,
+        "maxProfit": 3.1,
+        "rewardRiskRatio": 1.6315789473684212,
+        "breakeven": 138.1,
+        "breakevenDistPct": -2.7464788732394405,
+        "probAtBreakevenPct": 37.50827318798573,
+        "edgePct": -0.4917268120142704,
+        "longBidAskPctOfMid": 8.955223880597009,
+        "shortBidAskPctOfMid": 11.764705882352937,
+        "bidAskPctOfMid": 10.359964881474973,
+        "liquiditySemaphore": "YELLOW"
+      }
+    },
+    {
+      "name": "nvda_red_spread",
+      "input": {
+        "side": "CALL",
+        "longLeg": {
+          "strike": 150.0,
+          "bid": 1.6,
+          "ask": 2.0,
+          "last": 1.8
+        },
+        "shortLeg": {
+          "strike": 155.0,
+          "bid": 0.8,
+          "ask": 1.0,
+          "last": 0.9
+        },
+        "spot": 142.0,
+        "daysToExpiry": 14,
+        "rateDec": 0.045,
+        "atmIvDec": 0.42
+      },
+      "expected": {
+        "valid": true,
+        "eligibleForAutoRanking": true,
+        "reason": null,
+        "width": 5.0,
+        "debit": 1.2,
+        "maxProfit": 3.8,
+        "rewardRiskRatio": 3.1666666666666665,
+        "breakeven": 151.2,
+        "breakevenDistPct": 6.478873239436611,
+        "probAtBreakevenPct": 21.671701297824907,
+        "edgePct": -2.328298702175091,
+        "longBidAskPctOfMid": 22.222222222222214,
+        "shortBidAskPctOfMid": 22.222222222222214,
+        "bidAskPctOfMid": 22.222222222222214,
+        "liquiditySemaphore": "RED"
+      }
+    },
+    {
+      "name": "nvda_deep_otm_penny_rejected",
+      "input": {
+        "side": "CALL",
+        "longLeg": {
+          "strike": 180.0,
+          "bid": 0.01,
+          "ask": 0.02,
+          "last": 0.01
+        },
+        "shortLeg": {
+          "strike": 185.0,
+          "bid": 0.01,
+          "ask": 0.01,
+          "last": 0.01
+        },
+        "spot": 142.0,
+        "daysToExpiry": 14,
+        "rateDec": 0.045,
+        "atmIvDec": 0.42
+      },
+      "expected": {
+        "valid": false,
+        "eligibleForAutoRanking": false,
+        "reason": "DEBIT_BELOW_MIN_FLOOR",
+        "width": 5.0,
+        "debit": null,
+        "maxProfit": null,
+        "rewardRiskRatio": null,
+        "breakeven": null,
+        "breakevenDistPct": null,
+        "probAtBreakevenPct": null,
+        "edgePct": null,
+        "longBidAskPctOfMid": 66.66666666666667,
+        "shortBidAskPctOfMid": 0.0,
+        "bidAskPctOfMid": 33.333333333333336,
+        "liquiditySemaphore": "RED"
+      }
+    },
+    {
+      "name": "nvda_zero_bid_leg_rejected",
+      "input": {
+        "side": "CALL",
+        "longLeg": {
+          "strike": 165.0,
+          "bid": 0.25,
+          "ask": 0.3,
+          "last": 0.28
+        },
+        "shortLeg": {
+          "strike": 170.0,
+          "bid": 0.0,
+          "ask": 0.05,
+          "last": 0.03
+        },
+        "spot": 142.0,
+        "daysToExpiry": 14,
+        "rateDec": 0.045,
+        "atmIvDec": 0.42
+      },
+      "expected": {
+        "valid": false,
+        "eligibleForAutoRanking": false,
+        "reason": "SHORT_LEG_NO_POSITIVE_BID",
+        "width": 5.0,
+        "debit": null,
+        "maxProfit": null,
+        "rewardRiskRatio": null,
+        "breakeven": null,
+        "breakevenDistPct": null,
+        "probAtBreakevenPct": null,
+        "edgePct": null,
+        "longBidAskPctOfMid": 18.181818181818176,
+        "shortBidAskPctOfMid": null,
+        "bidAskPctOfMid": null,
+        "liquiditySemaphore": "NO_DATA"
+      }
+    },
+    {
+      "name": "nvda_excessive_bid_ask_rejected",
+      "input": {
+        "side": "CALL",
+        "longLeg": {
+          "strike": 155.0,
+          "bid": 0.6,
+          "ask": 1.1,
+          "last": 0.85
+        },
+        "shortLeg": {
+          "strike": 160.0,
+          "bid": 0.3,
+          "ask": 0.5,
+          "last": 0.4
+        },
+        "spot": 142.0,
+        "daysToExpiry": 14,
+        "rateDec": 0.045,
+        "atmIvDec": 0.42
+      },
+      "expected": {
+        "valid": false,
+        "eligibleForAutoRanking": false,
+        "reason": "EXCESSIVE_BID_ASK_SPREAD",
+        "width": 5.0,
+        "debit": null,
+        "maxProfit": null,
+        "rewardRiskRatio": null,
+        "breakeven": null,
+        "breakevenDistPct": null,
+        "probAtBreakevenPct": null,
+        "edgePct": null,
+        "longBidAskPctOfMid": 58.82352941176471,
+        "shortBidAskPctOfMid": 50.0,
+        "bidAskPctOfMid": 54.411764705882355,
+        "liquiditySemaphore": "RED"
+      }
+    }
+  ],
+  "currencySizingCases": [
+    {
+      "name": "us_nvda_2500_usd",
+      "input": {
+        "market": "US",
+        "premiumPerShare": 2.5,
+        "budget": 2500
+      },
+      "expected": {
+        "market": "US",
+        "currencyCode": "USD",
+        "currencyPrefix": "US$",
+        "contractMultiplier": 100,
+        "budgetPresets": [
+          500,
+          1000,
+          2500,
+          5000,
+          10000
+        ],
+        "defaultBudget": 2500,
+        "costPerContract": 250.0,
+        "maxContractsForBudget": 10
+      }
+    },
+    {
+      "name": "ar_ggal_250000_ars",
+      "input": {
+        "market": "AR",
+        "premiumPerShare": 250.0,
+        "budget": 250000
+      },
+      "expected": {
+        "market": "AR",
+        "currencyCode": "ARS",
+        "currencyPrefix": "$",
+        "contractMultiplier": 100,
+        "budgetPresets": [
+          50000,
+          100000,
+          250000,
+          500000
+        ],
+        "defaultBudget": 250000,
+        "costPerContract": 25000.0,
+        "maxContractsForBudget": 10
+      }
+    }
+  ],
+  "butterflyCases": [
+    {
+      "k1": 140.0,
+      "k2": 145.0,
+      "k3": 150.0,
+      "requireSymmetry": true,
+      "expected": true
+    },
+    {
+      "k1": 142.0,
+      "k2": 148.0,
+      "k3": 148.0,
+      "requireSymmetry": false,
+      "expected": false
+    },
+    {
+      "k1": 142.0,
+      "k2": 142.0,
+      "k3": 148.0,
+      "requireSymmetry": false,
+      "expected": false
+    },
+    {
+      "k1": 150.0,
+      "k2": 145.0,
+      "k3": 140.0,
+      "requireSymmetry": false,
+      "expected": false
+    },
+    {
+      "k1": 140.0,
+      "k2": 142.0,
+      "k3": 148.0,
+      "requireSymmetry": true,
+      "expected": false
+    }
+  ]
+}

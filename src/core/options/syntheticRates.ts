@@ -15,8 +15,12 @@ const DEFAULT_OPTION_FEE_RATE = 0.0020;
 const DEFAULT_VAT_RATE = 0.21;
 const DEFAULT_SHORT_BORROW_RATE_TNA = 0.02;
 const BPS_PER_UNIT = 10_000;
+export const MIN_SYNTHETIC_RATE_DTE = 3;
+export const MIN_SYNTHETIC_RATE_T = MIN_SYNTHETIC_RATE_DTE / 365;
+const SHORT_DTE_EPS = 1e-12;
 
 export type SyntheticEngineStatus = 'OK' | 'NO_DATA';
+export type ImpliedRateStatus = 'OK' | 'BLOCKED_SHORT_DTE' | 'NO_DATA';
 
 export type BorrowRegime =
   | 'EASY_TO_BORROW'
@@ -35,6 +39,7 @@ export interface SyntheticImpliedRatesInput {
   readonly riskFreeRate: number;
   readonly dividendYield: number;
   readonly timeToExpiry: number;
+  readonly dte?: number;
   readonly pairs: readonly SyntheticStrikePairInput[];
   readonly nearAtmCount?: number;
   readonly moderateBorrowThreshold?: number;
@@ -53,9 +58,12 @@ export interface SyntheticStrikeRateNode {
 
 export interface SyntheticImpliedRatesResult {
   readonly status: SyntheticEngineStatus;
+  readonly impliedRateStatus: ImpliedRateStatus;
   readonly medianImpliedRate: number;
   readonly medianImpliedTna: number;
   readonly impliedBorrowRate: number;
+  readonly impliedBorrowRateNullable: number | null;
+  readonly htbAlert: boolean;
   readonly borrowRegime: BorrowRegime;
   readonly strikes: readonly SyntheticStrikeRateNode[];
 }
@@ -151,9 +159,12 @@ export interface CalendarRollResult {
 
 const NO_DATA_SYNTH_RATES: SyntheticImpliedRatesResult = Object.freeze({
   status: 'NO_DATA',
+  impliedRateStatus: 'NO_DATA',
   medianImpliedRate: Number.NaN,
   medianImpliedTna: Number.NaN,
   impliedBorrowRate: Number.NaN,
+  impliedBorrowRateNullable: null,
+  htbAlert: false,
   borrowRegime: 'NO_DATA',
   strikes: [],
 });
@@ -261,6 +272,10 @@ export function computeSyntheticImpliedRates(
     return NO_DATA_SYNTH_RATES;
   }
 
+  const isShortDteBlocked =
+    (input.dte !== undefined && Number.isFinite(input.dte) && input.dte < MIN_SYNTHETIC_RATE_DTE) ||
+    timeToExpiry < MIN_SYNTHETIC_RATE_T - SHORT_DTE_EPS;
+
   const nodes: SyntheticStrikeRateNode[] = [];
   for (const pair of pairs) {
     if (
@@ -274,15 +289,35 @@ export function computeSyntheticImpliedRates(
     if (!isPositiveFinite(discStrike)) {
       continue;
     }
+    const absLogMoneyness = Math.abs(Math.log(pair.strike / spot));
+    if (!Number.isFinite(absLogMoneyness)) {
+      continue;
+    }
+
+    if (isShortDteBlocked) {
+      const syntheticForward = (pair.strike * pair.strike) / discStrike;
+      if (!Number.isFinite(syntheticForward)) {
+        continue;
+      }
+      nodes.push({
+        strike: pair.strike,
+        callMid: pair.callMid,
+        putMid: pair.putMid,
+        syntheticForward,
+        impliedRateContinuous: Number.NaN,
+        impliedTna: Number.NaN,
+        absLogMoneyness,
+      });
+      continue;
+    }
+
     const impliedRateContinuous = -Math.log(discStrike / pair.strike) / timeToExpiry;
     const syntheticForward = pair.strike * Math.exp(impliedRateContinuous * timeToExpiry);
     const impliedTna = Math.expm1(impliedRateContinuous * timeToExpiry) / timeToExpiry;
-    const absLogMoneyness = Math.abs(Math.log(pair.strike / spot));
     if (
       !Number.isFinite(impliedRateContinuous) ||
       !Number.isFinite(syntheticForward) ||
-      !Number.isFinite(impliedTna) ||
-      !Number.isFinite(absLogMoneyness)
+      !Number.isFinite(impliedTna)
     ) {
       continue;
     }
@@ -302,6 +337,21 @@ export function computeSyntheticImpliedRates(
   }
 
   const sortedByStrike = nodes.slice().sort((a, b) => a.strike - b.strike);
+
+  if (isShortDteBlocked) {
+    return {
+      status: 'OK',
+      impliedRateStatus: 'BLOCKED_SHORT_DTE',
+      medianImpliedRate: Number.NaN,
+      medianImpliedTna: Number.NaN,
+      impliedBorrowRate: Number.NaN,
+      impliedBorrowRateNullable: null,
+      htbAlert: false,
+      borrowRegime: 'NO_DATA',
+      strikes: sortedByStrike,
+    };
+  }
+
   const nearAtmRates = sortedByStrike
     .slice()
     .sort((a, b) =>
@@ -331,9 +381,12 @@ export function computeSyntheticImpliedRates(
 
   return {
     status: 'OK',
+    impliedRateStatus: 'OK',
     medianImpliedRate,
     medianImpliedTna,
     impliedBorrowRate,
+    impliedBorrowRateNullable: Number.isFinite(impliedBorrowRate) ? impliedBorrowRate : null,
+    htbAlert: borrowRegime === 'HARD_TO_BORROW_SQUEEZE_ALERT',
     borrowRegime,
     strikes: sortedByStrike,
   };

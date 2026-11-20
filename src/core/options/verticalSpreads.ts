@@ -11,6 +11,14 @@
 
 import { normCdf } from './math.js';
 
+export const DEFAULT_MIN_SPREAD_DEBIT = 0.10;
+export const DEFAULT_MAX_BID_ASK_PCT_OF_MID = 35.0;
+export const US_CONTRACT_MULTIPLIER = 100;
+export const US_BUDGET_PRESETS_USD = [500, 1_000, 2_500, 5_000, 10_000] as const;
+export const AR_BUDGET_PRESETS_ARS = [50_000, 100_000, 250_000, 500_000] as const;
+
+export type LiquiditySemaphore = 'GREEN' | 'YELLOW' | 'RED' | 'NO_DATA';
+
 export interface VerticalSpreadLegQuote {
   readonly strike: number;
   readonly bid: number;
@@ -30,10 +38,14 @@ export interface VerticalSpreadInput {
   readonly daysToExpiry: number;
   readonly rateDec: number;
   readonly atmIvDec: number;
+  readonly minDebit?: number;
+  readonly maxBidAskPctOfMid?: number;
+  readonly requirePositiveBids?: boolean;
 }
 
 export interface VerticalSpreadMetric {
   readonly valid: boolean;
+  readonly eligibleForAutoRanking: boolean;
   readonly reason: string | null;
   readonly width: number;
   readonly longPrice: number;
@@ -47,16 +59,233 @@ export interface VerticalSpreadMetric {
   readonly breakevenDistPct: number;
   readonly probAtBreakevenPct: number;
   readonly edgePct: number;
+  readonly longBidAskPctOfMid: number;
+  readonly shortBidAskPctOfMid: number;
+  readonly bidAskPctOfMid: number;
+  readonly liquiditySemaphore: LiquiditySemaphore;
 }
 
 function finitePositive(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }
 
-function resolveBuyPrice(leg: VerticalSpreadLegQuote): {
+/**
+ * Calcula el slippage relativo Bid-Ask % del Mid = ((ask - bid) / mid) * 100.
+ * Si bid <= 0 o ask < bid devuelve NaN (Zero Silent Fallbacks).
+ */
+export function computeLegBidAskPctOfMid(bid: number, ask: number): number {
+  if (!finitePositive(bid) || !finitePositive(ask) || ask < bid) {
+    return Number.NaN;
+  }
+  const mid = 0.5 * (bid + ask);
+  if (!finitePositive(mid)) {
+    return Number.NaN;
+  }
+  return ((ask - bid) / mid) * 100;
+}
+
+/**
+ * Clasifica el semáforo de liquidez según Bid-Ask % del Mid:
+ *  - GREEN:  < 5%
+ *  - YELLOW: 5% – 15%
+ *  - RED:    > 15%
+ *  - NO_DATA: NaN / inválido
+ */
+export function classifyLiquiditySemaphore(bidAskPctOfMid: number): LiquiditySemaphore {
+  if (!Number.isFinite(bidAskPctOfMid) || bidAskPctOfMid < 0) {
+    return 'NO_DATA';
+  }
+  if (bidAskPctOfMid < 5) {
+    return 'GREEN';
+  }
+  if (bidAskPctOfMid <= 15) {
+    return 'YELLOW';
+  }
+  return 'RED';
+}
+
+export function computeMultiLegBidAskPctOfMid(
+  legs: readonly { readonly bid: number; readonly ask: number }[],
+): {
+  readonly bidAskPctOfMid: number;
+  readonly maxLegBidAskPctOfMid: number;
+  readonly liquiditySemaphore: LiquiditySemaphore;
+  readonly allLegsHavePositiveBid: boolean;
+} {
+  if (legs.length === 0) {
+    return {
+      bidAskPctOfMid: Number.NaN,
+      maxLegBidAskPctOfMid: Number.NaN,
+      liquiditySemaphore: 'NO_DATA',
+      allLegsHavePositiveBid: false,
+    };
+  }
+  let sumPct = 0;
+  let maxPct = 0;
+  for (const leg of legs) {
+    const legPct = computeLegBidAskPctOfMid(leg.bid, leg.ask);
+    if (!Number.isFinite(legPct)) {
+      return {
+        bidAskPctOfMid: Number.NaN,
+        maxLegBidAskPctOfMid: Number.NaN,
+        liquiditySemaphore: 'NO_DATA',
+        allLegsHavePositiveBid: false,
+      };
+    }
+    sumPct += legPct;
+    if (legPct > maxPct) {
+      maxPct = legPct;
+    }
+  }
+  const avgPct = sumPct / legs.length;
+  return {
+    bidAskPctOfMid: avgPct,
+    maxLegBidAskPctOfMid: maxPct,
+    liquiditySemaphore: classifyLiquiditySemaphore(avgPct),
+    allLegsHavePositiveBid: true,
+  };
+}
+
+/**
+ * Valida estrictamente que una Mariposa tenga strikes ordenados K1 < K2 < K3
+ * (sin strikes repetidos como 142/148/148) y alas simétricas cuando requireSymmetry=true.
+ */
+export function isValidButterflyStrikes(
+  k1: number,
+  k2: number,
+  k3: number,
+  requireSymmetry = true,
+): boolean {
+  if (!finitePositive(k1) || !finitePositive(k2) || !finitePositive(k3)) {
+    return false;
+  }
+  if (!(k1 < k2 - 1e-9 && k2 < k3 - 1e-9)) {
+    return false;
+  }
+  if (requireSymmetry) {
+    const leftWing = k2 - k1;
+    const rightWing = k3 - k2;
+    if (Math.abs(leftWing - rightWing) > 1e-6) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Valida estrictamente que un Calendar / Diagonal Spread opere sobre dos vencimientos
+ * distintos (nearExpiry !== farExpiry y farDays > nearDays) con bid > 0 en ambas patas.
+ */
+export function isValidCalendarSpread(params: {
+  readonly nearExpiryCode: string;
+  readonly farExpiryCode: string;
+  readonly nearDays: number;
+  readonly farDays: number;
+  readonly nearStrike: number;
+  readonly farStrike: number;
+  readonly nearBid: number;
+  readonly nearAsk: number;
+  readonly farBid: number;
+  readonly farAsk: number;
+  readonly minNetDebit?: number;
+}): boolean {
+  const minDebit = params.minNetDebit ?? DEFAULT_MIN_SPREAD_DEBIT;
+  if (
+    typeof params.nearExpiryCode !== 'string' ||
+    typeof params.farExpiryCode !== 'string' ||
+    params.nearExpiryCode.trim() === '' ||
+    params.farExpiryCode.trim() === '' ||
+    params.nearExpiryCode.trim() === params.farExpiryCode.trim()
+  ) {
+    return false;
+  }
+  if (
+    !finitePositive(params.nearDays) ||
+    !finitePositive(params.farDays) ||
+    !(params.farDays > params.nearDays) ||
+    !finitePositive(params.nearStrike) ||
+    !finitePositive(params.farStrike)
+  ) {
+    return false;
+  }
+  if (
+    !finitePositive(params.nearBid) ||
+    !finitePositive(params.nearAsk) ||
+    params.nearAsk < params.nearBid ||
+    !finitePositive(params.farBid) ||
+    !finitePositive(params.farAsk) ||
+    params.farAsk < params.farBid
+  ) {
+    return false;
+  }
+  const netDebit = params.farAsk - params.nearBid;
+  return Number.isFinite(netDebit) && netDebit >= minDebit - 1e-12;
+}
+
+export interface OptionsMarketCurrencyConfig {
+  readonly market: 'US' | 'AR';
+  readonly currencyCode: 'USD' | 'ARS';
+  readonly currencyPrefix: 'US$' | '$';
+  readonly contractMultiplier: number;
+  readonly budgetPresets: readonly number[];
+  readonly defaultBudget: number;
+  readonly costPerContract: number;
+  readonly maxContractsForBudget: number;
+}
+
+/**
+ * Resuelve la configuración monetaria USD vs. ARS para dimensionamiento de contratos
+ * (costoPorContrato = prima * 100) y presupuestos de Mapa / Estrategias.
+ */
+export function resolveOptionsMarketCurrencyConfig(params: {
+  readonly market: 'US' | 'AR' | 'BYMA';
+  readonly premiumPerShare?: number | null;
+  readonly budget?: number | null;
+}): OptionsMarketCurrencyConfig {
+  const isUs = params.market === 'US';
+  const contractMultiplier = US_CONTRACT_MULTIPLIER;
+  const budgetPresets = isUs ? US_BUDGET_PRESETS_USD : AR_BUDGET_PRESETS_ARS;
+  const defaultBudget = isUs ? 2_500 : 250_000;
+  const effBudget =
+    params.budget !== null &&
+    params.budget !== undefined &&
+    Number.isFinite(params.budget) &&
+    params.budget > 0
+      ? params.budget
+      : defaultBudget;
+  const prem = params.premiumPerShare ?? Number.NaN;
+  const costPerContract =
+    Number.isFinite(prem) && prem > 0 ? prem * contractMultiplier : Number.NaN;
+  const maxContractsForBudget =
+    Number.isFinite(costPerContract) && costPerContract > 0
+      ? Math.floor(effBudget / costPerContract)
+      : 0;
+
+  return {
+    market: isUs ? 'US' : 'AR',
+    currencyCode: isUs ? 'USD' : 'ARS',
+    currencyPrefix: isUs ? 'US$' : '$',
+    contractMultiplier,
+    budgetPresets,
+    defaultBudget,
+    costPerContract,
+    maxContractsForBudget,
+  };
+}
+
+function resolveBuyPrice(
+  leg: VerticalSpreadLegQuote,
+  requirePositiveBids: boolean,
+): {
   readonly price: number;
   readonly usesEodRef: boolean;
 } {
+  if (requirePositiveBids) {
+    if (finitePositive(leg.bid) && finitePositive(leg.ask) && leg.ask >= leg.bid) {
+      return { price: leg.ask, usesEodRef: false };
+    }
+    return { price: Number.NaN, usesEodRef: false };
+  }
   if (finitePositive(leg.ask)) {
     return { price: leg.ask, usesEodRef: false };
   }
@@ -69,10 +298,19 @@ function resolveBuyPrice(leg: VerticalSpreadLegQuote): {
   return { price: Number.NaN, usesEodRef: false };
 }
 
-function resolveSellPrice(leg: VerticalSpreadLegQuote): {
+function resolveSellPrice(
+  leg: VerticalSpreadLegQuote,
+  requirePositiveBids: boolean,
+): {
   readonly price: number;
   readonly usesEodRef: boolean;
 } {
+  if (requirePositiveBids) {
+    if (finitePositive(leg.bid) && finitePositive(leg.ask) && leg.ask >= leg.bid) {
+      return { price: leg.bid, usesEodRef: false };
+    }
+    return { price: Number.NaN, usesEodRef: false };
+  }
   if (finitePositive(leg.bid)) {
     return { price: leg.bid, usesEodRef: false };
   }
@@ -90,9 +328,14 @@ function invalidMetric(
   long: { readonly price: number; readonly usesEodRef: boolean },
   short: { readonly price: number; readonly usesEodRef: boolean },
   reason: string,
+  longBidAskPctOfMid = Number.NaN,
+  shortBidAskPctOfMid = Number.NaN,
+  bidAskPctOfMid = Number.NaN,
+  liquiditySemaphore: LiquiditySemaphore = 'NO_DATA',
 ): VerticalSpreadMetric {
   return {
     valid: false,
+    eligibleForAutoRanking: false,
     reason,
     width,
     longPrice: long.price,
@@ -106,6 +349,10 @@ function invalidMetric(
     breakevenDistPct: Number.NaN,
     probAtBreakevenPct: Number.NaN,
     edgePct: Number.NaN,
+    longBidAskPctOfMid,
+    shortBidAskPctOfMid,
+    bidAskPctOfMid,
+    liquiditySemaphore,
   };
 }
 
@@ -113,38 +360,175 @@ function invalidMetric(
  * Calcula un vertical debit con puntas reales:
  *  - CALL: long strike abajo y short strike arriba.
  *  - PUT: long strike arriba y short strike abajo.
- * La probabilidad usa la densidad log-normal con la IV media de las dos patas
- * y la IV ATM como tercer dato si ambas patas tienen IV válida en el caller.
+ * Excluye del ranking automático spreads con debit < 0.10, patas sin bid > 0
+ * o bid-ask excesivo, y calcula el semáforo de liquidez Bid-Ask % del Mid.
  */
 export function computeVerticalSpreadMetrics(
   input: VerticalSpreadInput,
 ): VerticalSpreadMetric {
+  const requirePositiveBids = input.requirePositiveBids ?? true;
+  const minDebit = input.minDebit ?? DEFAULT_MIN_SPREAD_DEBIT;
+  const maxBidAskPctOfMid = input.maxBidAskPctOfMid ?? DEFAULT_MAX_BID_ASK_PCT_OF_MID;
+
   const width = Math.abs(input.shortLeg.strike - input.longLeg.strike);
-  const long = resolveBuyPrice(input.longLeg);
-  const short = resolveSellPrice(input.shortLeg);
+  const long = resolveBuyPrice(input.longLeg, requirePositiveBids);
+  const short = resolveSellPrice(input.shortLeg, requirePositiveBids);
+
+  const longBidAskPctOfMid = computeLegBidAskPctOfMid(input.longLeg.bid, input.longLeg.ask);
+  const shortBidAskPctOfMid = computeLegBidAskPctOfMid(input.shortLeg.bid, input.shortLeg.ask);
+  const bidAskPctOfMid =
+    Number.isFinite(longBidAskPctOfMid) && Number.isFinite(shortBidAskPctOfMid)
+      ? 0.5 * (longBidAskPctOfMid + shortBidAskPctOfMid)
+      : Number.NaN;
+  const liquiditySemaphore = classifyLiquiditySemaphore(bidAskPctOfMid);
 
   if (!Number.isFinite(width) || width <= 0) {
-    return invalidMetric(width, long, short, 'WIDTH_NOT_POSITIVE');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'WIDTH_NOT_POSITIVE',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
+  }
+  if (
+    requirePositiveBids &&
+    (!finitePositive(input.longLeg.bid) ||
+      !finitePositive(input.longLeg.ask) ||
+      input.longLeg.ask < input.longLeg.bid)
+  ) {
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'LONG_LEG_NO_POSITIVE_BID',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
+  }
+  if (
+    requirePositiveBids &&
+    (!finitePositive(input.shortLeg.bid) ||
+      !finitePositive(input.shortLeg.ask) ||
+      input.shortLeg.ask < input.shortLeg.bid)
+  ) {
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'SHORT_LEG_NO_POSITIVE_BID',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
   if (!Number.isFinite(long.price)) {
-    return invalidMetric(width, long, short, 'LONG_PRICE_NOT_CALCULABLE');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'LONG_PRICE_NOT_CALCULABLE',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
   if (!Number.isFinite(short.price)) {
-    return invalidMetric(width, long, short, 'SHORT_PRICE_NOT_CALCULABLE');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'SHORT_PRICE_NOT_CALCULABLE',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
   if (input.side === 'CALL' && input.shortLeg.strike <= input.longLeg.strike) {
-    return invalidMetric(width, long, short, 'CALL_STRIKES_NOT_ASCENDING');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'CALL_STRIKES_NOT_ASCENDING',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
   if (input.side === 'PUT' && input.shortLeg.strike >= input.longLeg.strike) {
-    return invalidMetric(width, long, short, 'PUT_STRIKES_NOT_DESCENDING');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'PUT_STRIKES_NOT_DESCENDING',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
 
   const debit = long.price - short.price;
   if (!(debit > 0)) {
-    return invalidMetric(width, long, short, 'DEBIT_NOT_POSITIVE');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'DEBIT_NOT_POSITIVE',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
+  }
+  if (debit < minDebit - 1e-12) {
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'DEBIT_BELOW_MIN_FLOOR',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
   if (debit >= width) {
-    return invalidMetric(width, long, short, 'DEBIT_NOT_LESS_THAN_WIDTH');
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'DEBIT_NOT_LESS_THAN_WIDTH',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
+  }
+
+  if (
+    requirePositiveBids &&
+    (!Number.isFinite(bidAskPctOfMid) || bidAskPctOfMid > maxBidAskPctOfMid + 1e-9)
+  ) {
+    return invalidMetric(
+      width,
+      long,
+      short,
+      'EXCESSIVE_BID_ASK_SPREAD',
+      longBidAskPctOfMid,
+      shortBidAskPctOfMid,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+    );
   }
 
   const maxProfit = width - debit;
@@ -182,8 +566,15 @@ export function computeVerticalSpreadMetrics(
     }
   }
 
+  const eligibleForAutoRanking =
+    debit >= minDebit - 1e-12 &&
+    Number.isFinite(bidAskPctOfMid) &&
+    bidAskPctOfMid <= maxBidAskPctOfMid + 1e-9 &&
+    Math.max(longBidAskPctOfMid, shortBidAskPctOfMid) <= maxBidAskPctOfMid + 1e-9;
+
   return {
     valid: true,
+    eligibleForAutoRanking,
     reason: null,
     width,
     longPrice: long.price,
@@ -197,5 +588,9 @@ export function computeVerticalSpreadMetrics(
     breakevenDistPct,
     probAtBreakevenPct,
     edgePct,
+    longBidAskPctOfMid,
+    shortBidAskPctOfMid,
+    bidAskPctOfMid,
+    liquiditySemaphore,
   };
 }

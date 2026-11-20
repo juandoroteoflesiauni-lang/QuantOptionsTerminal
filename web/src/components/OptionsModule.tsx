@@ -66,7 +66,11 @@ import {
 } from './options/engine';
 import { InteractiveOptionPriceMap } from './options/map/InteractiveOptionPriceMap';
 import { VolatilitySuiteView } from './options/VolatilitySuiteView';
-import { computeVerticalSpreadMetrics } from '../../../src/core/options/verticalSpreads';
+import {
+  computeVerticalSpreadMetrics,
+  isValidButterflyStrikes,
+  type LiquiditySemaphore,
+} from '../../../src/core/options/verticalSpreads';
 import {
   type BidirectionalFlowRow,
   type BuilderLeg,
@@ -80,6 +84,8 @@ import {
   computeBuilderAnalytics,
   computeInlineMarkersForRows,
   readOptionHoldingsFromStorage,
+  resolveActiveVolAnalyticsSuite,
+  resolveExpiryVolSuite,
 } from './options/optionsDerived';
 
 export type OptionsSubView =
@@ -159,6 +165,13 @@ const STRATEGY_FAMILIES: StrategyFamilyItem[] = [
   { id: 'collar', label: 'Collar', svgPath: 'M2 11 L6 11 L14 3 L18 3' },
 ];
 
+function getLiquiditySemaphoreBadgeStyle(sem?: LiquiditySemaphore | string): string {
+  if (sem === 'GREEN') return 'bg-[#22C55E]/15 text-[#22C55E] border-[#22C55E]/40';
+  if (sem === 'YELLOW') return 'bg-[#EAB308]/15 text-[#EAB308] border-[#EAB308]/40';
+  if (sem === 'RED') return 'bg-[#EF4444]/15 text-[#EF4444] border-[#EF4444]/40';
+  return 'bg-[#1F2433] text-[#787B86] border-[#2D3242]';
+}
+
 /* ============================================================================
    COMPONENTE DE TARJETA DE PAYOFF
    ============================================================================ */
@@ -188,7 +201,17 @@ const PayoffStrategyCard: React.FC<{
     <div className="rounded-[12px] bg-[#12141A] border border-[#232733] hover:border-[#343A4D] p-5 flex flex-col justify-between gap-4 transition-all">
       {/* Header de la Card */}
       <div className="space-y-1.5">
-        <h3 className="text-[16px] font-bold text-[#FFFFFF] tracking-tight">{card.title}</h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="text-[16px] font-bold text-[#FFFFFF] tracking-tight">{card.title}</h3>
+          {card.bidAskPctOfMid !== undefined && Number.isFinite(card.bidAskPctOfMid) && (
+            <span
+              title={`Semáforo de liquidez Bid-Ask % del Mid: ${fmtNum(card.bidAskPctOfMid, 1)}% (${card.liquiditySemaphore ?? '—'}) · Verde <5% · Amarillo 5-15% · Rojo >15%`}
+              className={`shrink-0 px-2 py-0.5 rounded-full border font-mono-num text-[10px] font-semibold ${getLiquiditySemaphoreBadgeStyle(card.liquiditySemaphore)}`}
+            >
+              ● {fmtNum(card.bidAskPctOfMid, 1)}% Mid
+            </span>
+          )}
+        </div>
         <p className="text-[12.5px] text-[#9CA3AF] leading-snug">{card.subtitle}</p>
         {card.note && <p className="text-[12px] text-[#D1D4DC] pt-1 font-medium">{card.note}</p>}
       </div>
@@ -379,6 +402,9 @@ type SpreadCellMetric = {
   readonly probBePct: number;
   readonly edgePct: number;
   readonly usesEodRef: boolean;
+  readonly bidAskPctOfMid: number;
+  readonly liquiditySemaphore: LiquiditySemaphore;
+  readonly eligibleForAutoRanking: boolean;
 };
 
 type DetailedSpreadRow = {
@@ -464,6 +490,9 @@ function buildDetailedSpreadMatrix(
       probBePct: result.probAtBreakevenPct,
       edgePct: result.edgePct,
       usesEodRef: result.longUsesEodRef || result.shortUsesEodRef,
+      bidAskPctOfMid: result.bidAskPctOfMid,
+      liquiditySemaphore: result.liquiditySemaphore,
+      eligibleForAutoRanking: result.eligibleForAutoRanking,
     };
   };
 
@@ -751,9 +780,10 @@ export const OptionsModule: React.FC<{
       effectiveRateDec,
       activeExpiry?.label ?? '—',
       activeExpiry?.id ?? '—',
-      strikes
+      strikes,
+      isUsMarket ? 'US' : 'AR',
     );
-  }, [upperUnderlying, displaySpot, activeExpiry, effectiveRateDec]);
+  }, [upperUnderlying, displaySpot, activeExpiry, effectiveRateDec, isUsMarket]);
 
   // Sincronizar targetPrice, simSpot, simDaysLeft, simTlr y patas iniciales reales al cambiar subyacente / llegar cadena
   useEffect(() => {
@@ -818,14 +848,77 @@ export const OptionsModule: React.FC<{
     onSelectSubView('armado');
   };
 
-  // Header 1-sigma real sincronizado al vencimiento seleccionado
+  // Header 1-sigma, VI ATM y TIR sintética sincronizados al vencimiento seleccionado
   const activeDays = activeExpiry?.daysToExpiry ?? 0;
-  const activeAtmIvDec =
-    activeExpiry && Number.isFinite(activeExpiry.atmIV) && activeExpiry.atmIV > 0
-      ? activeExpiry.atmIV / 100
-      : activeDays > 0
-        ? atmIv(activeDays)
-        : Number.NaN;
+  const activeVolSuite = useMemo(
+    () =>
+      resolveActiveVolAnalyticsSuite({
+        liveOptions,
+        liveQuantEngines: activeQuantEngines,
+        usSnapshot: liveMarket.usSnapshotsBySymbol[upperUnderlying],
+      }),
+    [liveOptions, activeQuantEngines, liveMarket.usSnapshotsBySymbol, upperUnderlying],
+  );
+  const activeVolSuiteExpiry = useMemo(
+    () => resolveExpiryVolSuite(activeVolSuite, activeExpiry?.id ?? null),
+    [activeVolSuite, activeExpiry?.id],
+  );
+  const activeAtmIvDec = useMemo(() => {
+    if (activeExpiry && Number.isFinite(activeExpiry.atmIV) && activeExpiry.atmIV > 0) {
+      return activeExpiry.atmIV / 100;
+    }
+    const suiteAtmOtm = activeVolSuiteExpiry?.smileOtmOnly.atmIvPct;
+    if (suiteAtmOtm !== null && suiteAtmOtm !== undefined && Number.isFinite(suiteAtmOtm) && suiteAtmOtm > 0) {
+      return suiteAtmOtm / 100;
+    }
+    const suiteAtmAll = activeVolSuiteExpiry?.smileAll.atmIvPct;
+    if (suiteAtmAll !== null && suiteAtmAll !== undefined && Number.isFinite(suiteAtmAll) && suiteAtmAll > 0) {
+      return suiteAtmAll / 100;
+    }
+    if (activeExpiry && activeExpiry.rows.length > 0 && Number.isFinite(displaySpot) && displaySpot > 0) {
+      const sortedNear = [...activeExpiry.rows]
+        .sort((a, b) => Math.abs(a.strike - displaySpot) - Math.abs(b.strike - displaySpot))
+        .slice(0, 2);
+      const nearIvs: number[] = [];
+      for (const r of sortedNear) {
+        if (r.strike >= displaySpot - 1e-6 && Number.isFinite(r.callIV) && r.callIV > 0) {
+          nearIvs.push(r.callIV / 100);
+        }
+        if (r.strike <= displaySpot + 1e-6 && Number.isFinite(r.putIV) && r.putIV > 0) {
+          nearIvs.push(r.putIV / 100);
+        }
+      }
+      if (nearIvs.length > 0) {
+        return nearIvs.reduce((acc, v) => acc + v, 0) / nearIvs.length;
+      }
+    }
+    const termIv = activeDays > 0 ? atmIv(activeDays) : Number.NaN;
+    return Number.isFinite(termIv) && termIv > 0 ? termIv : Number.NaN;
+  }, [activeExpiry, activeVolSuiteExpiry, displaySpot, activeDays]);
+
+  const activeParity = activeVolSuiteExpiry?.parity ?? null;
+  const isHeaderTirBlockedShortDte =
+    (activeDays > 0 && activeDays < 3) ||
+    activeParity?.impliedRateStatus === 'BLOCKED_SHORT_DTE' ||
+    (activeQuantEngines?.syntheticRates as { readonly impliedRateStatus?: string } | null | undefined)
+      ?.impliedRateStatus === 'BLOCKED_SHORT_DTE';
+  const headerImpliedTirPct = useMemo(() => {
+    if (isHeaderTirBlockedShortDte) {
+      return Number.NaN;
+    }
+    if (
+      activeParity?.medianMidTeaPct !== null &&
+      activeParity?.medianMidTeaPct !== undefined &&
+      Number.isFinite(activeParity.medianMidTeaPct)
+    ) {
+      return activeParity.medianMidTeaPct;
+    }
+    const synthTna = activeQuantEngines?.syntheticRates?.medianImpliedTna;
+    if (synthTna !== null && synthTna !== undefined && Number.isFinite(synthTna)) {
+      return synthTna * 100;
+    }
+    return Number.NaN;
+  }, [isHeaderTirBlockedShortDte, activeParity, activeQuantEngines]);
   const headerOneSigmaAbs =
     Number.isFinite(displaySpot) &&
     displaySpot > 0 &&
@@ -875,7 +968,9 @@ export const OptionsModule: React.FC<{
     const allCells: SpreadCellMetric[] = [];
     for (const r of detailedSpreadRows) {
       for (const c of [r.c1, r.c2, r.c3, r.c4, r.p1, r.p2, r.p3, r.p4]) {
-        if (c !== null) allCells.push(c);
+        if (c !== null && c.eligibleForAutoRanking && c.debit >= 0.1 - 1e-12) {
+          allCells.push(c);
+        }
       }
     }
     const callCells = allCells.filter((c) => c.side === 'CALL').sort((a, b) => b.ratio - a.ratio);
@@ -1152,6 +1247,45 @@ export const OptionsModule: React.FC<{
 
             <div>
               <div className="text-[10px] font-mono-num uppercase tracking-wider text-[#787B86]">
+                IV ATM
+              </div>
+              <div
+                title="Volatilidad implícita ATM real del vencimiento activo"
+                className="font-mono-num text-[14px] font-bold text-[#EAB308]"
+              >
+                {Number.isFinite(activeAtmIvDec) && activeAtmIvDec > 0
+                  ? `${fmtNum(activeAtmIvDec * 100, 1)}%`
+                  : '—'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-mono-num uppercase tracking-wider text-[#787B86]">
+                TIR
+              </div>
+              <div
+                title={
+                  isHeaderTirBlockedShortDte
+                    ? 'DTE < 3: anualización de tasa implícita sintética y alerta HTB suspendidas por amplificación de ruido bid-ask (T < 3/365)'
+                    : 'Tasa implícita sintética anualizada del vencimiento activo'
+                }
+                className="inline-flex items-center gap-1.5 font-mono-num text-[14px] font-bold text-[#FFFFFF]"
+              >
+                <span>
+                  {!isHeaderTirBlockedShortDte && Number.isFinite(headerImpliedTirPct)
+                    ? `${fmtNum(headerImpliedTirPct, 1)}%`
+                    : '—'}
+                </span>
+                {isHeaderTirBlockedShortDte && (
+                  <span className="px-1.5 py-0.2 rounded bg-[#1F2433] border border-[#3E465E] text-[9.5px] font-semibold text-[#9CA3AF]">
+                    DTE &lt; 3
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-mono-num uppercase tracking-wider text-[#787B86]">
                 TLR
               </div>
               <button
@@ -1170,7 +1304,9 @@ export const OptionsModule: React.FC<{
                 DIV.
               </div>
               <div className="font-mono-num text-[14px] font-bold text-[#787B86]">
-                {liveOptions ? `${fmtNum(liveOptions.dividendYield * 100, 1)}%` : '—'}
+                {liveOptions && activeDays >= 3 && Number.isFinite(liveOptions.dividendYield)
+                  ? `${fmtNum(liveOptions.dividendYield * 100, 1)}%`
+                  : '—'}
               </div>
             </div>
           </div>
@@ -1524,7 +1660,7 @@ export const OptionsModule: React.FC<{
           )}
 
           {/* OPTIMITZADOR CUANTITATIVO — LAS 3 MANERAS DE JUGARLA (PIEZA 18) */}
-          {(() => {
+          {!(strategyMode === 'familia' && selectedFamily === 'calendarios') && (() => {
             const qe = activeQuantEngines;
             const optRes =
               optimizerDir === 'BEARISH'
@@ -1691,6 +1827,14 @@ export const OptionsModule: React.FC<{
                                 {row.tag}
                               </span>
                             )}
+                            {row.bidAskPctOfMid !== undefined && Number.isFinite(row.bidAskPctOfMid) && (
+                              <span
+                                title={`Bid-Ask % del Mid: ${fmtNum(row.bidAskPctOfMid, 1)}% (${row.liquiditySemaphore ?? '—'})`}
+                                className={`px-1.5 py-0.5 rounded-full border font-mono-num text-[10px] font-semibold ${getLiquiditySemaphoreBadgeStyle(row.liquiditySemaphore)}`}
+                              >
+                                ● {fmtNum(row.bidAskPctOfMid, 1)}% Mid
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11.5px] text-[#787B86] mt-0.5">{row.desc}</div>
                         </td>
@@ -1742,38 +1886,58 @@ export const OptionsModule: React.FC<{
           {/* Panel Resumen de Decisión Spreads (Calls Bull & Puts Bear) */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="rounded-[10px] bg-[#101218] border border-[#232733] p-3.5 space-y-1">
-              <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#EAB308]">
-                MEJOR BULL CALL SPREAD ({spreadSummaryStats.bestCall ? `${spreadSummaryStats.bestCall.longStrike}/${spreadSummaryStats.bestCall.shortStrike}` : '—'})
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#EAB308]">
+                  MEJOR BULL CALL SPREAD ({spreadSummaryStats.bestCall ? `${spreadSummaryStats.bestCall.longStrike}/${spreadSummaryStats.bestCall.shortStrike}` : '—'})
+                </div>
+                {spreadSummaryStats.bestCall && Number.isFinite(spreadSummaryStats.bestCall.bidAskPctOfMid) && (
+                  <span
+                    title={`Semáforo Bid-Ask % del Mid: ${fmtNum(spreadSummaryStats.bestCall.bidAskPctOfMid, 1)}% (${spreadSummaryStats.bestCall.liquiditySemaphore})`}
+                    className={`px-2 py-0.5 rounded-full border font-mono-num text-[10px] font-semibold ${getLiquiditySemaphoreBadgeStyle(spreadSummaryStats.bestCall.liquiditySemaphore)}`}
+                  >
+                    ● {fmtNum(spreadSummaryStats.bestCall.bidAskPctOfMid, 1)}% Mid
+                  </span>
+                )}
               </div>
               {spreadSummaryStats.bestCall ? (
                 <>
                   <div className="font-mono-num text-[17px] font-extrabold text-[#FFFFFF]">
-                    {fmtNum(spreadSummaryStats.bestCall.ratio, 2)}x R/B · Deb $ {fmtNum(spreadSummaryStats.bestCall.debit, 1)}
+                    {fmtNum(spreadSummaryStats.bestCall.ratio, 2)}x R/B · Deb {isUsMarket ? 'US$' : '$'} {fmtNum(spreadSummaryStats.bestCall.debit, 2)}
                   </div>
                   <div className="text-[11px] font-mono-num text-[#9CA3AF]">
-                    BE $ {fmtNum(spreadSummaryStats.bestCall.breakeven, 0)} ({fmtPct(spreadSummaryStats.bestCall.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.bestCall.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.bestCall.edgePct, 1)}
+                    BE {isUsMarket ? 'US$' : '$'} {fmtNum(spreadSummaryStats.bestCall.breakeven, isUsMarket ? 2 : 0)} ({fmtPct(spreadSummaryStats.bestCall.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.bestCall.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.bestCall.edgePct, 1)}
                   </div>
                 </>
               ) : (
-                <div className="text-[12px] text-[#787B86] font-mono-num">Sin Call Spread válido en rango</div>
+                <div className="text-[12px] text-[#787B86] font-mono-num">Sin Call Spread líquido (Deb ≥ 0,10 y Bid &gt; 0)</div>
               )}
             </div>
 
             <div className="rounded-[10px] bg-[#101218] border border-[#232733] p-3.5 space-y-1">
-              <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#C084FC]">
-                MEJOR BEAR PUT SPREAD ({spreadSummaryStats.bestPut ? `${spreadSummaryStats.bestPut.longStrike}/${spreadSummaryStats.bestPut.shortStrike}` : '—'})
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#C084FC]">
+                  MEJOR BEAR PUT SPREAD ({spreadSummaryStats.bestPut ? `${spreadSummaryStats.bestPut.longStrike}/${spreadSummaryStats.bestPut.shortStrike}` : '—'})
+                </div>
+                {spreadSummaryStats.bestPut && Number.isFinite(spreadSummaryStats.bestPut.bidAskPctOfMid) && (
+                  <span
+                    title={`Semáforo Bid-Ask % del Mid: ${fmtNum(spreadSummaryStats.bestPut.bidAskPctOfMid, 1)}% (${spreadSummaryStats.bestPut.liquiditySemaphore})`}
+                    className={`px-2 py-0.5 rounded-full border font-mono-num text-[10px] font-semibold ${getLiquiditySemaphoreBadgeStyle(spreadSummaryStats.bestPut.liquiditySemaphore)}`}
+                  >
+                    ● {fmtNum(spreadSummaryStats.bestPut.bidAskPctOfMid, 1)}% Mid
+                  </span>
+                )}
               </div>
               {spreadSummaryStats.bestPut ? (
                 <>
                   <div className="font-mono-num text-[17px] font-extrabold text-[#FFFFFF]">
-                    {fmtNum(spreadSummaryStats.bestPut.ratio, 2)}x R/B · Deb $ {fmtNum(spreadSummaryStats.bestPut.debit, 1)}
+                    {fmtNum(spreadSummaryStats.bestPut.ratio, 2)}x R/B · Deb {isUsMarket ? 'US$' : '$'} {fmtNum(spreadSummaryStats.bestPut.debit, 2)}
                   </div>
                   <div className="text-[11px] font-mono-num text-[#9CA3AF]">
-                    BE $ {fmtNum(spreadSummaryStats.bestPut.breakeven, 0)} ({fmtPct(spreadSummaryStats.bestPut.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.bestPut.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.bestPut.edgePct, 1)}
+                    BE {isUsMarket ? 'US$' : '$'} {fmtNum(spreadSummaryStats.bestPut.breakeven, isUsMarket ? 2 : 0)} ({fmtPct(spreadSummaryStats.bestPut.beDistPct, 1)}) · Prob {fmtNum(spreadSummaryStats.bestPut.probBePct, 1)}% · Edge {fmtPct(spreadSummaryStats.bestPut.edgePct, 1)}
                   </div>
                 </>
               ) : (
-                <div className="text-[12px] text-[#787B86] font-mono-num">Sin Put Spread válido en rango</div>
+                <div className="text-[12px] text-[#787B86] font-mono-num">Sin Put Spread líquido (Deb ≥ 0,10 y Bid &gt; 0)</div>
               )}
             </div>
 
@@ -1952,15 +2116,24 @@ export const OptionsModule: React.FC<{
                                   : ''
                               }`}
                             >
-                              <span
-                                className={`px-2 py-0.5 rounded-full font-bold text-[11.5px] ${getSpreadPillColor(
-                                  cell.ratio
-                                )}`}
-                              >
-                                {fmtNum(cell.ratio, 2)}x
-                              </span>
+                              <div className="inline-flex items-center gap-1">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full font-bold text-[11.5px] ${getSpreadPillColor(
+                                    cell.ratio
+                                  )}`}
+                                >
+                                  {fmtNum(cell.ratio, 2)}x
+                                </span>
+                                {Number.isFinite(cell.bidAskPctOfMid) && (
+                                  <span
+                                    className={`px-1.5 py-0.2 rounded-full border font-mono-num text-[8.5px] font-semibold ${getLiquiditySemaphoreBadgeStyle(cell.liquiditySemaphore)}`}
+                                  >
+                                    ● {fmtNum(cell.bidAskPctOfMid, 0)}%
+                                  </span>
+                                )}
+                              </div>
                               <span className="text-[9.5px] font-mono-num text-[#9CA3AF] leading-tight whitespace-nowrap">
-                                Deb ${fmtNum(cell.debit, 0)} · BE {fmtPct(cell.beDistPct, 1)}
+                                Deb {isUsMarket ? 'US$' : '$'}{fmtNum(cell.debit, isUsMarket ? 2 : 1)} · BE {fmtPct(cell.beDistPct, 1)}
                               </span>
                               <span
                                 className={`text-[9.5px] font-mono-num leading-tight whitespace-nowrap ${
@@ -3271,10 +3444,12 @@ export const OptionsModule: React.FC<{
                   {
                     label: 'Mariposa',
                     build: () => {
-                      const rLo = builderRows[Math.max(0, atmBuilderIdx - 1)];
-                      const rMid = builderRows[atmBuilderIdx];
-                      const rHi = builderRows[Math.min(builderRows.length - 1, atmBuilderIdx + 1)];
-                      return rLo && rMid && rHi
+                      if (builderRows.length < 3) return [];
+                      const centerIdx = Math.min(Math.max(1, atmBuilderIdx), builderRows.length - 2);
+                      const rLo = builderRows[centerIdx - 1];
+                      const rMid = builderRows[centerIdx];
+                      const rHi = builderRows[centerIdx + 1];
+                      return rLo && rMid && rHi && isValidButterflyStrikes(rLo.strike, rMid.strike, rHi.strike, false)
                         ? [
                             legFromRow(rLo, 'Call', 'Compra', 10),
                             legFromRow(rMid, 'Call', 'Venta', 20),

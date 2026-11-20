@@ -1,16 +1,25 @@
 import React, { memo, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { fmtNum } from '../../../data/marketData';
-import { FX_EASE, Market, MapMode, Sized, money, pct } from '../engine';
+import { FX_EASE, Market, MapMode, Sized, isUsOptionsTicker, money, pct } from '../engine';
 import { AnimatedNumber } from './AnimatedNumber';
 
-export const BUDGETS = [50_000, 100_000, 250_000, 500_000];
+export const BUDGETS_ARS = [50_000, 100_000, 250_000, 500_000];
+export const BUDGETS_USD = [500, 1_000, 2_500, 5_000, 10_000];
+export const BUDGETS = BUDGETS_ARS;
 export type RoleKey = 'seguido' | 'medio' | 'grande';
 export const ROLES: { key: RoleKey; label: string }[] = [
   { key: 'seguido', label: 'Más seguido' },
   { key: 'medio', label: 'Al medio' },
   { key: 'grande', label: 'Más grande' },
 ];
+
+function semaphorePillClass(sem: string): string {
+  if (sem === 'GREEN') return 'bg-[#22C55E]/15 text-[#22C55E] border-[#22C55E]/40';
+  if (sem === 'YELLOW') return 'bg-[#EAB308]/15 text-[#EAB308] border-[#EAB308]/40';
+  if (sem === 'RED') return 'bg-[#EF4444]/15 text-[#EF4444] border-[#EF4444]/40';
+  return 'bg-[#1F2433] text-[#787B86] border-[#2D3242]';
+}
 
 const Pill: React.FC<{ on: boolean; layoutId: string; onClick: () => void; children: React.ReactNode }> = ({
   on,
@@ -49,6 +58,11 @@ export const StrategyCards: React.FC<{
   const [visible, setVisible] = useState(10);
   const [customText, setCustomText] = useState('');
 
+  const isUs = isUsOptionsTicker(mkt.ticker, mkt.market);
+  const currencyPrefix: 'US$' | '$' = isUs ? 'US$' : '$';
+  const activeBudgets = isUs ? BUDGETS_USD : BUDGETS_ARS;
+  const minCustomBudget = isUs ? 50 : 1_000;
+
   const sorted = useMemo(
     () => [...sized].sort((a, b) => (sortBy === 'chance' ? b.ev.pop - a.ev.pop || b.gain - a.gain : b.gain - a.gain)),
     [sized, sortBy]
@@ -58,14 +72,19 @@ export const StrategyCards: React.FC<{
 
   return (
     <div className="rounded-[14px] bg-[var(--fx-panel)] border border-[var(--fx-line)] p-5 flex flex-col gap-4">
-      <h3 className="text-[16px] font-extrabold tracking-tight text-white">Tres maneras de jugarla</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-[16px] font-extrabold tracking-tight text-white">Tres maneras de jugarla</h3>
+        <span className="px-2 py-0.5 rounded-full bg-[#161A25] border border-[#232733] font-mono-num text-[10.5px] text-[#9CA3AF]">
+          {isUs ? 'USD · 100 acc/lote' : 'ARS · 100 acc/lote'}
+        </span>
+      </div>
 
       {/* Capital disponible */}
       <div className="flex flex-wrap items-center gap-1">
         <span className="text-[12.5px] text-[#9CA3AF] mr-1">Ponés hasta</span>
-        {BUDGETS.map((b) => (
+        {activeBudgets.map((b) => (
           <Pill key={b} on={!isCustom && budget === b} layoutId="sc-budget" onClick={() => onBudget(b, false)}>
-            ${fmtNum(b / 1000, 0)} mil
+            {isUs ? `US$${fmtNum(b, 0)}` : `$${fmtNum(b / 1000, 0)} mil`}
           </Pill>
         ))}
         <input
@@ -77,7 +96,7 @@ export const StrategyCards: React.FC<{
           onChange={(e) => {
             setCustomText(e.target.value);
             const v = Number(e.target.value.replace(/\D/g, ''));
-            if (v >= 1000) onBudget(v, true);
+            if (v >= minCustomBudget) onBudget(v, true);
           }}
           placeholder="otro"
           className={`ml-1 w-[76px] px-2.5 py-1.5 rounded-[10px] bg-[var(--fx-base-2)] border font-mono-num text-[12.5px] text-white outline-none transition-colors ${
@@ -92,7 +111,7 @@ export const StrategyCards: React.FC<{
         </p>
       ) : picks.length === 0 ? (
         <p className="text-[13px] text-[#9CA3AF] py-6 text-center">
-          Con ${fmtNum(budget, 0)} no hay nada que la cadena permita armar para eso. Probá con más capital o
+          Con {currencyPrefix}{fmtNum(budget, 0)} no hay nada que la cadena permita armar para eso. Probá con más capital o
           ajustá el objetivo.
         </p>
       ) : (
@@ -127,7 +146,18 @@ export const StrategyCards: React.FC<{
                       />
                     )}
                     <span className="min-w-0">
-                      <span className="block text-[13.5px] font-bold text-white">{p.label}</span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-[13.5px] font-bold text-white">{p.label}</span>
+                        <span className="text-[11px] font-mono-num text-[#6B7280]">· {p.s.units}u</span>
+                        {Number.isFinite(p.s.ev.bidAskPctOfMid) && (
+                          <span
+                            title={`Liquidez Bid-Ask % del Mid: ${fmtNum(p.s.ev.bidAskPctOfMid, 1)}% (${p.s.ev.liquiditySemaphore})`}
+                            className={`px-1.5 py-0.2 rounded-full border font-mono-num text-[9.5px] font-semibold ${semaphorePillClass(p.s.ev.liquiditySemaphore)}`}
+                          >
+                            ● {fmtNum(p.s.ev.bidAskPctOfMid, 1)}%
+                          </span>
+                        )}
+                      </span>
                       <span className="block text-[11.5px] text-[#9CA3AF] truncate">{p.s.ev.strategy.name}</span>
                     </span>
                     <AnimatedNumber value={p.s.gain} kind="money" className="text-right text-[13.5px] font-bold text-[var(--fx-gain-2)]" />
@@ -209,12 +239,21 @@ export const StrategyCards: React.FC<{
                           on ? 'bg-white/[0.06]' : 'hover:bg-white/[0.03]'
                         }`}
                       >
-                        <span className="font-sans text-[#D1D4DC] truncate">
-                          {s.ev.strategy.name} <span className="text-[#6B7280]">· {s.units}u</span>
+                        <span className="font-sans text-[#D1D4DC] truncate flex items-center gap-1.5">
+                          <span className="truncate">{s.ev.strategy.name}</span>
+                          <span className="text-[#6B7280] shrink-0">· {s.units}u</span>
+                          {Number.isFinite(s.ev.bidAskPctOfMid) && (
+                            <span
+                              title={`Liquidez Bid-Ask % del Mid: ${fmtNum(s.ev.bidAskPctOfMid, 1)}% (${s.ev.liquiditySemaphore})`}
+                              className={`px-1.5 py-0.2 rounded-full border font-mono-num text-[9.5px] font-semibold shrink-0 ${semaphorePillClass(s.ev.liquiditySemaphore)}`}
+                            >
+                              ● {fmtNum(s.ev.bidAskPctOfMid, 1)}%
+                            </span>
+                          )}
                         </span>
-                        <span className="text-right text-[var(--fx-gain-2)]">{money(s.gain)}</span>
+                        <span className="text-right text-[var(--fx-gain-2)]">{money(s.gain, 0, currencyPrefix)}</span>
                         <span className="text-right text-white">{pct(s.ev.pop)}</span>
-                        <span className="text-right text-[var(--fx-loss-2)]">{money(-s.risk)}</span>
+                        <span className="text-right text-[var(--fx-loss-2)]">{money(-s.risk, 0, currencyPrefix)}</span>
                       </button>
                     );
                   })}

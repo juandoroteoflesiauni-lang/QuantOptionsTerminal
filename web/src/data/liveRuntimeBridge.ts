@@ -467,13 +467,35 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       calls.sort((a, b) => a.strike - b.strike);
       puts.sort((a, b) => a.strike - b.strike);
       const strikes = Array.from(strikeSet).sort((a, b) => a - b);
+
+      let resolvedIvAtmDec =
+        slice?.ivAtm !== null && slice?.ivAtm !== undefined && Number.isFinite(slice.ivAtm) && slice.ivAtm > 0
+          ? slice.ivAtm
+          : null;
+      if (resolvedIvAtmDec === null && spot !== null && Number.isFinite(spot) && spot > 0) {
+        const nearOtmIvs = [...calls, ...puts]
+          .filter(
+            (c) =>
+              c.iv !== null &&
+              Number.isFinite(c.iv) &&
+              c.iv > 0 &&
+              (c.contractType === 'call' ? c.strike >= spot - 1e-6 : c.strike <= spot + 1e-6),
+          )
+          .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))
+          .slice(0, 2)
+          .map((c) => c.iv as number);
+        if (nearOtmIvs.length > 0) {
+          resolvedIvAtmDec = nearOtmIvs.reduce((acc, v) => acc + v, 0) / nearOtmIvs.length;
+        }
+      }
+
       return {
         expiryCode: expDate,
         expiryLabel: `${expDate} (${Math.max(1, Math.round(days))}d)`,
         expirationDate: expDate,
         expiryUtcSec: expSec,
         days: Math.max(1, Math.round(days)),
-        ivAtm: slice?.ivAtm ?? null,
+        ivAtm: resolvedIvAtmDec,
         riskReversal25: slice?.riskReversal25 ?? null,
         butterfly25: slice?.butterfly25 ?? null,
         butterflyArbitrageFree: slice?.isButterflyArbitrageFree ?? true,
@@ -484,14 +506,25 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
     })
     .sort((a, b) => a.days - b.days);
 
-  const termStructure = (snap.volSurfaceSummary?.slices ?? [])
-    .filter((s) => s.ivAtm !== null && s.ivAtm > 0)
-    .map((s) => ({
-      days: Math.max(1, Math.round(s.timeToExpiryDays)),
-      label: s.expirationDate,
-      expiryCode: s.expirationDate,
-      atm: s.ivAtm as number,
-    }));
+  const termStructure = (
+    (snap.volSurfaceSummary?.slices ?? []).some((s) => s.ivAtm !== null && s.ivAtm > 0)
+      ? (snap.volSurfaceSummary?.slices ?? [])
+          .filter((s) => s.ivAtm !== null && s.ivAtm > 0)
+          .map((s) => ({
+            days: Math.max(1, Math.round(s.timeToExpiryDays)),
+            label: s.expirationDate,
+            expiryCode: s.expirationDate,
+            atm: s.ivAtm as number,
+          }))
+      : expiries
+          .filter((e) => e.ivAtm !== null && Number.isFinite(e.ivAtm) && e.ivAtm > 0)
+          .map((e) => ({
+            days: e.days,
+            label: e.expirationDate,
+            expiryCode: e.expiryCode,
+            atm: e.ivAtm as number,
+          }))
+  );
 
   const te = snap.terminalEngines ?? null;
   const quantEngines: ArOptionsResponse['quantEngines'] = te
@@ -529,7 +562,21 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
     spot,
     rateTna,
     continuousRate: rateDec,
-    dividendYield: frontSlice?.dividendYield ?? snap.marketContext?.treasury?.dividendYieldFront ?? 0,
+    dividendYield:
+      frontSlice !== null &&
+      frontSlice.timeToExpiryDays >= 3 &&
+      frontSlice.dividendYield !== null &&
+      Number.isFinite(frontSlice.dividendYield) &&
+      frontSlice.dividendYield >= 0 &&
+      frontSlice.dividendYield <= 0.25
+        ? frontSlice.dividendYield
+        : snap.marketContext?.treasury?.dividendYieldFront !== null &&
+            snap.marketContext?.treasury?.dividendYieldFront !== undefined &&
+            Number.isFinite(snap.marketContext.treasury.dividendYieldFront) &&
+            snap.marketContext.treasury.dividendYieldFront >= 0 &&
+            snap.marketContext.treasury.dividendYieldFront <= 0.25
+          ? snap.marketContext.treasury.dividendYieldFront
+          : 0,
     lotSize: 100,
     settlement: 'T+0',
     exerciseCutoffArt: '15:30 ART',

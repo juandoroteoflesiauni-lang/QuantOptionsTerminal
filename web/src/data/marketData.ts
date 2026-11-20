@@ -1011,7 +1011,27 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
     for (const c of exp.calls) callByStrike.set(c.strike, c);
     for (const p of exp.puts) putByStrike.set(p.strike, p);
 
-    const atmIvDec = exp.ivAtm !== null && Number.isFinite(exp.ivAtm) ? exp.ivAtm : Number.NaN;
+    let atmIvDec =
+      exp.ivAtm !== null && Number.isFinite(exp.ivAtm) && exp.ivAtm > 0
+        ? exp.ivAtm
+        : Number.NaN;
+    if (!Number.isFinite(atmIvDec) && Number.isFinite(spot) && spot > 0) {
+      const nearOtmIvs = [...exp.calls, ...exp.puts]
+        .filter(
+          (c) =>
+            c.iv !== null &&
+            c.iv !== undefined &&
+            Number.isFinite(c.iv) &&
+            c.iv > 0 &&
+            (c.contractType === 'call' ? c.strike >= spot - 1e-6 : c.strike <= spot + 1e-6),
+        )
+        .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))
+        .slice(0, 2)
+        .map((c) => c.iv as number);
+      if (nearOtmIvs.length > 0) {
+        atmIvDec = nearOtmIvs.reduce((acc, v) => acc + v, 0) / nearOtmIvs.length;
+      }
+    }
     const sigmaBandAbs =
       Number.isFinite(spot) && Number.isFinite(atmIvDec)
         ? spot * atmIvDec * Math.sqrt(Math.max(exp.days, 1) / 365)

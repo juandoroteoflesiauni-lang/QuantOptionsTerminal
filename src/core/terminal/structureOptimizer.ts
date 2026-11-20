@@ -12,6 +12,12 @@
  */
 
 import type { OptionContractType } from '../options/types.js';
+import {
+  DEFAULT_MIN_SPREAD_DEBIT,
+  computeMultiLegBidAskPctOfMid,
+  isValidButterflyStrikes,
+  type LiquiditySemaphore,
+} from '../options/verticalSpreads.js';
 import { MAX_TIME_SECONDS } from '../sessions.js';
 import type { TerminalDataStatus } from './types.js';
 
@@ -202,6 +208,8 @@ export interface EvaluatedOptionStructure {
   readonly positiveExpectedPayoff: number;
   readonly expectedReturnOnRisk: number;
   readonly convexityScore: number;
+  readonly bidAskPctOfMid: number;
+  readonly liquiditySemaphore: LiquiditySemaphore;
 }
 
 export interface OptimizeOptionStructuresInputs {
@@ -216,6 +224,7 @@ export interface OptimizeOptionStructuresInputs {
   readonly feeRate: number;
   readonly vatRate: number;
   readonly maxSpreadRatio?: number;
+  readonly minPerShareDebitOrCredit?: number;
 }
 
 export interface OptimizeOptionStructuresResult {
@@ -1006,6 +1015,7 @@ function evaluateCandidateBlueprint(
   vatRate: number,
   terminalPrices: readonly number[],
   normalizedProbs: readonly number[],
+  minPerShareDebitOrCredit = DEFAULT_MIN_SPREAD_DEBIT,
 ): EvaluatedOptionStructure | null {
   const evaluatedLegs: EvaluatedStructureLeg[] = [];
   let signedGrossCash = 0;
@@ -1056,6 +1066,16 @@ function evaluateCandidateBlueprint(
   const netDebitOrCredit = -signedNetCash;
 
   if (blueprint.requireNetDebit && netDebitOrCredit <= 0) {
+    return null;
+  }
+
+  // Pieza 45: Piso de débito/crédito por acción (>= 0.10) para evitar spreads profundos OTM de $0.01 con R/B artificial
+  if (Math.abs(grossDebitOrCredit) < minPerShareDebitOrCredit * lotSize - 1e-12) {
+    return null;
+  }
+
+  const liqMetrics = computeMultiLegBidAskPctOfMid(evaluatedLegs);
+  if (!liqMetrics.allLegsHavePositiveBid) {
     return null;
   }
 
@@ -1130,6 +1150,8 @@ function evaluateCandidateBlueprint(
     positiveExpectedPayoff,
     expectedReturnOnRisk,
     convexityScore,
+    bidAskPctOfMid: liqMetrics.bidAskPctOfMid,
+    liquiditySemaphore: liqMetrics.liquiditySemaphore,
   };
 }
 
@@ -1238,7 +1260,10 @@ function generateDirectionalBlueprints(
             continue;
           }
           const rightWing = c3.strike - c2.strike;
-          if (Math.abs(leftWing - rightWing) <= BUTTERFLY_SYMMETRY_EPS) {
+          if (
+            isValidButterflyStrikes(c1.strike, c2.strike, c3.strike, false) &&
+            Math.abs(leftWing - rightWing) <= BUTTERFLY_SYMMETRY_EPS
+          ) {
             blueprints.push({
               id: `CALL_BUTTERFLY_${String(c1.strike)}_${String(c2.strike)}_${String(c3.strike)}`,
               kind: 'CALL_BUTTERFLY',
@@ -1332,7 +1357,10 @@ function generateDirectionalBlueprints(
             continue;
           }
           const rightWing = c3.strike - c2.strike;
-          if (Math.abs(leftWing - rightWing) <= BUTTERFLY_SYMMETRY_EPS) {
+          if (
+            isValidButterflyStrikes(c1.strike, c2.strike, c3.strike, false) &&
+            Math.abs(leftWing - rightWing) <= BUTTERFLY_SYMMETRY_EPS
+          ) {
             blueprints.push({
               id: `PUT_BUTTERFLY_${String(c1.strike)}_${String(c2.strike)}_${String(c3.strike)}`,
               kind: 'PUT_BUTTERFLY',
@@ -1447,6 +1475,11 @@ export function optimizeOptionStructures(
     inputs.lotSize,
   );
 
+  const minPerShareDebitOrCredit =
+    inputs.minPerShareDebitOrCredit === undefined
+      ? DEFAULT_MIN_SPREAD_DEBIT
+      : assertNonNegativeFinite(inputs.minPerShareDebitOrCredit, 'minPerShareDebitOrCredit');
+
   const candidates: EvaluatedOptionStructure[] = [];
   for (const blueprint of blueprints) {
     const evaluated = evaluateCandidateBlueprint(
@@ -1457,6 +1490,7 @@ export function optimizeOptionStructures(
       inputs.vatRate,
       inputs.terminalPrices,
       normalizedProbs,
+      minPerShareDebitOrCredit,
     );
     if (evaluated !== null) {
       candidates.push(evaluated);

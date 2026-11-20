@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { type OptionExpiryGroup, fmtNum } from '../../data/marketData';
 import type { ArOptionsQuantEnginesDto, ArOptionsResponse, UsSnapshotResponseDto, UsVolSurfaceResponseDto } from '../../data/liveTypes';
 import type { StratLeg } from './engine';
+import { computeActiveExpiryVrpAndRegime } from '../../../../src/core/options/volAnalyticsSuite';
 import {
   type UnifiedQuantEnginesDto,
   type VolAnalyticsExpirySuiteDto,
@@ -171,6 +172,61 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
       : expirySuite.smileAll
     : null;
   const hist = suite?.historicalConditional ?? null;
+  const activeVrp = useMemo(() => {
+    const activeDte = expirySuite?.daysToExpiry ?? activeExpiry?.daysToExpiry ?? null;
+    const activeCode = expirySuite?.expiryCode ?? activeExpiry?.id ?? null;
+    const interpAtm =
+      activeSmile?.atmIvPct !== null &&
+      activeSmile?.atmIvPct !== undefined &&
+      Number.isFinite(activeSmile.atmIvPct) &&
+      activeSmile.atmIvPct > 0
+        ? activeSmile.atmIvPct
+        : expirySuite?.smileOtmOnly.atmIvPct !== null &&
+            expirySuite?.smileOtmOnly.atmIvPct !== undefined &&
+            Number.isFinite(expirySuite.smileOtmOnly.atmIvPct) &&
+            expirySuite.smileOtmOnly.atmIvPct > 0
+          ? expirySuite.smileOtmOnly.atmIvPct
+          : null;
+    const sameExpFallback =
+      expirySuite?.smileAll.atmIvPct !== null &&
+      expirySuite?.smileAll.atmIvPct !== undefined &&
+      Number.isFinite(expirySuite.smileAll.atmIvPct) &&
+      expirySuite.smileAll.atmIvPct > 0
+        ? expirySuite.smileAll.atmIvPct
+        : activeExpiry && Number.isFinite(activeExpiry.atmIV) && activeExpiry.atmIV > 0
+          ? activeExpiry.atmIV
+          : null;
+    const rv23 =
+      hist?.latestRv23Pct !== null &&
+      hist?.latestRv23Pct !== undefined &&
+      Number.isFinite(hist.latestRv23Pct) &&
+      hist.latestRv23Pct > 0
+        ? hist.latestRv23Pct
+        : null;
+    const rv20 =
+      hist?.latestRv20Pct !== null &&
+      hist?.latestRv20Pct !== undefined &&
+      Number.isFinite(hist.latestRv20Pct) &&
+      hist.latestRv20Pct > 0
+        ? hist.latestRv20Pct
+        : null;
+    const histSeries = (hist?.historySeries ?? [])
+      .map((p) => p.rvPct)
+      .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v) && v > 0);
+    return computeActiveExpiryVrpAndRegime({
+      expiryCode: activeCode,
+      daysToExpiry: activeDte,
+      ivAtmActiveExpiryPct: interpAtm,
+      sameExpiryFallbackIvAtmPct: sameExpFallback,
+      rvReferencePct: rv23 ?? rv20,
+      rvReferenceLabel: rv23 !== null ? 'RV23d' : 'RV20d',
+      historicalRvSeriesPct: histSeries,
+      historicalRvMinPct: hist?.quantiles.minPct ?? null,
+      historicalRvMaxPct: hist?.quantiles.maxPct ?? null,
+      fallbackIvRank: hist?.ivRank ?? null,
+      fallbackIvPercentile: hist?.ivPercentile ?? null,
+    });
+  }, [expirySuite, activeSmile, activeExpiry, hist]);
   const marketTag = suite?.market ?? (usSnapshot ? 'US' : 'BYMA');
   const currencyPrefix = marketTag === 'US' ? 'US$' : '$';
   const oratsSurface =
@@ -196,11 +252,13 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
               </h2>
               {hist && (
                 <span
+                  title={`Régimen alineado al vencimiento activo (${Number.isFinite(activeVrp.daysToExpiry) ? `${activeVrp.daysToExpiry}d` : '—'}) · VRP: ${fmtSignedNullable(activeVrp.vrpActiveExpiryPts, 1, ' pts')} vs ${activeVrp.rvReferenceLabel} (${fmtNullableNumber(activeVrp.rvReferencePct, 1, '%')})`}
                   className={`px-2.5 py-0.5 rounded-full border text-[10.5px] font-semibold ${regimePillStyle(
-                    hist.operativeRegime.code,
+                    activeVrp.operativeRegime.code,
                   )}`}
                 >
-                  {hist.operativeRegime.label}
+                  {activeVrp.operativeRegime.label}
+                  {Number.isFinite(activeVrp.daysToExpiry) ? ` · ${activeVrp.daysToExpiry}d` : ''}
                 </span>
               )}
             </div>
@@ -250,10 +308,10 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
           <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">VI ATM OTM</div>
             <div className="text-[16px] font-extrabold font-mono-num text-[#E5C76B]">
-              {fmtNullableNumber(activeSmile?.atmIvPct, 1, '%')}
+              {fmtNullableNumber(activeVrp.ivAtmActiveExpiryPct, 1, '%')}
             </div>
             <div className="text-[10px] text-[#9CA3AF] font-mono-num">
-              {expirySuite ? `${expirySuite.daysToExpiry}d al vto` : '—'}
+              {Number.isFinite(activeVrp.daysToExpiry) ? `${activeVrp.daysToExpiry}d al vto` : '—'}
             </div>
           </div>
           <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
@@ -266,19 +324,21 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
             </div>
           </div>
           <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">VRP (VI − RV23)</div>
+            <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">
+              VRP ({Number.isFinite(activeVrp.daysToExpiry) ? `VI ${activeVrp.daysToExpiry}d` : 'VI'} − {activeVrp.rvReferenceLabel})
+            </div>
             <div className="text-[16px] font-extrabold font-mono-num text-[#F3F4F6]">
-              {fmtSignedNullable(hist?.vrpVsRv23Pts, 1, ' pts')}
+              {fmtSignedNullable(activeVrp.vrpActiveExpiryPts, 1, ' pts')}
             </div>
             <div className="text-[10px] text-[#9CA3AF] font-mono-num">
-              Skew 25Δ RR: {fmtSignedNullable(activeSmile?.riskReversal25DeltaPp, 1, ' pp')}
+              {activeVrp.rvReferenceLabel}: {fmtNullableNumber(activeVrp.rvReferencePct, 1, '%')} · RR 25Δ: {fmtSignedNullable(activeSmile?.riskReversal25DeltaPp, 1, ' pp')}
             </div>
           </div>
           <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">IV Rank / Percentil</div>
             <div className="text-[16px] font-extrabold font-mono-num text-[#B794F4]">
-              {fmtNullableNumber(hist?.ivRank, 0, '%')} <span className="text-[#6B7280]">/</span>{' '}
-              {fmtNullableNumber(hist?.ivPercentile, 0, '%')}
+              {fmtNullableNumber(activeVrp.ivRankActiveExpiry, 0, '%')} <span className="text-[#6B7280]">/</span>{' '}
+              {fmtNullableNumber(activeVrp.ivPercentileActiveExpiry, 0, '%')}
             </div>
             <div className="text-[10px] text-[#9CA3AF] font-mono-num">
               Muestra: {hist?.barsUsed ?? 0} ruedas
@@ -448,7 +508,25 @@ const Tab1ResumenCono: React.FC<{
 }> = ({ suite, expirySuite, unifiedQuant, spot, currencyPrefix }) => {
   const hist = suite.historicalConditional;
   const cone = expirySuite?.expectedCone ?? null;
-  const ivPctRank = hist.ivPercentile;
+  const tab1Vrp = useMemo(
+    () =>
+      computeActiveExpiryVrpAndRegime({
+        expiryCode: expirySuite?.expiryCode ?? suite.activeExpiryCode,
+        daysToExpiry: expirySuite?.daysToExpiry ?? null,
+        ivAtmActiveExpiryPct: expirySuite?.smileOtmOnly.atmIvPct ?? null,
+        sameExpiryFallbackIvAtmPct: expirySuite?.smileAll.atmIvPct ?? null,
+        rvReferencePct: hist.latestRv23Pct ?? hist.latestRv20Pct ?? null,
+        rvReferenceLabel: hist.latestRv23Pct != null ? 'RV23d' : 'RV20d',
+        historicalRvMinPct: hist.quantiles.minPct,
+        historicalRvMaxPct: hist.quantiles.maxPct,
+        fallbackIvRank: hist.ivRank,
+        fallbackIvPercentile: hist.ivPercentile,
+      }),
+    [expirySuite, suite.activeExpiryCode, hist],
+  );
+  const ivPctRank = Number.isFinite(tab1Vrp.ivPercentileActiveExpiry)
+    ? tab1Vrp.ivPercentileActiveExpiry
+    : hist.ivPercentile;
 
   return (
     <div className="space-y-4">
@@ -457,18 +535,22 @@ const Tab1ResumenCono: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="text-[11px] uppercase tracking-wider text-[#6B7280] font-semibold">
-              Lectura Empírica de Régimen
+              Lectura Empírica de Régimen ({Number.isFinite(tab1Vrp.daysToExpiry) ? `Vto ${tab1Vrp.daysToExpiry}d` : 'Vto activo'} vs {tab1Vrp.rvReferenceLabel})
             </div>
-            <div className="text-[14px] font-bold text-[#F3F4F6] mt-0.5">{hist.operativeRegime.label}</div>
-            <p className="text-[12px] text-[#9CA3AF] mt-0.5">{hist.operativeRegime.rationale}</p>
+            <div className="text-[14px] font-bold text-[#F3F4F6] mt-0.5">{tab1Vrp.operativeRegime.label}</div>
+            <p className="text-[12px] text-[#9CA3AF] mt-0.5">{tab1Vrp.operativeRegime.rationale}</p>
           </div>
           <div className="text-right font-mono-num text-[11px] text-[#9CA3AF]">
             <div>
-              Vol. eval actual:{' '}
-              <strong className="text-[#E5C76B]">{fmtNullableNumber(hist.currentEvalVolPct, 1, '%')}</strong>
+              VI ATM ({Number.isFinite(tab1Vrp.daysToExpiry) ? `${tab1Vrp.daysToExpiry}d` : 'activo'}):{' '}
+              <strong className="text-[#E5C76B]">{fmtNullableNumber(tab1Vrp.ivAtmActiveExpiryPct, 1, '%')}</strong>
+              {' · '}VRP:{' '}
+              <strong className="text-[#F3F4F6]">{fmtSignedNullable(tab1Vrp.vrpActiveExpiryPts, 1, ' pts')}</strong>
             </div>
             <div>
-              Mediana hist.:{' '}
+              {tab1Vrp.rvReferenceLabel}:{' '}
+              <strong className="text-[#38BDF8]">{fmtNullableNumber(tab1Vrp.rvReferencePct, 1, '%')}</strong>
+              {' · '}Mediana hist.:{' '}
               <strong className="text-[#38BDF8]">{fmtNullableNumber(hist.quantiles.medianPct, 1, '%')}</strong>
             </div>
           </div>
@@ -1685,6 +1767,15 @@ const Tab4ParidadTasas: React.FC<{
     );
   }
 
+  const isShortDteBlocked =
+    parity.daysToExpiry < 3 ||
+    parity.impliedRateStatus === 'BLOCKED_SHORT_DTE' ||
+    (unifiedQuant?.syntheticRates as { readonly impliedRateStatus?: string } | null | undefined)
+      ?.impliedRateStatus === 'BLOCKED_SHORT_DTE';
+  const borrowLabel = isShortDteBlocked
+    ? 'BLOCKED_SHORT_DTE'
+    : unifiedQuant?.syntheticRates?.borrowRegime ?? '—';
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -1695,41 +1786,62 @@ const Tab4ParidadTasas: React.FC<{
           </div>
           <div className="text-[10px] text-[#9CA3AF]">Benchmark TEA · {parity.daysToExpiry}d</div>
         </div>
-        <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num">
+        <div
+          title={isShortDteBlocked ? 'DTE < 3: anualización de tasa implícita sintética suspendida' : undefined}
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+        >
           <div className="text-[10px] uppercase text-[#6B7280]">TEA Mid Mediana</div>
           <div className="text-[16px] font-extrabold text-[#F3F4F6]">
-            {fmtNullableNumber(parity.medianMidTeaPct, 2, '%')}
+            {isShortDteBlocked ? '—' : fmtNullableNumber(parity.medianMidTeaPct, 2, '%')}
           </div>
-          <div className="text-[10px] text-[#9CA3AF]">Sintético medio C − P</div>
+          <div className="text-[10px] text-[#9CA3AF]">
+            {isShortDteBlocked ? 'DTE < 3 (bloqueado)' : 'Sintético medio C − P'}
+          </div>
         </div>
-        <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num">
+        <div
+          title={isShortDteBlocked ? 'DTE < 3: anualización de tasa implícita sintética suspendida' : undefined}
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+        >
           <div className="text-[10px] uppercase text-[#6B7280]">Mejor TEA Tomadora</div>
           <div className="text-[16px] font-extrabold text-[#E5C76B]">
-            {fmtNullableNumber(parity.bestTomadoraTeaPct, 2, '%')}
+            {isShortDteBlocked ? '—' : fmtNullableNumber(parity.bestTomadoraTeaPct, 2, '%')}
           </div>
           <div className="text-[10px] text-[#9CA3AF]">
-            Base {parity.bestTomadoraStrike !== null ? `${currencyPrefix}${fmtNum(parity.bestTomadoraStrike, 2)}` : '—'}
+            {isShortDteBlocked
+              ? 'DTE < 3 (bloqueado)'
+              : `Base ${parity.bestTomadoraStrike !== null ? `${currencyPrefix}${fmtNum(parity.bestTomadoraStrike, 2)}` : '—'}`}
           </div>
         </div>
-        <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num">
+        <div
+          title={isShortDteBlocked ? 'DTE < 3: anualización de tasa implícita sintética suspendida' : undefined}
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+        >
           <div className="text-[10px] uppercase text-[#6B7280]">Mejor TEA Colocadora</div>
           <div className="text-[16px] font-extrabold text-[#B794F4]">
-            {fmtNullableNumber(parity.bestColocadoraTeaPct, 2, '%')}
+            {isShortDteBlocked ? '—' : fmtNullableNumber(parity.bestColocadoraTeaPct, 2, '%')}
           </div>
           <div className="text-[10px] text-[#9CA3AF]">
-            Base {parity.bestColocadoraStrike !== null ? `${currencyPrefix}${fmtNum(parity.bestColocadoraStrike, 2)}` : '—'}
+            {isShortDteBlocked
+              ? 'DTE < 3 (bloqueado)'
+              : `Base ${parity.bestColocadoraStrike !== null ? `${currencyPrefix}${fmtNum(parity.bestColocadoraStrike, 2)}` : '—'}`}
           </div>
         </div>
-        <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num">
+        <div
+          title={isShortDteBlocked ? 'DTE < 3: alerta HARD_TO_BORROW_SQUEEZE_ALERT bloqueada por T < 3/365' : undefined}
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+        >
           <div className="text-[10px] uppercase text-[#6B7280]">Borrow / Conv-Rev</div>
           <div className="text-[14px] font-extrabold text-[#38BDF8]">
-            {unifiedQuant?.syntheticRates?.borrowRegime ?? '—'}
+            {borrowLabel}
           </div>
           <div className="text-[10px] text-[#9CA3AF]">
-            Edge:{' '}
-            {unifiedQuant?.conversionReversal?.netEdgeVsRiskFreeBps != null
-              ? `${fmtNum(unifiedQuant.conversionReversal.netEdgeVsRiskFreeBps, 0)} bps`
-              : '—'}
+            {isShortDteBlocked
+              ? 'HTB bloqueado (DTE < 3)'
+              : `Edge: ${
+                  unifiedQuant?.conversionReversal?.netEdgeVsRiskFreeBps != null
+                    ? `${fmtNum(unifiedQuant.conversionReversal.netEdgeVsRiskFreeBps, 0)} bps`
+                    : '—'
+                }`}
           </div>
         </div>
       </div>

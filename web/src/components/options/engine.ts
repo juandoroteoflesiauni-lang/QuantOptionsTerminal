@@ -1,5 +1,13 @@
 import type { ArOptionContractDto, ArOptionsResponse } from '../../data/liveTypes';
 import { fmtNum } from '../../data/marketData';
+import {
+  DEFAULT_MAX_BID_ASK_PCT_OF_MID,
+  DEFAULT_MIN_SPREAD_DEBIT,
+  classifyLiquiditySemaphore,
+  computeLegBidAskPctOfMid,
+  isValidButterflyStrikes,
+  type LiquiditySemaphore,
+} from '../../../../src/core/options/verticalSpreads';
 
 /* ============================================================================
    Motor cuantitativo compartido por la suite de Opciones.
@@ -17,6 +25,9 @@ export const FX_EASE = [0.16, 1, 0.3, 1] as const;
 
 export interface Market {
   ticker: string;
+  market?: 'US' | 'AR';
+  currencyPrefix?: 'US$' | '$';
+  lotSize?: number;
   spot: number;
   days: number;
   rate: number;
@@ -26,6 +37,56 @@ export interface Market {
   step: number;
   strikes: number[];
   expiryDate: Date;
+}
+
+const KNOWN_US_OPTIONS_TICKERS = new Set([
+  'SPY',
+  'QQQ',
+  'IWM',
+  'DIA',
+  'NVDA',
+  'AAPL',
+  'MSFT',
+  'META',
+  'TSLA',
+  'AMD',
+  'AMZN',
+  'GOOGL',
+  'GOOG',
+  'IREN',
+  'MSTR',
+  'COIN',
+  'PLTR',
+  'AVGO',
+  'NFLX',
+  'SMCI',
+  'ARM',
+  'MU',
+  'INTC',
+  'QCOM',
+  'TSM',
+  'GLD',
+  'SLV',
+  'TLT',
+  'XLF',
+  'XLE',
+  'XLK',
+  'IBIT',
+]);
+
+export let CURRENT_MARKET_IS_US = false;
+export let CURRENT_CURRENCY_PREFIX: 'US$' | '$' = '$';
+let CURRENT_SYNCED_TICKER = '';
+
+export function isUsOptionsTicker(ticker: string, marketOverride?: 'US' | 'AR'): boolean {
+  if (marketOverride !== undefined) {
+    return marketOverride === 'US';
+  }
+  const clean = ticker.trim().toUpperCase();
+  if (clean === CURRENT_SYNCED_TICKER) {
+    return CURRENT_MARKET_IS_US;
+  }
+  return KNOWN_US_OPTIONS_TICKERS.has(clean);
 }
 
 const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'] as const;
@@ -56,12 +117,19 @@ export function makeMarket(
   rate = Number.NaN,
   expiryLabel = '—',
   expiryCode = '—',
-  strikesOverride?: readonly number[]
+  strikesOverride?: readonly number[],
+  marketOverride?: 'US' | 'AR',
 ): Market {
-  const codePrefix = ticker === 'GGAL' ? 'GFG' : ticker.slice(0, 3);
+  const isUs = isUsOptionsTicker(ticker, marketOverride);
+  const market: 'US' | 'AR' = isUs ? 'US' : 'AR';
+  const currencyPrefix: 'US$' | '$' = isUs ? 'US$' : '$';
+  const codePrefix = ticker === 'GGAL' && !isUs ? 'GFG' : ticker.slice(0, 3);
   if (!Number.isFinite(spot) || spot <= 0) {
     return {
       ticker,
+      market,
+      currencyPrefix,
+      lotSize: LOT,
       spot: Number.NaN,
       days,
       rate,
@@ -73,22 +141,32 @@ export function makeMarket(
       expiryDate: parseExpiry(expiryLabel),
     };
   }
-  const cleanOverride = (strikesOverride ?? [])
-    .filter((k) => Number.isFinite(k) && k > 0)
-    .sort((a, b) => a - b);
+  const cleanOverride = [...new Set((strikesOverride ?? []).filter((k) => Number.isFinite(k) && k > 0))].sort(
+    (a, b) => a - b,
+  );
 
   if (cleanOverride.length >= 2) {
-    const first = cleanOverride[0] ?? spot;
-    const second = cleanOverride[1] ?? first + spot * 0.04;
+    let minDiff = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < cleanOverride.length; i += 1) {
+      const prev = cleanOverride[i - 1];
+      const curr = cleanOverride[i];
+      if (prev !== undefined && curr !== undefined && curr - prev > 1e-6 && curr - prev < minDiff) {
+        minDiff = curr - prev;
+      }
+    }
+    const step = Number.isFinite(minDiff) && minDiff > 0 ? Math.max(0.5, minDiff) : 1;
     return {
       ticker,
+      market,
+      currencyPrefix,
+      lotSize: LOT,
       spot,
       days,
       rate,
       expiryLabel,
       expiryCode,
       codePrefix,
-      step: Math.max(1, second - first),
+      step,
       strikes: cleanOverride,
       expiryDate: parseExpiry(expiryLabel),
     };
@@ -103,6 +181,9 @@ export function makeMarket(
   for (let k = lo; k <= hi + 1e-9; k += step) strikes.push(Math.round(k * 100) / 100);
   return {
     ticker,
+    market,
+    currencyPrefix,
+    lotSize: LOT,
     spot,
     days,
     rate,
@@ -115,11 +196,12 @@ export function makeMarket(
   };
 }
 
-export const fk = (k: number) => fmtNum(k, 0);
-export const money = (v: number, decimals = 0) =>
-  Number.isFinite(v) ? `${v < 0 ? '-' : ''}$${fmtNum(Math.abs(v), decimals)}` : '—';
-export const signedMoney = (v: number) =>
-  Number.isFinite(v) ? `${v > 0.5 ? '+' : v < -0.5 ? '-' : ''}$${fmtNum(Math.abs(v), 0)}` : '—';
+export const fk = (k: number) =>
+  Number.isInteger(k) ? fmtNum(k, 0) : fmtNum(k, Math.abs(k * 10 - Math.round(k * 10)) < 1e-6 ? 1 : 2);
+export const money = (v: number, decimals = 0, prefix: 'US$' | '$' = CURRENT_CURRENCY_PREFIX) =>
+  Number.isFinite(v) ? `${v < 0 ? '-' : ''}${prefix}${fmtNum(Math.abs(v), decimals)}` : '—';
+export const signedMoney = (v: number, prefix: 'US$' | '$' = CURRENT_CURRENCY_PREFIX) =>
+  Number.isFinite(v) ? `${v > 0.5 ? '+' : v < -0.5 ? '-' : ''}${prefix}${fmtNum(Math.abs(v), 0)}` : '—';
 export const pct = (p: number, decimals = 0) =>
   Number.isFinite(p) ? `${fmtNum(p * 100, decimals)}%` : '—';
 
@@ -138,8 +220,13 @@ interface LiveOptionQuoteEntry {
   readonly contract: ArOptionContractDto;
 }
 const liveOptionContractIndex = new Map<string, LiveOptionQuoteEntry>();
+const liveExpiryCodesSet = new Set<string>();
 
 export function syncOptionEngineMarket(res: ArOptionsResponse): void {
+  CURRENT_SYNCED_TICKER = (res.underlying ?? '').trim().toUpperCase();
+  CURRENT_MARKET_IS_US = res.market === 'US';
+  CURRENT_CURRENCY_PREFIX = CURRENT_MARKET_IS_US ? 'US$' : '$';
+
   TERM_STRUCTURE.splice(
     0,
     TERM_STRUCTURE.length,
@@ -160,7 +247,9 @@ export function syncOptionEngineMarket(res: ArOptionsResponse): void {
     res.histMedianIv !== null && Number.isFinite(res.histMedianIv) ? res.histMedianIv : Number.NaN;
 
   liveOptionContractIndex.clear();
+  liveExpiryCodesSet.clear();
   for (const exp of res.expiries) {
+    liveExpiryCodesSet.add(exp.expiryCode);
     for (const c of exp.calls) {
       liveOptionContractIndex.set(`${exp.expiryCode}|C|${c.strike}`, { contract: c });
     }
@@ -226,9 +315,20 @@ export interface StratLeg {
   type: OptType;
   K: number;
   ratio: number;
+  expiryCode?: string;
+  expiryLabel?: string;
+  days?: number;
 }
 
-export type Family = 'Bear spread' | 'Bull spread' | 'Mariposa' | 'Comprada' | 'Cuña' | 'Cono' | 'Cóndor';
+export type Family =
+  | 'Bear spread'
+  | 'Bull spread'
+  | 'Mariposa'
+  | 'Comprada'
+  | 'Cuña'
+  | 'Cono'
+  | 'Cóndor'
+  | 'Calendario';
 
 export interface Strategy {
   id: string;
@@ -244,23 +344,47 @@ export interface PricedLeg extends StratLeg {
   code: string;
   delta: number;
   thetaDay: number;
+  bid?: number | null;
+  ask?: number | null;
+  bidAskPctOfMid?: number;
+  hasPositiveBid?: boolean;
 }
 
 export function priceLegs(mkt: Market, legs: StratLeg[]): PricedLeg[] {
   const rate = Number.isFinite(mkt.rate) ? mkt.rate : 0;
   return legs.map((l) => {
-    const live = liveOptionContractIndex.get(`${mkt.expiryCode}|${l.type}|${l.K}`)?.contract;
+    const legExpCode = l.expiryCode ?? mkt.expiryCode;
+    const legDays = l.days !== undefined && Number.isFinite(l.days) && l.days > 0 ? l.days : mkt.days;
+    const live = liveOptionContractIndex.get(`${legExpCode}|${l.type}|${l.K}`)?.contract;
     const iv =
       live?.iv !== null && live?.iv !== undefined && Number.isFinite(live.iv)
         ? live.iv
-        : smileIv(mkt.spot, l.K, mkt.days);
+        : smileIv(mkt.spot, l.K, legDays);
 
-    const livePrice = live?.mark ?? live?.last ?? (live?.bid != null && live?.ask != null ? (live.bid + live.ask) / 2 : null);
-    const pModel = bsPrice(l.type, mkt.spot, l.K, mkt.days, iv, rate);
+    const hasLiveBbo =
+      live?.bid !== null &&
+      live?.bid !== undefined &&
+      Number.isFinite(live.bid) &&
+      live.bid > 0 &&
+      live?.ask !== null &&
+      live?.ask !== undefined &&
+      Number.isFinite(live.ask) &&
+      live.ask >= live.bid;
+    const bboExecPrice = hasLiveBbo ? (l.side > 0 ? live.ask : live.bid) : null;
+    const livePrice =
+      bboExecPrice ??
+      live?.mark ??
+      live?.last ??
+      (live?.bid != null && live?.ask != null ? (live.bid + live.ask) / 2 : null);
+    const pModel = bsPrice(l.type, mkt.spot, l.K, legDays, iv, rate);
     const premiumRaw = livePrice !== null && Number.isFinite(livePrice) ? livePrice : pModel;
+    const legBidAskPct =
+      live?.bid != null && live?.ask != null
+        ? computeLegBidAskPctOfMid(live.bid, live.ask)
+        : Number.NaN;
 
-    const pUp = bsPrice(l.type, mkt.spot * 1.001, l.K, mkt.days, iv, rate);
-    const pTomorrow = bsPrice(l.type, mkt.spot, l.K, Math.max(0, mkt.days - 1), iv, rate);
+    const pUp = bsPrice(l.type, mkt.spot * 1.001, l.K, legDays, iv, rate);
+    const pTomorrow = bsPrice(l.type, mkt.spot, l.K, Math.max(0, legDays - 1), iv, rate);
 
     const delta =
       live?.delta !== null && live?.delta !== undefined && Number.isFinite(live.delta)
@@ -280,9 +404,13 @@ export function priceLegs(mkt: Market, legs: StratLeg[]): PricedLeg[] {
       ...l,
       premium: Number.isFinite(premiumRaw) ? Math.max(0.01, Math.round(premiumRaw * 100) / 100) : Number.NaN,
       iv,
-      code: live?.symbol ?? `${mkt.codePrefix}${l.type === 'C' ? 'C' : 'V'}${Math.round(l.K)}${mkt.expiryCode}`,
+      code: live?.symbol ?? `${mkt.codePrefix}${l.type === 'C' ? 'C' : 'V'}${fk(l.K)}${legExpCode}`,
       delta,
       thetaDay,
+      bid: live?.bid ?? null,
+      ask: live?.ask ?? null,
+      bidAskPctOfMid: legBidAskPct,
+      hasPositiveBid: hasLiveBbo,
     };
   });
 }
@@ -315,16 +443,20 @@ export interface Evaluation {
   popHist: number;
   gainAtTarget: number;
   daysLeft: number;
+  bidAskPctOfMid: number;
+  liquiditySemaphore: LiquiditySemaphore;
+  eligibleForAutoRanking: boolean;
   pnl: (S: number) => number;
   pnlAt: (S: number, elapsed: number) => number;
 }
 
 export function makePnlAt(mkt: Market, legs: PricedLeg[], commission: number) {
   return (S: number, elapsed: number) => {
-    const dl = Math.max(0, mkt.days - elapsed);
     let v = -commission;
     for (const l of legs) {
       if (!Number.isFinite(l.premium)) return Number.NaN;
+      const baseDays = l.days !== undefined && Number.isFinite(l.days) && l.days > 0 ? l.days : mkt.days;
+      const dl = Math.max(0, baseDays - elapsed);
       v += l.side * l.ratio * LOT * (legValue(mkt, l, S, dl) - l.premium);
     }
     return v;
@@ -354,6 +486,25 @@ export function evaluate(mkt: Market, strategy: Strategy, target: number, elapse
   const horizon = Math.max(0, Math.min(mkt.days, elapsed));
   const daysLeft = mkt.days - horizon;
 
+  const legPcts = legs
+    .map((l) => l.bidAskPctOfMid ?? Number.NaN)
+    .filter((v) => Number.isFinite(v));
+  const bidAskPctOfMid =
+    legPcts.length === legs.length && legs.length > 0
+      ? legPcts.reduce((acc, v) => acc + v, 0) / legs.length
+      : Number.NaN;
+  const liquiditySemaphore = classifyLiquiditySemaphore(bidAskPctOfMid);
+
+  const hasLiveChainForExpiry = liveExpiryCodesSet.has(mkt.expiryCode);
+  const perShareNetDebitOrCredit = Number.isFinite(cash) ? Math.abs(cash) / LOT : 0;
+  const meetsDebitFloor = perShareNetDebitOrCredit >= DEFAULT_MIN_SPREAD_DEBIT - 1e-12;
+  const meetsLiveLiquidity =
+    !hasLiveChainForExpiry ||
+    (legs.every((l) => l.hasPositiveBid === true) &&
+      Number.isFinite(bidAskPctOfMid) &&
+      bidAskPctOfMid <= DEFAULT_MAX_BID_ASK_PCT_OF_MID + 1e-9);
+  const eligibleForAutoRanking = allPriced && meetsDebitFloor && meetsLiveLiquidity;
+
   const pnlAt = makePnlAt(mkt, legs, commission);
   const pnl = (S: number) => pnlAt(S, horizon);
 
@@ -371,6 +522,9 @@ export function evaluate(mkt: Market, strategy: Strategy, target: number, elapse
       popHist: Number.NaN,
       gainAtTarget: Number.NaN,
       daysLeft,
+      bidAskPctOfMid,
+      liquiditySemaphore,
+      eligibleForAutoRanking: false,
       pnl,
       pnlAt,
     };
@@ -443,19 +597,22 @@ export function evaluate(mkt: Market, strategy: Strategy, target: number, elapse
     popHist: prob(HIST_VOL, 0),
     gainAtTarget: pnl(target),
     daysLeft,
+    bidAskPctOfMid,
+    liquiditySemaphore,
+    eligibleForAutoRanking,
     pnl,
     pnlAt,
   };
 }
 
 function verticals(mkt: Market, down: boolean): Strategy[] {
-  const ks = mkt.strikes;
+  const ks = [...new Set(mkt.strikes.filter((k) => Number.isFinite(k) && k > 0))].sort((a, b) => a - b);
   const out: Strategy[] = [];
   for (let i = 0; i < ks.length; i++) {
     for (let j = i + 1; j < ks.length; j++) {
       const lo = ks[i];
       const hi = ks[j];
-      if (lo === undefined || hi === undefined) continue;
+      if (lo === undefined || hi === undefined || !(lo < hi - 1e-9)) continue;
       if (hi - lo > mkt.step * 6) continue;
       out.push(
         down
@@ -485,29 +642,40 @@ function verticals(mkt: Market, down: boolean): Strategy[] {
   return out;
 }
 
-function butterflies(mkt: Market): Strategy[] {
-  const ks = mkt.strikes;
-  const kFirst = ks[0];
-  const kLast = ks[ks.length - 1];
-  if (kFirst === undefined || kLast === undefined) return [];
+export function butterflies(mkt: Market): Strategy[] {
+  const ks = [...new Set(mkt.strikes.filter((k) => Number.isFinite(k) && k > 0))].sort((a, b) => a - b);
+  if (ks.length < 3) return [];
   const out: Strategy[] = [];
-  for (const c of ks) {
-    for (const w of [1, 2, 3].map((m) => m * mkt.step)) {
-      const lo = c - w;
-      const hi = c + w;
-      if (lo < kFirst || hi > kLast) continue;
-      for (const type of ['C', 'P'] as const) {
-        out.push({
-          id: `bfly-${type}-${lo}-${c}-${hi}`,
-          family: 'Mariposa',
-          name: `Mariposa ${type === 'C' ? 'calls' : 'puts'} ${fk(lo)}/${fk(c)}/${fk(hi)}`,
-          desc: 'Zona de precios: la ganancia máxima está en la base del medio',
-          legs: [
-            { side: 1, type, K: lo, ratio: 1 },
-            { side: -1, type, K: c, ratio: 2 },
-            { side: 1, type, K: hi, ratio: 1 },
-          ],
-        });
+  const maxWing = Math.max(mkt.step * 4, mkt.spot * 0.12);
+  for (let i = 0; i < ks.length - 2; i += 1) {
+    const lo = ks[i];
+    if (lo === undefined) continue;
+    for (let j = i + 1; j < ks.length - 1; j += 1) {
+      const c = ks[j];
+      if (c === undefined) continue;
+      const wL = c - lo;
+      if (wL <= 1e-9 || wL > maxWing + 1e-6) continue;
+      for (let m = j + 1; m < ks.length; m += 1) {
+        const hi = ks[m];
+        if (hi === undefined) continue;
+        if (!isValidButterflyStrikes(lo, c, hi, true)) continue;
+        const lLo = fk(lo);
+        const lMid = fk(c);
+        const lHi = fk(hi);
+        if (lLo === lMid || lMid === lHi || lLo === lHi) continue;
+        for (const type of ['C', 'P'] as const) {
+          out.push({
+            id: `bfly-${type}-${lo}-${c}-${hi}`,
+            family: 'Mariposa',
+            name: `Mariposa ${type === 'C' ? 'calls' : 'puts'} ${lLo}/${lMid}/${lHi}`,
+            desc: 'Zona de precios: la ganancia máxima está en la base del medio',
+            legs: [
+              { side: 1, type, K: lo, ratio: 1 },
+              { side: -1, type, K: c, ratio: 2 },
+              { side: 1, type, K: hi, ratio: 1 },
+            ],
+          });
+        }
       }
     }
   }
@@ -515,21 +683,21 @@ function butterflies(mkt: Market): Strategy[] {
 }
 
 function condors(mkt: Market): Strategy[] {
-  const ks = mkt.strikes;
-  const kFirst = ks[0];
-  const kLast = ks[ks.length - 1];
-  if (kFirst === undefined || kLast === undefined) return [];
+  const ks = [...new Set(mkt.strikes.filter((k) => Number.isFinite(k) && k > 0))].sort((a, b) => a - b);
+  if (ks.length < 4) return [];
+  const strikeSet = new Set(ks);
   const out: Strategy[] = [];
   const w = mkt.step;
-  for (let i = 0; i < ks.length; i++) {
-    for (let j = i + 1; j < ks.length; j++) {
+  for (let i = 1; i < ks.length - 2; i++) {
+    for (let j = i + 1; j < ks.length - 1; j++) {
       const k2 = ks[i];
       const k3 = ks[j];
-      if (k2 === undefined || k3 === undefined) continue;
+      if (k2 === undefined || k3 === undefined || !(k2 < k3 - 1e-9)) continue;
       if (k3 - k2 > mkt.step * 6) continue;
       const k1 = k2 - w;
       const k4 = k3 + w;
-      if (k1 < kFirst || k4 > kLast) continue;
+      if (!(k1 < k2 - 1e-9 && k3 < k4 - 1e-9)) continue;
+      if (!strikeSet.has(k1) || !strikeSet.has(k4)) continue;
       out.push({
         id: `condor-${k1}-${k2}-${k3}-${k4}`,
         family: 'Cóndor',
@@ -659,6 +827,7 @@ export function sizeForBudget(
 ): Sized[] {
   const out: Sized[] = [];
   for (const ev of evs) {
+    if (!ev.eligibleForAutoRanking) continue;
     const g = gainOf(ev);
     if (!Number.isFinite(g) || ev.maxLoss == null || ev.maxLoss <= 0 || g < ev.maxLoss * MIN_REWARD_RISK) continue;
     const units = Math.floor(budget / ev.maxLoss);

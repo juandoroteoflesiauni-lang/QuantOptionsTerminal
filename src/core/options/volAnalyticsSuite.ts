@@ -16,7 +16,9 @@
 import { priceAmericanBjerksund2002 } from './american.js';
 import { greeksBsm } from './blackScholes.js';
 import { normPdf } from './math.js';
+import { MIN_SYNTHETIC_RATE_DTE, type ImpliedRateStatus } from './syntheticRates.js';
 import type { OptionContractType } from './types.js';
+import { DEFAULT_MIN_SPREAD_DEBIT, isValidButterflyStrikes } from './verticalSpreads.js';
 
 const TRADING_DAYS_PER_YEAR = 252;
 const CALENDAR_DAYS_PER_YEAR = 365;
@@ -669,6 +671,176 @@ export function computeOperativeRegimeSuggestion(params: {
   };
 }
 
+export type ActiveExpiryIvSource = 'INTERPOLATED_ATM' | 'SAME_EXPIRY_FALLBACK' | 'NO_DATA';
+
+export interface ActiveExpiryVrpInput {
+  readonly expiryCode: string | null;
+  readonly daysToExpiry: number | null;
+  /** IV ATM interpolada del vencimiento actualmente seleccionado en % (ej. 21.5). */
+  readonly ivAtmActiveExpiryPct: number | null;
+  /** Fallback explícito del MISMO vencimiento activo (ej. IV OTM más cercana al spot en %) si falta interpolación exacta en 0% moneyness. Nunca de otro vencimiento. */
+  readonly sameExpiryFallbackIvAtmPct?: number | null;
+  /** Volatilidad realizada de referencia en % (ej. RV 23 ruedas). */
+  readonly rvReferencePct: number | null;
+  readonly rvReferenceLabel?: string;
+  readonly historicalRvMinPct?: number | null;
+  readonly historicalRvMaxPct?: number | null;
+  readonly historicalRvSeriesPct?: readonly number[];
+  readonly fallbackIvRank?: number | null;
+  readonly fallbackIvPercentile?: number | null;
+}
+
+export interface ActiveExpiryVrpResult {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly expiryCode: string | null;
+  readonly daysToExpiry: number;
+  readonly ivAtmActiveExpiryPct: number;
+  readonly ivSource: ActiveExpiryIvSource;
+  readonly rvReferencePct: number;
+  readonly rvReferenceLabel: string;
+  readonly vrpActiveExpiryPts: number;
+  readonly ivRankActiveExpiry: number;
+  readonly ivPercentileActiveExpiry: number;
+  readonly operativeRegime: OperativeRegimeSuggestion;
+}
+
+/**
+ * Pieza 45 — Calcula vrpActiveExpiry = ivAtmActiveExpiry - rvReference usando exclusivamente
+ * la IV ATM del vencimiento activo seleccionado por el usuario (con fallback explícito al
+ * mismo vencimiento, jamás mezclando silenciosamente otro vencimiento) y alimenta el
+ * clasificador de régimen operativo.
+ */
+export function computeActiveExpiryVrpAndRegime(
+  input: ActiveExpiryVrpInput,
+): ActiveExpiryVrpResult {
+  const rvReferenceLabel = input.rvReferenceLabel ?? 'RV23d';
+  const daysToExpiry = isPositiveFinite(input.daysToExpiry) ? input.daysToExpiry : Number.NaN;
+
+  let ivAtmActiveExpiryPct = Number.NaN;
+  let ivSource: ActiveExpiryIvSource = 'NO_DATA';
+  if (isPositiveFinite(input.ivAtmActiveExpiryPct)) {
+    ivAtmActiveExpiryPct = input.ivAtmActiveExpiryPct;
+    ivSource = 'INTERPOLATED_ATM';
+  } else if (isPositiveFinite(input.sameExpiryFallbackIvAtmPct)) {
+    ivAtmActiveExpiryPct = input.sameExpiryFallbackIvAtmPct;
+    ivSource = 'SAME_EXPIRY_FALLBACK';
+  }
+
+  const rvReferencePct = isPositiveFinite(input.rvReferencePct)
+    ? input.rvReferencePct
+    : Number.NaN;
+
+  if (!Number.isFinite(ivAtmActiveExpiryPct) || !Number.isFinite(rvReferencePct)) {
+    return {
+      status: 'NO_DATA',
+      expiryCode: input.expiryCode,
+      daysToExpiry,
+      ivAtmActiveExpiryPct,
+      ivSource,
+      rvReferencePct,
+      rvReferenceLabel,
+      vrpActiveExpiryPts: Number.NaN,
+      ivRankActiveExpiry: Number.NaN,
+      ivPercentileActiveExpiry: Number.NaN,
+      operativeRegime: {
+        code: 'NO_DATA',
+        label: '—',
+        rationale: !Number.isFinite(ivAtmActiveExpiryPct)
+          ? 'Sin IV ATM válida en el vencimiento activo.'
+          : 'Sin volatilidad realizada de referencia para calcular VRP.',
+      },
+    };
+  }
+
+  const vrpActiveExpiryPts = ivAtmActiveExpiryPct - rvReferencePct;
+
+  let ivRankActiveExpiry = Number.NaN;
+  let ivPercentileActiveExpiry = Number.NaN;
+
+  const histSeries = input.historicalRvSeriesPct;
+  if (histSeries && isRuntimeArray(histSeries)) {
+    const validHist = histSeries.filter((v) => isPositiveFinite(v));
+    if (validHist.length >= 2) {
+      const sorted = validHist.slice().sort((a, b) => a - b);
+      const minPct = sorted[0] ?? Number.NaN;
+      const maxPct = sorted[sorted.length - 1] ?? Number.NaN;
+      if (Number.isFinite(minPct) && Number.isFinite(maxPct) && maxPct > minPct) {
+        ivRankActiveExpiry = clampPct(((ivAtmActiveExpiryPct - minPct) / (maxPct - minPct)) * 100);
+      }
+      const leCount = sorted.filter((v) => v <= ivAtmActiveExpiryPct).length;
+      ivPercentileActiveExpiry = clampPct((leCount / sorted.length) * 100);
+    }
+  }
+
+  if (
+    !Number.isFinite(ivRankActiveExpiry) &&
+    isPositiveFinite(input.historicalRvMinPct) &&
+    isPositiveFinite(input.historicalRvMaxPct) &&
+    input.historicalRvMaxPct > input.historicalRvMinPct
+  ) {
+    ivRankActiveExpiry = clampPct(
+      ((ivAtmActiveExpiryPct - input.historicalRvMinPct) /
+        (input.historicalRvMaxPct - input.historicalRvMinPct)) *
+        100,
+    );
+  }
+
+  if (
+    !Number.isFinite(ivRankActiveExpiry) &&
+    input.fallbackIvRank !== null &&
+    input.fallbackIvRank !== undefined &&
+    Number.isFinite(input.fallbackIvRank)
+  ) {
+    ivRankActiveExpiry = clampPct(input.fallbackIvRank);
+  }
+
+  if (
+    !Number.isFinite(ivPercentileActiveExpiry) &&
+    input.fallbackIvPercentile !== null &&
+    input.fallbackIvPercentile !== undefined &&
+    Number.isFinite(input.fallbackIvPercentile)
+  ) {
+    ivPercentileActiveExpiry = clampPct(input.fallbackIvPercentile);
+  }
+
+  const operativeRegime = Number.isFinite(ivRankActiveExpiry)
+    ? computeOperativeRegimeSuggestion({
+        ivRank: ivRankActiveExpiry,
+        vrpPts: vrpActiveExpiryPts,
+      })
+    : vrpActiveExpiryPts > 5
+      ? {
+          code: 'VENTA_PRIMA_CUBIERTA' as const,
+          label: 'VENTA DE PRIMA CUBIERTA',
+          rationale: `VRP activo +${vrpActiveExpiryPts.toFixed(1)} pts sobre ${rvReferenceLabel}.`,
+        }
+      : vrpActiveExpiryPts < -3
+        ? {
+            code: 'COMPRA_CONVEXIDAD_CALENDAR' as const,
+            label: 'COMPRA DE CONVEXIDAD / CALENDAR',
+            rationale: `VRP activo ${vrpActiveExpiryPts.toFixed(1)} pts debajo de ${rvReferenceLabel}.`,
+          }
+        : {
+            code: 'NEUTRAL_SELECTIVO' as const,
+            label: 'NEUTRAL / SELECTIVO',
+            rationale: `VRP activo alineado con ${rvReferenceLabel}.`,
+          };
+
+  return {
+    status: 'OK',
+    expiryCode: input.expiryCode,
+    daysToExpiry,
+    ivAtmActiveExpiryPct,
+    ivSource,
+    rvReferencePct,
+    rvReferenceLabel,
+    vrpActiveExpiryPts,
+    ivRankActiveExpiry,
+    ivPercentileActiveExpiry,
+    operativeRegime,
+  };
+}
+
 export function computeRollingRvDistributionAtWindow(
   bars: readonly HistoricalDailyBarInput[],
   windowDays: number,
@@ -1250,6 +1422,7 @@ export interface ParitySyntheticStrikeRow {
 
 export interface ParityAndSyntheticSuiteResult {
   readonly status: 'OK' | 'NO_DATA';
+  readonly impliedRateStatus: ImpliedRateStatus;
   readonly daysToExpiry: number;
   readonly benchmarkTeaPct: number | null;
   readonly benchmarkLabel: string;
@@ -1276,6 +1449,7 @@ export function computeParityAndSyntheticRatesByStrike(input: {
   const benchmarkLabel = input.benchmarkLabel ?? 'Caución / SOFR';
   const emptyOut: ParityAndSyntheticSuiteResult = {
     status: 'NO_DATA',
+    impliedRateStatus: 'NO_DATA',
     daysToExpiry: input.daysToExpiry,
     benchmarkTeaPct: input.benchmarkTeaPct,
     benchmarkLabel,
@@ -1298,6 +1472,7 @@ export function computeParityAndSyntheticRatesByStrike(input: {
     return emptyOut;
   }
 
+  const isShortDteBlocked = input.daysToExpiry < MIN_SYNTHETIC_RATE_DTE;
   const t = input.daysToExpiry / CALENDAR_DAYS_PER_YEAR;
   const spotMid = input.spotMid;
   const spotBid = isPositiveFinite(input.spotBid) ? input.spotBid : spotMid;
@@ -1339,18 +1514,27 @@ export function computeParityAndSyntheticRatesByStrike(input: {
       const capMid = discSpotMid - (callMid - putMid);
       if (isPositiveFinite(capMid)) {
         const growth = p.strike / capMid;
-        const tea = (Math.pow(growth, 1 / t) - 1) * 100;
         const fwd = p.strike + (callMid - putMid) * growth;
-        if (Number.isFinite(tea) && Number.isFinite(fwd)) {
-          midImpliedTeaPct = tea;
+        if (Number.isFinite(fwd)) {
           syntheticForwardMid = fwd;
+        }
+        if (!isShortDteBlocked) {
+          const tea = (Math.pow(growth, 1 / t) - 1) * 100;
+          if (Number.isFinite(tea)) {
+            midImpliedTeaPct = tea;
+          }
         }
       }
     }
 
     // TEA Tomadora: -Spot(Bid) + Call(Ask) - Put(Bid) -> recibo capTomadora hoy, pago K al vencimiento
     let teaTomadoraPct = Number.NaN;
-    if (isPositiveFinite(p.callAsk) && isPositiveFinite(p.putBid) && p.callAsk >= (p.callBid ?? 0)) {
+    if (
+      !isShortDteBlocked &&
+      isPositiveFinite(p.callAsk) &&
+      isPositiveFinite(p.putBid) &&
+      p.callAsk >= (p.callBid ?? 0)
+    ) {
       const capTom = discSpotBid - (p.callAsk - p.putBid);
       if (isPositiveFinite(capTom)) {
         const teaTom = (Math.pow(p.strike / capTom, 1 / t) - 1) * 100;
@@ -1362,7 +1546,12 @@ export function computeParityAndSyntheticRatesByStrike(input: {
 
     // TEA Colocadora: +Spot(Ask) - Call(Bid) + Put(Ask) -> invierto capColocadora hoy, cobro K al vencimiento
     let teaColocadoraPct = Number.NaN;
-    if (isPositiveFinite(p.callBid) && isPositiveFinite(p.putAsk) && (p.callAsk ?? p.callBid) >= p.callBid) {
+    if (
+      !isShortDteBlocked &&
+      isPositiveFinite(p.callBid) &&
+      isPositiveFinite(p.putAsk) &&
+      (p.callAsk ?? p.callBid) >= p.callBid
+    ) {
       const capCol = discSpotAsk - (p.callBid - p.putAsk);
       if (isPositiveFinite(capCol)) {
         const teaCol = (Math.pow(p.strike / capCol, 1 / t) - 1) * 100;
@@ -1375,25 +1564,28 @@ export function computeParityAndSyntheticRatesByStrike(input: {
     const hasValidRow =
       Number.isFinite(callIvPct) ||
       Number.isFinite(putIvPct) ||
+      Number.isFinite(syntheticForwardMid) ||
       Number.isFinite(midImpliedTeaPct) ||
       Number.isFinite(teaTomadoraPct) ||
       Number.isFinite(teaColocadoraPct);
     if (!hasValidRow) continue;
 
     const canLendAboveBenchmark =
+      !isShortDteBlocked &&
       benchmarkTeaPct !== null &&
       Number.isFinite(teaColocadoraPct) &&
       teaColocadoraPct > benchmarkTeaPct;
     const canBorrowBelowBenchmark =
+      !isShortDteBlocked &&
       benchmarkTeaPct !== null &&
       Number.isFinite(teaTomadoraPct) &&
       teaTomadoraPct < benchmarkTeaPct;
     const edgeColocadoraBps =
-      benchmarkTeaPct !== null && Number.isFinite(teaColocadoraPct)
+      !isShortDteBlocked && benchmarkTeaPct !== null && Number.isFinite(teaColocadoraPct)
         ? (teaColocadoraPct - benchmarkTeaPct) * 100
         : Number.NaN;
     const edgeTomadoraBps =
-      benchmarkTeaPct !== null && Number.isFinite(teaTomadoraPct)
+      !isShortDteBlocked && benchmarkTeaPct !== null && Number.isFinite(teaTomadoraPct)
         ? (benchmarkTeaPct - teaTomadoraPct) * 100
         : Number.NaN;
 
@@ -1421,6 +1613,24 @@ export function computeParityAndSyntheticRatesByStrike(input: {
 
   if (rows.length === 0) {
     return emptyOut;
+  }
+
+  if (isShortDteBlocked) {
+    return {
+      status: 'OK',
+      impliedRateStatus: 'BLOCKED_SHORT_DTE',
+      daysToExpiry: input.daysToExpiry,
+      benchmarkTeaPct,
+      benchmarkLabel,
+      medianMidTeaPct: Number.NaN,
+      medianTeaTomadoraPct: Number.NaN,
+      medianTeaColocadoraPct: Number.NaN,
+      bestColocadoraStrike: null,
+      bestColocadoraTeaPct: Number.NaN,
+      bestTomadoraStrike: null,
+      bestTomadoraTeaPct: Number.NaN,
+      strikes: rows,
+    };
   }
 
   const nearAtm = rows
@@ -1456,6 +1666,7 @@ export function computeParityAndSyntheticRatesByStrike(input: {
 
   return {
     status: 'OK',
+    impliedRateStatus: 'OK',
     daysToExpiry: input.daysToExpiry,
     benchmarkTeaPct,
     benchmarkLabel,
@@ -1729,7 +1940,12 @@ export function computeRatiosAndStructureCosts(input: {
       const sSell = getLeg(bullShort, 'call', 'sell');
       const width = bullShort.strike - bullLong.strike;
       const netDebit = lBuy.price - sSell.price;
-      if (width > 0 && isPositiveFinite(netDebit) && netDebit < width) {
+      if (
+        width > 0 &&
+        isPositiveFinite(netDebit) &&
+        netDebit >= DEFAULT_MIN_SPREAD_DEBIT - 1e-12 &&
+        netDebit < width
+      ) {
         const maxProfit = width - netDebit;
         const costPctOfMaxProfit = (netDebit / maxProfit) * 100;
         const costPctOfWidth = (netDebit / width) * 100;
@@ -1796,7 +2012,12 @@ export function computeRatiosAndStructureCosts(input: {
       const sSell = getLeg(bearShort, 'put', 'sell');
       const width = bearLong.strike - bearShort.strike;
       const netDebit = lBuy.price - sSell.price;
-      if (width > 0 && isPositiveFinite(netDebit) && netDebit < width) {
+      if (
+        width > 0 &&
+        isPositiveFinite(netDebit) &&
+        netDebit >= DEFAULT_MIN_SPREAD_DEBIT - 1e-12 &&
+        netDebit < width
+      ) {
         const maxProfit = width - netDebit;
         const costPctOfMaxProfit = (netDebit / maxProfit) * 100;
         const costPctOfWidth = (netDebit / width) * 100;
@@ -1896,7 +2117,14 @@ export function computeRatiosAndStructureCosts(input: {
         const extraWingRisk = Math.max(0, rightWidth - leftWidth);
         const maxRisk = netDebit + extraWingRisk;
         const maxProfit = leftWidth - netDebit;
-        if (leftWidth > 0 && isPositiveFinite(netDebit) && maxProfit > 0 && maxRisk > 0) {
+        if (
+          isValidButterflyStrikes(bestPair.k1.strike, center.strike, bestPair.k3.strike, false) &&
+          leftWidth > 0 &&
+          isPositiveFinite(netDebit) &&
+          netDebit >= DEFAULT_MIN_SPREAD_DEBIT - 1e-12 &&
+          maxProfit > 0 &&
+          maxRisk > 0
+        ) {
           const costPctOfMaxProfit = (netDebit / maxProfit) * 100;
           const costPctOfWidth = (netDebit / leftWidth) * 100;
           const hist = evaluateBs2002Percentile({
@@ -2268,6 +2496,7 @@ export interface VolAnalyticsExpirySuiteResult {
   readonly expectedCone: ExpectedConeDensitySummary;
   readonly parity: ParityAndSyntheticSuiteResult;
   readonly ratiosAndStructures: RatiosAndStructureCostsResult;
+  readonly activeExpiryVrp?: ActiveExpiryVrpResult;
 }
 
 export interface VolAnalyticsSuiteResult {
