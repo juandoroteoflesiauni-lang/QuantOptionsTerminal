@@ -295,6 +295,33 @@
   contain: strict;
 }
 
+.imperative-price-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  contain: strict;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.cell-flash-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  will-change: opacity;
+}
+
+.cell-flash-overlay[data-dir='up'] {
+  background-color: #22c55e;
+}
+
+.cell-flash-overlay[data-dir='down'] {
+  background-color: #ef4444;
+}
+
 @keyframes qc-chip-flash-up {
   0% {
     background-color: rgba(8, 153, 129, 0.32);

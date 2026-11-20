@@ -1,0 +1,371 @@
+{
+  "meta": {
+    "defaultSoaCapacity": 1200,
+    "defaultTradeRingCapacity": 2048,
+    "soaDeltaStride": 10,
+    "maxDeltaItemsPerFrame": 120,
+    "deltaFrameBufferBytes": 9600,
+    "l2VisualPulseMs": 100,
+    "tableVisualPulseMs": 220
+  },
+  "soaCases": {
+    "registrations": [
+      {
+        "raw": "ar:ggal",
+        "normalized": "AR:GGAL",
+        "id": 0
+      },
+      {
+        "raw": "US:NVDA",
+        "normalized": "US:NVDA",
+        "id": 1
+      },
+      {
+        "raw": "nvda261120c00140000",
+        "normalized": "NVDA261120C00140000",
+        "id": 2
+      },
+      {
+        "raw": "AR:GGAL",
+        "normalized": "AR:GGAL",
+        "id": 0
+      },
+      {
+        "raw": "  us:spy ",
+        "normalized": "US:SPY",
+        "id": 3
+      }
+    ],
+    "uniqueCount": 4,
+    "deltasBatch1": [
+      {
+        "id": 0,
+        "bid": 7050.25,
+        "ask": 7060.75,
+        "last": 7055.5,
+        "bidSize": 1200,
+        "askSize": 850,
+        "timestamp": 1794580680.0,
+        "iv": 0.4825,
+        "delta": 0.5123,
+        "gamma": 0.0042
+      },
+      {
+        "id": 2,
+        "bid": 5.15,
+        "ask": 5.35,
+        "last": 5.25,
+        "bidSize": 40,
+        "askSize": 65,
+        "timestamp": 1794580681.0,
+        "iv": 0.6145,
+        "delta": 0.4412,
+        "gamma": 0.0315
+      },
+      {
+        "id": 9999,
+        "bid": 1.0,
+        "ask": 2.0,
+        "last": 1.5,
+        "bidSize": 1,
+        "askSize": 1,
+        "timestamp": 1794580682.0,
+        "iv": 0.1,
+        "delta": 0.1,
+        "gamma": 0.1
+      }
+    ],
+    "deltasBatch2": [
+      {
+        "id": 0,
+        "bid": null,
+        "ask": null,
+        "last": 7090.0,
+        "bidSize": null,
+        "askSize": null,
+        "timestamp": 1794580690.0,
+        "iv": null,
+        "delta": null,
+        "gamma": null
+      },
+      {
+        "id": 1,
+        "bid": 141.9,
+        "ask": 142.0,
+        "last": 141.95,
+        "bidSize": 500,
+        "askSize": 300,
+        "timestamp": 1794580691.0,
+        "iv": null,
+        "delta": null,
+        "gamma": null
+      }
+    ],
+    "expectedApplied1": 2,
+    "expectedApplied2": 2,
+    "expectedRows": [
+      {
+        "id": 0,
+        "symbol": "AR:GGAL",
+        "bid": 7050.25,
+        "ask": 7060.75,
+        "last": 7090.0,
+        "bidSize": 1200,
+        "askSize": 850,
+        "timestamp": 1794580690.0,
+        "iv": 0.48249998688697815,
+        "delta": 0.5123000144958496,
+        "gamma": 0.00419999985024333
+      },
+      {
+        "id": 1,
+        "symbol": "US:NVDA",
+        "bid": 141.9,
+        "ask": 142.0,
+        "last": 141.95,
+        "bidSize": 500,
+        "askSize": 300,
+        "timestamp": 1794580691.0,
+        "iv": null,
+        "delta": null,
+        "gamma": null
+      },
+      {
+        "id": 2,
+        "symbol": "NVDA261120C00140000",
+        "bid": 5.15,
+        "ask": 5.35,
+        "last": 5.25,
+        "bidSize": 40,
+        "askSize": 65,
+        "timestamp": 1794580681.0,
+        "iv": 0.6144999861717224,
+        "delta": 0.44119998812675476,
+        "gamma": 0.03150000050663948
+      },
+      {
+        "id": 3,
+        "symbol": "US:SPY",
+        "bid": null,
+        "ask": null,
+        "last": null,
+        "bidSize": 0,
+        "askSize": 0,
+        "timestamp": null,
+        "iv": null,
+        "delta": null,
+        "gamma": null
+      }
+    ]
+  },
+  "ringBufferCases": {
+    "capacity": 2048,
+    "totalPushes": 2105,
+    "expectedCount": 2048,
+    "queries": [
+      {
+        "offset": 0,
+        "maxCount": 5,
+        "expectedCount": 5,
+        "expected": [
+          {
+            "price": 626.0,
+            "size": 5,
+            "ts": 1794582104
+          },
+          {
+            "price": 625.75,
+            "size": 4,
+            "ts": 1794582103
+          },
+          {
+            "price": 625.5,
+            "size": 3,
+            "ts": 1794582102
+          },
+          {
+            "price": 625.25,
+            "size": 2,
+            "ts": 1794582101
+          },
+          {
+            "price": 625.0,
+            "size": 1,
+            "ts": 1794582100
+          }
+        ]
+      },
+      {
+        "offset": 100,
+        "maxCount": 4,
+        "expectedCount": 4,
+        "expected": [
+          {
+            "price": 601.0,
+            "size": 5,
+            "ts": 1794582004
+          },
+          {
+            "price": 600.75,
+            "size": 4,
+            "ts": 1794582003
+          },
+          {
+            "price": 600.5,
+            "size": 3,
+            "ts": 1794582002
+          },
+          {
+            "price": 600.25,
+            "size": 2,
+            "ts": 1794582001
+          }
+        ]
+      },
+      {
+        "offset": 2045,
+        "maxCount": 10,
+        "expectedCount": 3,
+        "expected": [
+          {
+            "price": 114.75,
+            "size": 10,
+            "ts": 1794580059
+          },
+          {
+            "price": 114.5,
+            "size": 9,
+            "ts": 1794580058
+          },
+          {
+            "price": 114.25,
+            "size": 8,
+            "ts": 1794580057
+          }
+        ]
+      },
+      {
+        "offset": 2048,
+        "maxCount": 5,
+        "expectedCount": 0,
+        "expected": []
+      },
+      {
+        "offset": -1,
+        "maxCount": 5,
+        "expectedCount": 0,
+        "expected": []
+      }
+    ]
+  },
+  "bitmaskCases": {
+    "selective": {
+      "initialDirty": [
+        0,
+        31,
+        32,
+        63,
+        64,
+        511,
+        512,
+        1199
+      ],
+      "visible1": [
+        31,
+        64,
+        100,
+        512
+      ],
+      "expectedFrame1": [
+        31,
+        64,
+        512
+      ],
+      "expectedRemaining1": [
+        0,
+        32,
+        63,
+        511,
+        1199
+      ],
+      "visible2": [
+        0,
+        63,
+        1199
+      ],
+      "expectedFrame2": [
+        0,
+        63,
+        1199
+      ],
+      "expectedRemaining2": [
+        32,
+        511
+      ]
+    },
+    "burstPagination": {
+      "totalDirtyVisible": 250,
+      "expectedFrameCounts": [
+        120,
+        120,
+        10
+      ],
+      "expectedHasMore": [
+        true,
+        true,
+        false
+      ],
+      "maxFrameBytes": 9600
+    }
+  },
+  "domRegistryCases": {
+    "initialValue": 142.5,
+    "initialText": "$ 142,50",
+    "decimals": 2,
+    "prefix": "$ ",
+    "steps": [
+      {
+        "value": 142.5,
+        "expectMutated": false,
+        "expectText": "$ 142,50",
+        "expectDir": null
+      },
+      {
+        "value": 142.5000000001,
+        "expectMutated": false,
+        "expectText": "$ 142,50",
+        "expectDir": null
+      },
+      {
+        "value": 143.25,
+        "expectMutated": true,
+        "expectText": "$ 143,25",
+        "expectDir": "up"
+      },
+      {
+        "value": 141.8,
+        "expectMutated": true,
+        "expectText": "$ 141,80",
+        "expectDir": "down"
+      },
+      {
+        "value": null,
+        "expectMutated": true,
+        "expectText": "\u2014",
+        "expectDir": null
+      },
+      {
+        "value": null,
+        "expectMutated": false,
+        "expectText": "\u2014",
+        "expectDir": null
+      },
+      {
+        "value": 140.0,
+        "expectMutated": true,
+        "expectText": "$ 140,00",
+        "expectDir": null
+      }
+    ]
+  }
+}

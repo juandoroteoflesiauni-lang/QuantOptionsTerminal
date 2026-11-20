@@ -7,6 +7,27 @@ import {
 } from '../../../src/core/atomicQuoteStore';
 import { appendLiveTapeTick, type LiveFxSnapshot, type LiveTapeTick } from '../../../src/core/realtimePropagation';
 import { refreshBackendHealth } from '../data/liveRuntimeBridge';
+import {
+  DEFAULT_SOA_CAPACITY,
+  DEFAULT_TRADE_RING_CAPACITY,
+  MarketStoreSoA,
+  SOA_COL_ASK,
+  SOA_COL_ASK_SIZE,
+  SOA_COL_BID,
+  SOA_COL_BID_SIZE,
+  SOA_COL_DELTA,
+  SOA_COL_GAMMA,
+  SOA_COL_ID,
+  SOA_COL_IV,
+  SOA_COL_LAST,
+  SOA_COL_TIMESTAMP,
+  SOA_DELTA_STRIDE,
+  TradeRingBuffer,
+  domCellRegistry,
+  isDedicatedWorkerSupported,
+  normalizeSoaSymbol,
+} from '../store/marketStoreSoa';
+import type { WorkerInboundMessage, WorkerOutboundMessage } from '../workers/marketFeed.worker';
 
 export type LiveStreamMarket = 'AR' | 'US';
 export type LiveStreamTransport = 'WS' | 'POLL';
@@ -270,7 +291,13 @@ let metaState: MarketStreamMeta = {
   ticksPerSecond: state.ticksPerSecond,
 };
 
+export const marketStoreSoa = new MarketStoreSoA(DEFAULT_SOA_CAPACITY);
+export const tradeRingBuffer = new TradeRingBuffer(DEFAULT_TRADE_RING_CAPACITY);
+
 let managerCount = 0;
+let marketWorker: Worker | null = null;
+let pullRafHandle: number | null = null;
+let pullScheduled = false;
 let socket: WebSocket | null = null;
 let socketGeneration = 0;
 let openTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -293,8 +320,107 @@ let legacyFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const pendingMarketBatches: MarketBatchWire[] = [];
 let marketBatchFlushHandle: number | null = null;
 let pendingMarketBatchTransport: LiveStreamTransport = 'WS';
+const visibleSymbolsByConsumer = new Map<string, readonly string[]>();
+
+function postToWorker(message: WorkerInboundMessage, transfer?: Transferable[]): void {
+  if (marketWorker === null) return;
+  try {
+    if (transfer !== undefined && transfer.length > 0) {
+      marketWorker.postMessage(message, transfer);
+    } else {
+      marketWorker.postMessage(message);
+    }
+  } catch {
+    // Ignora errores de canal cerrado durante teardown.
+  }
+}
+
+function sendVisibleIdsToWorker(): void {
+  if (marketWorker === null) return;
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const list of visibleSymbolsByConsumer.values()) {
+    for (let i = 0; i < list.length; i += 1) {
+      const sym = list[i];
+      if (sym !== undefined && sym !== '' && !seen.has(sym)) {
+        seen.add(sym);
+        merged.push(sym);
+      }
+    }
+  }
+  if (merged.length === 0) {
+    postToWorker({ type: 'SET_VISIBLE_IDS', ids: [], allVisible: true });
+    return;
+  }
+  if (currentViewScope?.focusSymbol) {
+    const focusSym = currentViewScope.focusSymbol;
+    const prefix = currentViewScope.focusMarket ?? 'US';
+    const qualified = `${prefix}:${focusSym}`;
+    if (!seen.has(qualified)) {
+      seen.add(qualified);
+      merged.push(qualified);
+    }
+    if (!seen.has(focusSym)) {
+      seen.add(focusSym);
+      merged.push(focusSym);
+    }
+  }
+  if (marketFocusSymbol !== null && !seen.has(marketFocusSymbol)) {
+    seen.add(marketFocusSymbol);
+    merged.push(marketFocusSymbol);
+  }
+  const knownIds: number[] = [];
+  for (let i = 0; i < merged.length; i += 1) {
+    const sym = merged[i];
+    if (sym === undefined) continue;
+    const id = marketStoreSoa.getId(sym);
+    if (id !== undefined) knownIds.push(id);
+  }
+  postToWorker({
+    type: 'SET_VISIBLE_IDS',
+    ids: knownIds,
+    symbols: merged,
+    allVisible: false,
+  });
+}
+
+export function setVisibleMarketSymbols(
+  symbols: readonly string[],
+  consumerKey = 'default',
+): void {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < symbols.length; i += 1) {
+    const raw = symbols[i];
+    if (raw === undefined) continue;
+    const clean = normalizeSoaSymbol(raw);
+    if (clean === '' || seen.has(clean)) continue;
+    seen.add(clean);
+    normalized.push(clean);
+  }
+  if (normalized.length === 0) {
+    if (!visibleSymbolsByConsumer.has(consumerKey)) return;
+    visibleSymbolsByConsumer.delete(consumerKey);
+  } else {
+    const prev = visibleSymbolsByConsumer.get(consumerKey);
+    if (
+      prev !== undefined &&
+      prev.length === normalized.length &&
+      prev.every((v, idx) => v === normalized[idx])
+    ) {
+      return;
+    }
+    visibleSymbolsByConsumer.set(consumerKey, normalized);
+  }
+  sendVisibleIdsToWorker();
+}
 
 function sendFocusMessage(): void {
+  if (marketWorker !== null) {
+    postToWorker({ type: 'SET_FOCUS_SYMBOL', symbol: marketFocusSymbol });
+    sendVisibleIdsToWorker();
+    return;
+  }
   if (socket === null || socket.readyState !== WebSocket.OPEN) return;
   try {
     socket.send(JSON.stringify({ action: 'focus', symbol: marketFocusSymbol ?? '' }));
@@ -304,7 +430,18 @@ function sendFocusMessage(): void {
 }
 
 function sendViewScopeMessage(): void {
-  if (socket === null || socket.readyState !== WebSocket.OPEN || currentViewScope === null) return;
+  if (currentViewScope === null) return;
+  if (marketWorker !== null) {
+    postToWorker({
+      type: 'SET_VIEW_SCOPE',
+      view: currentViewScope.view,
+      focusSymbol: currentViewScope.focusSymbol,
+      focusMarket: currentViewScope.focusMarket,
+    });
+    sendVisibleIdsToWorker();
+    return;
+  }
+  if (socket === null || socket.readyState !== WebSocket.OPEN) return;
   try {
     socket.send(
       JSON.stringify({
@@ -865,7 +1002,35 @@ function deriveTapeTickFromQuote(
   };
 }
 
+const directSoaScratch = new Float64Array(SOA_DELTA_STRIDE);
+
+function writeDirectSoaFallback(
+  symbolKey: string,
+  bidVal: number,
+  askVal: number,
+  lastVal: number,
+  bidSizeVal: number,
+  askSizeVal: number,
+  tsVal: number,
+): void {
+  const id = marketStoreSoa.registerSymbol(symbolKey);
+  if (id < 0) return;
+  directSoaScratch[SOA_COL_ID] = id;
+  directSoaScratch[SOA_COL_BID] = bidVal;
+  directSoaScratch[SOA_COL_ASK] = askVal;
+  directSoaScratch[SOA_COL_LAST] = lastVal;
+  directSoaScratch[SOA_COL_BID_SIZE] = bidSizeVal;
+  directSoaScratch[SOA_COL_ASK_SIZE] = askSizeVal;
+  directSoaScratch[SOA_COL_TIMESTAMP] = tsVal;
+  directSoaScratch[SOA_COL_IV] = Number.NaN;
+  directSoaScratch[SOA_COL_DELTA] = Number.NaN;
+  directSoaScratch[SOA_COL_GAMMA] = Number.NaN;
+  marketStoreSoa.applyBinaryDelta(directSoaScratch, 1, SOA_DELTA_STRIDE);
+  domCellRegistry.applySoaDeltaBatch(marketStoreSoa, directSoaScratch, 1, SOA_DELTA_STRIDE);
+}
+
 function pushTapeTick(tape: readonly LiveTapeTick[], tick: LiveTapeTick): readonly LiveTapeTick[] {
+  tradeRingBuffer.push(tick.price, tick.size ?? 0, tick.timeSec);
   return appendLiveTapeTick(tape, tick);
 }
 
@@ -1025,6 +1190,14 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
   const parsedOrderBook = parseOrderBook(batch.liveOrderBook);
   const liveOrderBook = parsedOrderBook ?? state.liveOrderBook;
   let liveTape = Array.isArray(batch.tape) ? parseTape(batch.tape) : state.liveTape;
+  if (Array.isArray(batch.tape) && state.totalBatches === 0) {
+    for (let i = 0; i < liveTape.length; i += 1) {
+      const t = liveTape[i];
+      if (t !== undefined) {
+        tradeRingBuffer.push(t.price, t.size ?? 0, t.timeSec);
+      }
+    }
+  }
   for (const [key, parsedQuote] of Object.entries(nextQuotes)) {
     const previousQuote = previousQuotes[key] ?? null;
     const tapeTick = deriveTapeTickFromQuote(parsedQuote, previousQuote);
@@ -1032,6 +1205,17 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
       liveTape = pushTapeTick(liveTape, tapeTick);
     }
     quoteStore.set(key, parsedQuote, marketQuotesEqual);
+    if (marketWorker === null || transport === 'POLL') {
+      writeDirectSoaFallback(
+        key,
+        Number.NaN,
+        Number.NaN,
+        parsedQuote.price,
+        Number.NaN,
+        Number.NaN,
+        parsedQuote.asOfUtcSec ?? Number.NaN,
+      );
+    }
   }
   const staleKeys: string[] = [];
   for (const [existingKey] of quoteStore.entries()) {
@@ -1117,6 +1301,17 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     if (parsed.direction !== null) changedTicks += 1;
     nextQuotes[key] = parsed;
     quoteStore.set(key, parsed, marketQuotesEqual);
+    if (marketWorker === null || transport === 'POLL') {
+      writeDirectSoaFallback(
+        key,
+        Number.NaN,
+        Number.NaN,
+        parsed.price,
+        Number.NaN,
+        Number.NaN,
+        parsed.asOfUtcSec ?? Number.NaN,
+      );
+    }
   }
   const cauciones = arSourceMode === 'NO_DATA'
     ? []
@@ -1261,6 +1456,17 @@ function applyTickDeltaSequence(
       if (parsed.direction !== null) changedTicks += 1;
       nextQuotes[key] = parsed;
       quoteStore.set(key, parsed, marketQuotesEqual);
+      if (marketWorker === null || transport === 'POLL') {
+        writeDirectSoaFallback(
+          key,
+          Number.NaN,
+          Number.NaN,
+          parsed.price,
+          Number.NaN,
+          Number.NaN,
+          parsed.asOfUtcSec ?? Number.NaN,
+        );
+      }
     }
   }
 
@@ -1383,6 +1589,9 @@ function applyLegacyStockEvent(raw: unknown): void {
   if (type === 'trade') {
     price = finitePositive(raw['price']);
     asOfUtcSec = finitePositive(raw['time']);
+    if (price !== null && asOfUtcSec !== null) {
+      tradeRingBuffer.push(price, finiteNumber(raw['size']) ?? 0, asOfUtcSec);
+    }
   } else if (type === 'bar_update') {
     const forming = isRecord(raw['formingBar']) ? raw['formingBar'] : null;
     const closed = isRecord(raw['lastClosedBar']) ? raw['lastClosedBar'] : null;
@@ -1635,6 +1844,17 @@ function applyOptionQuotesBatch(parsed: Record<string, unknown>): void {
       size: nullableNumber(item['size']),
     };
     optionQuoteStore.set(key, nextOpt, optionQuotesEqual);
+    if (marketWorker === null) {
+      writeDirectSoaFallback(
+        key,
+        nextOpt.bid ?? Number.NaN,
+        nextOpt.ask ?? Number.NaN,
+        nextOpt.last ?? nextOpt.mid ?? Number.NaN,
+        nextOpt.size ?? Number.NaN,
+        nextOpt.size ?? Number.NaN,
+        nextOpt.time,
+      );
+    }
   }
 }
 
@@ -1660,6 +1880,14 @@ export function subscribeLiveBarUpdate(
   };
 }
 
+function requestWsResync(): void {
+  if (marketWorker !== null) {
+    postToWorker({ type: 'RESYNC_WS', reason: 'delta_resync_required' });
+    return;
+  }
+  socket?.close(4000, 'delta_resync_required');
+}
+
 function flushMarketBatches(): void {
   const batches = pendingMarketBatches.splice(0, pendingMarketBatches.length);
   const transport = pendingMarketBatchTransport;
@@ -1670,7 +1898,7 @@ function flushMarketBatches(): void {
     const accepted = applyTickDeltaSequence(deltas, transport);
     if (!accepted && transport === 'WS') {
       pendingMarketBatches.length = 0;
-      socket?.close(4000, 'delta_resync_required');
+      requestWsResync();
       return;
     }
   }
@@ -1690,33 +1918,37 @@ function flushMarketBatches(): void {
   }
 }
 
+function handleParsedMessage(parsed: Record<string, unknown>, transport: LiveStreamTransport): void {
+  if (parsed['type'] === 'MARKET_TICK_BATCH' || parsed['type'] === 'TICK_DELTA') {
+    const accepted = parsed['type'] === 'TICK_DELTA'
+      ? applyTickDelta(parsed as MarketTickBatchWire, transport)
+      : applyBatch(parsed as MarketTickBatchWire, transport);
+    if (accepted && transport === 'WS') stopPolling();
+    if (!accepted && transport === 'WS' && parsed['type'] === 'TICK_DELTA') {
+      requestWsResync();
+    }
+  } else if (parsed['type'] === 'market_batch') {
+    queueMarketBatch(parsed as MarketBatchWire, transport);
+    if (transport === 'WS') stopPolling();
+  } else if (parsed['type'] === 'option_quotes_batch') {
+    applyOptionQuotesBatch(parsed);
+    if (transport === 'WS') stopPolling();
+  } else if (parsed['type'] === 'ggal_bar_tick') {
+    dispatchGgalBarTick(parsed);
+  } else {
+    if (parsed['type'] === 'bar_update') {
+      dispatchBarUpdateEvent(parsed);
+    }
+    applyLegacyStockEvent(parsed);
+  }
+}
+
 function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
   if (typeof raw !== 'string') return;
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return;
-    if (parsed['type'] === 'MARKET_TICK_BATCH' || parsed['type'] === 'TICK_DELTA') {
-      const accepted = parsed['type'] === 'TICK_DELTA'
-        ? applyTickDelta(parsed as MarketTickBatchWire, transport)
-        : applyBatch(parsed as MarketTickBatchWire, transport);
-      if (accepted && transport === 'WS') stopPolling();
-      if (!accepted && transport === 'WS' && parsed['type'] === 'TICK_DELTA') {
-        socket?.close(4000, 'delta_resync_required');
-      }
-    } else if (parsed['type'] === 'market_batch') {
-      queueMarketBatch(parsed as MarketBatchWire, transport);
-      if (transport === 'WS') stopPolling();
-    } else if (parsed['type'] === 'option_quotes_batch') {
-      applyOptionQuotesBatch(parsed);
-      if (transport === 'WS') stopPolling();
-    } else if (parsed['type'] === 'ggal_bar_tick') {
-      dispatchGgalBarTick(parsed);
-    } else {
-      if (parsed['type'] === 'bar_update') {
-        dispatchBarUpdateEvent(parsed);
-      }
-      applyLegacyStockEvent(parsed);
-    }
+    handleParsedMessage(parsed, transport);
   } catch {
     // Malformed frames never replace the last valid immutable quote snapshot.
   }
@@ -1772,7 +2004,34 @@ function socketUrl(): string {
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 }
 
-function connectSocket(): void {
+function scheduleWorkerPull(): void {
+  if (marketWorker === null || pullScheduled || managerCount === 0) return;
+  pullScheduled = true;
+  const schedule =
+    typeof requestAnimationFrame === 'function'
+      ? (cb: () => void): number => requestAnimationFrame(cb)
+      : (cb: () => void): number => setTimeout(cb, 16) as unknown as number;
+  pullRafHandle = schedule(() => {
+    pullRafHandle = null;
+    pullScheduled = false;
+    if (marketWorker !== null && managerCount > 0) {
+      postToWorker({ type: 'PULL_DELTAS' });
+    }
+  });
+}
+
+function cancelWorkerPull(): void {
+  pullScheduled = false;
+  if (pullRafHandle === null) return;
+  if (typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(pullRafHandle);
+  } else {
+    clearTimeout(pullRafHandle);
+  }
+  pullRafHandle = null;
+}
+
+function connectDirectSocket(): void {
   if (managerCount === 0 || typeof window === 'undefined' || typeof WebSocket === 'undefined') return;
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
   reconnectTimer = null;
@@ -1788,7 +2047,7 @@ function connectSocket(): void {
     next = new WebSocket(socketUrl());
   } catch {
     startPolling();
-    reconnectTimer = setTimeout(connectSocket, RECONNECT_INTERVAL_MS);
+    reconnectTimer = setTimeout(connectDirectSocket, RECONNECT_INTERVAL_MS);
     return;
   }
   socket = next;
@@ -1818,7 +2077,7 @@ function connectSocket(): void {
     notify({ ...state, version: state.version + 1, status: 'RECONNECTING', isLive: false });
     startPolling();
     if (reconnectTimer === null && managerCount > 0) {
-      reconnectTimer = setTimeout(connectSocket, RECONNECT_INTERVAL_MS);
+      reconnectTimer = setTimeout(connectDirectSocket, RECONNECT_INTERVAL_MS);
     }
   };
   next.addEventListener('close', scheduleReconnect);
@@ -1831,6 +2090,113 @@ function connectSocket(): void {
   });
 }
 
+function ensureMarketWorker(): Worker | null {
+  if (
+    typeof Worker === 'undefined' ||
+    !isDedicatedWorkerSupported() ||
+    typeof window === 'undefined'
+  ) {
+    return null;
+  }
+  if (marketWorker !== null) return marketWorker;
+  let nextWorker: Worker;
+  try {
+    nextWorker = new Worker(
+      new URL('../workers/marketFeed.worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+  } catch {
+    return null;
+  }
+
+  nextWorker.addEventListener('message', (event: MessageEvent<WorkerOutboundMessage>) => {
+    if (marketWorker !== nextWorker) return;
+    const msg = event.data;
+    if (msg.type === 'WS_STATUS') {
+      notify({
+        ...state,
+        version: state.version + 1,
+        status: msg.status,
+        transport: msg.transport,
+        isLive: msg.isLive,
+      });
+      if (msg.isLive) void refreshBackendHealth();
+      return;
+    }
+    if (msg.type === 'WS_FALLBACK_POLL') {
+      startPolling();
+      return;
+    }
+    if (msg.type === 'WS_STOP_POLL') {
+      stopPolling();
+      return;
+    }
+    if (msg.type === 'SYMBOL_BINDINGS') {
+      for (let i = 0; i < msg.bindings.length; i += 1) {
+        const pair = msg.bindings[i];
+        if (pair !== undefined) {
+          marketStoreSoa.bindSymbolId(pair[0], pair[1]);
+        }
+      }
+      return;
+    }
+    if (msg.type === 'DELTAS_READY') {
+      scheduleWorkerPull();
+      return;
+    }
+    if (msg.type === 'DELTA_BATCH') {
+      for (let i = 0; i < msg.bindings.length; i += 1) {
+        const pair = msg.bindings[i];
+        if (pair !== undefined) {
+          marketStoreSoa.bindSymbolId(pair[0], pair[1]);
+        }
+      }
+      const view = new Float64Array(msg.buffer, 0, msg.count * msg.stride);
+      marketStoreSoa.applyBinaryDelta(view, msg.count, msg.stride);
+      domCellRegistry.applySoaDeltaBatch(marketStoreSoa, view, msg.count, msg.stride);
+      postToWorker({ type: 'RETURN_BUFFER', buffer: msg.buffer }, [msg.buffer]);
+      if (msg.hasMore) {
+        scheduleWorkerPull();
+      }
+      return;
+    }
+    if (msg.type === 'PARSED_WS_MESSAGE') {
+      handleParsedMessage(msg.payload, 'WS');
+    }
+  });
+
+  nextWorker.addEventListener('error', () => {
+    if (marketWorker !== nextWorker) return;
+    cancelWorkerPull();
+    marketWorker = null;
+    try {
+      nextWorker.terminate();
+    } catch {
+      // Limpieza ante fallo de inicialización del Worker.
+    }
+    if (managerCount > 0) {
+      connectDirectSocket();
+    }
+  });
+
+  marketWorker = nextWorker;
+  return nextWorker;
+}
+
+function connectSocket(): void {
+  if (managerCount === 0 || typeof window === 'undefined') return;
+  const activeWorker = ensureMarketWorker();
+  if (activeWorker !== null) {
+    postToWorker({ type: 'CONNECT', url: socketUrl() });
+    sendFocusMessage();
+    sendViewScopeMessage();
+    sendVisibleIdsToWorker();
+    return;
+  }
+  // Degradación limpia al transporte directo cuando `Worker` no está disponible.
+  connectDirectSocket();
+}
+
 function acquireConnection(): void {
   managerCount += 1;
   if (releaseTimer !== null) {
@@ -1840,6 +2206,7 @@ function acquireConnection(): void {
   if (managerCount > 1) return;
   void refreshBackendHealth();
   if (
+    marketWorker === null &&
     typeof WebSocket !== 'undefined' &&
     socket !== null &&
     (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
@@ -1855,6 +2222,10 @@ function teardownConnection(): void {
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
   openTimeout = null;
   reconnectTimer = null;
+  cancelWorkerPull();
+  if (marketWorker !== null) {
+    postToWorker({ type: 'DISCONNECT' });
+  }
   stopPolling();
   clearPendingLegacy();
   cancelMarketBatchFlush();

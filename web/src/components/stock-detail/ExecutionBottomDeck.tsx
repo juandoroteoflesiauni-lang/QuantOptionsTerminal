@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowUpRight, Layers, Radar, ShieldAlert } from 'lucide-react';
 import { fmtNum, fmtPct } from '../../data/marketData';
+import { ImperativePriceCell } from '../ImperativePriceCell';
 import {
   computeAtrPositionSize,
   computeCi24hImpliedCarry,
@@ -187,9 +188,18 @@ export const ExecutionBottomDeck: React.FC<{
         <div className="grid grid-cols-3 gap-2 text-[11px] font-mono-num">
           <div className="px-2.5 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#1B1B28]">
             <div className="text-[9px] uppercase text-[#767C99]">Mejor Bid</div>
-            <div className="font-semibold text-[#2EDC7E]">
-              {book?.bestBid ? `${pxPrefix}${fmtNum(book.bestBid, 2)}` : '—'}
-            </div>
+            <ImperativePriceCell
+              cellKey={`L2:${deck.ticker}:BEST_BID`}
+              symbol={`${deck.market}:${deck.ticker}`}
+              field="bid"
+              pulseTier="l2"
+              value={book?.bestBid && Number.isFinite(book.bestBid) && book.bestBid > 0 ? book.bestBid : Number.NaN}
+              decimals={2}
+              prefix={pxPrefix}
+              align="left"
+              className="h-5 w-full rounded-[4px]"
+              textClassName="font-semibold text-[#2EDC7E]"
+            />
           </div>
           <div className="px-2.5 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#1B1B28]">
             <div className="text-[9px] uppercase text-[#767C99]">Spread</div>
@@ -204,9 +214,18 @@ export const ExecutionBottomDeck: React.FC<{
           </div>
           <div className="px-2.5 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#1B1B28]">
             <div className="text-[9px] uppercase text-[#767C99]">Mejor Ask</div>
-            <div className="font-semibold text-[#FF5468]">
-              {book?.bestAsk ? `${pxPrefix}${fmtNum(book.bestAsk, 2)}` : '—'}
-            </div>
+            <ImperativePriceCell
+              cellKey={`L2:${deck.ticker}:BEST_ASK`}
+              symbol={`${deck.market}:${deck.ticker}`}
+              field="ask"
+              pulseTier="l2"
+              value={book?.bestAsk && Number.isFinite(book.bestAsk) && book.bestAsk > 0 ? book.bestAsk : Number.NaN}
+              decimals={2}
+              prefix={pxPrefix}
+              align="left"
+              className="h-5 w-full rounded-[4px]"
+              textClassName="font-semibold text-[#FF5468]"
+            />
           </div>
         </div>
 
@@ -233,9 +252,17 @@ export const ExecutionBottomDeck: React.FC<{
                     <span className="relative z-10 text-[#9DA4C2] text-[10px]">
                       {row ? (row.size > 0 ? fmtNum(row.size, 0) : 'L1') : '—'}
                     </span>
-                    <span className="relative z-10 font-semibold text-[#2EDC7E]">
-                      {row ? fmtNum(row.price, 2) : '—'}
-                    </span>
+                    <ImperativePriceCell
+                      cellKey={`L2:${deck.ticker}:BID:${i}`}
+                      symbol={i === 0 ? `${deck.market}:${deck.ticker}` : null}
+                      field={i === 0 ? 'bid' : null}
+                      pulseTier="l2"
+                      value={row && Number.isFinite(row.price) && row.price > 0 ? row.price : Number.NaN}
+                      decimals={2}
+                      align="right"
+                      className="relative z-10 h-5 w-[88px] shrink-0 rounded-[4px]"
+                      textClassName="font-semibold text-[#2EDC7E]"
+                    />
                   </div>
                 );
               })}
@@ -258,9 +285,17 @@ export const ExecutionBottomDeck: React.FC<{
                       className="absolute left-0 top-0 bottom-0 bg-[#FF5468]/14 pointer-events-none"
                       style={{ width: `${fillPct}%` }}
                     />
-                    <span className="relative z-10 font-semibold text-[#FF5468]">
-                      {row ? fmtNum(row.price, 2) : '—'}
-                    </span>
+                    <ImperativePriceCell
+                      cellKey={`L2:${deck.ticker}:ASK:${i}`}
+                      symbol={i === 0 ? `${deck.market}:${deck.ticker}` : null}
+                      field={i === 0 ? 'ask' : null}
+                      pulseTier="l2"
+                      value={row && Number.isFinite(row.price) && row.price > 0 ? row.price : Number.NaN}
+                      decimals={2}
+                      align="left"
+                      className="relative z-10 h-5 w-[88px] shrink-0 rounded-[4px]"
+                      textClassName="font-semibold text-[#FF5468]"
+                    />
                     <span className="relative z-10 text-[#9DA4C2] text-[10px]">
                       {row ? (row.size > 0 ? fmtNum(row.size, 0) : 'L1') : '—'}
                     </span>

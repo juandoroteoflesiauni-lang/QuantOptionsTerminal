@@ -1,7 +1,9 @@
-import React, { memo, useCallback, useMemo, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useAtomicOptionQuote } from '../../api/useMarketLiveStream';
+import { normalizeOptionContractKey } from '../../../../src/core/atomicQuoteStore';
+import { setVisibleMarketSymbols, useAtomicOptionQuote } from '../../api/useMarketLiveStream';
 import { fmtNum } from '../../data/marketData';
+import { ImperativePriceCell } from '../ImperativePriceCell';
 import {
   type EnrichedChainRow,
   type InlineAxisMarker,
@@ -102,11 +104,33 @@ const BidAskCell: React.FC<{
   readonly size: number;
   readonly ticker: string;
 }> = ({ strike, optType, isBid, px, size, ticker }) => {
+  const cellRef = useRef<HTMLDivElement | null>(null);
   const hasPx = Number.isFinite(px) && px > 0;
   const hasSize = Number.isFinite(size) && size > 0;
   const actionSide: 'Compra' | 'Venta' = isBid ? 'Venta' : 'Compra';
+  const contractSym = normalizeOptionContractKey(ticker);
+  const handleMutate = useCallback(
+    (nextVal: number, formatted: string) => {
+      const el = cellRef.current;
+      if (el === null) return;
+      if (Number.isFinite(nextVal) && nextVal > 0) {
+        el.dataset['px'] = String(nextVal);
+        el.dataset['quoteId'] = `${String(strike)}:${optType}:${actionSide}`;
+        el.dataset['strike'] = String(strike);
+        el.dataset['optType'] = optType;
+        el.dataset['side'] = actionSide;
+        el.dataset['ticker'] = ticker;
+        el.title = `${ticker} · Click para ${actionSide.toLowerCase()} a ${formatted} (Shift+Click envía a Armado a mano)`;
+      } else {
+        delete el.dataset['px'];
+        delete el.dataset['quoteId'];
+      }
+    },
+    [actionSide, optType, strike, ticker],
+  );
   return (
     <div
+      ref={cellRef}
       data-quote-id={hasPx ? `${String(strike)}:${optType}:${actionSide}` : undefined}
       data-strike={hasPx ? String(strike) : undefined}
       data-opt-type={hasPx ? optType : undefined}
@@ -122,16 +146,28 @@ const BidAskCell: React.FC<{
         hasPx ? 'hover:bg-[#16161F] cursor-pointer' : ''
       }`}
     >
-      {hasPx ? (
-        <span className="inline-flex items-baseline justify-end gap-1">
-          <span className={isBid ? 'text-[#22C55E] font-medium' : 'text-[#EF4444] font-medium'}>
-            {fmtNum(px, 2)}
-          </span>
-          {hasSize && <span className="text-[10.5px] text-[#6B7280]">×{fmtNum(size, 0)}</span>}
-        </span>
-      ) : (
-        <span className="text-[#6B7280]">—</span>
-      )}
+      <span className="inline-flex items-center justify-end gap-1">
+        <ImperativePriceCell
+          cellKey={`OPT:${contractSym}:${isBid ? 'BID' : 'ASK'}`}
+          symbol={contractSym}
+          field={isBid ? 'bid' : 'ask'}
+          pulseTier="table"
+          value={hasPx ? px : Number.NaN}
+          decimals={2}
+          className="h-5 w-[56px] shrink-0 rounded-[4px] px-0.5"
+          textClassName={
+            hasPx
+              ? isBid
+                ? 'text-[#22C55E] font-medium'
+                : 'text-[#EF4444] font-medium'
+              : 'text-[#6B7280]'
+          }
+          onMutate={handleMutate}
+        />
+        {hasPx && hasSize && (
+          <span className="text-[10.5px] text-[#6B7280]">×{fmtNum(size, 0)}</span>
+        )}
+      </span>
     </div>
   );
 };
@@ -150,6 +186,8 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
   readonly effectiveRateDec: number;
 }) {
   const { row } = item;
+  const callContractSym = normalizeOptionContractKey(row.callTicker);
+  const putContractSym = normalizeOptionContractKey(row.putTicker);
   const liveCall = useAtomicOptionQuote(row.callTicker, 250);
   const livePut = useAtomicOptionQuote(row.putTicker, 250);
 
@@ -198,9 +236,17 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             {Number.isFinite(row.callIV) ? `${fmtNum(row.callIV, 1)}%` : '—'}
           </div>
           <TheoCell theo={item.callTheoreticalPrice} ask={callAsk} />
-          <div title={row.callTicker} className="flex h-full items-center justify-end px-2 text-[#E5E7EB]">
-            {Number.isFinite(callLast) ? fmtNum(callLast, 2) : '—'}
-          </div>
+          <ImperativePriceCell
+            cellKey={`OPT:${callContractSym}:LAST:completa`}
+            symbol={callContractSym}
+            field="last"
+            pulseTier="table"
+            value={Number.isFinite(callLast) ? callLast : Number.NaN}
+            decimals={2}
+            title={row.callTicker}
+            className="w-full h-full px-2 rounded-[4px]"
+            textClassName="text-[#E5E7EB]"
+          />
           <VarCell valPct={item.callChangePct} />
           <BidAskCell
             strike={row.strike}
@@ -254,9 +300,17 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
           <div title={row.callTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
             {Number.isFinite(row.callTimeValuePct) ? `${fmtNum(row.callTimeValuePct, 2)}%` : '—'}
           </div>
-          <div title={row.callTicker} className="flex h-full items-center justify-end px-2 text-[#E5E7EB]">
-            {Number.isFinite(callLast) ? fmtNum(callLast, 2) : '—'}
-          </div>
+          <ImperativePriceCell
+            cellKey={`OPT:${callContractSym}:LAST:valortiempo`}
+            symbol={callContractSym}
+            field="last"
+            pulseTier="table"
+            value={Number.isFinite(callLast) ? callLast : Number.NaN}
+            decimals={2}
+            title={row.callTicker}
+            className="w-full h-full px-2 rounded-[4px]"
+            textClassName="text-[#E5E7EB]"
+          />
         </>
       )}
 
@@ -326,9 +380,17 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             ticker={row.putTicker}
           />
           <VarCell valPct={item.putChangePct} />
-          <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#E5E7EB]">
-            {Number.isFinite(putLast) ? fmtNum(putLast, 2) : '—'}
-          </div>
+          <ImperativePriceCell
+            cellKey={`OPT:${putContractSym}:LAST:completa`}
+            symbol={putContractSym}
+            field="last"
+            pulseTier="table"
+            value={Number.isFinite(putLast) ? putLast : Number.NaN}
+            decimals={2}
+            title={row.putTicker}
+            className="w-full h-full px-2 rounded-[4px]"
+            textClassName="text-[#E5E7EB]"
+          />
           <TheoCell theo={item.putTheoreticalPrice} ask={putAsk} />
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
             {Number.isFinite(row.putIV) ? `${fmtNum(row.putIV, 1)}%` : '—'}
@@ -361,9 +423,17 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
 
       {colMode === 'valortiempo' && (
         <>
-          <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#E5E7EB]">
-            {Number.isFinite(putLast) ? fmtNum(putLast, 2) : '—'}
-          </div>
+          <ImperativePriceCell
+            cellKey={`OPT:${putContractSym}:LAST:valortiempo`}
+            symbol={putContractSym}
+            field="last"
+            pulseTier="table"
+            value={Number.isFinite(putLast) ? putLast : Number.NaN}
+            decimals={2}
+            title={row.putTicker}
+            className="w-full h-full px-2 rounded-[4px]"
+            textClassName="text-[#E5E7EB]"
+          />
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
             {Number.isFinite(row.putTimeValuePct) ? `${fmtNum(row.putTimeValuePct, 2)}%` : '—'}
           </div>
@@ -495,6 +565,27 @@ export const VirtualizedOptionChainTable: React.FC<VirtualizedOptionChainTablePr
 
     const virtualItems = rowVirtualizer.getVirtualItems();
     const totalHeight = rowVirtualizer.getTotalSize();
+
+    useEffect(() => {
+      const visibleSyms: string[] = [];
+      for (let i = 0; i < virtualItems.length; i += 1) {
+        const vr = virtualItems[i];
+        if (vr === undefined) continue;
+        const entry = entries[vr.index];
+        if (entry === undefined || entry.kind !== 'row') continue;
+        const callKey = normalizeOptionContractKey(entry.item.row.callTicker);
+        const putKey = normalizeOptionContractKey(entry.item.row.putTicker);
+        if (callKey !== '') visibleSyms.push(callKey);
+        if (putKey !== '') visibleSyms.push(putKey);
+      }
+      setVisibleMarketSymbols(visibleSyms, 'option-chain');
+    }, [entries, virtualItems]);
+
+    useEffect(() => {
+      return () => {
+        setVisibleMarketSymbols([], 'option-chain');
+      };
+    }, []);
 
     return (
       <div

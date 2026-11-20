@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { layoutCurveLabels } from '../../../src/core/bondCurveLayout';
 import {
@@ -54,11 +54,13 @@ import {
   KPICard,
 } from './DesignSystem';
 import { CompanyLogo } from './common/CompanyLogo';
+import { ImperativePriceCell } from './ImperativePriceCell';
 import {
   formatExtendedSessionBadge,
   getAtomicMarketQuote,
   getMarketLiveCauciones,
   getMarketStreamMetaClock,
+  setVisibleMarketSymbols,
   tickFlashClass,
   useAtomicMarketQuote,
   useMarketLiveStream,
@@ -377,11 +379,17 @@ const PanelVirtualRow: React.FC<{
           <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">{resolvedRow.name}</span>
         </div>
       </div>
-      <div className="px-2.5 font-semibold text-[#F3F4F6]">
-        <TickFlash value={Number.isFinite(resolvedRow.last) ? resolvedRow.last : null}>
-          {Number.isFinite(resolvedRow.last) ? `$ ${fmtNum(resolvedRow.last, resolvedRow.last >= 1000 ? 0 : 2)}` : '—'}
-        </TickFlash>
-      </div>
+      <ImperativePriceCell
+        cellKey={`MON:${mode}:${resolvedRow.symbol}:LAST`}
+        symbol={`${mode}:${resolvedRow.symbol}`}
+        field="last"
+        pulseTier="table"
+        value={Number.isFinite(resolvedRow.last) ? resolvedRow.last : Number.NaN}
+        decimals={Number.isFinite(resolvedRow.last) && resolvedRow.last >= 1000 ? 0 : 2}
+        prefix="$ "
+        className="w-full h-full px-2.5 rounded-[4px]"
+        textClassName="font-semibold text-[#F3F4F6]"
+      />
       <div className="px-2.5 flex justify-end">
         <DeltaPill value={displayDeltaPct} size="sm" />
       </div>
@@ -420,6 +428,25 @@ const VirtualizedEquityPanelTable: React.FC<{
   }, []);
 
   const virtualRows = rowVirtualizer.getVirtualItems();
+  const visibleScopeId = useId();
+
+  useEffect(() => {
+    const syms: string[] = [];
+    for (let i = 0; i < virtualRows.length; i += 1) {
+      const vr = virtualRows[i];
+      const item = vr !== undefined ? list[vr.index] : undefined;
+      if (item !== undefined) {
+        syms.push(`${mode}:${item.symbol}`);
+      }
+    }
+    setVisibleMarketSymbols(syms, `panel:${visibleScopeId}`);
+  }, [list, mode, virtualRows, visibleScopeId]);
+
+  useEffect(() => {
+    return () => {
+      setVisibleMarketSymbols([], `panel:${visibleScopeId}`);
+    };
+  }, [visibleScopeId]);
 
   return (
     <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[520px]">
@@ -694,8 +721,17 @@ const CedearVirtualRow: React.FC<{
       ? 'text-[#F5B544] bg-[#F5B544]/12 border-[#F5B544]/30'
       : 'text-[#9CA3AF] bg-[#1A1A26] border-[#262636]';
 
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const handleLocalMutate = useCallback((nextVal: number) => {
+    const el = rowRef.current;
+    if (el !== null && Number.isFinite(nextVal)) {
+      el.dataset['price'] = String(nextVal);
+    }
+  }, []);
+
   return (
     <div
+      ref={rowRef}
       data-id={row.key}
       data-price={Number.isFinite(localArs) ? String(localArs) : '0'}
       className={`${CEDEAR_GRID_CLASS} h-full items-center border-b border-[#181824] hover:bg-[#181C27] cursor-pointer text-right font-mono-num tabular-nums text-[12px]`}
@@ -740,11 +776,17 @@ const CedearVirtualRow: React.FC<{
         </div>
       </div>
 
-      <div className="px-2.5 font-bold text-[#F3F4F6]">
-        <TickFlash value={Number.isFinite(usLast) ? usLast : null}>
-          {Number.isFinite(usLast) ? `US$ ${fmtNum(usLast, 2)}` : '—'}
-        </TickFlash>
-      </div>
+      <ImperativePriceCell
+        cellKey={`CED:${row.key}:US_LAST`}
+        symbol={row.usTicker ? `US:${row.usTicker}` : null}
+        field={row.usTicker ? 'last' : null}
+        pulseTier="table"
+        value={Number.isFinite(usLast) ? usLast : Number.NaN}
+        decimals={2}
+        prefix="US$ "
+        className="w-full h-full px-2.5 rounded-[4px]"
+        textClassName="font-bold text-[#F3F4F6]"
+      />
 
       <div className="px-2.5 flex justify-end">
         <DeltaPill value={usDeltaPct} size="sm" />
@@ -753,11 +795,18 @@ const CedearVirtualRow: React.FC<{
       <div className="px-2.5 text-[#9CA3AF] text-[11px]">{row.ratioStr}</div>
 
       <div className="px-2.5 leading-tight">
-        <TickFlash value={Number.isFinite(localArs) ? localArs : null}>
-          <span className="block font-bold text-[#38BDF8]">
-            {Number.isFinite(localArs) ? `$ ${fmtNum(localArs, 0)}` : '—'}
-          </span>
-        </TickFlash>
+        <ImperativePriceCell
+          cellKey={`CED:${row.key}:AR_LAST`}
+          symbol={`AR:${row.ticker}`}
+          field="last"
+          pulseTier="table"
+          value={Number.isFinite(localArs) ? localArs : Number.NaN}
+          decimals={0}
+          prefix="$ "
+          className="w-full h-[18px] rounded-[4px]"
+          textClassName="font-bold text-[#38BDF8]"
+          onMutate={handleLocalMutate}
+        />
         {Number.isFinite(fairArsPrice) && (
           <div className="text-[10px] text-[#787B86]">Par: $ {fmtNum(fairArsPrice, 0)}</div>
         )}
@@ -906,6 +955,28 @@ const VirtualizedCedearsTable: React.FC<{
     });
   }, []);
 
+  const virtualCedearRows = rowVirtualizer.getVirtualItems();
+  const cedearScopeId = useId();
+
+  useEffect(() => {
+    const syms: string[] = [];
+    for (let i = 0; i < virtualCedearRows.length; i += 1) {
+      const vr = virtualCedearRows[i];
+      const item = vr !== undefined ? rows[vr.index] : undefined;
+      if (item !== undefined) {
+        syms.push(`AR:${item.ticker}`);
+        if (item.usTicker) syms.push(`US:${item.usTicker}`);
+      }
+    }
+    setVisibleMarketSymbols(syms, `cedears:${cedearScopeId}`);
+  }, [cedearScopeId, rows, virtualCedearRows]);
+
+  useEffect(() => {
+    return () => {
+      setVisibleMarketSymbols([], `cedears:${cedearScopeId}`);
+    };
+  }, [cedearScopeId]);
+
   return (
     <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[580px]">
       <div className="min-w-[1105px]">
@@ -933,7 +1004,7 @@ const VirtualizedCedearsTable: React.FC<{
             className="relative w-full"
             style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
           >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            {virtualCedearRows.map((virtualRow) => {
               const r = rows[virtualRow.index];
               if (!r) return null;
               return (
@@ -2356,11 +2427,17 @@ export const MonitoringModule: React.FC<{
                               </span>
                             </td>
                             <td className="px-2.5 font-bold text-[var(--text-primary)]">
-                              <TickFlash value={Number.isFinite(b.price) ? b.price : null}>
-                                {Number.isFinite(b.price)
-                                  ? `${b.currency === 'ARS' ? '$ ' : 'US$ '}${fmtNum(b.price, 2)}`
-                                  : '—'}
-                              </TickFlash>
+                              <ImperativePriceCell
+                                cellKey={`BOND:${b.ticker}:PRICE`}
+                                symbol={`AR:${b.ticker}`}
+                                field="last"
+                                pulseTier="table"
+                                value={Number.isFinite(b.price) ? b.price : Number.NaN}
+                                decimals={2}
+                                prefix={b.currency === 'ARS' ? '$ ' : 'US$ '}
+                                className="h-6 w-[112px] ml-auto rounded-[4px] px-1"
+                                textClassName="font-bold text-[var(--text-primary)]"
+                              />
                             </td>
                             <td className="px-2.5">
                               <DeltaPill value={b.deltaPct} size="sm" />
@@ -2643,9 +2720,15 @@ export const MonitoringModule: React.FC<{
                         <td className="px-3 text-left font-bold text-[var(--text-primary)]">{c.label}</td>
                         <td className="px-2.5 text-[var(--text-secondary)]">{c.currency}</td>
                         <td className="px-2.5 font-bold text-[#8B7CF6]">
-                          <TickFlash value={c.tnaWeighted}>
-                            {c.tnaWeighted !== null ? `${fmtNum(c.tnaWeighted, 2)} %` : '—'}
-                          </TickFlash>
+                          <ImperativePriceCell
+                            cellKey={`CAUC:${c.currency}:${String(c.termDays)}:TNA`}
+                            pulseTier="table"
+                            value={c.tnaWeighted !== null && Number.isFinite(c.tnaWeighted) ? c.tnaWeighted : Number.NaN}
+                            decimals={2}
+                            suffix=" %"
+                            className="h-6 w-[96px] ml-auto rounded-[4px] px-1"
+                            textClassName="font-bold text-[#8B7CF6]"
+                          />
                         </td>
                         <td className="px-2.5 text-[var(--text-primary)]">
                           {c.teaEffective !== null ? `${fmtNum(c.teaEffective, 2)} %` : '—'}
@@ -4048,9 +4131,15 @@ export const FuturesModule: React.FC = () => {
                         {c.days !== null ? `${String(c.days)}d` : '—'}
                       </td>
                       <td className="px-2.5 font-bold text-[var(--text-primary)]">
-                        <TickFlash value={c.price}>
-                          {c.price !== null ? `$ ${fmtNum(c.price, 2)}` : '—'}
-                        </TickFlash>
+                        <ImperativePriceCell
+                          cellKey={`FUT:${c.contract}:PRICE`}
+                          pulseTier="table"
+                          value={c.price !== null && Number.isFinite(c.price) ? c.price : Number.NaN}
+                          decimals={2}
+                          prefix="$ "
+                          className="h-6 w-[108px] ml-auto rounded-[4px] px-1"
+                          textClassName="font-bold text-[var(--text-primary)]"
+                        />
                       </td>
                       <td className="px-2.5 text-[var(--text-secondary)]">
                         {(() => {
