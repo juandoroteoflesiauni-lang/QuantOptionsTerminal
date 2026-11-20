@@ -55,8 +55,10 @@ import {
   computeExpiration1530ArtUtcSec,
   formatIsoUtcFromSec,
   getBuenosAiresParts,
+  DAYS_PER_YEAR,
   GGAL_ADR_RATIO,
   GGAL_BYMA_LOT_SIZE,
+  interpolateContinuousRate,
   type BidAskQuote,
   type BymaFeeSchedule,
   type ContinuousRateCurvePoint,
@@ -152,6 +154,7 @@ import {
   type BmbBestQuoteObservation,
 } from './bmbFeedAdapter.js';
 import type { BmbBridgeSnapshotDto } from './primaryRofexLoader.js';
+import { computeMaxPainStrike } from '../core/options/exposure.js';
 import {
   MarketRuntime,
   RuntimeNoDataError,
@@ -2405,16 +2408,90 @@ export class GgalSpecialistRuntime {
     const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
     const preOpenOptions: LocalOptionPreOpenInput[] = [];
     if (front !== null) {
-      for (const c of [...front.calls, ...front.puts].slice(0, 12)) {
+      const spotRefArs =
+        spots.byma24hQuote.last ??
+        spots.bymaPrevClose ??
+        bundle.ggalOptions.spot ??
+        Number.NaN;
+      const adrMidUsd =
+        Number.isFinite(spots.adrQuote.bid) &&
+        Number.isFinite(spots.adrQuote.ask) &&
+        spots.adrQuote.ask > 0
+          ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
+          : spots.adrQuote.last;
+      const bondCcls = bonds.displayRows
+        .map((r) => r.cclImplied)
+        .filter((v): v is number => v !== null && Number.isFinite(v) && v > 0);
+      const bondCclMean =
+        bondCcls.length > 0
+          ? bondCcls.reduce((acc, v) => acc + v, 0) / bondCcls.length
+          : Number.NaN;
+      const prevCcl =
+        spots.bymaPrevClose !== null &&
+        spots.bymaPrevClose > 0 &&
+        adrPrevClose !== null &&
+        adrPrevClose > 0
+          ? (spots.bymaPrevClose * GGAL_ADR_RATIO) / adrPrevClose
+          : Number.NaN;
+      const cclForReprice =
+        Number.isFinite(bondCclMean) && bondCclMean > 0
+          ? bondCclMean
+          : bundle.overview.cclMedian !== null &&
+              Number.isFinite(bundle.overview.cclMedian) &&
+              bundle.overview.cclMedian > 0
+            ? bundle.overview.cclMedian
+            : prevCcl;
+      const projectedSpotArs =
+        adrMidUsd !== undefined &&
+        Number.isFinite(adrMidUsd) &&
+        adrMidUsd > 0 &&
+        Number.isFinite(cclForReprice) &&
+        cclForReprice > 0
+          ? (adrMidUsd * cclForReprice) / GGAL_ADR_RATIO
+          : Number.NaN;
+      const centerStrike =
+        Number.isFinite(projectedSpotArs) && projectedSpotArs > 0
+          ? projectedSpotArs
+          : spotRefArs;
+      const dteDays = Math.max(1, front.days);
+      const dteYears = dteDays / DAYS_PER_YEAR;
+      const interpCont = interpolateContinuousRate(rates.rateCurveArs, dteDays);
+      const localRateCont = Number.isFinite(interpCont)
+        ? interpCont
+        : Number.isFinite(rates.caucion1dTnaPct)
+          ? Math.log(1 + Math.max(0, rates.caucion1dTnaPct) / 100)
+          : 0;
+
+      const byAtmDistance = <T extends { readonly strike: number }>(list: readonly T[]): T[] =>
+        list
+          .slice()
+          .sort((a, b) =>
+            Number.isFinite(centerStrike) && centerStrike > 0
+              ? Math.abs(a.strike - centerStrike) - Math.abs(b.strike - centerStrike)
+              : a.strike - b.strike,
+          );
+
+      const selectedCalls = byAtmDistance(front.calls).slice(0, 8);
+      const selectedPuts = byAtmDistance(front.puts).slice(0, 4);
+      const combined = [...selectedCalls, ...selectedPuts].sort((a, b) => {
+        if (a.contractType !== b.contractType) {
+          return a.contractType === 'call' ? -1 : 1;
+        }
+        return a.strike - b.strike;
+      });
+
+      for (const c of combined) {
         const refPrice = c.mark ?? c.last ?? (c.bid !== null && c.ask !== null ? 0.5 * (c.bid + c.ask) : null);
         if (
           refPrice !== null &&
+          Number.isFinite(refPrice) &&
           refPrice > 0 &&
           c.delta !== null &&
           c.gamma !== null &&
           c.thetaDaily !== null &&
           c.vegaPer1Pct !== null
         ) {
+          const ownIv = c.iv !== null && Number.isFinite(c.iv) && c.iv > 0 ? c.iv : undefined;
           preOpenOptions.push({
             tickerByma: c.symbol,
             prevCloseArs: refPrice,
@@ -2422,6 +2499,14 @@ export class GgalSpecialistRuntime {
             gamma: c.gamma,
             vega: c.vegaPer1Pct * 100,
             theta: c.thetaDaily * 365,
+            strikeArs: c.strike,
+            contractType: c.contractType,
+            timeToExpiryYears: dteYears,
+            ...(ownIv !== undefined ? { iv: ownIv } : {}),
+            rateCont: localRateCont,
+            ...(Number.isFinite(projectedSpotArs) && projectedSpotArs > 0
+              ? { projectedSpotArs }
+              : {}),
           });
         }
       }
@@ -4699,9 +4784,14 @@ export class GgalSpecialistRuntime {
     readonly microstructure: GgalL2MicrostructureMetrics;
   } {
     const routerStatus = this.syncFeedRouterWithBundle(bundle);
+    const detailBook = bundle.ggalDetail.orderBook5Levels ?? null;
+    const bookForL2 =
+      detailBook !== null && (detailBook.bids.length > 0 || detailBook.asks.length > 0)
+        ? detailBook
+        : (this.arRuntime.getCachedPrimaryMervBook('AR:GGAL:24hs') ?? detailBook);
     const l2Ladder = this.arFeedRouter.resolveL2LadderState(
       'GGAL',
-      bundle.ggalDetail.orderBook5Levels ?? null,
+      bookForL2,
       Math.floor(this.nowMsFn() / 1_000),
     );
 
@@ -5093,11 +5183,16 @@ export class GgalSpecialistRuntime {
     const primaryFuturesLive =
       connectorHealth?.primaryRofex.wsConnected === true && connectorHealth.primaryRofex.liveDlrCount > 0;
 
+    const cachedPrimaryBook = this.arRuntime.getCachedPrimaryMervBook('AR:GGAL:24hs');
+
     this.arFeedRouter.updateFromRuntimeTelemetry({
       asOfUtcSec,
       primaryConfigured: endpoints.matrizWsConfigured,
-      primaryConnected: false,
-      primaryLastMsgUtcSec: null,
+      primaryConnected: connectorHealth?.primaryRofex.wsConnected ?? false,
+      primaryLastMsgUtcSec:
+        cachedPrimaryBook?.asOfUtcSec ??
+        connectorHealth?.primaryRofex.liveDlrLastUpdateUtcSec ??
+        null,
       primaryError: null,
       primaryFuturesLive,
       primaryFuturesLastMsgUtcSec: connectorHealth?.primaryRofex.liveDlrLastUpdateUtcSec ?? null,
@@ -5134,7 +5229,7 @@ export class GgalSpecialistRuntime {
 
     return {
       routerStatus: this.arFeedRouter.getStatusSnapshot(asOfUtcSec),
-      l2Ladder: this.arFeedRouter.resolveL2LadderState('GGAL', null, asOfUtcSec),
+      l2Ladder: this.arFeedRouter.resolveL2LadderState('GGAL', cachedPrimaryBook, asOfUtcSec),
     };
   }
 
@@ -5256,6 +5351,247 @@ export class GgalSpecialistRuntime {
    * Pieza 40: ruta rápida de velas. No consulta peers, estructura, cono ni
    * perfil griego; solo series esenciales para pintar el chart en <300 ms.
    */
+  /**
+   * Pieza 44: Resuelve niveles clave (`Call Wall`, `Put Wall`, `Zero Gamma`, `Max Pain`)
+   * y perfil por strike en la moneda activa (`ARS` vs `USD`) combinando Anexo B/Proxy BYMA,
+   * cadena BYMA directa (`ggalOptions`) y cadena US ADR (`usSnapshot` Massive/ORATS).
+   */
+  private resolveDualChartOptionsLevelsAndProfile(params: {
+    readonly coordMode: GgalDualChartCoordMode;
+    readonly cclRate: number;
+    readonly adrLastUsd: number;
+    readonly strRes:
+      | {
+          readonly callWallArs?: number | null;
+          readonly putWallArs?: number | null;
+          readonly zeroGammaLevelArs?: number | null;
+          readonly peakPinStrikeArs?: number | null;
+          readonly strikeProfile?: readonly {
+            readonly strikeArs: number | null;
+            readonly effectiveSignedGex?: number | null;
+            readonly vannaExpArs?: number | null;
+            readonly charmExpArs?: number | null;
+          }[];
+        }
+      | null;
+    readonly ggalOptions: ArOptionsResponse | null;
+    readonly usSnapshot: TerminalSnapshotResponse | null;
+  }): {
+    readonly callWall: number;
+    readonly putWall: number;
+    readonly zeroGamma: number;
+    readonly maxPain: number;
+    readonly greekProfile: readonly GgalStrikeGreekProfileRow[];
+  } {
+    if (params.coordMode === 'RATIO_CCL') {
+      return {
+        callWall: Number.NaN,
+        putWall: Number.NaN,
+        zeroGamma: Number.NaN,
+        maxPain: Number.NaN,
+        greekProfile: [],
+      };
+    }
+
+    const fromArs = (arsVal: number | null | undefined): number =>
+      arsVal !== null && arsVal !== undefined && Number.isFinite(arsVal) && arsVal > 0
+        ? convertArsPriceToCoord(arsVal, params.coordMode, params.cclRate, params.adrLastUsd)
+        : Number.NaN;
+
+    const fromUsd = (usdVal: number | null | undefined): number => {
+      if (usdVal === null || usdVal === undefined || !Number.isFinite(usdVal) || usdVal <= 0) {
+        return Number.NaN;
+      }
+      if (params.coordMode === 'USD_ADR_NASDAQ') {
+        return usdVal;
+      }
+      return Number.isFinite(params.cclRate) && params.cclRate > 0
+        ? (usdVal * params.cclRate) / GGAL_ADR_RATIO
+        : Number.NaN;
+    };
+
+    const frontByma =
+      params.ggalOptions !== null
+        ? selectLiquidFrontAndBackExpiries(params.ggalOptions).front
+        : null;
+    const bymaExpSummary = params.ggalOptions?.exposureSummary ?? null;
+
+    const usContractsAll = params.usSnapshot?.volSurfaceSummary?.contracts ?? [];
+    // Selecciona el primer vencimiento US con OI positivo para Max Pain / Perfil Griego
+    const sortedExpiries = [...new Set(usContractsAll.map((c) => c.expirationDate))].sort();
+    let frontUsContracts = usContractsAll;
+    for (const exp of sortedExpiries) {
+      const slice = usContractsAll.filter(
+        (c) =>
+          c.expirationDate === exp &&
+          c.openInterest !== null &&
+          Number.isFinite(c.openInterest) &&
+          c.openInterest > 0,
+      );
+      if (slice.length > 0) {
+        frontUsContracts = slice;
+        break;
+      }
+    }
+    const usMaxPainUsd = computeMaxPainStrike(
+      frontUsContracts
+        .filter((c) => c.openInterest !== null && Number.isFinite(c.openInterest) && c.openInterest > 0)
+        .map((c) => ({
+          strike: c.strike,
+          contractType: c.contractType,
+          openInterest: c.openInterest as number,
+        })),
+    );
+    const usExpSummary = params.usSnapshot?.exposureSummary ?? null;
+
+    const pickLevel = (
+      bymaRawArs: number | null | undefined,
+      usRawUsd: number | null | undefined,
+    ): number => {
+      if (params.coordMode === 'USD_ADR_NASDAQ') {
+        const nativeUsd = fromUsd(usRawUsd);
+        if (Number.isFinite(nativeUsd)) return nativeUsd;
+        return fromArs(bymaRawArs);
+      }
+      const nativeArs = fromArs(bymaRawArs);
+      if (Number.isFinite(nativeArs)) return nativeArs;
+      return fromUsd(usRawUsd);
+    };
+
+    const callWall = pickLevel(
+      params.strRes?.callWallArs ?? bymaExpSummary?.callWallStrike,
+      usExpSummary?.callWallStrike,
+    );
+    const putWall = pickLevel(
+      params.strRes?.putWallArs ?? bymaExpSummary?.putWallStrike,
+      usExpSummary?.putWallStrike,
+    );
+    const zeroGamma = pickLevel(
+      params.strRes?.zeroGammaLevelArs ?? bymaExpSummary?.gammaFlipSpot,
+      usExpSummary?.gammaFlipSpot,
+    );
+    const maxPain = pickLevel(
+      params.strRes?.peakPinStrikeArs ?? frontByma?.maxPainStrike,
+      Number.isFinite(usMaxPainUsd) ? usMaxPainUsd : null,
+    );
+
+    const greekProfile: GgalStrikeGreekProfileRow[] = [];
+    const anexoByStrike = new Map((this.anexoBStore?.rows ?? []).map((r) => [r.strikeArs, r]));
+    for (const item of params.strRes?.strikeProfile ?? []) {
+      const strikeArs = item.strikeArs;
+      if (strikeArs === null || !Number.isFinite(strikeArs)) {
+        continue;
+      }
+      const row = anexoByStrike.get(strikeArs);
+      const uncov = row !== undefined ? row.callOi.uncoveredNom + row.putOi.uncoveredNom : 0;
+      const cov = row !== undefined ? row.callOi.coveredNom + row.putOi.coveredNom : 0;
+      const tot = uncov + cov;
+      const uncovShare = tot > 0 ? uncov / tot : 1;
+      const covShare = tot > 0 ? cov / tot : 0;
+      const convertedStrike = fromArs(strikeArs);
+      if (!Number.isFinite(convertedStrike)) {
+        continue;
+      }
+      const gexVal = item.effectiveSignedGex ?? 0;
+      const vannaVal = item.vannaExpArs ?? 0;
+      const charmVal = item.charmExpArs ?? 0;
+      greekProfile.push({
+        strike: convertedStrike,
+        signedGexUncovered: gexVal * uncovShare,
+        signedGexCovered: gexVal * covShare,
+        vannaUncovered: vannaVal * uncovShare,
+        vannaCovered: vannaVal * covShare,
+        charmUncovered: charmVal * uncovShare,
+        charmCovered: charmVal * covShare,
+      });
+    }
+
+    if (greekProfile.length === 0 && frontByma !== null) {
+      const bymaSpot = params.ggalOptions?.spot ?? params.adrLastUsd;
+      const byStrike = new Map<
+        number,
+        { signedGex: number; vanna: number; charm: number }
+      >();
+      const validSpot = Number.isFinite(bymaSpot) && bymaSpot > 0 ? bymaSpot : 1;
+      for (const c of [...frontByma.calls, ...frontByma.puts]) {
+        const oi = c.openInterest;
+        const gamma = c.gamma;
+        if (oi === null || !Number.isFinite(oi) || oi <= 0 || gamma === null || !Number.isFinite(gamma)) {
+          continue;
+        }
+        const sign = c.contractType === 'call' ? 1 : -1;
+        const gex = sign * gamma * oi * GGAL_BYMA_LOT_SIZE * validSpot * validSpot * 0.01;
+        const acc = byStrike.get(c.strike) ?? { signedGex: 0, vanna: 0, charm: 0 };
+        acc.signedGex += gex;
+        byStrike.set(c.strike, acc);
+      }
+      for (const [k, vals] of [...byStrike.entries()].sort((a, b) => a[0] - b[0])) {
+        const strikeCoord = fromArs(k);
+        if (!Number.isFinite(strikeCoord)) continue;
+        greekProfile.push({
+          strike: strikeCoord,
+          signedGexUncovered: vals.signedGex,
+          signedGexCovered: 0,
+          vannaUncovered: vals.vanna,
+          vannaCovered: 0,
+          charmUncovered: vals.charm,
+          charmCovered: 0,
+        });
+      }
+    }
+
+    if (greekProfile.length === 0 && frontUsContracts.length > 0) {
+      const adrSpotRef =
+        params.usSnapshot?.envelope.snapshot.metrics.spot ?? params.adrLastUsd;
+      const validAdr = Number.isFinite(adrSpotRef) && adrSpotRef > 0 ? adrSpotRef : 1;
+      const byStrike = new Map<
+        number,
+        { signedGex: number; vanna: number; charm: number }
+      >();
+      for (const c of frontUsContracts) {
+        if (
+          c.openInterest === null ||
+          !Number.isFinite(c.openInterest) ||
+          c.openInterest <= 0 ||
+          c.gamma === null ||
+          !Number.isFinite(c.gamma)
+        ) {
+          continue;
+        }
+        const sign = c.contractType === 'call' ? 1 : -1;
+        const gex = sign * c.gamma * c.openInterest * 100 * validAdr * validAdr * 0.01;
+        const vanna = (c.vanna ?? 0) * c.openInterest * 100;
+        const charm = (c.charm ?? 0) * c.openInterest * 100;
+        const acc = byStrike.get(c.strike) ?? { signedGex: 0, vanna: 0, charm: 0 };
+        acc.signedGex += gex;
+        acc.vanna += vanna;
+        acc.charm += charm;
+        byStrike.set(c.strike, acc);
+      }
+      for (const [k, vals] of [...byStrike.entries()].sort((a, b) => a[0] - b[0])) {
+        const strikeCoord = fromUsd(k);
+        if (!Number.isFinite(strikeCoord)) continue;
+        greekProfile.push({
+          strike: strikeCoord,
+          signedGexUncovered: vals.signedGex,
+          signedGexCovered: 0,
+          vannaUncovered: vals.vanna,
+          vannaCovered: 0,
+          charmUncovered: vals.charm,
+          charmCovered: 0,
+        });
+      }
+    }
+
+    return {
+      callWall,
+      putWall,
+      zeroGamma,
+      maxPain,
+      greekProfile,
+    };
+  }
+
   private async computeDualChartLight(opts: {
     readonly coordMode: GgalDualChartCoordMode;
     readonly timeframe: GgalDualChartTimeframe;
@@ -5401,6 +5737,29 @@ export class GgalSpecialistRuntime {
     const ema50 = computeEmaSeries(convertedBars, 50);
     const ema200 = computeEmaSeries(convertedBars, 200);
     const fastRouter = this.buildStandaloneFastRouterStatus(asOfUtcSec, 0);
+    const cachedUsSnap = this.runtime.getCachedSnapshot('GGAL');
+    const cachedOptions =
+      this.arRuntime.getCachedOptionsChain('GGAL') ??
+      this.bundleCache?.value.ggalOptions ??
+      null;
+    const adrLastUsd =
+      lastAdr?.close ??
+      cachedUsSnap?.envelope.snapshot.metrics.spot ??
+      Number.NaN;
+    const lightOptions = this.resolveDualChartOptionsLevelsAndProfile({
+      coordMode: opts.coordMode,
+      cclRate: historicalCcl,
+      adrLastUsd,
+      strRes: null,
+      ggalOptions: cachedOptions,
+      usSnapshot: cachedUsSnap,
+    });
+    const convertedFastLadder = this.convertLadderToCoord(
+      fastRouter.l2Ladder,
+      opts.coordMode,
+      historicalCcl,
+      adrLastUsd,
+    );
     const marketTz = opts.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
     const volumeProfile = computeVolumeProfile(convertedBars, 32, marketTz);
     const zones = this.detectUnmitigatedZones(convertedBars);
@@ -5425,10 +5784,10 @@ export class GgalSpecialistRuntime {
         avwapAnchorUtcSec,
         spotPrice: lastBar?.close ?? Number.NaN,
         cclRate: historicalCcl,
-        callWall: Number.NaN,
-        putWall: Number.NaN,
-        zeroGamma: Number.NaN,
-        maxPain: Number.NaN,
+        callWall: lightOptions.callWall,
+        putWall: lightOptions.putWall,
+        zeroGamma: lightOptions.zeroGamma,
+        maxPain: lightOptions.maxPain,
         bars: convertedBars,
         ema9,
         ema21,
@@ -5439,8 +5798,8 @@ export class GgalSpecialistRuntime {
         zones,
         expectedCone: [],
         subPaneSeries: [],
-        greekProfile: [],
-        l2Ladder: fastRouter.l2Ladder,
+        greekProfile: lightOptions.greekProfile,
+        l2Ladder: convertedFastLadder,
         confluenceAlerts: [],
         reason: null,
       } satisfies GgalDualChartPayload),
@@ -5832,30 +6191,20 @@ export class GgalSpecialistRuntime {
     const zones = this.detectUnmitigatedZones(convertedBars);
 
     const strRes = structure?.result ?? structure?.proxyResult ?? null;
-    const callWall = convertArsPriceToCoord(
-      strRes?.callWallArs ?? Number.NaN,
-      opts.coordMode,
+    const resolvedOpts = this.resolveDualChartOptionsLevelsAndProfile({
+      coordMode: opts.coordMode,
       cclRate,
       adrLastUsd,
-    );
-    const putWall = convertArsPriceToCoord(
-      strRes?.putWallArs ?? Number.NaN,
-      opts.coordMode,
-      cclRate,
-      adrLastUsd,
-    );
-    const zeroGamma = convertArsPriceToCoord(
-      strRes?.zeroGammaLevelArs ?? Number.NaN,
-      opts.coordMode,
-      cclRate,
-      adrLastUsd,
-    );
-    const maxPain = convertArsPriceToCoord(
-      strRes?.peakPinStrikeArs ?? Number.NaN,
-      opts.coordMode,
-      cclRate,
-      adrLastUsd,
-    );
+      strRes,
+      ggalOptions:
+        bundle?.ggalOptions ?? this.arRuntime.getCachedOptionsChain('GGAL') ?? null,
+      usSnapshot:
+        bundle?.usSnapshot ?? fastUsSnap ?? this.runtime.getCachedSnapshot('GGAL'),
+    });
+    const callWall = resolvedOpts.callWall;
+    const putWall = resolvedOpts.putWall;
+    const zeroGamma = resolvedOpts.zeroGamma;
+    const maxPain = resolvedOpts.maxPain;
 
     const spotPrice = lastBar?.close ?? Number.NaN;
     const frontExpiry =
@@ -5895,41 +6244,7 @@ export class GgalSpecialistRuntime {
     );
 
     // Chart 2 Greek profile differentiating Uncovered (Descubiertas) vs Covered (Cubiertas)
-    const greekProfile: GgalStrikeGreekProfileRow[] = [];
-    const anexoByStrike = new Map((this.anexoBStore?.rows ?? []).map((r) => [r.strikeArs, r]));
-    for (const item of strRes?.strikeProfile ?? []) {
-      const strikeArs = item.strikeArs;
-      if (strikeArs === null || !Number.isFinite(strikeArs)) {
-        continue;
-      }
-      const row = anexoByStrike.get(strikeArs);
-      const uncov = row !== undefined ? row.callOi.uncoveredNom + row.putOi.uncoveredNom : 0;
-      const cov = row !== undefined ? row.callOi.coveredNom + row.putOi.coveredNom : 0;
-      const tot = uncov + cov;
-      const uncovShare = tot > 0 ? uncov / tot : 1;
-      const covShare = tot > 0 ? cov / tot : 0;
-      const convertedStrike = convertArsPriceToCoord(
-        strikeArs,
-        opts.coordMode,
-        cclRate,
-        adrLastUsd,
-      );
-      if (!Number.isFinite(convertedStrike)) {
-        continue;
-      }
-      const gexVal = item.effectiveSignedGex ?? 0;
-      const vannaVal = item.vannaExpArs ?? 0;
-      const charmVal = item.charmExpArs ?? 0;
-      greekProfile.push({
-        strike: convertedStrike,
-        signedGexUncovered: gexVal * uncovShare,
-        signedGexCovered: gexVal * covShare,
-        vannaUncovered: vannaVal * uncovShare,
-        vannaCovered: vannaVal * covShare,
-        charmUncovered: charmVal * uncovShare,
-        charmCovered: charmVal * covShare,
-      });
-    }
+    const greekProfile: readonly GgalStrikeGreekProfileRow[] = resolvedOpts.greekProfile;
 
     const convertedLadder = this.convertLadderToCoord(l2Ladder, opts.coordMode, cclRate, adrLastUsd);
     const confluenceAlerts: GgalL2ConfluenceAlert[] = [];
@@ -6033,7 +6348,7 @@ export class GgalSpecialistRuntime {
         price: convertArsPriceToCoord(a.price, coordMode, cclRate, adrReferenceUsd),
       }))
       .filter((a) => Number.isFinite(a.price) && a.price > 0);
-    if (bids.length === 0 || asks.length === 0) {
+    if (bids.length === 0 && asks.length === 0) {
       return {
         available: false,
         reason: 'INVALID_BOOK_STATE',

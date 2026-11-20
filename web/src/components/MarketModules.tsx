@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { layoutCurveLabels } from '../../../src/core/bondCurveLayout';
 import {
   TrendingUp,
   ArrowUpRight,
@@ -3260,6 +3261,16 @@ export const BondsCurveModule: React.FC = () => {
     .filter((b) => b.law === 'Ley NY')
     .sort((a, b) => a.modDuration - b.modDuration)
     .map((b) => ({ t: b.ticker, x: mapX(b.modDuration), y: mapY(b.tir), c: '#4BA3FF', tir: fmtNum(b.tir, 2) }));
+  const allCurvePts = [...arPts, ...nyPts];
+  const labelPlacements = layoutCurveLabels(
+    allCurvePts.map((pt) => ({
+      id: pt.t,
+      label: `${pt.t} (${pt.tir}%)`,
+      x: pt.x,
+      y: pt.y,
+    })),
+  );
+  const labelByBondId = new Map(labelPlacements.map((p) => [p.id, p]));
   const arLine = arPts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
   const nyLine = nyPts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
   const gridTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => minTir + f * (maxTir - minTir));
@@ -3339,22 +3350,40 @@ export const BondsCurveModule: React.FC = () => {
                   />
                 )}
 
-                {[...arPts, ...nyPts].map((pt) => (
-                  <g key={pt.t}>
-                    <circle cx={pt.x} cy={pt.y} r="5" fill={pt.c} stroke="#08080D" strokeWidth="1.5" />
-                    <text
-                      x={pt.x}
-                      y={pt.y - 9}
-                      textAnchor="middle"
-                      fill="#F3F3F9"
-                      fontSize="10"
-                      fontWeight="bold"
-                      className="font-mono-num"
-                    >
-                      {pt.t} ({pt.tir}%)
-                    </text>
-                  </g>
-                ))}
+                {allCurvePts.map((pt) => {
+                  const placed = labelByBondId.get(pt.t);
+                  const lx = placed?.labelX ?? pt.x;
+                  const ly = placed?.labelY ?? pt.y - 9;
+                  const anchor = placed?.textAnchor ?? 'middle';
+                  return (
+                    <g key={pt.t}>
+                      {placed?.needsLeader === true && (
+                        <line
+                          x1={pt.x}
+                          y1={pt.y}
+                          x2={placed.leaderEndX}
+                          y2={placed.leaderEndY}
+                          stroke={pt.c}
+                          strokeOpacity="0.6"
+                          strokeWidth="1"
+                          strokeDasharray="2 2"
+                        />
+                      )}
+                      <circle cx={pt.x} cy={pt.y} r="5" fill={pt.c} stroke="#08080D" strokeWidth="1.5" />
+                      <text
+                        x={lx}
+                        y={ly}
+                        textAnchor={anchor}
+                        fill="#F3F3F9"
+                        fontSize="10"
+                        fontWeight="bold"
+                        className="font-mono-num"
+                      >
+                        {pt.t} ({pt.tir}%)
+                      </text>
+                    </g>
+                  );
+                })}
                 <text x="290" y="208" textAnchor="middle" fill="#6D6D84" fontSize="10" className="font-mono-num">
                   Modified Duration (Años) →
                 </text>
@@ -3520,6 +3549,8 @@ interface PrimaryDlrContractExt {
   readonly days: number | null;
   readonly price: number | null;
   readonly priceBasis: 'LAST' | 'MID' | 'SETTLEMENT_EOD' | 'NONE';
+  readonly status?: 'LIVE' | 'CIERRE_AJUSTE' | 'NONE';
+  readonly baseArs?: number | null;
   readonly last: number | null;
   readonly settlement: number | null;
   readonly bid: number | null;
@@ -3716,6 +3747,7 @@ export const FuturesModule: React.FC = () => {
                   <th className="py-2.5 px-2.5">Deval. Directa</th>
                   <th className="py-2.5 px-2.5">TNA Implícita</th>
                   <th className="py-2.5 px-2.5">TEA Implícita</th>
+                  <th className="py-2.5 px-2.5">Base ($)</th>
                   <th className="py-2.5 px-3">Fwd i→i+1</th>
                 </tr>
               </thead>
@@ -3728,14 +3760,16 @@ export const FuturesModule: React.FC = () => {
                           <span>{c.contract}</span>
                           <span
                             className={`px-1.5 py-0.5 rounded text-[9.5px] font-sans font-bold tracking-wider ${
-                              c.priceBasis === 'SETTLEMENT_EOD'
+                              c.status === 'CIERRE_AJUSTE' || c.priceBasis === 'SETTLEMENT_EOD'
                                 ? 'bg-[#35280F] text-[#F5B544] border border-[#F5B544]/40'
                                 : c.priceBasis === 'LAST' || c.priceBasis === 'MID'
                                   ? 'bg-[#0D221E] text-[#2EDC7E] border border-[#164E3F]'
                                   : 'bg-[#1E222D] text-[#9CA3AF] border border-[#2A3347]'
                             }`}
                           >
-                            {c.priceBasis}
+                            {c.status === 'CIERRE_AJUSTE'
+                              ? 'CIERRE/AJUSTE'
+                              : c.priceBasis}
                           </span>
                         </span>
                       </td>
@@ -3771,7 +3805,11 @@ export const FuturesModule: React.FC = () => {
                                 : '—';
                             return `${bTxt} / ${aTxt}`;
                           }
-                          if (liveMarket.marketState === 'CERRADO' || c.priceBasis === 'SETTLEMENT_EOD') {
+                          if (
+                            liveMarket.marketState === 'CERRADO' ||
+                            c.status === 'CIERRE_AJUSTE' ||
+                            c.priceBasis === 'SETTLEMENT_EOD'
+                          ) {
                             return (
                               <span className="text-[11px] font-sans text-[#787B86]">
                                 Sin puntas (Cierre)
@@ -3796,6 +3834,19 @@ export const FuturesModule: React.FC = () => {
                       <td className="px-3 text-[#2EDC7E] font-semibold">
                         {c.teaImplicitaPct !== null ? `${fmtNum(c.teaImplicitaPct, 2)} %` : '—'}
                       </td>
+                      <td className="px-2.5 text-[var(--text-secondary)] font-mono-num">
+                        {(() => {
+                          const baseVal =
+                            c.baseArs !== undefined && c.baseArs !== null && Number.isFinite(c.baseArs)
+                              ? c.baseArs
+                              : c.price !== null && c.spotUsed !== null
+                                ? c.price - c.spotUsed
+                                : null;
+                          return baseVal !== null && Number.isFinite(baseVal)
+                            ? `${baseVal >= 0 ? '+' : ''}${fmtNum(baseVal, 2)}`
+                            : '—';
+                        })()}
+                      </td>
                       <td className="px-3 text-[#E5C76B] font-semibold">
                         {c.forwardToForwardPct != null ? `${fmtNum(c.forwardToForwardPct, 2)} %` : '—'}
                       </td>
@@ -3803,7 +3854,7 @@ export const FuturesModule: React.FC = () => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={11} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
+                    <td colSpan={12} className="py-8 text-center font-sans text-[12px] text-[var(--text-tertiary)]">
                       No hay contratos cargados en la categoría seleccionada.
                     </td>
                   </tr>

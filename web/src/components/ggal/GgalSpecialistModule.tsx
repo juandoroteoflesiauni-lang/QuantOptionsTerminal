@@ -302,7 +302,7 @@ export const GgalSpecialistModule: React.FC<{
   const scheduleDualChartRetry = (): void => {
     if (dualChartRetryTimerRef.current !== null) return;
     if (dualChartRetryAttemptsRef.current >= 2) {
-      if (lastValidDualChartRef.current === null) {
+      if (lastValidDualChartRef.current === null || lastValidDualChartRef.current.coordMode !== coordMode) {
         setDualChartError('No se pudo cargar el gráfico dual tras dos reintentos.');
       }
       return;
@@ -323,12 +323,17 @@ export const GgalSpecialistModule: React.FC<{
       dualChartAbortRef.current = ctrl;
       const cacheKey = `${coordMode}:${chartTimeframe}:${avwapAnchor}`;
       const cached = dualChartCacheRef.current.get(cacheKey);
+      const sameCurrencyFallback =
+        lastValidDualChartRef.current !== null &&
+        lastValidDualChartRef.current.coordMode === coordMode
+          ? lastValidDualChartRef.current
+          : null;
       if (cached !== undefined) {
         setDualChartPayload(cached);
         setDualChartError(null);
         setDualChartLoading(false);
-      } else if (lastValidDualChartRef.current !== null) {
-        setDualChartPayload(lastValidDualChartRef.current);
+      } else if (sameCurrencyFallback !== null) {
+        setDualChartPayload(sameCurrencyFallback);
         setDualChartError(null);
         setDualChartLoading(true);
       } else {

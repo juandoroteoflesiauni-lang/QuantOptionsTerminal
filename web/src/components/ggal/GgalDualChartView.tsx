@@ -48,6 +48,10 @@ import {
   computeSessionVwapSeries,
 } from '../../../../src/core/ggal/technicalIndicators';
 import {
+  computeDualChartVisibleRange,
+  filterOverlayLevelsForCoordMode,
+} from '../../../../src/core/ggal/chartCoordGuard';
+import {
   formatExtendedSessionBadge,
   getMarketLiveClock,
   getMarketLiveQuote,
@@ -858,6 +862,12 @@ function L2LadderPanel({
           </div>
         ) : (
           <>
+            {(ladder.bookStatus === 'EOD_CIERRE' || ladder.isEodCached === true) && (
+              <div className="mb-1 flex items-center justify-between rounded border border-[#F59E0B]/30 bg-[#35280F]/40 px-1.5 py-0.5 font-mono text-[9px] text-[#F5B544]">
+                <span>EOD / CIERRE</span>
+                <span>Último snapshot L2</span>
+              </div>
+            )}
             <div className="grid grid-cols-[30px_1fr_62px_38px] gap-1 px-1 pb-0.5 font-mono text-[9px] text-[#6B7280]">
               <span>Lado</span>
               <span className="text-right">Precio</span>
@@ -1112,14 +1122,52 @@ export function GgalDualChartView({
   const primitiveRef = useRef<GgalChartOverlayPrimitive | null>(null);
   const isSyncingRef = useRef(false);
   const lastFitKeyRef = useRef<string | null>(null);
+  const prevScaleModeRef = useRef<string | null>(null);
+  const latestBarCountRef = useRef<number>(0);
 
-  const latestPayloadRef = useRef(payload);
-  latestPayloadRef.current = payload;
+  // Pieza 44: bloquea cualquier desajuste o fuga de niveles ARS <-> USD antes de renderizar o escalar.
+  const safePayload = useMemo((): GgalDualChartPayloadDto | null => {
+    if (payload === null) return null;
+    if (payload.status !== 'OPERATIONAL') {
+      return payload.coordMode === coordMode ? payload : null;
+    }
+    const bars = payload.bars ?? [];
+    const guarded = filterOverlayLevelsForCoordMode({
+      activeCoordMode: coordMode,
+      payloadCoordMode: payload.coordMode,
+      bars,
+      levels: {
+        callWall: payload.callWall ?? Number.NaN,
+        putWall: payload.putWall ?? Number.NaN,
+        zeroGamma: payload.zeroGamma ?? Number.NaN,
+        maxPain: payload.maxPain ?? Number.NaN,
+      },
+      zones: payload.zones ?? [],
+      expectedCone: payload.expectedCone ?? [],
+      volumeProfile: payload.volumeProfile ?? null,
+    });
+    if (!guarded.coordMatched) {
+      return null;
+    }
+    return {
+      ...payload,
+      callWall: guarded.levels.callWall,
+      putWall: guarded.levels.putWall,
+      zeroGamma: guarded.levels.zeroGamma,
+      maxPain: guarded.levels.maxPain,
+      zones: guarded.zones,
+      expectedCone: guarded.expectedCone,
+      ...(guarded.volumeProfile !== null ? { volumeProfile: guarded.volumeProfile } : { volumeProfile: undefined }),
+    };
+  }, [payload, coordMode]);
+
+  const latestPayloadRef = useRef(safePayload);
+  latestPayloadRef.current = safePayload;
   const togglesRef = useRef(toggles);
   togglesRef.current = toggles;
 
-  const coneLabel = useMemo(() => resolveConeLabel(timeframe, payload), [timeframe, payload]);
-  const hasCone = (payload?.expectedCone?.length ?? 0) >= 2;
+  const coneLabel = useMemo(() => resolveConeLabel(timeframe, safePayload), [timeframe, safePayload]);
+  const hasCone = (safePayload?.expectedCone?.length ?? 0) >= 2;
   const latestConeLabelRef = useRef(coneLabel);
   latestConeLabelRef.current = coneLabel;
 
@@ -1158,7 +1206,7 @@ export function GgalDualChartView({
         borderColor: '#1C1C24',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 10,
+        rightOffset: 2,
       },
     });
 
@@ -1174,6 +1222,7 @@ export function GgalDualChartView({
         borderColor: '#1C1C24',
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 2,
       },
     });
 
@@ -1251,7 +1300,41 @@ export function GgalDualChartView({
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(handleMainRange);
     subChart.timeScale().subscribeVisibleLogicalRangeChange(handleSubRange);
 
+    let lastContainerWidth = mainEl.clientWidth;
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver((entries) => {
+            const w = entries[0]?.contentRect.width ?? mainEl.clientWidth;
+            if (w <= 0) return;
+            if (lastContainerWidth <= 40 && w > 40 && latestBarCountRef.current > 0) {
+              isSyncingRef.current = true;
+              try {
+                const count = latestBarCountRef.current;
+                const vr = computeDualChartVisibleRange({
+                  totalBars: count,
+                  maxVisibleBars: 220,
+                  rightPaddingBars: (latestPayloadRef.current?.expectedCone?.length ?? 0) >= 2 ? 5 : 2,
+                });
+                mainChart.priceScale('right').applyOptions({ autoScale: true });
+                subChart.priceScale('right').applyOptions({ autoScale: true });
+                if (count <= 220) {
+                  mainChart.timeScale().fitContent();
+                  subChart.timeScale().fitContent();
+                } else if (vr !== null) {
+                  mainChart.timeScale().setVisibleLogicalRange(vr);
+                  subChart.timeScale().setVisibleLogicalRange(vr);
+                }
+              } finally {
+                isSyncingRef.current = false;
+              }
+            }
+            lastContainerWidth = w;
+          })
+        : null;
+    resizeObserver?.observe(mainEl);
+
     return () => {
+      resizeObserver?.disconnect();
       mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(handleMainRange);
       subChart.timeScale().unsubscribeVisibleLogicalRangeChange(handleSubRange);
       candleSeries.detachPrimitive(primitive);
@@ -1301,12 +1384,28 @@ export function GgalDualChartView({
     }
     priceLinesRef.current = [];
 
-    primitive.setState({ payload, toggles, coneLabel });
+    primitive.setState({ payload: safePayload, toggles, coneLabel });
 
-    const bars = payload?.status === 'OPERATIONAL' ? (payload.bars ?? []) : [];
-    if (payload === null || payload.status !== 'OPERATIONAL' || bars.length === 0) {
-      candleSeries.setData([]);
-      volumeSeriesRef.current?.setData([]);
+    const scaleModeKey = `${coordMode}|${timeframe}`;
+    const scaleModeChanged = prevScaleModeRef.current !== scaleModeKey;
+    prevScaleModeRef.current = scaleModeKey;
+
+    const bars = safePayload?.status === 'OPERATIONAL' ? (safePayload.bars ?? []) : [];
+    latestBarCountRef.current = bars.length;
+
+    if (scaleModeChanged || safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0) {
+      isSyncingRef.current = true;
+      try {
+        candleSeries.setData([]);
+        volumeSeriesRef.current?.setData([]);
+        mainChart.priceScale('right').applyOptions({ autoScale: true });
+        subChart.priceScale('right').applyOptions({ autoScale: true });
+      } finally {
+        isSyncingRef.current = false;
+      }
+    }
+
+    if (safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0) {
       lastFitKeyRef.current = null;
       lastBarRef.current = null;
       closedBarsRef.current = [];
@@ -1334,10 +1433,10 @@ export function GgalDualChartView({
     lastBarRef.current = lastBar ?? null;
     closedBarsRef.current = bars.slice(0, Math.max(0, bars.length - 1));
     emaBaselinesRef.current = {
-      9: payload.ema9 !== undefined && payload.ema9.length > 1 ? (payload.ema9[payload.ema9.length - 2]?.value ?? Number.NaN) : Number.NaN,
-      21: payload.ema21 !== undefined && payload.ema21.length > 1 ? (payload.ema21[payload.ema21.length - 2]?.value ?? Number.NaN) : Number.NaN,
-      50: payload.ema50 !== undefined && payload.ema50.length > 1 ? (payload.ema50[payload.ema50.length - 2]?.value ?? Number.NaN) : Number.NaN,
-      200: payload.ema200 !== undefined && payload.ema200.length > 1 ? (payload.ema200[payload.ema200.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      9: safePayload.ema9 !== undefined && safePayload.ema9.length > 1 ? (safePayload.ema9[safePayload.ema9.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      21: safePayload.ema21 !== undefined && safePayload.ema21.length > 1 ? (safePayload.ema21[safePayload.ema21.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      50: safePayload.ema50 !== undefined && safePayload.ema50.length > 1 ? (safePayload.ema50[safePayload.ema50.length - 2]?.value ?? Number.NaN) : Number.NaN,
+      200: safePayload.ema200 !== undefined && safePayload.ema200.length > 1 ? (safePayload.ema200[safePayload.ema200.length - 2]?.value ?? Number.NaN) : Number.NaN,
     };
 
     const addLineOverlay = (
@@ -1363,46 +1462,46 @@ export function GgalDualChartView({
     };
 
     if (toggles.showEmas) {
-      const ema9Series = addLineOverlay(payload.ema9, INDICATOR_COLORS.ema9, 1.25);
+      const ema9Series = addLineOverlay(safePayload.ema9, INDICATOR_COLORS.ema9, 1.25);
       if (ema9Series !== null) emaSeriesRefs.current[9] = ema9Series;
-      const ema21Series = addLineOverlay(payload.ema21, INDICATOR_COLORS.ema21, 1.25);
+      const ema21Series = addLineOverlay(safePayload.ema21, INDICATOR_COLORS.ema21, 1.25);
       if (ema21Series !== null) emaSeriesRefs.current[21] = ema21Series;
-      const ema50Series = addLineOverlay(payload.ema50, INDICATOR_COLORS.ema50, 1.5);
+      const ema50Series = addLineOverlay(safePayload.ema50, INDICATOR_COLORS.ema50, 1.5);
       if (ema50Series !== null) emaSeriesRefs.current[50] = ema50Series;
-      const ema200Series = addLineOverlay(payload.ema200, INDICATOR_COLORS.ema200, 2);
+      const ema200Series = addLineOverlay(safePayload.ema200, INDICATOR_COLORS.ema200, 2);
       if (ema200Series !== null) emaSeriesRefs.current[200] = ema200Series;
     }
 
     if (
       toggles.showAvwap &&
-      payload.avwapBands !== undefined &&
-      payload.avwapBands.length > 0
+      safePayload.avwapBands !== undefined &&
+      safePayload.avwapBands.length > 0
     ) {
       avwapSeriesRef.current = addLineOverlay(
-        payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.avwap })),
+        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.avwap })),
         INDICATOR_COLORS.avwap,
         1.75,
       );
       avwapPlus1SeriesRef.current = addLineOverlay(
-        payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus1Sigma })),
+        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus1Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dashed,
       );
       avwapMinus1SeriesRef.current = addLineOverlay(
-        payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus1Sigma })),
+        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus1Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dashed,
       );
       avwapPlus2SeriesRef.current = addLineOverlay(
-        payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus2Sigma })),
+        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus2Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dotted,
       );
       avwapMinus2SeriesRef.current = addLineOverlay(
-        payload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus2Sigma })),
+        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus2Sigma })),
         INDICATOR_COLORS.avwapBand,
         1,
         LineStyle.Dotted,
@@ -1411,7 +1510,7 @@ export function GgalDualChartView({
 
     if (toggles.showSessionVwap && bars.length > 0) {
       const marketTz =
-        payload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+        safePayload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
       const vwapSeries = computeSessionVwapSeries(bars, marketTz);
       const vwapLine = addLineOverlay(vwapSeries, INDICATOR_COLORS.sessionVwap, 1.5);
       if (vwapLine !== null) vwapSeriesRef.current = vwapLine;
@@ -1431,10 +1530,10 @@ export function GgalDualChartView({
     };
 
     const levelValues: Record<LevelId, number | null | undefined> = {
-      callWall: payload.callWall,
-      putWall: payload.putWall,
-      zeroGamma: payload.zeroGamma,
-      maxPain: payload.maxPain,
+      callWall: safePayload.callWall,
+      putWall: safePayload.putWall,
+      zeroGamma: safePayload.zeroGamma,
+      maxPain: safePayload.maxPain,
     };
     for (const spec of LEVEL_SPECS) {
       if (levelVisibility[spec.id]) {
@@ -1442,7 +1541,7 @@ export function GgalDualChartView({
       }
     }
 
-    const subPaneSeries = payload.subPaneSeries ?? [];
+    const subPaneSeries = safePayload.subPaneSeries ?? [];
     if (subPaneMode === 'CVD_LEE_READY') {
       const series = subChart.addSeries(LineSeries, { color: '#E5C76B', lineWidth: 2 });
       series.setData(
@@ -1502,12 +1601,33 @@ export function GgalDualChartView({
       subSeriesRef.current.push(seriesBma, seriesBbar, seriesSupv);
     }
 
-    const fitKey = `${payload.timeframe}|${payload.coordMode}|${payload.avwapAnchor}|${String(payload.asOfUtcSec)}|${String(bars.length)}`;
-    if (lastFitKeyRef.current !== fitKey) {
+    const fitKey = `${safePayload.timeframe}|${safePayload.coordMode}|${safePayload.avwapAnchor}|${String(safePayload.asOfUtcSec)}|${String(bars.length)}`;
+    if (lastFitKeyRef.current !== fitKey || scaleModeChanged) {
       lastFitKeyRef.current = fitKey;
-      mainChart.timeScale().fitContent();
+      isSyncingRef.current = true;
+      try {
+        const rightPad = (safePayload.expectedCone?.length ?? 0) >= 2 ? 5 : 2;
+        mainChart.timeScale().applyOptions({ rightOffset: rightPad });
+        subChart.timeScale().applyOptions({ rightOffset: rightPad });
+        mainChart.priceScale('right').applyOptions({ autoScale: true });
+        subChart.priceScale('right').applyOptions({ autoScale: true });
+        const visibleRange = computeDualChartVisibleRange({
+          totalBars: bars.length,
+          maxVisibleBars: 220,
+          rightPaddingBars: rightPad,
+        });
+        if (bars.length <= 220) {
+          mainChart.timeScale().fitContent();
+          subChart.timeScale().fitContent();
+        } else if (visibleRange !== null) {
+          mainChart.timeScale().setVisibleLogicalRange(visibleRange);
+          subChart.timeScale().setVisibleLogicalRange(visibleRange);
+        }
+      } finally {
+        isSyncingRef.current = false;
+      }
     }
-  }, [payload, toggles, subPaneMode, levelVisibility, coneLabel]);
+  }, [safePayload, coordMode, timeframe, toggles, subPaneMode, levelVisibility, coneLabel]);
 
   // Live tick projection: updates the forming candle, EMAs, session VWAP and CVD
   // without rebuilding the historical series or refitting the time scale.
@@ -1993,7 +2113,7 @@ export function GgalDualChartView({
           coordMode={coordMode}
         />
         <KeyLevelsPanel
-          payload={payload}
+          payload={safePayload}
           coordMode={coordMode}
           visibility={levelVisibility}
           onToggle={toggleLevel}

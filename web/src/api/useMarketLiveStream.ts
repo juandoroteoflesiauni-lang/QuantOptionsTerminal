@@ -75,6 +75,8 @@ export interface MarketLiveFuture {
   readonly days: number | null;
   readonly price: number | null;
   readonly priceBasis: 'LAST' | 'MID' | 'SETTLEMENT_EOD' | 'NONE';
+  readonly status?: 'LIVE' | 'CIERRE_AJUSTE' | 'NONE';
+  readonly baseArs?: number | null;
   readonly last: number | null;
   readonly settlement: number | null;
   readonly close: number | null;
@@ -579,6 +581,11 @@ function parseFuture(raw: unknown): MarketLiveFuture | null {
     spotSourceRaw === 'A3500_BCRA' || spotSourceRaw === 'DLR_SPOT' || spotSourceRaw === 'NONE'
       ? spotSourceRaw
       : 'NONE';
+  const statusRaw = raw['status'];
+  const status =
+    statusRaw === 'LIVE' || statusRaw === 'CIERRE_AJUSTE' || statusRaw === 'NONE'
+      ? statusRaw
+      : undefined;
   return {
     contract: raw['contract'].trim().toUpperCase(),
     category,
@@ -586,6 +593,8 @@ function parseFuture(raw: unknown): MarketLiveFuture | null {
     days: nullableNumber(raw['days']),
     price: nullableNumber(raw['price']),
     priceBasis,
+    ...(status !== undefined ? { status } : {}),
+    baseArs: nullableNumber(raw['baseArs']),
     last: nullableNumber(raw['last']),
     settlement: nullableNumber(raw['settlement']),
     close: nullableNumber(raw['close']),

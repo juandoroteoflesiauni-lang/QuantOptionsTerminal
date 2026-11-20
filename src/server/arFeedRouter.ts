@@ -571,6 +571,61 @@ export class ArFeedRouter {
     const asOfUtcSec = status.asOfUtcSec;
     const bmb = status.providers.find((p) => p.provider === 'BMB_HOMEBROKER_BRIDGE');
 
+    const toLevels = (
+      sideLevels: readonly { readonly price: number; readonly size: number; readonly orderCount?: number | null }[],
+    ): readonly GgalL2OrderLevel[] => {
+      const out: GgalL2OrderLevel[] = [];
+      for (let i = 0; i < Math.min(5, sideLevels.length); i++) {
+        const lvl = sideLevels[i];
+        if (lvl === undefined || !Number.isFinite(lvl.price) || !Number.isFinite(lvl.size)) {
+          continue;
+        }
+        const levelNum = (i + 1) as 1 | 2 | 3 | 4 | 5;
+        out.push({
+          level: levelNum,
+          price: lvl.price,
+          size: lvl.size,
+          orderCount:
+            lvl.orderCount !== null &&
+            lvl.orderCount !== undefined &&
+            Number.isInteger(lvl.orderCount) &&
+            lvl.orderCount >= 0
+              ? lvl.orderCount
+              : null,
+        });
+      }
+      return out;
+    };
+
+    // Pieza 44: si Primary XOMS/MERV aportó caja L2 5 puntas (en vivo o último snapshot EOD/CIERRE),
+    // servirla explícitamente aunque BMB esté OUT_OF_SESSION o el tick tenga >15 s sin cambio.
+    if (
+      rawBook !== null &&
+      rawBook.source === 'PRIMARY_MERV' &&
+      (rawBook.bids.length > 0 || rawBook.asks.length > 0) &&
+      !(status.activePrimaryEquityProvider === 'BMB_HOMEBROKER_BRIDGE' && status.l2Available)
+    ) {
+      const primaryBids = toLevels(rawBook.bids);
+      const primaryAsks = toLevels(rawBook.asks);
+      if (primaryBids.length > 0 || primaryAsks.length > 0) {
+        const isEodCached =
+          rawBook.isEodCached === true ||
+          rawBook.bookStatus === 'EOD_CIERRE' ||
+          rawBook.marketState === 'WEEKEND_CLOSED';
+        return {
+          available: true,
+          activeProvider: 'PRIMARY_MATRIZ_WS',
+          qualityTier: 'REALTIME_L2_TICK',
+          asOfUtcSec: rawBook.asOfUtcSec ?? asOfUtcSec,
+          symbol,
+          bids: primaryBids,
+          asks: primaryAsks,
+          bookStatus: isEodCached ? 'EOD_CIERRE' : 'LIVE',
+          isEodCached,
+        };
+      }
+    }
+
     if (
       bmb?.configured === true &&
       bmb.errorReason === BMB_OUT_OF_SESSION_REASON
@@ -619,32 +674,6 @@ export class ArFeedRouter {
       };
     }
 
-    const toLevels = (
-      sideLevels: readonly { readonly price: number; readonly size: number; readonly orderCount?: number | null }[],
-    ): readonly GgalL2OrderLevel[] => {
-      const out: GgalL2OrderLevel[] = [];
-      for (let i = 0; i < Math.min(5, sideLevels.length); i++) {
-        const lvl = sideLevels[i];
-        if (lvl === undefined || !Number.isFinite(lvl.price) || !Number.isFinite(lvl.size)) {
-          continue;
-        }
-        const levelNum = (i + 1) as 1 | 2 | 3 | 4 | 5;
-        out.push({
-          level: levelNum,
-          price: lvl.price,
-          size: lvl.size,
-          orderCount:
-            lvl.orderCount !== null &&
-            lvl.orderCount !== undefined &&
-            Number.isInteger(lvl.orderCount) &&
-            lvl.orderCount >= 0
-              ? lvl.orderCount
-              : null,
-        });
-      }
-      return out;
-    };
-
     const bids = toLevels(rawBook.bids);
     const asks = toLevels(rawBook.asks);
 
@@ -667,6 +696,11 @@ export class ArFeedRouter {
       symbol,
       bids,
       asks,
+      bookStatus:
+        rawBook.isEodCached === true || rawBook.bookStatus === 'EOD_CIERRE'
+          ? 'EOD_CIERRE'
+          : 'LIVE',
+      isEodCached: rawBook.isEodCached === true || rawBook.bookStatus === 'EOD_CIERRE',
     };
   }
 }

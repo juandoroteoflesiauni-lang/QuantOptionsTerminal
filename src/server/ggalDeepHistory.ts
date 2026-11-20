@@ -21,6 +21,9 @@ export const GGAL_DEEP_HISTORY_MAX_BARS = 15_000;
 export const GGAL_DEEP_HISTORY_SYMBOL = 'GGAL';
 export const GGAL_DEEP_HISTORY_TIMEFRAMES = ['5m', '15m', '1h'] as const;
 export type GgalDeepHistoryTimeframe = (typeof GGAL_DEEP_HISTORY_TIMEFRAMES)[number];
+/** Pieza 44: FMP Enterprise también pagina y cachea `4h` hasta cubrir el gap electoral. */
+export const GGAL_FMP_PAGINATED_TIMEFRAMES = ['5m', '15m', '1h', '4h'] as const;
+export type GgalPaginatedHistoryTimeframe = (typeof GGAL_FMP_PAGINATED_TIMEFRAMES)[number];
 
 /** Edad máxima de un snapshot (memoria o disco) antes de recargar. */
 export const GGAL_DEEP_HISTORY_TTL_MS = 30 * 60 * 1_000;
@@ -31,6 +34,12 @@ export type TimeframeForDeep = '5m' | '15m' | '1h' | '4h' | '1D' | '1m';
 
 export function isGgalDeepHistoryTimeframe(timeframe: TimeframeForDeep): boolean {
   return (GGAL_DEEP_HISTORY_TIMEFRAMES as readonly string[]).includes(timeframe);
+}
+
+export function isGgalPaginatedHistoryTimeframe(
+  timeframe: TimeframeForDeep,
+): timeframe is GgalPaginatedHistoryTimeframe {
+  return (GGAL_FMP_PAGINATED_TIMEFRAMES as readonly string[]).includes(timeframe);
 }
 
 /**
@@ -180,7 +189,7 @@ export class GgalAdrDeepHistoryStore {
   }
 
   /** Consulta instantánea de la caché (<15 ms): solo entradas frescas. */
-  public peek(timeframe: GgalDeepHistoryTimeframe): readonly { readonly time: number; readonly open: number; readonly high: number; readonly low: number; readonly close: number; readonly volume: number; readonly vw?: number }[] | null {
+  public peek(timeframe: GgalPaginatedHistoryTimeframe): readonly { readonly time: number; readonly open: number; readonly high: number; readonly low: number; readonly close: number; readonly volume: number; readonly vw?: number }[] | null {
     const entry = this.entries.get(timeframe);
     if (entry === undefined) {
       return null;
@@ -192,7 +201,7 @@ export class GgalAdrDeepHistoryStore {
     return entry.bars;
   }
 
-  private touch(timeframe: GgalDeepHistoryTimeframe, entry: GgalAdrDeepHistoryEntry): void {
+  private touch(timeframe: GgalPaginatedHistoryTimeframe, entry: GgalAdrDeepHistoryEntry): void {
     this.entries.delete(timeframe);
     this.entries.set(timeframe, entry);
     while (this.entries.size > MAX_LRU_ENTRIES) {
@@ -204,14 +213,14 @@ export class GgalAdrDeepHistoryStore {
     }
   }
 
-  private diskPath(timeframe: GgalDeepHistoryTimeframe): string | null {
+  private diskPath(timeframe: GgalPaginatedHistoryTimeframe): string | null {
     if (this.cacheDir === null || this.fs === null) {
       return null;
     }
     return resolvePath(this.cacheDir, `GGAL-${timeframe}.json`);
   }
 
-  private async readDisk(timeframe: GgalDeepHistoryTimeframe): Promise<GgalAdrDeepHistoryEntry | null> {
+  private async readDisk(timeframe: GgalPaginatedHistoryTimeframe): Promise<GgalAdrDeepHistoryEntry | null> {
     const path = this.diskPath(timeframe);
     const fs = this.fs;
     if (path === null || fs === null) {
@@ -240,7 +249,7 @@ export class GgalAdrDeepHistoryStore {
   }
 
   private async writeDisk(
-    timeframe: GgalDeepHistoryTimeframe,
+    timeframe: GgalPaginatedHistoryTimeframe,
     bars: readonly {
       readonly time: number;
       readonly open: number;
@@ -275,7 +284,7 @@ export class GgalAdrDeepHistoryStore {
    * `minRefreshAgeMs` (incluido `forceRefresh: true`).
    */
   public async ensure(
-    timeframe: GgalDeepHistoryTimeframe,
+    timeframe: GgalPaginatedHistoryTimeframe,
     opts: {
       readonly loadFn: () => Promise<readonly { readonly time: number; readonly open: number; readonly high: number; readonly low: number; readonly close: number; readonly volume: number; readonly vw?: number }[]>;
       readonly forceRefresh?: boolean;

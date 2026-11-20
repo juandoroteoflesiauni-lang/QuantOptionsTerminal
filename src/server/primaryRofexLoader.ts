@@ -26,6 +26,8 @@
  *    degrada explícitamente con badges y estados reales sin inventar puntas ni precios.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 import { WebSocket } from 'ws';
 import type { FetchResponse } from '../data/types.js';
 import {
@@ -126,17 +128,22 @@ export interface DlrContractMetricsInput {
   readonly close: number | null | undefined;
   readonly a3500: number | null | undefined;
   readonly dlrSpot: number | null | undefined;
+  /** Pieza 44: fuera de rueda sin puntas vivas prioriza `SE ?? CL ?? LA`. */
+  readonly outOfSession?: boolean;
 }
 
 export type DlrPriceBasis = 'LAST' | 'MID' | 'SETTLEMENT_EOD' | 'NONE';
+export type DlrContractStatus = 'LIVE' | 'CIERRE_AJUSTE' | 'NONE';
 
 export interface DlrContractMetricsResult {
   readonly priceBasis: DlrPriceBasis;
+  readonly status: DlrContractStatus;
   readonly referencePrice: number;
   readonly spotUsed: number;
   readonly spotSource: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE';
   readonly maturityUtcSec: number;
   readonly days: number;
+  readonly baseArs: number;
   readonly devalDirectaPct: number;
   readonly tnaImplicitaPct: number;
   readonly teaImplicitaPct: number;
@@ -154,6 +161,8 @@ export interface PrimaryDlrContractDto {
   readonly days: number | null;
   readonly price: number | null;
   readonly priceBasis: DlrPriceBasis;
+  readonly status?: DlrContractStatus;
+  readonly baseArs?: number | null;
   readonly last: number | null;
   readonly settlement: number | null;
   readonly close: number | null;
@@ -188,6 +197,8 @@ export interface OrderBook5LevelsDto {
   readonly marketSymbol: string;
   readonly settlement: string;
   readonly marketState: 'LIVE' | 'WEEKEND_CLOSED' | 'UNAVAILABLE';
+  readonly bookStatus?: 'LIVE' | 'EOD_CIERRE';
+  readonly isEodCached?: boolean;
   readonly source: 'PRIMARY_MERV' | 'BMB_HOMEBROKER' | 'BYMA_L1_ONLY';
   readonly asOfUtcSec: number | null;
   readonly bids: readonly OrderBookLevel[];
@@ -751,20 +762,108 @@ export function inferDlrMaturityDateStr(symbol: string): string | null {
  * Calcula métricas puras de un contrato futuro DLR/ROFEX contra Spot (A3500 BCRA / DLR/SPOT) en base 365.
  * Prioridad de precio de referencia: `LA -> mid(BI, OF) -> SE -> CL`.
  */
+/**
+ * Pieza 44: Determina si el mercado local BYMA/ROFEX está fuera de rueda usando
+ * calendario/horario estándar en `America/Argentina/Buenos_Aires` (UTC-3).
+ */
+export function isArMarketOutOfSession(utcSec: number): boolean {
+  if (!Number.isFinite(utcSec) || utcSec <= 0) {
+    return false;
+  }
+  // Argentina opera UTC-3 fijo sin DST desde 2009.
+  const artDate = new Date((Math.trunc(utcSec) - 3 * 3_600) * 1_000);
+  const dow = artDate.getUTCDay();
+  if (dow === 0 || dow === 6) {
+    return true;
+  }
+  const minutesOfDay = artDate.getUTCHours() * 60 + artDate.getUTCMinutes();
+  return minutesOfDay < 10 * 60 || minutesOfDay >= 17 * 60 + 15;
+}
+
+/**
+ * Pieza 44: Normaliza claves canónicas de libro BYMA/MERV (`AR:GGAL:24hs`,
+ * `MERV - XMEV - GGAL - 24hs`, `AR:GGAL:CI`, `GGAL`) al ticker y plazo objetivo.
+ */
+export function resolveMervBookTarget(
+  rawTicker: string,
+  preferredSettlement?: '24HS' | 'CI',
+): { readonly ticker: string; readonly preferredSettlement?: '24HS' | 'CI' } {
+  const upper = rawTicker.trim().toUpperCase();
+  if (upper.startsWith('MERV - XMEV -')) {
+    const parsed = parseMervInstrumentSymbol(rawTicker);
+    if (parsed !== null) {
+      const sett =
+        parsed.settlement.toUpperCase() === 'CI'
+          ? ('CI' as const)
+          : parsed.settlement.toUpperCase() === '24HS'
+            ? ('24HS' as const)
+            : preferredSettlement;
+      return {
+        ticker: parsed.ticker,
+        ...(sett !== undefined ? { preferredSettlement: sett } : {}),
+      };
+    }
+  }
+
+  let ticker = upper;
+  let derivedSettlement = preferredSettlement;
+  if (ticker.startsWith('AR:')) {
+    const parts = ticker.split(':');
+    ticker = (parts[1] ?? '').trim();
+    const settPart = (parts[2] ?? '').trim().toUpperCase();
+    if (derivedSettlement === undefined) {
+      if (settPart === 'CI') {
+        derivedSettlement = 'CI';
+      } else if (settPart === '24HS' || settPart === 'T1') {
+        derivedSettlement = '24HS';
+      }
+    }
+  } else if (ticker.includes(':')) {
+    const [head, tail] = ticker.split(':');
+    ticker = (head ?? '').trim();
+    const settPart = (tail ?? '').trim().toUpperCase();
+    if (derivedSettlement === undefined) {
+      if (settPart === 'CI') {
+        derivedSettlement = 'CI';
+      } else if (settPart === '24HS' || settPart === 'T1') {
+        derivedSettlement = '24HS';
+      }
+    }
+  }
+
+  return {
+    ticker,
+    ...(derivedSettlement !== undefined ? { preferredSettlement: derivedSettlement } : {}),
+  };
+}
+
 export function computeDlrContractMetrics(input: DlrContractMetricsInput): DlrContractMetricsResult {
   const la = posFiniteOrNaN(input.last);
   const bi = posFiniteOrNaN(input.bestBid);
   const of = posFiniteOrNaN(input.bestAsk);
   const se = posFiniteOrNaN(input.settlement);
   const cl = posFiniteOrNaN(input.close);
+  const hasLiveBook = Number.isFinite(bi) && Number.isFinite(of);
 
   let priceBasis: DlrPriceBasis = 'NONE';
   let referencePrice = Number.NaN;
 
-  if (Number.isFinite(la)) {
+  if (!hasLiveBook && input.outOfSession === true) {
+    // Fuera de rueda sin puntas BI/OF activas: prioridad SE -> CL -> LA (`CIERRE_AJUSTE`).
+    if (Number.isFinite(se)) {
+      referencePrice = se;
+      priceBasis = 'SETTLEMENT_EOD';
+    } else if (Number.isFinite(cl)) {
+      referencePrice = cl;
+      priceBasis = 'SETTLEMENT_EOD';
+    } else if (Number.isFinite(la)) {
+      referencePrice = la;
+      priceBasis = 'LAST';
+    }
+  } else if (Number.isFinite(la)) {
     referencePrice = la;
     priceBasis = 'LAST';
-  } else if (Number.isFinite(bi) && Number.isFinite(of)) {
+  } else if (hasLiveBook) {
     referencePrice = 0.5 * (bi + of);
     priceBasis = 'MID';
   } else if (Number.isFinite(se)) {
@@ -774,6 +873,12 @@ export function computeDlrContractMetrics(input: DlrContractMetricsInput): DlrCo
     referencePrice = cl;
     priceBasis = 'SETTLEMENT_EOD';
   }
+
+  const status: DlrContractStatus = !Number.isFinite(referencePrice)
+    ? 'NONE'
+    : hasLiveBook || (input.outOfSession !== true && priceBasis === 'LAST')
+      ? 'LIVE'
+      : 'CIERRE_AJUSTE';
 
   const a3500 = posFiniteOrNaN(input.a3500);
   const dlrSpot = posFiniteOrNaN(input.dlrSpot);
@@ -795,6 +900,11 @@ export function computeDlrContractMetrics(input: DlrContractMetricsInput): DlrCo
       ? Math.max(1, Math.round((maturityUtcSec - input.asOfUtcSec) / 86_400))
       : Number.NaN;
 
+  const baseArs =
+    Number.isFinite(referencePrice) && Number.isFinite(spotUsed)
+      ? referencePrice - spotUsed
+      : Number.NaN;
+
   if (
     !Number.isFinite(referencePrice) ||
     !Number.isFinite(spotUsed) ||
@@ -803,11 +913,13 @@ export function computeDlrContractMetrics(input: DlrContractMetricsInput): DlrCo
   ) {
     return {
       priceBasis,
+      status,
       referencePrice,
       spotUsed,
       spotSource,
       maturityUtcSec,
       days,
+      baseArs,
       devalDirectaPct: Number.NaN,
       tnaImplicitaPct: Number.NaN,
       teaImplicitaPct: Number.NaN,
@@ -823,11 +935,13 @@ export function computeDlrContractMetrics(input: DlrContractMetricsInput): DlrCo
 
   return {
     priceBasis,
+    status,
     referencePrice,
     spotUsed,
     spotSource,
     maturityUtcSec,
     days,
+    baseArs,
     devalDirectaPct,
     tnaImplicitaPct,
     teaImplicitaPct,
@@ -1456,15 +1570,29 @@ export function mergePrimaryMarketData(
     marketId: next.marketId,
     bids: next.bids.length > 0 ? next.bids : previous.bids,
     asks: next.asks.length > 0 ? next.asks : previous.asks,
-    last: keep('last') ? previous.last : next.last,
-    settlement: keep('settlement') ? previous.settlement : next.settlement,
-    close: keep('close') ? previous.close : next.close,
-    open: keep('open') ? previous.open : next.open,
-    high: keep('high') ? previous.high : next.high,
-    low: keep('low') ? previous.low : next.low,
-    openInterest: keep('openInterest') ? previous.openInterest : next.openInterest,
-    nominalVolume: keep('nominalVolume') ? previous.nominalVolume : next.nominalVolume,
-    impliedVol: keep('impliedVol') ? previous.impliedVol : next.impliedVol,
+    // Pieza 44: un frame con LA/SE/CL en `null` fuera de rueda nunca borra el cierre previo válido.
+    last: keep('last') || (next.last === null && previous.last !== null) ? previous.last : next.last,
+    settlement:
+      keep('settlement') || (next.settlement === null && previous.settlement !== null)
+        ? previous.settlement
+        : next.settlement,
+    close:
+      keep('close') || (next.close === null && previous.close !== null) ? previous.close : next.close,
+    open: keep('open') || (next.open === null && previous.open !== null) ? previous.open : next.open,
+    high: keep('high') || (next.high === null && previous.high !== null) ? previous.high : next.high,
+    low: keep('low') || (next.low === null && previous.low !== null) ? previous.low : next.low,
+    openInterest:
+      keep('openInterest') || (next.openInterest === null && previous.openInterest !== null)
+        ? previous.openInterest
+        : next.openInterest,
+    nominalVolume:
+      keep('nominalVolume') || (next.nominalVolume === null && previous.nominalVolume !== null)
+        ? previous.nominalVolume
+        : next.nominalVolume,
+    impliedVol:
+      keep('impliedVol') || (next.impliedVol === null && previous.impliedVol !== null)
+        ? previous.impliedVol
+        : next.impliedVol,
     updatedAtUtcSec: (() => {
       const nextUpdated = next.updatedAtUtcSec ?? null;
       const previousUpdated = previous.updatedAtUtcSec ?? null;
@@ -1475,8 +1603,14 @@ export function mergePrimaryMarketData(
       if (nextFrame !== null && previousUpdated !== null && nextFrame > previousUpdated) return nextFrame;
       return previousUpdated;
     })(),
-    lastTradeAtUtcSec: keep('lastTradeAtUtcSec') ? previous.lastTradeAtUtcSec ?? null : next.lastTradeAtUtcSec ?? null,
-    turnover: keep('turnover') ? previous.turnover ?? null : next.turnover ?? null,
+    lastTradeAtUtcSec:
+      keep('lastTradeAtUtcSec') || (next.lastTradeAtUtcSec === null && previous.lastTradeAtUtcSec !== null)
+        ? previous.lastTradeAtUtcSec ?? null
+        : next.lastTradeAtUtcSec ?? null,
+    turnover:
+      keep('turnover') || (next.turnover === null && previous.turnover !== null)
+        ? previous.turnover ?? null
+        : next.turnover ?? null,
     frameAtUtcSec: next.frameAtUtcSec ?? previous.frameAtUtcSec ?? null,
   };
 }
@@ -1492,6 +1626,8 @@ export interface PrimaryRofexClientDeps {
   readonly retry429DelayMs?: number;
   /** Inyectable para tests: espera usada en pacing REST y backoff ante 429. */
   readonly sleepFn?: (ms: number) => Promise<void>;
+  /** Pieza 44: ruta opcional de caché en disco para cierres DLR/L2 (`null` desactiva I/O). */
+  readonly persistCachePath?: string | null;
 }
 
 /**
@@ -1531,6 +1667,7 @@ export class PrimaryRofexClient {
    */
   private readonly wsGroups = new Map<string, WsSubscriptionGroup>();
   private wsLastMessageAtMs = 0;
+  private wsConnectedAtMs = 0;
   private wsReconnectAttempts = 0;
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -1545,6 +1682,22 @@ export class PrimaryRofexClient {
     string,
     { readonly maturityDate: string | null; readonly contractMultiplier: number | null; readonly minPriceIncrement: number | null }
   >();
+  /** Pieza 44: cierres/ajustes (`SE`/`CL`/`LA`) persistentes por contrato `DLR/*` y último L2 MERV no vacío. */
+  private readonly dlrClosureCache = new Map<
+    string,
+    {
+      readonly last: number | null;
+      readonly settlement: number | null;
+      readonly close: number | null;
+      readonly openInterest: number | null;
+      readonly nominalVolume: number | null;
+      readonly updatedAtUtcSec: number | null;
+    }
+  >();
+  private readonly mervLastNonEmptyBook = new Map<string, OrderBook5LevelsDto>();
+  private readonly dlrRestEodFetchedAtMs = new Map<string, number>();
+  private readonly persistCachePath: string | null;
+  private lastPersistWriteMs = 0;
   /** Listener del tick ARS de GGAL (vela ARS + CCL implícito hacia ggalSpecialistRuntime). */
   private ggalArsTickListener:
     | ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void)
@@ -1607,6 +1760,160 @@ export class PrimaryRofexClient {
       ttlResolver: () => MD_CACHE_TTL_MS,
       nowFn: this.nowMsFn,
     });
+    // Solo persiste a disco en runtime real (no cuando se inyecta `fetchFn` en tests salvo que se especifique ruta).
+    this.persistCachePath =
+      deps.persistCachePath !== undefined
+        ? deps.persistCachePath
+        : deps.fetchFn === undefined
+          ? resolvePath(process.cwd(), '.cache', 'primary-eod-closures.json')
+          : null;
+    this.loadPersistedClosuresFromDisk();
+  }
+
+  private loadPersistedClosuresFromDisk(): void {
+    if (this.persistCachePath === null || !existsSync(this.persistCachePath)) {
+      return;
+    }
+    try {
+      const raw = readFileSync(this.persistCachePath, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isPlainRecord(parsed)) return;
+      if (isPlainRecord(parsed['dlrClosures'])) {
+        for (const [sym, entry] of Object.entries(parsed['dlrClosures'])) {
+          if (!isPlainRecord(entry)) continue;
+          const settlement = readNum(entry, ['settlement']);
+          const close = readNum(entry, ['close']);
+          const last = readNum(entry, ['last']);
+          if (settlement === null && close === null && last === null) continue;
+          this.dlrClosureCache.set(sym, {
+            last,
+            settlement,
+            close,
+            openInterest: readNum(entry, ['openInterest']),
+            nominalVolume: readNum(entry, ['nominalVolume']),
+            updatedAtUtcSec: readNum(entry, ['updatedAtUtcSec']),
+          });
+        }
+      }
+      if (isPlainRecord(parsed['mervBooks'])) {
+        for (const [bookKey, dto] of Object.entries(parsed['mervBooks'])) {
+          if (!isPlainRecord(dto)) continue;
+          const bidsRaw = Array.isArray(dto['bids']) ? dto['bids'] : [];
+          const asksRaw = Array.isArray(dto['asks']) ? dto['asks'] : [];
+          if (bidsRaw.length === 0 && asksRaw.length === 0) continue;
+          this.mervLastNonEmptyBook.set(bookKey, dto as unknown as OrderBook5LevelsDto);
+        }
+      }
+    } catch {
+      // Caché corrupta o ilegible se ignora sin bloquear el arranque.
+    }
+  }
+
+  private savePersistedClosuresToDisk(force = false): void {
+    if (this.persistCachePath === null) return;
+    const nowMs = this.nowMsFn();
+    if (!force && nowMs - this.lastPersistWriteMs < 15_000) return;
+    this.lastPersistWriteMs = nowMs;
+    try {
+      mkdirSync(dirname(this.persistCachePath), { recursive: true });
+      const dlrClosures: Record<string, unknown> = {};
+      for (const [k, v] of this.dlrClosureCache) {
+        dlrClosures[k] = v;
+      }
+      const mervBooks: Record<string, unknown> = {};
+      for (const [k, v] of this.mervLastNonEmptyBook) {
+        mervBooks[k] = v;
+      }
+      writeFileSync(
+        this.persistCachePath,
+        JSON.stringify({ savedAtUtcSec: Math.floor(nowMs / 1_000), dlrClosures, mervBooks }),
+        'utf8',
+      );
+    } catch {
+      // Escritura best-effort en caché de disco.
+    }
+  }
+
+  private recordDlrClosureFromSnapshot(symbol: string, snap: ParsedPrimaryMarketData): void {
+    if (!symbol.startsWith('DLR/')) return;
+    const prev = this.dlrClosureCache.get(symbol);
+    const last = snap.last !== null && Number.isFinite(snap.last) && snap.last > 0
+      ? snap.last
+      : prev?.last ?? null;
+    const settlement = snap.settlement !== null && Number.isFinite(snap.settlement) && snap.settlement > 0
+      ? snap.settlement
+      : prev?.settlement ?? null;
+    const close = snap.close !== null && Number.isFinite(snap.close) && snap.close > 0
+      ? snap.close
+      : prev?.close ?? null;
+    if (last === null && settlement === null && close === null) {
+      return;
+    }
+    this.dlrClosureCache.set(symbol, {
+      last,
+      settlement,
+      close,
+      openInterest: snap.openInterest ?? prev?.openInterest ?? null,
+      nominalVolume: snap.nominalVolume ?? prev?.nominalVolume ?? null,
+      updatedAtUtcSec: snap.updatedAtUtcSec ?? prev?.updatedAtUtcSec ?? null,
+    });
+    this.savePersistedClosuresToDisk(false);
+  }
+
+  private buildMervOrderBookDto(
+    cleanTicker: string,
+    marketSymbol: string,
+    settlement: string,
+    md: ParsedPrimaryMarketData,
+    hasLiveDepth: boolean,
+    isEodCached = false,
+  ): OrderBook5LevelsDto {
+    const metrics = computeOrderBookL2Metrics(md.bids, md.asks);
+    return {
+      symbol: cleanTicker,
+      marketSymbol,
+      settlement,
+      marketState: hasLiveDepth && !isEodCached ? 'LIVE' : 'WEEKEND_CLOSED',
+      bookStatus: hasLiveDepth && !isEodCached ? 'LIVE' : 'EOD_CIERRE',
+      isEodCached,
+      source: 'PRIMARY_MERV',
+      asOfUtcSec: md.updatedAtUtcSec,
+      bids: md.bids,
+      asks: md.asks,
+      bestBid: sanitizeNum(metrics.bestBid),
+      bestAsk: sanitizeNum(metrics.bestAsk),
+      mid: sanitizeNum(metrics.mid),
+      spreadArs: sanitizeNum(metrics.spread),
+      spreadPct: sanitizeNum(metrics.spreadPct),
+      bidDepthSize: sanitizeNum(metrics.bidDepthSize),
+      askDepthSize: sanitizeNum(metrics.askDepthSize),
+      vwapBid5: sanitizeNum(metrics.vwapBid5),
+      vwapAsk5: sanitizeNum(metrics.vwapAsk5),
+      vwapBook5: sanitizeNum(metrics.vwapBook5),
+      obi5: sanitizeNum(metrics.obi5),
+      last: md.last,
+      open: md.open,
+      high: md.high,
+      low: md.low,
+      close: md.close,
+      settlementPrice: md.settlement,
+      nominalVolume: md.nominalVolume,
+    };
+  }
+
+  private recordMervNonEmptyBook(
+    ticker: string,
+    settlement: string,
+    dto: OrderBook5LevelsDto,
+  ): void {
+    if (dto.bids.length === 0 && dto.asks.length === 0) return;
+    const clean = ticker.toUpperCase();
+    const settUpper = settlement.toUpperCase();
+    this.mervLastNonEmptyBook.set(`${clean}:${settUpper}`, dto);
+    if (!this.mervLastNonEmptyBook.has(clean) || settUpper === '24HS') {
+      this.mervLastNonEmptyBook.set(clean, dto);
+    }
+    this.savePersistedClosuresToDisk(true);
   }
 
   public isConfigured(): boolean {
@@ -1934,6 +2241,21 @@ export class PrimaryRofexClient {
       { forceRefresh },
     );
     const restSnap = res.value;
+    if (restSnap !== null) {
+      this.recordDlrClosureFromSnapshot(symbol, restSnap);
+      const mervParsedRest = parseMervInstrumentSymbol(symbol);
+      if (mervParsedRest !== null && (restSnap.bids.length > 0 || restSnap.asks.length > 0)) {
+        const dtoRest = this.buildMervOrderBookDto(
+          mervParsedRest.ticker,
+          symbol,
+          mervParsedRest.settlement,
+          restSnap,
+          true,
+          false,
+        );
+        this.recordMervNonEmptyBook(mervParsedRest.ticker, mervParsedRest.settlement, dtoRest);
+      }
+    }
     if (wsSnap !== undefined && restSnap !== null) {
       const wsTime = wsSnap.updatedAtUtcSec ?? 0;
       const restTime = restSnap.updatedAtUtcSec ?? 0;
@@ -2082,6 +2404,7 @@ export class PrimaryRofexClient {
             return;
           }
           this.wsConnected = true;
+          this.wsConnectedAtMs = this.nowMsFn();
           this.wsReconnectAttempts = 0;
           this.lastError = null;
           this.startWsHeartbeat(sock);
@@ -2149,6 +2472,7 @@ export class PrimaryRofexClient {
               const snapshot = mergePrimaryMarketData(previous, nextSnapshot, present);
               this.wsSnapshots.set(key, snapshot);
               if (sym.startsWith('DLR/')) {
+                this.recordDlrClosureFromSnapshot(sym, snapshot);
                 this.wsTelemetry.record({
                   atMs: receivedAtMs,
                   latencyMs:
@@ -2160,15 +2484,28 @@ export class PrimaryRofexClient {
                 this.recomputeLiveDlrDerived();
               }
               const mervParsed = parseMervInstrumentSymbol(sym);
-              if (mervParsed !== null && this.mervMarketDataListener !== null) {
-                this.mervMarketDataListener({
-                  symbol: sym,
-                  marketId: mkt,
-                  ticker: mervParsed.ticker,
-                  settlement: mervParsed.settlement,
-                  snapshot,
-                  receivedAtUtcSec: receivedSec,
-                });
+              if (mervParsed !== null) {
+                if (snapshot.bids.length > 0 || snapshot.asks.length > 0) {
+                  const dtoLive = this.buildMervOrderBookDto(
+                    mervParsed.ticker,
+                    sym,
+                    mervParsed.settlement,
+                    snapshot,
+                    true,
+                    false,
+                  );
+                  this.recordMervNonEmptyBook(mervParsed.ticker, mervParsed.settlement, dtoLive);
+                }
+                if (this.mervMarketDataListener !== null) {
+                  this.mervMarketDataListener({
+                    symbol: sym,
+                    marketId: mkt,
+                    ticker: mervParsed.ticker,
+                    settlement: mervParsed.settlement,
+                    snapshot,
+                    receivedAtUtcSec: receivedSec,
+                  });
+                }
               }
               if (
                 mervParsed !== null &&
@@ -2327,6 +2664,7 @@ export class PrimaryRofexClient {
 
   private recomputeLiveDlrDerived(): void {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const outOfSession = isArMarketOutOfSession(nowSec);
     const spotSnap = this.wsSnapshots.get('ROFX:DLR/SPOT') ?? null;
     const dlrSpot =
       spotSnap?.last ??
@@ -2345,17 +2683,25 @@ export class PrimaryRofexClient {
       const symbol = key.slice(separator + 1);
       const category = classifyDlrSymbol(symbol);
       if (category !== 'OUTRIGHT' && category !== 'MINI' && category !== 'SPOT') continue;
+      const closure = this.dlrClosureCache.get(symbol);
+      const effLast = snap.last ?? closure?.last ?? null;
+      const effSettlement = snap.settlement ?? closure?.settlement ?? null;
+      const effClose = snap.close ?? closure?.close ?? null;
+      const effOi = snap.openInterest ?? closure?.openInterest ?? null;
+      const effNv = snap.nominalVolume ?? closure?.nominalVolume ?? null;
+      const effUpdated = snap.updatedAtUtcSec ?? closure?.updatedAtUtcSec ?? null;
       const detail = this.dlrDetailBySymbol.get(symbol) ?? null;
       const metrics = computeDlrContractMetrics({
         asOfUtcSec: nowSec,
         maturityDate: detail?.maturityDate ?? inferDlrMaturityDateStr(symbol),
-        last: snap.last,
+        last: effLast,
         bestBid: snap.bids[0]?.price,
         bestAsk: snap.asks[0]?.price,
-        settlement: snap.settlement,
-        close: snap.close,
+        settlement: effSettlement,
+        close: effClose,
         a3500: this.referenceSpotA3500,
         dlrSpot,
+        outOfSession,
       });
       const expiryUtcSec = sanitizeNum(metrics.maturityUtcSec);
       contracts.push({
@@ -2368,9 +2714,11 @@ export class PrimaryRofexClient {
         days: sanitizeNum(metrics.days),
         price: sanitizeNum(metrics.referencePrice),
         priceBasis: metrics.priceBasis,
-        last: snap.last,
-        settlement: snap.settlement,
-        close: snap.close,
+        status: metrics.status,
+        baseArs: sanitizeNum(metrics.baseArs),
+        last: effLast,
+        settlement: effSettlement,
+        close: effClose,
         bid: snap.bids[0]?.price ?? null,
         bidPrice: snap.bids[0]?.price ?? null,
         bidSize: snap.bids[0]?.size ?? null,
@@ -2379,8 +2727,8 @@ export class PrimaryRofexClient {
         askSize: snap.asks[0]?.size ?? null,
         bids: snap.bids,
         asks: snap.asks,
-        openInterest: snap.openInterest,
-        nominalVolume: snap.nominalVolume,
+        openInterest: effOi,
+        nominalVolume: effNv,
         open: snap.open,
         high: snap.high,
         low: snap.low,
@@ -2393,7 +2741,7 @@ export class PrimaryRofexClient {
         forwardToForwardPct: null,
         contractMultiplier: detail?.contractMultiplier ?? null,
         minPriceIncrement: detail?.minPriceIncrement ?? null,
-        updatedAtUtcSec: snap.updatedAtUtcSec,
+        updatedAtUtcSec: effUpdated,
         source: 'PRIMARY_ROFEX',
       });
     }
@@ -2518,6 +2866,7 @@ export class PrimaryRofexClient {
     readonly asOfUtcSec: number;
     readonly a3500: number | null;
     readonly forceRefresh?: boolean;
+    readonly allowRestEodFallback?: boolean;
   }): Promise<{
     readonly spotUsed: number | null;
     readonly spotSource: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE';
@@ -2557,23 +2906,61 @@ export class PrimaryRofexClient {
         params.a3500 !== null && Number.isFinite(params.a3500) && params.a3500 > 0 ? params.a3500 : null;
       const resolvedSpotSource: 'A3500_BCRA' | 'DLR_SPOT' | 'NONE' =
         resolvedSpotUsed !== null ? 'A3500_BCRA' : 'NONE';
+      const outOfSession = isArMarketOutOfSession(params.asOfUtcSec);
+      const nowMs = this.nowMsFn();
+      const wsGraceElapsed =
+        !this.wsConnected ||
+        this.wsConnectedAtMs <= 0 ||
+        nowMs - this.wsConnectedAtMs >= 3_000;
+
+      if (outOfSession && (params.allowRestEodFallback === true || wsGraceElapsed)) {
+        // Fuera de rueda (tras ventana inicial WS), hidrata cierres/ajustes faltantes (SE/CL/LA) vía snapshot REST con cooldown.
+        for (const inst of products) {
+          const wsKey = `${inst.marketId}:${inst.symbol}`;
+          const wsSnap = this.wsSnapshots.get(wsKey);
+          const cached = this.dlrClosureCache.get(inst.symbol);
+          const hasAnyRef =
+            (wsSnap?.settlement ?? cached?.settlement ?? null) !== null ||
+            (wsSnap?.close ?? cached?.close ?? null) !== null ||
+            (wsSnap?.last ?? cached?.last ?? null) !== null;
+          if (hasAnyRef) continue;
+          const lastRestAttempt = this.dlrRestEodFetchedAtMs.get(inst.symbol) ?? 0;
+          if (!params.forceRefresh && lastRestAttempt > 0 && nowMs - lastRestAttempt < 5 * 60_000) {
+            continue;
+          }
+          this.dlrRestEodFetchedAtMs.set(inst.symbol, nowMs);
+          const restSnap = await this.getMarketData(inst.symbol, inst.marketId, 5, false).catch(() => null);
+          if (restSnap !== null) {
+            const merged = mergePrimaryMarketData(wsSnap ?? null, restSnap, new Set(['BI', 'OF', 'LA', 'SE', 'CL', 'OI', 'NV']));
+            this.wsSnapshots.set(wsKey, merged);
+            this.recordDlrClosureFromSnapshot(inst.symbol, merged);
+          }
+        }
+        this.savePersistedClosuresToDisk(true);
+      }
 
       const contracts: PrimaryDlrContractDto[] = products.map((inst) => {
         const snap = this.wsSnapshots.get(`${inst.marketId}:${inst.symbol}`) ?? null;
+        const closure = this.dlrClosureCache.get(inst.symbol);
+        const effLast = snap?.last ?? closure?.last ?? null;
+        const effSettlement = snap?.settlement ?? closure?.settlement ?? null;
+        const effClose = snap?.close ?? closure?.close ?? null;
+        const effOi = snap?.openInterest ?? closure?.openInterest ?? null;
+        const effNv = snap?.nominalVolume ?? closure?.nominalVolume ?? null;
+        const effUpdated = snap?.updatedAtUtcSec ?? closure?.updatedAtUtcSec ?? null;
         const maturityDateRaw =
           this.dlrDetailBySymbol.get(inst.symbol)?.maturityDate ?? inferDlrMaturityDateStr(inst.symbol);
-        // Sin snapshot WS todavía: todas las lecturas de precio quedan ausentes (NaN),
-        // de modo que la UI muestra "—" en lugar de un precio de respaldo.
         const metrics = computeDlrContractMetrics({
           asOfUtcSec: params.asOfUtcSec,
           maturityDate: maturityDateRaw,
-          last: snap?.last,
+          last: effLast,
           bestBid: snap?.bids[0]?.price,
           bestAsk: snap?.asks[0]?.price,
-          settlement: snap?.settlement,
-          close: snap?.close,
+          settlement: effSettlement,
+          close: effClose,
           a3500: params.a3500,
           dlrSpot: null,
+          outOfSession,
         });
         const expiryUtcSec = sanitizeNum(metrics.maturityUtcSec);
         const maturityIso =
@@ -2589,9 +2976,11 @@ export class PrimaryRofexClient {
           days: sanitizeNum(metrics.days),
           price: sanitizeNum(metrics.referencePrice),
           priceBasis: metrics.priceBasis,
-          last: snap?.last ?? null,
-          settlement: snap?.settlement ?? null,
-          close: snap?.close ?? null,
+          status: metrics.status,
+          baseArs: sanitizeNum(metrics.baseArs),
+          last: effLast,
+          settlement: effSettlement,
+          close: effClose,
           bid: snap?.bids[0]?.price ?? null,
           bidPrice: snap?.bids[0]?.price ?? null,
           bidSize: snap?.bids[0]?.size ?? null,
@@ -2600,8 +2989,8 @@ export class PrimaryRofexClient {
           askSize: snap?.asks[0]?.size ?? null,
           bids: snap?.bids ?? [],
           asks: snap?.asks ?? [],
-          openInterest: snap?.openInterest ?? null,
-          nominalVolume: snap?.nominalVolume ?? null,
+          openInterest: effOi,
+          nominalVolume: effNv,
           open: snap?.open ?? null,
           high: snap?.high ?? null,
           low: snap?.low ?? null,
@@ -2614,7 +3003,7 @@ export class PrimaryRofexClient {
           forwardToForwardPct: null,
           contractMultiplier: detail?.contractMultiplier ?? null,
           minPriceIncrement: detail?.minPriceIncrement ?? null,
-          updatedAtUtcSec: snap?.updatedAtUtcSec ?? null,
+          updatedAtUtcSec: effUpdated,
           source: 'PRIMARY_ROFEX',
         };
       });
@@ -2642,7 +3031,77 @@ export class PrimaryRofexClient {
   }
 
   /**
-   * Obtiene caja de 5 puntas L2 desde segmento MERV de Primary para un ticker BYMA.
+   * Pieza 44: Consulta síncrona en memoria/caché del último libro L2 5 puntas MERV
+   * sin bloquear por red (soporta claves `AR:GGAL:24hs`, `MERV - XMEV - GGAL - 24hs`, `GGAL` y fallback `CI`/EOD).
+   */
+  public getCachedMervOrderBook5LevelsSync(
+    rawTicker: string,
+    preferredSettlement?: '24HS' | 'CI',
+  ): OrderBook5LevelsDto | null {
+    const target = resolveMervBookTarget(rawTicker, preferredSettlement);
+    if (target.ticker === '') return null;
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+    const outOfSession = isArMarketOutOfSession(nowSec);
+    const matches: Array<{
+      readonly symbol: string;
+      readonly settlement: string;
+      readonly snap: ParsedPrimaryMarketData;
+    }> = [];
+
+    for (const [key, snap] of this.wsSnapshots) {
+      const sep = key.indexOf(':');
+      const sym = sep >= 0 ? key.slice(sep + 1) : key;
+      const parsed = parseMervInstrumentSymbol(sym);
+      if (parsed === null || parsed.ticker !== target.ticker) continue;
+      if (snap.bids.length === 0 && snap.asks.length === 0) continue;
+      matches.push({ symbol: sym, settlement: parsed.settlement, snap });
+    }
+
+    const wantSett = target.preferredSettlement ?? '24HS';
+    const picked =
+      matches.find((m) => m.settlement.toUpperCase() === wantSett) ??
+      matches.find((m) => m.settlement.toUpperCase() === '24HS') ??
+      matches.find((m) => m.settlement.toUpperCase() === 'CI') ??
+      matches[0];
+
+    if (picked !== undefined) {
+      const updatedSec = picked.snap.updatedAtUtcSec;
+      const freshLive =
+        !outOfSession &&
+        updatedSec !== null &&
+        updatedSec > 0 &&
+        nowSec >= updatedSec &&
+        nowSec - updatedSec <= LIVE_MERV_WS_MAX_AGE_SEC;
+      return this.buildMervOrderBookDto(
+        target.ticker,
+        picked.symbol,
+        picked.settlement,
+        picked.snap,
+        true,
+        !freshLive,
+      );
+    }
+
+    const cachedDto =
+      this.mervLastNonEmptyBook.get(`${target.ticker}:${wantSett}`) ??
+      this.mervLastNonEmptyBook.get(`${target.ticker}:24HS`) ??
+      this.mervLastNonEmptyBook.get(`${target.ticker}:CI`) ??
+      this.mervLastNonEmptyBook.get(target.ticker) ??
+      null;
+    if (cachedDto !== null && (cachedDto.bids.length > 0 || cachedDto.asks.length > 0)) {
+      return {
+        ...cachedDto,
+        marketState: 'WEEKEND_CLOSED',
+        bookStatus: 'EOD_CIERRE',
+        isEodCached: true,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Obtiene caja de 5 puntas L2 desde segmento MERV de Primary para un ticker BYMA
+   * (acepta claves `AR:GGAL:24hs` / `MERV - XMEV - GGAL - 24hs`, con fallback `CI` y EOD cacheado).
    */
   public async getMervOrderBook5Levels(
     rawTicker: string,
@@ -2652,10 +3111,29 @@ export class PrimaryRofexClient {
     if (!this.config.configured) {
       return null;
     }
-    const cleanTicker = rawTicker.trim().toUpperCase();
+    const target = resolveMervBookTarget(rawTicker, preferredSettlement);
+    const cleanTicker = target.ticker;
+    const effPreferredSettlement = target.preferredSettlement;
+    if (cleanTicker === '') {
+      return null;
+    }
     try {
       const mervList = await this.getInstrumentsBySegment('MERV', 'ROFX', false);
-      const candidates = mervList
+      const mergedItems = new Map<string, { readonly marketId: string; readonly symbol: string }>();
+      for (const item of mervList) {
+        mergedItems.set(`${item.marketId}:${item.symbol}`, item);
+      }
+      for (const key of this.wsSnapshots.keys()) {
+        const sep = key.indexOf(':');
+        if (sep < 0) continue;
+        const marketId = key.slice(0, sep);
+        const symbol = key.slice(sep + 1);
+        if (marketId === 'MERV' || symbol.startsWith('MERV -')) {
+          mergedItems.set(key, { marketId, symbol });
+        }
+      }
+
+      let candidates = [...mergedItems.values()]
         .map((item) => ({ item, parsed: parseMervInstrumentSymbol(item.symbol) }))
         .filter(
           (entry): entry is {
@@ -2663,14 +3141,27 @@ export class PrimaryRofexClient {
             readonly parsed: NonNullable<ReturnType<typeof parseMervInstrumentSymbol>>;
           } => entry.parsed !== null && entry.parsed.ticker === cleanTicker,
         );
+
       if (candidates.length === 0) {
-        return null;
+        const catalog = await this.getAllInstruments(false).catch(() => []);
+        candidates = catalog
+          .map((item) => ({ item, parsed: parseMervInstrumentSymbol(item.symbol) }))
+          .filter(
+            (entry): entry is {
+              readonly item: { readonly marketId: string; readonly symbol: string };
+              readonly parsed: NonNullable<ReturnType<typeof parseMervInstrumentSymbol>>;
+            } => entry.parsed !== null && entry.parsed.ticker === cleanTicker,
+          );
+      }
+
+      if (candidates.length === 0) {
+        return this.getCachedMervOrderBook5LevelsSync(cleanTicker, effPreferredSettlement);
       }
 
       const preferred =
-        preferredSettlement === 'CI'
+        effPreferredSettlement === 'CI'
           ? candidates.find((c) => c.parsed.settlement.toUpperCase() === 'CI')
-          : preferredSettlement === '24HS'
+          : effPreferredSettlement === '24HS'
             ? candidates.find((c) => c.parsed.settlement.toUpperCase() === '24HS')
             : (candidates.find((c) => c.parsed.settlement.toUpperCase() === '24HS') ??
               candidates.find((c) => c.parsed.settlement.toUpperCase() === 'CI') ??
@@ -2679,66 +3170,74 @@ export class PrimaryRofexClient {
         return null;
       }
 
-      // Fast path en vivo: con el stream L2 BYMA conectado, el snapshot WS `Md`
-      // más reciente alimenta la 5 puntas sin REST (ggalSpecialistRuntime y
-      // StockDetailView la consumen con prioridad cuando BMB L2 está deshabilitado).
-      const nowSecForWs = Math.floor(this.nowMsFn() / 1_000);
-      const liveSnap =
-        this.wsSnapshots.get(`${preferred.item.marketId}:${preferred.item.symbol}`) ?? null;
-      const liveSnapFresh =
-        liveSnap !== null &&
-        liveSnap.updatedAtUtcSec !== null &&
-        liveSnap.updatedAtUtcSec > 0 &&
-        nowSecForWs >= liveSnap.updatedAtUtcSec &&
-        nowSecForWs - liveSnap.updatedAtUtcSec <= LIVE_MERV_WS_MAX_AGE_SEC &&
-        (liveSnap.bids.length > 0 || liveSnap.asks.length > 0 || liveSnap.last !== null);
+      const loadForCandidate = async (cand: typeof preferred): Promise<{
+        readonly md: ParsedPrimaryMarketData | null;
+        readonly hasLiveDepth: boolean;
+      }> => {
+        const nowSecForWs = Math.floor(this.nowMsFn() / 1_000);
+        const liveSnap =
+          this.wsSnapshots.get(`${cand.item.marketId}:${cand.item.symbol}`) ?? null;
+        const liveSnapFresh =
+          liveSnap !== null &&
+          liveSnap.updatedAtUtcSec !== null &&
+          liveSnap.updatedAtUtcSec > 0 &&
+          nowSecForWs >= liveSnap.updatedAtUtcSec &&
+          nowSecForWs - liveSnap.updatedAtUtcSec <= LIVE_MERV_WS_MAX_AGE_SEC &&
+          (liveSnap.bids.length > 0 || liveSnap.asks.length > 0 || liveSnap.last !== null);
 
-      let md: ParsedPrimaryMarketData | null = null;
-      if (liveSnapFresh) {
-        // `liveSnapFresh` (alias const de la condición) ya angosta liveSnap a no-null (TS 4.4+).
-        md = liveSnap;
-      } else {
-        md = await this.getMarketData(
-          preferred.item.symbol,
-          preferred.item.marketId,
-          5,
-          forceRefresh,
-        );
+        const md = liveSnapFresh
+          ? liveSnap
+          : await this.getMarketData(cand.item.symbol, cand.item.marketId, 5, forceRefresh);
+        const hasLiveDepth = md !== null && (md.bids.length > 0 || md.asks.length > 0);
+        return { md, hasLiveDepth };
+      };
+
+      let chosenCand = preferred;
+      let { md, hasLiveDepth } = await loadForCandidate(preferred);
+
+      if (!hasLiveDepth) {
+        const wantAlt = preferred.parsed.settlement.toUpperCase() === 'CI' ? '24HS' : 'CI';
+        const altCand = candidates.find((c) => c.parsed.settlement.toUpperCase() === wantAlt);
+        if (altCand !== undefined) {
+          const altRes = await loadForCandidate(altCand);
+          if (altRes.hasLiveDepth) {
+            chosenCand = altCand;
+            md = altRes.md;
+            hasLiveDepth = true;
+          }
+        }
       }
+
+      if (md !== null && hasLiveDepth) {
+        const liveDto = this.buildMervOrderBookDto(
+          cleanTicker,
+          chosenCand.item.symbol,
+          chosenCand.parsed.settlement,
+          md,
+          true,
+          false,
+        );
+        this.recordMervNonEmptyBook(cleanTicker, chosenCand.parsed.settlement, liveDto);
+        return liveDto;
+      }
+
+      const cachedEod = this.getCachedMervOrderBook5LevelsSync(cleanTicker, effPreferredSettlement);
+      if (cachedEod !== null) {
+        return cachedEod;
+      }
+
       if (md === null) {
         return null;
       }
-      const metrics = computeOrderBookL2Metrics(md.bids, md.asks);
-      const hasLiveDepth = md.bids.length > 0 || md.asks.length > 0;
 
-      return {
-        symbol: cleanTicker,
-        marketSymbol: preferred.item.symbol,
-        settlement: preferred.parsed.settlement,
-        marketState: hasLiveDepth ? 'LIVE' : 'WEEKEND_CLOSED',
-        source: 'PRIMARY_MERV',
-        asOfUtcSec: md.updatedAtUtcSec,
-        bids: md.bids,
-        asks: md.asks,
-        bestBid: sanitizeNum(metrics.bestBid),
-        bestAsk: sanitizeNum(metrics.bestAsk),
-        mid: sanitizeNum(metrics.mid),
-        spreadArs: sanitizeNum(metrics.spread),
-        spreadPct: sanitizeNum(metrics.spreadPct),
-        bidDepthSize: sanitizeNum(metrics.bidDepthSize),
-        askDepthSize: sanitizeNum(metrics.askDepthSize),
-        vwapBid5: sanitizeNum(metrics.vwapBid5),
-        vwapAsk5: sanitizeNum(metrics.vwapAsk5),
-        vwapBook5: sanitizeNum(metrics.vwapBook5),
-        obi5: sanitizeNum(metrics.obi5),
-        last: md.last,
-        open: md.open,
-        high: md.high,
-        low: md.low,
-        close: md.close,
-        settlementPrice: md.settlement,
-        nominalVolume: md.nominalVolume,
-      };
+      return this.buildMervOrderBookDto(
+        cleanTicker,
+        chosenCand.item.symbol,
+        chosenCand.parsed.settlement,
+        md,
+        false,
+        false,
+      );
     } catch (err: unknown) {
       this.lastError = this.redact(err instanceof Error ? err.message : String(err));
       return null;

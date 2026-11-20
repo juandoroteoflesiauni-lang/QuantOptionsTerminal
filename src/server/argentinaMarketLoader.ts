@@ -3512,6 +3512,7 @@ export class ArgentinaMarketRuntime {
   private lastMonitoring: ArMonitoringResponse | null = null;
   private lastMacro: ArMacroResponse | null = null;
   private lastBmbSnapshot: BmbBridgeSnapshotDto | null = null;
+  private readonly lastOptionsBySymbol = new Map<string, ArOptionsResponse>();
   private liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private liveStreaming = false;
   private liveRefreshInFlight = false;
@@ -3742,6 +3743,22 @@ export class ArgentinaMarketRuntime {
     return this.iolClient.getFeedHealth();
   }
 
+  /** Pieza 44: accesores síncronos en memoria/caché para fast-path de GGAL Specialist. */
+  public getCachedPrimaryMervBook(
+    rawTicker: string,
+    preferredSettlement?: '24HS' | 'CI',
+  ): OrderBook5LevelsDto | null {
+    return this.primaryClient.getCachedMervOrderBook5LevelsSync(rawTicker, preferredSettlement);
+  }
+
+  public getCachedOptionsChain(rawUnderlying = 'GGAL'): ArOptionsResponse | null {
+    return this.lastOptionsBySymbol.get(rawUnderlying.trim().toUpperCase()) ?? null;
+  }
+
+  public getCachedBmbSnapshot(): BmbBridgeSnapshotDto | null {
+    return this.lastBmbSnapshot;
+  }
+
   /** Pieza 33: reconexión individual de Primary DLR con token nuevo. */
   public async reconnectPrimaryDlr(): Promise<string> {
     await this.primaryClient.reconnectDlrLiveStream();
@@ -3799,13 +3816,17 @@ export class ArgentinaMarketRuntime {
       ...SOVEREIGN_BONDS.flatMap((bond) => [bond.baseTicker, `${bond.baseTicker}D`, `${bond.baseTicker}C`]),
     ];
     this.realtimeBus.start(symbols);
-    void this.primaryClient.startDlrLiveStream().catch(() => undefined);
-    // Stream productivo Eco Valores XOMS: L2 BYMA 5 puntas (MERV) + curva DLR/*.
-    void this.primaryClient.startBymaL2LiveStream({
-      fixedIncomeTickers: SOVEREIGN_BONDS
-        .filter((bond) => bond.currency === 'CER')
-        .map((bond) => bond.baseTicker),
-    }).catch(() => undefined);
+    // Stream productivo Eco Valores XOMS: L2 BYMA 5 puntas (MERV) + curva DLR/* (incluyendo CL y SE).
+    void this.primaryClient
+      .startBymaL2LiveStream({
+        fixedIncomeTickers: SOVEREIGN_BONDS
+          .filter((bond) => bond.currency === 'CER')
+          .map((bond) => bond.baseTicker),
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        void this.primaryClient.startDlrLiveStream().catch(() => undefined);
+      });
     const run = async (): Promise<void> => {
       if (!this.liveStreaming || this.liveRefreshInFlight) return;
       const inSession = isBymaL2SessionUtcSec(Math.floor(this.nowMsFn() / 1_000));
@@ -7451,8 +7472,14 @@ export class ArgentinaMarketRuntime {
         settlementPrice: null,
         nominalVolume: null,
       };
+    } else if (mervBook !== null && (mervBook.bids.length > 0 || mervBook.asks.length > 0)) {
+      orderBook5Levels = mervBook;
+    } else if (mervBookCi !== null && (mervBookCi.bids.length > 0 || mervBookCi.asks.length > 0)) {
+      orderBook5Levels = mervBookCi;
     } else if (mervBook !== null) {
       orderBook5Levels = mervBook;
+    } else if (mervBookCi !== null) {
+      orderBook5Levels = mervBookCi;
     } else if (stock !== null) {
       const l1Bids = stock.bid !== null && Number.isFinite(stock.bid) && stock.bid > 0 ? [{ price: stock.bid, size: 0 }] : [];
       const l1Asks = stock.ask !== null && Number.isFinite(stock.ask) && stock.ask > 0 ? [{ price: stock.ask, size: 0 }] : [];
@@ -8923,7 +8950,9 @@ export class ArgentinaMarketRuntime {
       { forceRefresh },
     );
 
-    return cached.value as ArOptionsResponse;
+    const result = cached.value as ArOptionsResponse;
+    this.lastOptionsBySymbol.set(rawUnderlying.trim().toUpperCase(), result);
+    return result;
   }
 
   private async getUsDailyBars1dMap(

@@ -2112,6 +2112,67 @@ export function classifyDealerGammaRegimeFromSummary(
   };
 }
 
+export interface MaxPainContractInput {
+  readonly strike: number;
+  readonly contractType: 'call' | 'put';
+  readonly openInterest: number;
+}
+
+/**
+ * Calcula el Max Pain determinístico sobre una cadena de opciones con strikes y OI válidos.
+ * Minimiza el valor intrínseco agregado al vencimiento asumiendo lote estándar uniforme;
+ * ante empate exacto, escoge el menor strike candidato. Devuelve `NaN` si faltan strikes u OI > 0.
+ */
+export function computeMaxPainStrike(contracts: readonly MaxPainContractInput[]): number {
+  const byStrike = new Map<number, { callOi: number; putOi: number }>();
+  let totalOi = 0;
+
+  for (const c of contracts) {
+    if (
+      !Number.isFinite(c.strike) ||
+      c.strike <= 0 ||
+      !Number.isFinite(c.openInterest) ||
+      c.openInterest <= 0
+    ) {
+      continue;
+    }
+    const existing = byStrike.get(c.strike) ?? { callOi: 0, putOi: 0 };
+    if (c.contractType === 'call') {
+      existing.callOi += c.openInterest;
+    } else {
+      existing.putOi += c.openInterest;
+    }
+    byStrike.set(c.strike, existing);
+    totalOi += c.openInterest;
+  }
+
+  if (byStrike.size === 0 || totalOi <= 0) {
+    return Number.NaN;
+  }
+
+  const strikes = [...byStrike.keys()].sort((a, b) => a - b);
+  let bestStrike = Number.NaN;
+  let minPayout = Number.POSITIVE_INFINITY;
+
+  for (const cand of strikes) {
+    let payout = 0;
+    for (const [k, oi] of byStrike) {
+      if (cand > k && oi.callOi > 0) {
+        payout += (cand - k) * oi.callOi;
+      }
+      if (cand < k && oi.putOi > 0) {
+        payout += (k - cand) * oi.putOi;
+      }
+    }
+    if (payout < minPayout - 1e-9) {
+      minPayout = payout;
+      bestStrike = cand;
+    }
+  }
+
+  return bestStrike;
+}
+
 /**
  * Clasifica el régimen de gamma de dealers directamente desde un `DealerExposureResult`.
  */

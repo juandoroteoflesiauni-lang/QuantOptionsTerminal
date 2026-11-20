@@ -207,7 +207,8 @@ import {
   GGAL_DEEP_HISTORY_MAX_BARS,
   GgalAdrDeepHistoryStore,
   isGgalDeepHistoryTimeframe,
-  type GgalDeepHistoryTimeframe,
+  isGgalPaginatedHistoryTimeframe,
+  type GgalPaginatedHistoryTimeframe,
 } from './ggalDeepHistory.js';
 import { loadBars } from '../data/loader.js';
 import {
@@ -8431,8 +8432,10 @@ export class MarketRuntime {
     // proveedor: las consultas posteriores responden desde la caché (<15 ms).
     const useDeepHistory =
       parsed.canonicalSymbol === 'GGAL' &&
-      isGgalDeepHistoryTimeframe(timeframe) &&
-      Number.isFinite(deepHistoryFromUtcSec(nowSec));
+      Number.isFinite(deepHistoryFromUtcSec(nowSec)) &&
+      (isGgalDeepHistoryTimeframe(timeframe) ||
+        (providerChain[0] === 'FMP_ENTERPRISE_REST' &&
+          isGgalPaginatedHistoryTimeframe(timeframe)));
 
     let bars: readonly Bar[];
     let barsStatusOk = true;
@@ -8442,7 +8445,7 @@ export class MarketRuntime {
     if (useDeepHistory) {
       const fromSec = deepHistoryFromUtcSec(nowSec);
       const fmpLoad = async (): Promise<readonly Bar[]> => {
-        const result = await this.fmpClient.fetchHistorical({
+        const result = await this.fmpClient.fetchHistoricalPaginated({
           symbol: parsed.canonicalSymbol,
           timeframe,
           fromUtcSec: fromSec,
@@ -8500,7 +8503,10 @@ export class MarketRuntime {
         if (provider === undefined) continue;
         try {
           loadedBars = await (provider === 'FMP_ENTERPRISE_REST'
-            ? store.ensure(timeframe as GgalDeepHistoryTimeframe, { forceRefresh: false, loadFn: fmpLoad })
+            ? store.ensure(timeframe as GgalPaginatedHistoryTimeframe, {
+                forceRefresh: false,
+                loadFn: fmpLoad,
+              })
             : (provider === 'TRADIER_REST'
                 ? tradierDeepLoad()
                 : massiveDeepLoad()));
@@ -8956,6 +8962,13 @@ export class MarketRuntime {
       }
     }
     return out;
+  }
+
+  /** Pieza 44: lectura síncrona de snapshot US cacheado en memoria para GGAL Specialist. */
+  public getCachedSnapshot(symbol: string): TerminalSnapshotResponse | null {
+    const clean = symbol.trim().toUpperCase();
+    if (clean === '') return null;
+    return this.snapshotCache.peek(`snapshot:${clean}`)?.value ?? null;
   }
 
   /**

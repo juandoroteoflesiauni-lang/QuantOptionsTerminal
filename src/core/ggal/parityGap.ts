@@ -7,6 +7,7 @@
  */
 
 import { normCdf } from '../options/math.js';
+import { greeksBsm, priceBsm } from '../options/blackScholes.js';
 import {
   BYMA_FEE_SCHEDULE,
   type BymaFeeSchedule,
@@ -109,6 +110,29 @@ export interface LocalOptionPreOpenInput {
   readonly theta: number;
   /** Cambio esperado explícito de IV decimal; si se omite, usa `ivSensitivity * r_ADR_adj`. */
   readonly deltaImpliedVol?: number;
+  /** Pieza 44: parámetros BSM individuales opcionales para evitar repricing plano. */
+  readonly strikeArs?: number;
+  readonly contractType?: 'call' | 'put';
+  readonly timeToExpiryYears?: number;
+  readonly iv?: number;
+  readonly rateCont?: number;
+  readonly dividendYield?: number;
+  readonly projectedSpotArs?: number;
+}
+
+export interface IndividualOptionBsmRepricingInput {
+  readonly tickerByma: string;
+  readonly prevSpotArs: number;
+  readonly projectedSpotArs: number;
+  readonly strikeArs: number;
+  readonly contractType: 'call' | 'put';
+  readonly timeToExpiryYears: number;
+  readonly iv: number;
+  readonly rateCont: number;
+  readonly prevCloseArs: number;
+  readonly dividendYield?: number;
+  readonly deltaImpliedVol?: number;
+  readonly dtYears?: number;
 }
 
 export interface PreOpenOptionRepricingItem {
@@ -116,6 +140,11 @@ export interface PreOpenOptionRepricingItem {
   readonly prevCloseArs: number;
   readonly fairOpenArs: number;
   readonly deltaRepricePct: number;
+  readonly bsmFairPrevArs?: number;
+  readonly bsmFairProjectedArs?: number;
+  readonly strikeArs?: number;
+  readonly deltaAtClose?: number;
+  readonly gammaAtClose?: number;
 }
 
 export interface ParityGapInput {
@@ -401,7 +430,97 @@ export function calibrateCausalOuAr1(
 }
 
 /**
- * Calcula precio teórico de apertura pre-11:00 ART y repricing de opciones locales por Taylor.
+ * Repricing teórico individual por base `GFGC*` / `GFGV*` combinando valuación BSM exacta
+ * y sensibilidad Delta-Gamma-Vega-Theta al proyectar `prevSpotArs -> projectedSpotArs`
+ * con tasa local, DTE e IV propia de cada strike.
+ */
+export function computeIndividualOptionRepricingBsm(
+  input: IndividualOptionBsmRepricingInput,
+): PreOpenOptionRepricingItem {
+  if (
+    !isPositiveFinite(input.prevSpotArs) ||
+    !isPositiveFinite(input.projectedSpotArs) ||
+    !isPositiveFinite(input.strikeArs) ||
+    !isPositiveFinite(input.timeToExpiryYears) ||
+    !isPositiveFinite(input.iv) ||
+    !Number.isFinite(input.rateCont) ||
+    !isPositiveFinite(input.prevCloseArs)
+  ) {
+    return {
+      tickerByma: input.tickerByma,
+      prevCloseArs: input.prevCloseArs,
+      fairOpenArs: Number.NaN,
+      deltaRepricePct: Number.NaN,
+    };
+  }
+
+  const q = input.dividendYield !== undefined && Number.isFinite(input.dividendYield)
+    ? input.dividendYield
+    : 0;
+  const dSigma = input.deltaImpliedVol !== undefined && Number.isFinite(input.deltaImpliedVol)
+    ? input.deltaImpliedVol
+    : 0;
+  const dtYears = input.dtYears !== undefined && Number.isFinite(input.dtYears) && input.dtYears >= 0
+    ? input.dtYears
+    : 0;
+  const nextT = Math.max(1e-6, input.timeToExpiryYears - dtYears);
+  const nextIv = Math.max(0.01, input.iv + dSigma);
+
+  const bs0 = priceBsm({
+    spot: input.prevSpotArs,
+    strike: input.strikeArs,
+    timeToExpiry: input.timeToExpiryYears,
+    rate: input.rateCont,
+    dividendYield: q,
+    volatility: input.iv,
+    contractType: input.contractType,
+  });
+  const bs1 = priceBsm({
+    spot: input.projectedSpotArs,
+    strike: input.strikeArs,
+    timeToExpiry: nextT,
+    rate: input.rateCont,
+    dividendYield: q,
+    volatility: nextIv,
+    contractType: input.contractType,
+  });
+  const g0 = greeksBsm({
+    spot: input.prevSpotArs,
+    strike: input.strikeArs,
+    timeToExpiry: input.timeToExpiryYears,
+    rate: input.rateCont,
+    dividendYield: q,
+    volatility: input.iv,
+    contractType: input.contractType,
+  });
+
+  if (!Number.isFinite(bs0) || !Number.isFinite(bs1)) {
+    return {
+      tickerByma: input.tickerByma,
+      prevCloseArs: input.prevCloseArs,
+      fairOpenArs: Number.NaN,
+      deltaRepricePct: Number.NaN,
+    };
+  }
+
+  const fairOpenArs = Math.max(0, input.prevCloseArs + (bs1 - bs0));
+  const deltaRepricePct = ((fairOpenArs - input.prevCloseArs) / input.prevCloseArs) * 100;
+
+  return {
+    tickerByma: input.tickerByma,
+    prevCloseArs: input.prevCloseArs,
+    fairOpenArs,
+    deltaRepricePct,
+    bsmFairPrevArs: bs0,
+    bsmFairProjectedArs: bs1,
+    strikeArs: input.strikeArs,
+    deltaAtClose: g0.delta,
+    gammaAtClose: g0.gamma,
+  };
+}
+
+/**
+ * Calcula precio teórico de apertura pre-11:00 ART y repricing individual por base (`BSM` o `Taylor`).
  */
 export function computeBymaFairOpenAndReprice(
   preOpen: PreOpenMacroPredictorInput,
@@ -491,6 +610,46 @@ export function computeBymaFairOpenAndReprice(
   const repricing: PreOpenOptionRepricingItem[] = [];
 
   for (const opt of options) {
+    const strikeArs = opt.strikeArs;
+    const contractType = opt.contractType;
+    const timeToExpiryYears = opt.timeToExpiryYears;
+    const iv = opt.iv;
+
+    if (
+      strikeArs !== undefined &&
+      contractType !== undefined &&
+      timeToExpiryYears !== undefined &&
+      iv !== undefined &&
+      isPositiveFinite(strikeArs) &&
+      isPositiveFinite(timeToExpiryYears) &&
+      isPositiveFinite(iv) &&
+      isPositiveFinite(opt.prevCloseArs)
+    ) {
+      const targetSpot =
+        opt.projectedSpotArs !== undefined && isPositiveFinite(opt.projectedSpotArs)
+          ? opt.projectedSpotArs
+          : fairBymaOpenArs;
+      const dSigma = opt.deltaImpliedVol ?? ivSens * rAdrOvnAdj;
+      const rateCont = opt.rateCont !== undefined && Number.isFinite(opt.rateCont) ? opt.rateCont : 0;
+      repricing.push(
+        computeIndividualOptionRepricingBsm({
+          tickerByma: opt.tickerByma,
+          prevSpotArs: preOpen.bymaPrevClose24hArs,
+          projectedSpotArs: targetSpot,
+          strikeArs,
+          contractType,
+          timeToExpiryYears,
+          iv,
+          rateCont,
+          prevCloseArs: opt.prevCloseArs,
+          ...(opt.dividendYield !== undefined ? { dividendYield: opt.dividendYield } : {}),
+          deltaImpliedVol: dSigma,
+          dtYears,
+        }),
+      );
+      continue;
+    }
+
     if (
       !isPositiveFinite(opt.prevCloseArs) ||
       !Number.isFinite(opt.delta) ||

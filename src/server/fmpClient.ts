@@ -18,6 +18,10 @@ import type { Bar } from '../core/types.js';
 import type { FetchFn, FetchResponse, Timeframe } from '../data/types.js';
 import { etWallTimeToUtc } from '../data/alignment.js';
 import { getMarketParts, isRth, MAX_TIME_SECONDS } from '../core/sessions.js';
+import {
+  mergeFmpPaginatedBars,
+  planFmpIntradayDateWindows,
+} from '../core/ggal/fmpPagination.js';
 import type {
   EarningsCatalystEvent,
   MacroCatalystEvent,
@@ -866,6 +870,93 @@ export class FmpEnterpriseClient {
       keyEnvName: keySelection.envName,
       fromUtcSec: request.fromUtcSec ?? null,
       toUtcSec: request.toUtcSec ?? null,
+    };
+  }
+
+  /**
+   * Pieza 44: Descarga intradiaria paginada hacia atrás en ventanas de fechas compatibles
+   * con FMP Enterprise (`from`/`to`), deduplicando y ordenando ascendentemente por UTC sec.
+   */
+  public async fetchHistoricalPaginated(
+    request: FmpHistoricalRequest & {
+      readonly windowDaysOverride?: number;
+      readonly maxEmptyWindows?: number;
+    },
+  ): Promise<FmpHistoricalResult> {
+    const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
+    const toUtcSec =
+      request.toUtcSec !== undefined && Number.isFinite(request.toUtcSec)
+        ? Math.trunc(request.toUtcSec)
+        : requestedAtUtcSec;
+    const fromUtcSec =
+      request.fromUtcSec !== undefined && Number.isFinite(request.fromUtcSec)
+        ? Math.trunc(request.fromUtcSec)
+        : toUtcSec - 430 * 86_400;
+
+    if (request.timeframe === '1D') {
+      return this.fetchHistorical({ ...request, fromUtcSec, toUtcSec });
+    }
+
+    const windows = planFmpIntradayDateWindows({
+      fromUtcSec,
+      toUtcSec,
+      timeframe: request.timeframe,
+      ...(request.windowDaysOverride !== undefined
+        ? { windowDaysOverride: request.windowDaysOverride }
+        : {}),
+    });
+
+    if (windows.length <= 1) {
+      return this.fetchHistorical({ ...request, fromUtcSec, toUtcSec });
+    }
+
+    const pages: (readonly Bar[])[] = [];
+    let lastMeta: FmpHistoricalResult | null = null;
+    let totalDiscarded = 0;
+    let earliestSeenSec = Number.POSITIVE_INFINITY;
+    let consecutiveEmpty = 0;
+    const maxEmptyWindows = Math.max(1, Math.trunc(request.maxEmptyWindows ?? 6));
+
+    for (const win of windows) {
+      const page = await this.fetchHistorical({
+        ...request,
+        fromUtcSec: win.fromUtcSec,
+        toUtcSec: win.toUtcSec,
+      });
+      lastMeta = page;
+      totalDiscarded += page.discarded;
+      if (page.bars.length === 0) {
+        consecutiveEmpty += 1;
+        if (consecutiveEmpty >= maxEmptyWindows) {
+          break;
+        }
+        continue;
+      }
+      consecutiveEmpty = 0;
+      pages.push(page.bars);
+      const firstBar = page.bars[0];
+      if (firstBar !== undefined && firstBar.time < earliestSeenSec) {
+        earliestSeenSec = firstBar.time;
+      }
+      if (earliestSeenSec <= fromUtcSec) {
+        break;
+      }
+    }
+
+    const mergedBars = mergeFmpPaginatedBars(pages, { fromUtcSec, toUtcSec });
+    const meta = lastMeta;
+    return {
+      bars: mergedBars,
+      source: meta?.source ?? 'FMP_STABLE',
+      endpoint: 'HISTORICAL_CHART',
+      requestedAtUtcSec,
+      httpStatus: meta?.httpStatus ?? 200,
+      rows: mergedBars.length,
+      discarded: totalDiscarded,
+      legacyFallbackUsed: meta?.legacyFallbackUsed ?? false,
+      keyEnvName: meta?.keyEnvName ?? 'MARKET',
+      fromUtcSec,
+      toUtcSec,
     };
   }
 

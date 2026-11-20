@@ -635,6 +635,8 @@ export type GgalL2LadderStateDto =
       readonly symbol: string;
       readonly bids: readonly GgalL2OrderLevelDto[];
       readonly asks: readonly GgalL2OrderLevelDto[];
+      readonly bookStatus?: 'LIVE' | 'EOD_CIERRE';
+      readonly isEodCached?: boolean;
     }
   | {
       readonly available: false;

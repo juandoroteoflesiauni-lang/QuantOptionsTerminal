@@ -1,0 +1,764 @@
+{
+  "fmpPagination": {
+    "fromUtcSec": 1757980800,
+    "toUtcSec": 1795132800,
+    "windows15m": [
+      {
+        "fromUtcSec": 1793923200,
+        "toUtcSec": 1795132800
+      },
+      {
+        "fromUtcSec": 1792800000,
+        "toUtcSec": 1794009600
+      },
+      {
+        "fromUtcSec": 1791676800,
+        "toUtcSec": 1792886400
+      },
+      {
+        "fromUtcSec": 1790553600,
+        "toUtcSec": 1791763200
+      },
+      {
+        "fromUtcSec": 1789430400,
+        "toUtcSec": 1790640000
+      },
+      {
+        "fromUtcSec": 1788307200,
+        "toUtcSec": 1789516800
+      },
+      {
+        "fromUtcSec": 1787184000,
+        "toUtcSec": 1788393600
+      },
+      {
+        "fromUtcSec": 1786060800,
+        "toUtcSec": 1787270400
+      },
+      {
+        "fromUtcSec": 1784937600,
+        "toUtcSec": 1786147200
+      },
+      {
+        "fromUtcSec": 1783814400,
+        "toUtcSec": 1785024000
+      },
+      {
+        "fromUtcSec": 1782691200,
+        "toUtcSec": 1783900800
+      },
+      {
+        "fromUtcSec": 1781568000,
+        "toUtcSec": 1782777600
+      },
+      {
+        "fromUtcSec": 1780444800,
+        "toUtcSec": 1781654400
+      },
+      {
+        "fromUtcSec": 1779321600,
+        "toUtcSec": 1780531200
+      },
+      {
+        "fromUtcSec": 1778198400,
+        "toUtcSec": 1779408000
+      },
+      {
+        "fromUtcSec": 1777075200,
+        "toUtcSec": 1778284800
+      },
+      {
+        "fromUtcSec": 1775952000,
+        "toUtcSec": 1777161600
+      },
+      {
+        "fromUtcSec": 1774828800,
+        "toUtcSec": 1776038400
+      },
+      {
+        "fromUtcSec": 1773705600,
+        "toUtcSec": 1774915200
+      },
+      {
+        "fromUtcSec": 1772582400,
+        "toUtcSec": 1773792000
+      },
+      {
+        "fromUtcSec": 1771459200,
+        "toUtcSec": 1772668800
+      },
+      {
+        "fromUtcSec": 1770336000,
+        "toUtcSec": 1771545600
+      },
+      {
+        "fromUtcSec": 1769212800,
+        "toUtcSec": 1770422400
+      },
+      {
+        "fromUtcSec": 1768089600,
+        "toUtcSec": 1769299200
+      },
+      {
+        "fromUtcSec": 1766966400,
+        "toUtcSec": 1768176000
+      },
+      {
+        "fromUtcSec": 1765843200,
+        "toUtcSec": 1767052800
+      },
+      {
+        "fromUtcSec": 1764720000,
+        "toUtcSec": 1765929600
+      },
+      {
+        "fromUtcSec": 1763596800,
+        "toUtcSec": 1764806400
+      },
+      {
+        "fromUtcSec": 1762473600,
+        "toUtcSec": 1763683200
+      },
+      {
+        "fromUtcSec": 1761350400,
+        "toUtcSec": 1762560000
+      },
+      {
+        "fromUtcSec": 1760227200,
+        "toUtcSec": 1761436800
+      },
+      {
+        "fromUtcSec": 1759104000,
+        "toUtcSec": 1760313600
+      },
+      {
+        "fromUtcSec": 1757980800,
+        "toUtcSec": 1759190400
+      }
+    ],
+    "windows1h": [
+      {
+        "fromUtcSec": 1792540800,
+        "toUtcSec": 1795132800
+      },
+      {
+        "fromUtcSec": 1790035200,
+        "toUtcSec": 1792627200
+      },
+      {
+        "fromUtcSec": 1787529600,
+        "toUtcSec": 1790121600
+      },
+      {
+        "fromUtcSec": 1785024000,
+        "toUtcSec": 1787616000
+      },
+      {
+        "fromUtcSec": 1782518400,
+        "toUtcSec": 1785110400
+      },
+      {
+        "fromUtcSec": 1780012800,
+        "toUtcSec": 1782604800
+      },
+      {
+        "fromUtcSec": 1777507200,
+        "toUtcSec": 1780099200
+      },
+      {
+        "fromUtcSec": 1775001600,
+        "toUtcSec": 1777593600
+      },
+      {
+        "fromUtcSec": 1772496000,
+        "toUtcSec": 1775088000
+      },
+      {
+        "fromUtcSec": 1769990400,
+        "toUtcSec": 1772582400
+      },
+      {
+        "fromUtcSec": 1767484800,
+        "toUtcSec": 1770076800
+      },
+      {
+        "fromUtcSec": 1764979200,
+        "toUtcSec": 1767571200
+      },
+      {
+        "fromUtcSec": 1762473600,
+        "toUtcSec": 1765065600
+      },
+      {
+        "fromUtcSec": 1759968000,
+        "toUtcSec": 1762560000
+      },
+      {
+        "fromUtcSec": 1757980800,
+        "toUtcSec": 1760054400
+      }
+    ],
+    "windows4h": [
+      {
+        "fromUtcSec": 1789948800,
+        "toUtcSec": 1795132800
+      },
+      {
+        "fromUtcSec": 1784851200,
+        "toUtcSec": 1790035200
+      },
+      {
+        "fromUtcSec": 1779753600,
+        "toUtcSec": 1784937600
+      },
+      {
+        "fromUtcSec": 1774656000,
+        "toUtcSec": 1779840000
+      },
+      {
+        "fromUtcSec": 1769558400,
+        "toUtcSec": 1774742400
+      },
+      {
+        "fromUtcSec": 1764460800,
+        "toUtcSec": 1769644800
+      },
+      {
+        "fromUtcSec": 1759363200,
+        "toUtcSec": 1764547200
+      },
+      {
+        "fromUtcSec": 1757980800,
+        "toUtcSec": 1759449600
+      }
+    ],
+    "pagesInput": [
+      [
+        {
+          "time": 1795129200,
+          "open": 52.0,
+          "high": 52.8,
+          "low": 51.9,
+          "close": 52.5,
+          "volume": 12000
+        },
+        {
+          "time": 1795131900,
+          "open": 52.5,
+          "high": 53.0,
+          "low": 52.4,
+          "close": 52.9,
+          "volume": 15000
+        }
+      ],
+      [
+        {
+          "time": 1761498000,
+          "open": 41.2,
+          "high": 42.1,
+          "low": 40.9,
+          "close": 41.8,
+          "volume": 41000
+        },
+        {
+          "time": 1795129200,
+          "open": 52.0,
+          "high": 52.9,
+          "low": 51.9,
+          "close": 52.6,
+          "volume": 12500
+        }
+      ]
+    ],
+    "expectedMerged": [
+      {
+        "time": 1761498000,
+        "open": 41.2,
+        "high": 42.1,
+        "low": 40.9,
+        "close": 41.8,
+        "volume": 41000
+      },
+      {
+        "time": 1795129200,
+        "open": 52.0,
+        "high": 52.9,
+        "low": 51.9,
+        "close": 52.6,
+        "volume": 12500
+      },
+      {
+        "time": 1795131900,
+        "open": 52.5,
+        "high": 53.0,
+        "low": 52.4,
+        "close": 52.9,
+        "volume": 15000
+      }
+    ]
+  },
+  "bsmRepricing": {
+    "adrPriceUsd": 52.4,
+    "cclRate": 1285.0,
+    "spotTeoricoArs": 6733.4,
+    "cases": [
+      {
+        "input": {
+          "tickerByma": "GFGC6400DI",
+          "prevSpotArs": 7200.0,
+          "projectedSpotArs": 6733.4,
+          "strikeArs": 6400.0,
+          "contractType": "call",
+          "timeToExpiryYears": 0.07671232876712329,
+          "iv": 0.56,
+          "rateCont": 0.30748469974796055,
+          "prevCloseArs": 1067.100781
+        },
+        "expected": {
+          "tickerByma": "GFGC6400DI",
+          "prevCloseArs": 1067.100781,
+          "fairOpenArs": 703.5305429182863,
+          "deltaRepricePct": -34.07084359370493,
+          "bsmFairPrevArs": 1051.3308187952625,
+          "bsmFairProjectedArs": 687.7605807135487,
+          "deltaAtClose": 0.838672188462348,
+          "gammaAtClose": 0.00021905545969787822
+        }
+      },
+      {
+        "input": {
+          "tickerByma": "GFGC6800DI",
+          "prevSpotArs": 7200.0,
+          "projectedSpotArs": 6733.4,
+          "strikeArs": 6800.0,
+          "contractType": "call",
+          "timeToExpiryYears": 0.07671232876712329,
+          "iv": 0.52,
+          "rateCont": 0.30748469974796055,
+          "prevCloseArs": 748.332462
+        },
+        "expected": {
+          "tickerByma": "GFGC6800DI",
+          "prevCloseArs": 748.332462,
+          "fairOpenArs": 442.67451478495843,
+          "deltaRepricePct": -40.845207542933174,
+          "bsmFairPrevArs": 737.2733612084712,
+          "bsmFairProjectedArs": 431.6154139934297,
+          "deltaAtClose": 0.736520660092118,
+          "gammaAtClose": 0.0003149400051747918
+        }
+      },
+      {
+        "input": {
+          "tickerByma": "GFGC7200DI",
+          "prevSpotArs": 7200.0,
+          "projectedSpotArs": 6733.4,
+          "strikeArs": 7200.0,
+          "contractType": "call",
+          "timeToExpiryYears": 0.07671232876712329,
+          "iv": 0.49,
+          "rateCont": 0.30748469974796055,
+          "prevCloseArs": 481.821273
+        },
+        "expected": {
+          "tickerByma": "GFGC7200DI",
+          "prevCloseArs": 481.821273,
+          "fairOpenArs": 248.9661453393328,
+          "deltaRepricePct": -48.32811266526773,
+          "bsmFairPrevArs": 474.70076188345274,
+          "bsmFairProjectedArs": 241.84563422278552,
+          "deltaAtClose": 0.5954788554371415,
+          "gammaAtClose": 0.00039652212271903915
+        }
+      },
+      {
+        "input": {
+          "tickerByma": "GFGC7600DI",
+          "prevSpotArs": 7200.0,
+          "projectedSpotArs": 6733.4,
+          "strikeArs": 7600.0,
+          "contractType": "call",
+          "timeToExpiryYears": 0.07671232876712329,
+          "iv": 0.47,
+          "rateCont": 0.30748469974796055,
+          "prevCloseArs": 282.531287
+        },
+        "expected": {
+          "tickerByma": "GFGC7600DI",
+          "prevCloseArs": 282.531287,
+          "fairOpenArs": 124.9845159806016,
+          "deltaRepricePct": -55.76259277061886,
+          "bsmFairPrevArs": 278.3559475191814,
+          "bsmFairProjectedArs": 120.809176499783,
+          "deltaAtClose": 0.43287790494705625,
+          "gammaAtClose": 0.00041960569607219135
+        }
+      },
+      {
+        "input": {
+          "tickerByma": "GFGC8000DI",
+          "prevSpotArs": 7200.0,
+          "projectedSpotArs": 6733.4,
+          "strikeArs": 8000.0,
+          "contractType": "call",
+          "timeToExpiryYears": 0.07671232876712329,
+          "iv": 0.46,
+          "rateCont": 0.30748469974796055,
+          "prevCloseArs": 152.586485
+        },
+        "expected": {
+          "tickerByma": "GFGC8000DI",
+          "prevCloseArs": 152.586485,
+          "fairOpenArs": 57.55408429785834,
+          "deltaRepricePct": -62.2810078508209,
+          "bsmFairPrevArs": 150.33151201568216,
+          "bsmFairProjectedArs": 55.29911131354049,
+          "deltaAtClose": 0.28159039588075185,
+          "gammaAtClose": 0.0003679685905350636
+        }
+      },
+      {
+        "input": {
+          "tickerByma": "GFGV7000DI",
+          "prevSpotArs": 7200.0,
+          "projectedSpotArs": 6733.4,
+          "strikeArs": 7000.0,
+          "contractType": "put",
+          "timeToExpiryYears": 0.07671232876712329,
+          "iv": 0.51,
+          "rateCont": 0.30748469974796055,
+          "prevCloseArs": 243.366367
+        },
+        "expected": {
+          "tickerByma": "GFGV7000DI",
+          "prevCloseArs": 243.366367,
+          "fairOpenArs": 439.5631770387116,
+          "deltaRepricePct": 80.61788177933052,
+          "bsmFairPrevArs": 239.76982009417134,
+          "bsmFairProjectedArs": 435.966630132883,
+          "deltaAtClose": -0.33103796195197865,
+          "gammaAtClose": 0.0003565308770234018
+        }
+      }
+    ]
+  },
+  "dlrOutOfSession": [
+    {
+      "name": "out_of_session_settlement_priority_over_stale_last",
+      "input": {
+        "asOfUtcSec": 1795273200,
+        "maturityDate": "20261230",
+        "last": 1545.0,
+        "bestBid": null,
+        "bestAsk": null,
+        "settlement": 1552.5,
+        "close": 1550.0,
+        "a3500": 1445.0,
+        "dlrSpot": null,
+        "outOfSession": true
+      },
+      "expected": {
+        "priceBasis": "SETTLEMENT_EOD",
+        "status": "CIERRE_AJUSTE",
+        "referencePrice": 1552.5,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1798653600,
+        "days": 39,
+        "baseArs": 107.5,
+        "devalDirectaPct": 7.439446366781999,
+        "tnaImplicitaPct": 69.62558779167769,
+        "teaImplicitaPct": 95.73155536596573,
+        "temImplicitaPct": 5.674967863173341
+      }
+    },
+    {
+      "name": "out_of_session_close_cl_fallback",
+      "input": {
+        "asOfUtcSec": 1795273200,
+        "maturityDate": "20270129",
+        "last": 1598.0,
+        "bestBid": null,
+        "bestAsk": null,
+        "settlement": null,
+        "close": 1602.0,
+        "a3500": 1445.0,
+        "dlrSpot": null,
+        "outOfSession": true
+      },
+      "expected": {
+        "priceBasis": "SETTLEMENT_EOD",
+        "status": "CIERRE_AJUSTE",
+        "referencePrice": 1602.0,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1801245600,
+        "days": 69,
+        "baseArs": 157.0,
+        "devalDirectaPct": 10.865051903114198,
+        "tnaImplicitaPct": 57.474549922270754,
+        "teaImplicitaPct": 72.56681519031545,
+        "temImplicitaPct": 4.58657504699298
+      }
+    },
+    {
+      "name": "out_of_session_last_fallback_without_se_or_cl",
+      "input": {
+        "asOfUtcSec": 1795273200,
+        "maturityDate": "20270226",
+        "last": 1648.5,
+        "bestBid": null,
+        "bestAsk": null,
+        "settlement": null,
+        "close": null,
+        "a3500": 1445.0,
+        "dlrSpot": null,
+        "outOfSession": true
+      },
+      "expected": {
+        "priceBasis": "LAST",
+        "status": "CIERRE_AJUSTE",
+        "referencePrice": 1648.5,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1803664800,
+        "days": 97,
+        "baseArs": 203.5,
+        "devalDirectaPct": 14.083044982698967,
+        "tnaImplicitaPct": 52.992901223557965,
+        "teaImplicitaPct": 64.17859199651372,
+        "temImplicitaPct": 4.159107222863501
+      }
+    },
+    {
+      "name": "out_of_session_live_book_still_live",
+      "input": {
+        "asOfUtcSec": 1795273200,
+        "maturityDate": "20270331",
+        "last": null,
+        "bestBid": 1690.0,
+        "bestAsk": 1695.0,
+        "settlement": 1692.0,
+        "close": 1689.0,
+        "a3500": 1445.0,
+        "dlrSpot": null,
+        "outOfSession": true
+      },
+      "expected": {
+        "priceBasis": "MID",
+        "status": "LIVE",
+        "referencePrice": 1692.5,
+        "spotUsed": 1445.0,
+        "spotSource": "A3500_BCRA",
+        "maturityUtcSec": 1806516000,
+        "days": 130,
+        "baseArs": 247.5,
+        "devalDirectaPct": 17.128027681660907,
+        "tnaImplicitaPct": 48.09023156774023,
+        "teaImplicitaPct": 55.87572446790239,
+        "temImplicitaPct": 3.7157726332710084
+      }
+    }
+  ],
+  "bondCurveLayout": {
+    "points": [
+      {
+        "id": "AL29",
+        "label": "AL29 (11.40%)",
+        "x": 85.0,
+        "y": 135.0
+      },
+      {
+        "id": "GD29",
+        "label": "GD29 (10.95%)",
+        "x": 92.0,
+        "y": 141.0
+      },
+      {
+        "id": "AL30",
+        "label": "AL30 (11.20%)",
+        "x": 108.0,
+        "y": 138.0
+      },
+      {
+        "id": "GD30",
+        "label": "GD30 (10.75%)",
+        "x": 115.0,
+        "y": 145.0
+      },
+      {
+        "id": "AL35",
+        "label": "AL35 (11.10%)",
+        "x": 385.0,
+        "y": 136.0
+      },
+      {
+        "id": "GD35",
+        "label": "GD35 (10.85%)",
+        "x": 392.0,
+        "y": 141.0
+      },
+      {
+        "id": "AE38",
+        "label": "AE38 (11.30%)",
+        "x": 405.0,
+        "y": 132.0
+      },
+      {
+        "id": "AL41",
+        "label": "AL41 (10.90%)",
+        "x": 420.0,
+        "y": 139.0
+      },
+      {
+        "id": "GD41",
+        "label": "GD41 (10.65%)",
+        "x": 455.0,
+        "y": 144.0
+      }
+    ],
+    "expected": [
+      {
+        "id": "AL29",
+        "labelX": 85.0,
+        "labelY": 124.0,
+        "textAnchor": "middle",
+        "needsLeader": false,
+        "overlapCount": 0
+      },
+      {
+        "id": "GD29",
+        "labelX": 92.0,
+        "labelY": 172.0,
+        "textAnchor": "middle",
+        "needsLeader": true,
+        "overlapCount": 0
+      },
+      {
+        "id": "AL30",
+        "labelX": 138.0,
+        "labelY": 124.0,
+        "textAnchor": "start",
+        "needsLeader": true,
+        "overlapCount": 0
+      },
+      {
+        "id": "GD30",
+        "labelX": 125.0,
+        "labelY": 148.0,
+        "textAnchor": "start",
+        "needsLeader": false,
+        "overlapCount": 0
+      },
+      {
+        "id": "AL35",
+        "labelX": 375.0,
+        "labelY": 139.0,
+        "textAnchor": "end",
+        "needsLeader": false,
+        "overlapCount": 0
+      },
+      {
+        "id": "GD35",
+        "labelX": 380.0,
+        "labelY": 160.0,
+        "textAnchor": "end",
+        "needsLeader": true,
+        "overlapCount": 0
+      },
+      {
+        "id": "AE38",
+        "labelX": 405.0,
+        "labelY": 121.0,
+        "textAnchor": "middle",
+        "needsLeader": false,
+        "overlapCount": 0
+      },
+      {
+        "id": "AL41",
+        "labelX": 450.0,
+        "labelY": 125.0,
+        "textAnchor": "start",
+        "needsLeader": true,
+        "overlapCount": 0
+      },
+      {
+        "id": "GD41",
+        "labelX": 465.0,
+        "labelY": 147.0,
+        "textAnchor": "start",
+        "needsLeader": false,
+        "overlapCount": 0
+      }
+    ]
+  },
+  "coordGuardAndMaxPain": {
+    "usBars": [
+      {
+        "timeSec": 1795000000,
+        "open": 49.5,
+        "high": 51.0,
+        "low": 49.0,
+        "close": 50.5,
+        "volume": 100000
+      },
+      {
+        "timeSec": 1795003600,
+        "open": 50.5,
+        "high": 53.0,
+        "low": 50.0,
+        "close": 52.0,
+        "volume": 120000
+      }
+    ],
+    "arsLeakOnUsdInput": {
+      "activeCoordMode": "USD_ADR_NASDAQ",
+      "payloadCoordMode": "USD_ADR_NASDAQ",
+      "levels": {
+        "callWall": 7500.0,
+        "putWall": 45.0,
+        "zeroGamma": 6800.0,
+        "maxPain": 50.0
+      }
+    },
+    "arsLeakOnUsdExpected": {
+      "callWall": null,
+      "putWall": 45.0,
+      "zeroGamma": null,
+      "maxPain": 50.0
+    },
+    "maxPainContracts": [
+      {
+        "strike": 45.0,
+        "contractType": "call",
+        "openInterest": 200
+      },
+      {
+        "strike": 45.0,
+        "contractType": "put",
+        "openInterest": 900
+      },
+      {
+        "strike": 50.0,
+        "contractType": "call",
+        "openInterest": 1200
+      },
+      {
+        "strike": 50.0,
+        "contractType": "put",
+        "openInterest": 1400
+      },
+      {
+        "strike": 55.0,
+        "contractType": "call",
+        "openInterest": 1800
+      },
+      {
+        "strike": 55.0,
+        "contractType": "put",
+        "openInterest": 300
+      }
+    ],
+    "expectedMaxPain": 50.0
+  }
+}

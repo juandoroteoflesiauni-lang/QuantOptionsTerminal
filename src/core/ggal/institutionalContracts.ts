@@ -78,6 +78,8 @@ export interface GgalL2LadderAvailable {
   readonly symbol: string;
   readonly bids: readonly GgalL2OrderLevel[];
   readonly asks: readonly GgalL2OrderLevel[];
+  readonly bookStatus?: 'LIVE' | 'EOD_CIERRE';
+  readonly isEodCached?: boolean;
 }
 
 export interface GgalL2LadderUnavailable {
