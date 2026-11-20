@@ -641,6 +641,10 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       ? {
           netGex: snap.exposureSummary.netGex,
           netDex: snap.exposureSummary.netDex,
+          netVex: snap.exposureSummary.netVex ?? null,
+          netCex: snap.exposureSummary.netCex ?? null,
+          vannaRegime: snap.exposureSummary.vannaRegime ?? 'NEUTRAL',
+          charmPinStrike: snap.exposureSummary.charmPinStrike ?? null,
           callWallStrike: snap.exposureSummary.callWallStrike,
           putWallStrike: snap.exposureSummary.putWallStrike,
           gammaFlipSpot: snap.exposureSummary.gammaFlipSpot,
@@ -672,6 +676,8 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
                   callGex: s.callGex,
                   putGex: s.putGex,
                   netGex: s.netGex,
+                  vex: s.vex ?? s.netVannaExposure ?? null,
+                  cex: s.cex ?? s.netCharmExposure ?? null,
                 })),
               }
             : {}),

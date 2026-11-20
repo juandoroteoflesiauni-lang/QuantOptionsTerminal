@@ -77,6 +77,7 @@ import {
   type DealerExposureResult,
   type ExposureContractInput,
   type GammaFlipStatus,
+  type VannaRegime,
 } from '../core/options/exposure.js';
 import {
   computeSignedOptionsOrderFlow,
@@ -512,6 +513,8 @@ export interface SerializedStrikeExposure {
   readonly netDex: number | null;
   readonly netVannaExposure: number | null;
   readonly netCharmExposure: number | null;
+  readonly vex: number | null;
+  readonly cex: number | null;
 }
 
 export interface SerializedExposureSummary {
@@ -522,6 +525,10 @@ export interface SerializedExposureSummary {
   readonly netDex: number | null;
   readonly netVannaExposure: number | null;
   readonly netCharmExposure: number | null;
+  readonly netVex: number | null;
+  readonly netCex: number | null;
+  readonly vannaRegime: VannaRegime;
+  readonly charmPinStrike: number | null;
   readonly callWallStrike: number | null;
   readonly putWallStrike: number | null;
   readonly gammaFlipSpot: number | null;
@@ -2310,6 +2317,10 @@ function serializeExposure(exposure: DealerExposureResult): SerializedExposureSu
     netDex: sanitizeFinite(exposure.netDex),
     netVannaExposure: sanitizeFinite(exposure.netVannaExposure),
     netCharmExposure: sanitizeFinite(exposure.netCharmExposure),
+    netVex: sanitizeFinite(exposure.netVannaExposure),
+    netCex: sanitizeFinite(exposure.netCharmExposure),
+    vannaRegime: exposure.vannaRegime,
+    charmPinStrike: sanitizeFinite(exposure.charmPinStrike),
     callWallStrike: sanitizeFinite(exposure.callWallStrike),
     putWallStrike: sanitizeFinite(exposure.putWallStrike),
     gammaFlipSpot: sanitizeFinite(exposure.gammaFlipSpot),
@@ -2343,6 +2354,8 @@ function serializeExposure(exposure: DealerExposureResult): SerializedExposureSu
       netDex: sanitizeFinite(s.netDex),
       netVannaExposure: sanitizeFinite(s.netVannaExposure),
       netCharmExposure: sanitizeFinite(s.netCharmExposure),
+      vex: sanitizeFinite(s.netVannaExposure),
+      cex: sanitizeFinite(s.netCharmExposure),
     })),
   };
 }

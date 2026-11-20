@@ -1,7 +1,10 @@
 import React, { useId, useMemo, useState } from 'react';
 import {
+  buildWhatIfHeatmapAndAttribution,
   evaluateWhatIfPoint,
   simulateWhatIfPayoffSurface,
+  WHAT_IF_HEATMAP_IV_SHIFT_STEPS,
+  WHAT_IF_HEATMAP_SIGMA_STEPS,
   type WhatIfCurvePoint,
   type WhatIfOptionLeg,
 } from '../../../../src/core/options/whatIfPayoff';
@@ -59,6 +62,31 @@ function pnlToneClass(value: number): string {
   return 'text-slate-200';
 }
 
+// Pieza 50: formato compacto con signo para celdas de la matriz 7×7.
+function fmtCompactSigned(value: number, prefix: string): string {
+  if (!Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1e6) return `${sign}${prefix}${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}${prefix}${(abs / 1e3).toFixed(1)}K`;
+  return `${sign}${prefix}${abs.toFixed(0)}`;
+}
+
+// Intensidad relativa respecto a max(|min|, |max|): verde P&L > 0, rojo P&L < 0.
+function heatmapCellStyle(pnlUsd: number, maxAbs: number): React.CSSProperties {
+  if (!Number.isFinite(pnlUsd) || !Number.isFinite(maxAbs) || maxAbs <= 0) {
+    return { backgroundColor: 'rgba(107, 114, 128, 0.12)' };
+  }
+  const ratio = Math.min(1, Math.abs(pnlUsd) / maxAbs);
+  const alpha = 0.12 + 0.58 * ratio;
+  return {
+    backgroundColor:
+      pnlUsd >= 0
+        ? `rgba(16, 185, 129, ${alpha.toFixed(3)})`
+        : `rgba(244, 63, 94, ${alpha.toFixed(3)})`,
+  };
+}
+
 export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
   structureLabel,
   spot,
@@ -87,6 +115,9 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
   const [ivShiftPts, setIvShiftPts] = useState<number>(0);
   const [elapsedDaysRaw, setElapsedDaysRaw] = useState<number>(() => Math.max(0, Math.round(safeMaxDte * 0.45)));
   const [hoveredSpot, setHoveredSpot] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'curves' | 'heatmap'>('curves');
+  const [selectedCell, setSelectedCell] = useState<{ row: number; col: number } | null>(null);
+  const [hoveredCell, setHoveredCell] = useState<{ row: number; col: number } | null>(null);
   const clipId = useId().replace(/:/g, '_');
 
   const hoursRemaining = Math.min(Math.max(0, hoursRemainingRaw), startHours);
@@ -169,6 +200,39 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
     contracts,
     contractMultiplier,
   ]);
+
+  // Pieza 50: matriz 7×7 Spot × ΔIV + atribución de Taylor. `selectedCell` se pasa
+  // dentro del input para que la función resuelva spotGrid[col] / ivShiftGridPts[row]
+  // sin dependencia circular con este mismo useMemo.
+  const heatmapData = useMemo(
+    () =>
+      buildWhatIfHeatmapAndAttribution({
+        referenceSpot: spot,
+        legs: effectiveLegs,
+        rate,
+        dividendYield,
+        elapsedDays,
+        horizonDte: safeMaxDte,
+        targetSpot: hoveredSpot ?? spot,
+        targetIvShiftPts: ivShiftPts,
+        contracts,
+        contractMultiplier,
+        selectedCell,
+      }),
+    [
+      spot,
+      effectiveLegs,
+      rate,
+      dividendYield,
+      elapsedDays,
+      safeMaxDte,
+      hoveredSpot,
+      ivShiftPts,
+      contracts,
+      contractMultiplier,
+      selectedCell,
+    ],
+  );
 
   const chartMetrics = useMemo(() => {
     const pts = surface.curve;
@@ -272,6 +336,68 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
   const activeSpotDisplay = Number.isFinite(activePoint.spot) ? activePoint.spot : spot;
   const remainingDteTn = Math.max(0, safeMaxDte - elapsedDays);
 
+  // Pieza 50: delegación de eventos de la matriz 7×7 (un solo handler para las 49 celdas).
+  const readHeatmapCell = (target: EventTarget | null): { row: number; col: number } | null => {
+    const el = target instanceof HTMLElement ? target.closest('[data-cell]') : null;
+    if (el === null) return null;
+    const row = Number(el.getAttribute('data-row'));
+    const col = Number(el.getAttribute('data-col'));
+    if (!Number.isInteger(row) || !Number.isInteger(col)) return null;
+    if (row < 0 || row >= WHAT_IF_HEATMAP_IV_SHIFT_STEPS.length) return null;
+    if (col < 0 || col >= WHAT_IF_HEATMAP_SIGMA_STEPS.length) return null;
+    return { row, col };
+  };
+
+  const handleGridClick = (evt: React.MouseEvent<HTMLDivElement>): void => {
+    const cell = readHeatmapCell(evt.target);
+    if (cell === null) return;
+    setSelectedCell((prev) =>
+      prev !== null && prev.row === cell.row && prev.col === cell.col ? null : cell,
+    );
+  };
+
+  const handleGridHover = (evt: React.MouseEvent<HTMLDivElement>): void => {
+    const cell = readHeatmapCell(evt.target);
+    setHoveredCell((prev) =>
+      prev !== null && cell !== null && prev.row === cell.row && prev.col === cell.col
+        ? prev
+        : cell,
+    );
+  };
+
+  const handleGridLeave = (): void => {
+    setHoveredCell(null);
+  };
+
+  // Atribución de Griegas (Taylor 2.º orden) del punto objetivo.
+  const attribution = heatmapData.attribution;
+  const attributionComponents: readonly {
+    readonly key: string;
+    readonly value: number;
+    readonly swatch: string;
+  }[] = [
+    { key: 'Delta', value: attribution.deltaPnl, swatch: 'bg-sky-400' },
+    { key: 'Gamma', value: attribution.gammaPnl, swatch: 'bg-emerald-400' },
+    { key: 'Theta', value: attribution.thetaPnl, swatch: 'bg-amber-400' },
+    { key: 'Vega', value: attribution.vegaPnl, swatch: 'bg-cyan-300' },
+    { key: 'Residuo', value: attribution.residualPnl, swatch: 'bg-fuchsia-400' },
+  ];
+  const attributionDenominator = attributionComponents.reduce(
+    (acc, component) => acc + Math.abs(component.value),
+    0,
+  );
+  const heatmapMaxAbs = Math.max(
+    Math.abs(heatmapData.minPnlUsd),
+    Math.abs(heatmapData.maxPnlUsd),
+  );
+  const selectedCellInfo =
+    selectedCell !== null
+      ? (heatmapData.cells[selectedCell.row]?.[selectedCell.col] ?? null)
+      : null;
+  const hoveredCellInfo =
+    hoveredCell !== null ? (heatmapData.cells[hoveredCell.row]?.[hoveredCell.col] ?? null) : null;
+  const focusCellInfo = hoveredCellInfo ?? selectedCellInfo;
+
   return (
     <div className="space-y-3 rounded-lg border border-slate-800/90 bg-[#090D14] p-3">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/70 pb-2">
@@ -294,6 +420,22 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 text-[10px]">
+          <div className="flex items-center gap-0.5 rounded border border-slate-700/70 bg-slate-900/70 p-0.5">
+            {(['curves', 'heatmap'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode)}
+                className={`rounded px-2 py-0.5 font-mono transition ${
+                  viewMode === mode
+                    ? 'border border-cyan-500/60 bg-cyan-500/20 text-cyan-200'
+                    : 'border border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {mode === 'curves' ? 'Curvas' : 'Matriz Spot × ΔIV'}
+              </button>
+            ))}
+          </div>
           {([-15, 0, 15] as const).map((preset) => (
             <button
               key={preset}
@@ -453,7 +595,102 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
       </div>
 
       {/* Gráfico SVG interactivo de 3 curvas */}
-      {chartMetrics ? (
+      {viewMode === 'heatmap' ? (
+        heatmapData.isValid && heatmapData.cells.length > 0 ? (
+          <div className="rounded border border-slate-800/80 bg-[#06090F] p-2">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px]">
+              <span className="font-mono text-slate-300 tabular-nums">
+                Matriz 7×7 Spot × ΔIV · 1σ = ±{fmtStrike(heatmapData.oneSigmaMoveAbs)} · T+
+                {String(heatmapData.attribution.elapsedDays)}d
+              </span>
+              <span className="text-slate-500">
+                Clic en una celda para fijar el punto de atribución · clic de nuevo para soltar
+              </span>
+            </div>
+            <div
+              className="grid gap-px"
+              style={{
+                gridTemplateColumns: `46px repeat(${String(heatmapData.spotGrid.length)}, minmax(0, 1fr))`,
+              }}
+              onClick={handleGridClick}
+              onMouseOver={handleGridHover}
+              onMouseLeave={handleGridLeave}
+            >
+              <div className="text-[9px] font-mono text-slate-500" />
+              {heatmapData.spotGrid.map((gridSpot, col) => (
+                <div
+                  key={`hcol-${String(col)}`}
+                  className="text-center text-[9px] font-mono text-slate-400 tabular-nums"
+                >
+                  {col === 3 ? 'Spot' : `${String(WHAT_IF_HEATMAP_SIGMA_STEPS[col] ?? 0)}σ`}
+                  <div className="text-[9px] text-slate-500">{fmtStrike(gridSpot)}</div>
+                </div>
+              ))}
+              {heatmapData.cells.map((rowCells, row) => (
+                <React.Fragment key={`hrow-${String(row)}`}>
+                  <div className="flex items-center justify-end pr-1 text-[9px] font-mono text-slate-400 tabular-nums">
+                    {(WHAT_IF_HEATMAP_IV_SHIFT_STEPS[row] ?? 0) > 0 ? '+' : ''}
+                    {String(WHAT_IF_HEATMAP_IV_SHIFT_STEPS[row] ?? 0)}p
+                  </div>
+                  {rowCells.map((cell) => {
+                    const isSelected =
+                      selectedCell !== null &&
+                      selectedCell.row === cell.rowIndex &&
+                      selectedCell.col === cell.colIndex;
+                    return (
+                      <div
+                        key={`hc-${String(cell.rowIndex)}-${String(cell.colIndex)}`}
+                        data-cell
+                        data-row={cell.rowIndex}
+                        data-col={cell.colIndex}
+                        style={heatmapCellStyle(cell.pnlUsd, heatmapMaxAbs)}
+                        className={`flex min-h-9 cursor-pointer select-none flex-col items-center justify-center px-1 py-1 ${
+                          isSelected ? 'outline outline-2 -outline-offset-2 outline-cyan-300' : ''
+                        }`}
+                      >
+                        <span
+                          className={`font-mono text-[10px] font-semibold tabular-nums ${pnlToneClass(
+                            cell.pnlUsd,
+                          )}`}
+                        >
+                          {fmtCompactSigned(cell.pnlUsd, currencyPrefix)}
+                        </span>
+                        {cell.ivClampedLegs > 0 && (
+                          <span className="text-[8px] font-mono text-amber-300/90 tabular-nums">
+                            piso {String(cell.ivClampedLegs)}p
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] font-mono text-slate-400 tabular-nums">
+              {focusCellInfo ? (
+                <>
+                  <span>Spot {fmtStrike(focusCellInfo.spot)}</span>
+                  <span>
+                    ΔIV {focusCellInfo.ivShiftPts > 0 ? '+' : ''}
+                    {String(focusCellInfo.ivShiftPts)}p
+                  </span>
+                  <span className={pnlToneClass(focusCellInfo.pnlUsd)}>
+                    P&L {fmtSignedMoney(focusCellInfo.pnlUsd, currencyPrefix)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">
+                  Hover o clic sobre una celda para inspeccionar su P&amp;L.
+                </span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded border border-slate-800/80 bg-[#06090F] p-3 text-center text-xs text-slate-400">
+            Matriz 2D Spot × ΔIV no calculable (—).
+          </div>
+        )
+      ) : chartMetrics ? (
         <div className="relative rounded border border-slate-800/80 bg-[#06090F] p-2">
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px]">
             <div className="flex flex-wrap items-center gap-3">
@@ -705,6 +942,62 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
           Curva What-If no calculable (—).
         </div>
       )}
+
+      {/* Pieza 50: Atribución de Griegas (Taylor 2.º orden) — visible en curvas y matriz */}
+      <div className="rounded border border-slate-800/80 bg-[#0D131D] px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+          <span className="font-semibold text-slate-300">
+            Atribución de Griegas (Taylor 2.º orden)
+          </span>
+          <span className="font-mono text-slate-400 tabular-nums">
+            Objetivo: Spot {fmtStrike(attribution.targetSpot)} · ΔIV{' '}
+            {attribution.deltaIvPts > 0 ? '+' : ''}
+            {String(attribution.deltaIvPts)}p · T+{String(attribution.elapsedDays)}d
+          </span>
+        </div>
+        <div className="mt-1.5 flex h-2 w-full overflow-hidden rounded bg-slate-800/80">
+          {attributionComponents.map((component) =>
+            Number.isFinite(component.value) && attributionDenominator > 0 ? (
+              <div
+                key={component.key}
+                className={component.swatch}
+                style={{
+                  width: `${String((Math.abs(component.value) / attributionDenominator) * 100)}%`,
+                }}
+              />
+            ) : null,
+          )}
+        </div>
+        <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono tabular-nums sm:grid-cols-5">
+          {attributionComponents.map((component) => (
+            <div
+              key={component.key}
+              className="flex items-center justify-between gap-2 rounded border border-slate-800/60 bg-slate-900/40 px-2 py-1"
+            >
+              <span className="inline-flex items-center gap-1.5 text-slate-400">
+                <span className={`h-2 w-2 rounded-sm ${component.swatch}`} />
+                {component.key}
+              </span>
+              <span className={pnlToneClass(component.value)}>
+                {fmtSignedMoney(component.value, currencyPrefix)}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-slate-400 tabular-nums">
+          <span>
+            Total BSM:{' '}
+            <span className={pnlToneClass(attribution.totalBsmPnl)}>
+              {fmtSignedMoney(attribution.totalBsmPnl, currencyPrefix)}
+            </span>{' '}
+            · P&amp;L posición:{' '}
+            <span className={pnlToneClass(attribution.totalPositionPnl)}>
+              {fmtSignedMoney(attribution.totalPositionPnl, currencyPrefix)}
+            </span>
+          </span>
+          <span className="text-slate-500">Residuo ≈ Vanna/Volga/Charm y orden superior</span>
+        </div>
+      </div>
     </div>
   );
 };

@@ -851,6 +851,7 @@ export const OptionsModule: React.FC<{
   // Estado del Módulo 3: Flujo
   const [flowUnit, setFlowUnit] = useState<'lotes' | '$'>('lotes');
   const [flowPeriod, setFlowPeriod] = useState<'hoy' | 'anterior' | 'vencimiento'>('hoy');
+  const [exposureMetric, setExposureMetric] = useState<'GEX' | 'VEX' | 'CEX'>('GEX');
 
   // Estado de Cadena Completa y Armado a Mano
   const [expandedExpiries, setExpandedExpiries] = useState<Record<string, boolean>>({});
@@ -1593,6 +1594,8 @@ export const OptionsModule: React.FC<{
         readonly netGex: number | null;
         readonly callOi: number | null;
         readonly putOi: number | null;
+        readonly vex: number | null;
+        readonly cex: number | null;
       }
     >();
     for (const s of liveOptions?.exposureSummary?.byStrike ?? []) {
@@ -1602,6 +1605,8 @@ export const OptionsModule: React.FC<{
         netGex: s.netGex,
         callOi: s.callOi,
         putOi: s.putOi,
+        vex: s.vex ?? s.netVannaExposure ?? null,
+        cex: s.cex ?? s.netCharmExposure ?? null,
       });
     }
     return map;
@@ -1682,6 +1687,13 @@ export const OptionsModule: React.FC<{
     return list;
   }, [flowSummary.rows, dealerGammaReport.zeroGammaSpot]);
 
+  // Pieza 50: resumen Vanna (VEX) / Charm (CEX) de dealers del vencimiento activo.
+  const exposureSummaryView = liveOptions?.exposureSummary ?? null;
+  const netVexView = exposureSummaryView?.netVex ?? null;
+  const netCexView = exposureSummaryView?.netCex ?? null;
+  const vannaRegimeView = exposureSummaryView?.vannaRegime ?? null;
+  const charmPinStrikeView = exposureSummaryView?.charmPinStrike ?? null;
+
   const builderAnalytics = useMemo(
     () =>
       computeBuilderAnalytics(
@@ -1702,6 +1714,18 @@ export const OptionsModule: React.FC<{
   const formatPrice = (value: number, decimals = 2): string =>
     fmtNum(value, isUsMarket ? 2 : decimals);
   const formatSigma = (value: number): string => fmtNum(value, isUsMarket ? 2 : 0);
+
+  // Pieza 50: formato compacto con signo para exposiciones USD (VEX/CEX).
+  const formatSignedUsdCompact = (value: number): string => {
+    if (!Number.isFinite(value)) return '—';
+    const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+    const ccy = isUsMarket ? 'US$' : '$';
+    const abs = Math.abs(value);
+    if (abs >= 1e9) return `${sign}${ccy} ${fmtNum(abs / 1e9, 2)} B`;
+    if (abs >= 1e6) return `${sign}${ccy} ${fmtNum(abs / 1e6, 2)} M`;
+    if (abs >= 1e3) return `${sign}${ccy} ${fmtNum(abs / 1e3, 1)} K`;
+    return `${sign}${ccy} ${fmtNum(abs, 0)}`;
+  };
 
   const subViews: { id: OptionsSubView; label: string; icon: React.ReactNode }[] = [
     { id: 'mapa', label: 'Mapa', icon: <MapIcon className="w-3.5 h-3.5" /> },
@@ -3522,6 +3546,70 @@ export const OptionsModule: React.FC<{
             </div>
           </div>
 
+          {/* Pieza 50: Vanna (VEX) / Charm (CEX) de dealers y Charm Pin por base */}
+          <div className="rounded-[12px] bg-[#101218] border border-[#232733] px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono-num tabular-nums">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[#787B86]">NET VEX (1% IV)</div>
+              <div
+                className={`text-[15px] font-extrabold ${
+                  netVexView !== null && Number.isFinite(netVexView)
+                    ? netVexView >= 0
+                      ? 'text-emerald-400'
+                      : 'text-rose-400'
+                    : 'text-[#787B86]'
+                }`}
+              >
+                {netVexView !== null ? formatSignedUsdCompact(netVexView) : '—'}
+              </div>
+              <div className="text-[10px] text-[#9CA3AF]">USD delta / +1% IV</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[#787B86]">RÉGIMEN VANNA</div>
+              <div className="mt-1">
+                <span
+                  className={`inline-flex px-2 py-0.5 rounded-full border text-[11px] font-bold ${
+                    vannaRegimeView === 'SUPPORTIVE_ON_IV_DROP'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40'
+                      : vannaRegimeView === 'PRESSURE_ON_IV_DROP'
+                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/40'
+                        : 'bg-[#16161D] text-[#9CA3AF] border-[#252532]'
+                  }`}
+                >
+                  {vannaRegimeView === 'SUPPORTIVE_ON_IV_DROP'
+                    ? 'Soporte si cae IV'
+                    : vannaRegimeView === 'PRESSURE_ON_IV_DROP'
+                      ? 'Presión si cae IV'
+                      : 'Neutral'}
+                </span>
+              </div>
+              <div className="text-[10px] text-[#9CA3AF]">Re-hedging dealers ante ΔIV &lt; 0</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[#787B86]">NET CEX (1D)</div>
+              <div
+                className={`text-[15px] font-extrabold ${
+                  netCexView !== null && Number.isFinite(netCexView)
+                    ? netCexView >= 0
+                      ? 'text-emerald-400'
+                      : 'text-rose-400'
+                    : 'text-[#787B86]'
+                }`}
+              >
+                {netCexView !== null ? formatSignedUsdCompact(netCexView) : '—'}
+              </div>
+              <div className="text-[10px] text-[#9CA3AF]">USD delta / día calendario</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[#787B86]">CHARM PIN</div>
+              <div className="text-[15px] font-extrabold text-[#C084FC]">
+                {charmPinStrikeView !== null && Number.isFinite(charmPinStrikeView)
+                  ? formatStrike(charmPinStrikeView)
+                  : '—'}
+              </div>
+              <div className="text-[10px] text-[#9CA3AF]">Máx |Net CEX| por base</div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="rounded-[12px] bg-[#12141A] border border-[#232733] p-5 space-y-2">
               <div className="flex items-center gap-1.5 text-[13px] text-[#D1D4DC] font-medium">
@@ -3708,6 +3796,30 @@ export const OptionsModule: React.FC<{
                     $
                   </button>
                 </div>
+
+                <div className="flex items-center gap-1 border-l border-[#232733] pl-3 text-[12.5px]">
+                  {(['GEX', 'VEX', 'CEX'] as const).map((metric) => (
+                    <button
+                      key={metric}
+                      type="button"
+                      title={
+                        metric === 'GEX'
+                          ? 'Net GEX por base (USD por 1% Spot)'
+                          : metric === 'VEX'
+                            ? 'Vanna Exposure por base (USD delta por +1% IV)'
+                            : 'Charm Exposure por base (USD delta por día)'
+                      }
+                      onClick={() => setExposureMetric(metric)}
+                      className={`px-3 py-1 rounded-full font-bold cursor-pointer ${
+                        exposureMetric === metric
+                          ? 'bg-[#EAECEF] text-[#0B0E14]'
+                          : 'text-[#9CA3AF] hover:text-white'
+                      }`}
+                    >
+                      {metric === 'VEX' ? 'VEX (Vanna)' : metric === 'CEX' ? 'CEX (Charm)' : metric}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="flex items-center gap-1.5">
@@ -3729,7 +3841,7 @@ export const OptionsModule: React.FC<{
             <div ref={flowTableScrollRef} className="perf-table-viewport max-h-[68vh] overflow-auto">
               <div className="grid grid-cols-12 border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider text-center sticky top-0 z-20 bg-[#0A0A0D]">
                 <div className="col-span-4 py-2.5 bg-[#2B2819] text-[#EAB308]">CALL</div>
-                <div className="col-span-4 py-2.5 bg-[#161922] text-[#9CA3AF]">BASE · WALLS / GEX</div>
+                <div className="col-span-4 py-2.5 bg-[#161922] text-[#9CA3AF]">{`BASE · WALLS / ${exposureMetric}`}</div>
                 <div className="col-span-4 py-2.5 bg-[#261D30] text-[#C084FC]">PUT</div>
               </div>
 
@@ -3759,7 +3871,12 @@ export const OptionsModule: React.FC<{
                     }
                     const r = entry.row;
                   const gexRow = exposureByStrikeMap.get(r.strikeNum);
-                  const netGexStrike = gexRow?.netGex ?? null;
+                  const metricVal =
+                    exposureMetric === 'GEX'
+                      ? (gexRow?.netGex ?? null)
+                      : exposureMetric === 'VEX'
+                        ? (gexRow?.vex ?? null)
+                        : (gexRow?.cex ?? null);
                   const isCallWall =
                     Number.isFinite(dealerGammaReport.callWallStrike) &&
                     Math.abs(r.strikeNum - dealerGammaReport.callWallStrike) < 1e-6;
@@ -3769,14 +3886,18 @@ export const OptionsModule: React.FC<{
                   const pinK = activeQuantEngines?.gexCharmPin?.gexCharmPinStrike ?? null;
                   const isPinStrike =
                     pinK !== null && Number.isFinite(pinK) && Math.abs(r.strikeNum - pinK) < 1e-6;
-                  const gexLabel =
-                    netGexStrike !== null && Number.isFinite(netGexStrike)
-                      ? `${netGexStrike >= 0 ? '+' : '-'}${
-                          Math.abs(netGexStrike) >= 1e6
-                            ? `${fmtNum(Math.abs(netGexStrike) / 1e6, 1)}M`
-                            : Math.abs(netGexStrike) >= 1e3
-                              ? `${fmtNum(Math.abs(netGexStrike) / 1e3, 0)}K`
-                              : fmtNum(Math.abs(netGexStrike), 0)
+                  const isCharmPinStrike =
+                    charmPinStrikeView !== null &&
+                    Number.isFinite(charmPinStrikeView) &&
+                    Math.abs(r.strikeNum - charmPinStrikeView) < 1e-6;
+                  const metricLabel =
+                    metricVal !== null && Number.isFinite(metricVal)
+                      ? `${metricVal >= 0 ? '+' : '-'}${
+                          Math.abs(metricVal) >= 1e6
+                            ? `${fmtNum(Math.abs(metricVal) / 1e6, 1)}M`
+                            : Math.abs(metricVal) >= 1e3
+                              ? `${fmtNum(Math.abs(metricVal) / 1e3, 0)}K`
+                              : fmtNum(Math.abs(metricVal), 0)
                         }`
                       : null;
 
@@ -3841,14 +3962,28 @@ export const OptionsModule: React.FC<{
                               PIN
                             </span>
                           )}
-                          {gexLabel !== null && (
+                          {isCharmPinStrike && (
                             <span
-                              title="Net GEX por base (USD por 1% Spot)"
-                              className={`text-[9.5px] font-semibold ${
-                                (netGexStrike ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                              title="Charm Pin (máx |Net CEX| por base)"
+                              className="px-1.5 py-0.2 rounded bg-purple-500/20 border border-purple-400/50 text-[9.5px] font-bold text-[#C084FC]"
+                            >
+                              CPIN
+                            </span>
+                          )}
+                          {metricLabel !== null && (
+                            <span
+                              title={
+                                exposureMetric === 'GEX'
+                                  ? 'Net GEX por base (USD por 1% Spot)'
+                                  : exposureMetric === 'VEX'
+                                    ? 'Vanna Exposure por base (USD delta por +1% IV)'
+                                    : 'Charm Exposure por base (USD delta por día)'
+                              }
+                              className={`text-[9.5px] font-semibold tabular-nums ${
+                                (metricVal ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
                               }`}
                             >
-                              GEX {gexLabel}
+                              {exposureMetric} {metricLabel}
                             </span>
                           )}
                         </div>

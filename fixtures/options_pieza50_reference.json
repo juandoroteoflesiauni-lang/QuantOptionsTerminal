@@ -1,0 +1,4531 @@
+{
+  "meta": {
+    "generator": "tools/gen_options_pieza50_reference.py",
+    "tolerance": 1e-09
+  },
+  "vannaRegimeCases": [
+    {
+      "name": "supportive",
+      "netVex": 0.005,
+      "neutralEpsilon": null,
+      "expected": "SUPPORTIVE_ON_IV_DROP"
+    },
+    {
+      "name": "pressure",
+      "netVex": -0.005,
+      "neutralEpsilon": null,
+      "expected": "PRESSURE_ON_IV_DROP"
+    },
+    {
+      "name": "zero_neutral",
+      "netVex": 0.0,
+      "neutralEpsilon": null,
+      "expected": "NEUTRAL"
+    },
+    {
+      "name": "tiny_positive_neutral",
+      "netVex": 1e-07,
+      "neutralEpsilon": null,
+      "expected": "NEUTRAL"
+    },
+    {
+      "name": "epsilon_boundary_neutral",
+      "netVex": 1e-06,
+      "neutralEpsilon": null,
+      "expected": "NEUTRAL"
+    },
+    {
+      "name": "epsilon_boundary_negative_neutral",
+      "netVex": -1e-06,
+      "neutralEpsilon": null,
+      "expected": "NEUTRAL"
+    },
+    {
+      "name": "nan_neutral",
+      "netVex": "NaN",
+      "neutralEpsilon": null,
+      "expected": "NEUTRAL"
+    },
+    {
+      "name": "custom_epsilon_neutral",
+      "netVex": 0.001,
+      "neutralEpsilon": 0.01,
+      "expected": "NEUTRAL"
+    },
+    {
+      "name": "custom_epsilon_pressure",
+      "netVex": -0.02,
+      "neutralEpsilon": 0.01,
+      "expected": "PRESSURE_ON_IV_DROP"
+    }
+  ],
+  "charmPinCases": [
+    {
+      "name": "unique_max",
+      "spot": 100.0,
+      "rows": [
+        {
+          "strike": 90.0,
+          "netCharmExposure": -5000.0
+        },
+        {
+          "strike": 100.0,
+          "netCharmExposure": 8000.0
+        },
+        {
+          "strike": 110.0,
+          "netCharmExposure": -6000.0
+        }
+      ],
+      "expected": 100.0
+    },
+    {
+      "name": "tie_same_distance_lower_strike",
+      "spot": 100.0,
+      "rows": [
+        {
+          "strike": 90.0,
+          "netCharmExposure": -7000.0
+        },
+        {
+          "strike": 110.0,
+          "netCharmExposure": 7000.0
+        }
+      ],
+      "expected": 90.0
+    },
+    {
+      "name": "tie_nearest_spot_wins",
+      "spot": 100.0,
+      "rows": [
+        {
+          "strike": 95.0,
+          "netCharmExposure": 5000.0
+        },
+        {
+          "strike": 115.0,
+          "netCharmExposure": -5000.0
+        },
+        {
+          "strike": 120.0,
+          "netCharmExposure": 3000.0
+        }
+      ],
+      "expected": 95.0
+    },
+    {
+      "name": "empty_rows_nan",
+      "spot": 100.0,
+      "rows": [],
+      "expected": "NaN"
+    },
+    {
+      "name": "all_zero_nan",
+      "spot": 100.0,
+      "rows": [
+        {
+          "strike": 100.0,
+          "netCharmExposure": 0.0
+        },
+        {
+          "strike": 105.0,
+          "netCharmExposure": 0.0
+        }
+      ],
+      "expected": "NaN"
+    },
+    {
+      "name": "nan_row_skipped",
+      "spot": 100.0,
+      "rows": [
+        {
+          "strike": 100.0,
+          "netCharmExposure": "NaN"
+        },
+        {
+          "strike": 105.0,
+          "netCharmExposure": 2000.0
+        }
+      ],
+      "expected": 105.0
+    },
+    {
+      "name": "negative_max_abs",
+      "spot": 100.0,
+      "rows": [
+        {
+          "strike": 95.0,
+          "netCharmExposure": -9000.0
+        },
+        {
+          "strike": 105.0,
+          "netCharmExposure": 1000.0
+        }
+      ],
+      "expected": 95.0
+    }
+  ],
+  "dealerExposureCases": [
+    {
+      "name": "multi_strike_q_positive",
+      "market": {
+        "spot": 100.0,
+        "nowUtcSec": 1770000000,
+        "rate": 0.045,
+        "dividendYield": 0.015
+      },
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 105.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 1200.0,
+          "sharesPerContract": 100,
+          "iv": 0.22
+        },
+        {
+          "contractType": "call",
+          "strike": 110.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 800.0,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 95.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 1500.0,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 90.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 900.0,
+          "sharesPerContract": 100,
+          "iv": 0.26
+        }
+      ],
+      "expected": {
+        "callVannaExposure": 207455.45278546383,
+        "putVannaExposure": 198008.63729849138,
+        "netVannaExposure": 405464.0900839552,
+        "callCharmExposure": -84968.76146751012,
+        "putCharmExposure": -74771.17822081357,
+        "netCharmExposure": -159739.9396883237,
+        "vannaRegime": "SUPPORTIVE_ON_IV_DROP",
+        "charmPinStrike": 105.0,
+        "byStrike": [
+          {
+            "strike": 90.0,
+            "callVannaExposure": 0.0,
+            "putVannaExposure": 64645.66491638735,
+            "netVannaExposure": 64645.66491638735,
+            "callCharmExposure": 0.0,
+            "putCharmExposure": -26672.578164807892,
+            "netCharmExposure": -26672.578164807892
+          },
+          {
+            "strike": 95.0,
+            "callVannaExposure": 0.0,
+            "putVannaExposure": 133362.97238210402,
+            "netVannaExposure": 133362.97238210402,
+            "callCharmExposure": 0.0,
+            "putCharmExposure": -48098.60005600567,
+            "netCharmExposure": -48098.60005600567
+          },
+          {
+            "strike": 105.0,
+            "callVannaExposure": 130037.60417845783,
+            "putVannaExposure": 0.0,
+            "netVannaExposure": 130037.60417845783,
+            "callCharmExposure": -52428.622702009874,
+            "putCharmExposure": 0.0,
+            "netCharmExposure": -52428.622702009874
+          },
+          {
+            "strike": 110.0,
+            "callVannaExposure": 77417.848607006,
+            "putVannaExposure": 0.0,
+            "netVannaExposure": 77417.848607006,
+            "callCharmExposure": -32540.138765500244,
+            "putCharmExposure": 0.0,
+            "netCharmExposure": -32540.138765500244
+          }
+        ],
+        "quality": {
+          "usableContracts": 4,
+          "skippedContracts": 0,
+          "zeroOiContracts": 0,
+          "countsByReason": {
+            "invalidIv": 0,
+            "expired": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "multi_strike_q_zero",
+      "market": {
+        "spot": 100.0,
+        "nowUtcSec": 1770000000,
+        "rate": 0.045,
+        "dividendYield": 0.0
+      },
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 105.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 1200.0,
+          "sharesPerContract": 100,
+          "iv": 0.22
+        },
+        {
+          "contractType": "call",
+          "strike": 110.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 800.0,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 95.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 1500.0,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 90.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 900.0,
+          "sharesPerContract": 100,
+          "iv": 0.26
+        }
+      ],
+      "expected": {
+        "callVannaExposure": 206927.54523949095,
+        "putVannaExposure": 198613.9132659737,
+        "netVannaExposure": 405541.45850546466,
+        "callCharmExposure": -88359.12831483703,
+        "putCharmExposure": -72073.1643968214,
+        "netCharmExposure": -160432.29271165843,
+        "vannaRegime": "SUPPORTIVE_ON_IV_DROP",
+        "charmPinStrike": 105.0,
+        "byStrike": [
+          {
+            "strike": 90.0,
+            "callVannaExposure": 0.0,
+            "putVannaExposure": 63888.71338702934,
+            "netVannaExposure": 63888.71338702934,
+            "callCharmExposure": 0.0,
+            "putCharmExposure": -25758.19994625476,
+            "netCharmExposure": -25758.19994625476
+          },
+          {
+            "strike": 95.0,
+            "callVannaExposure": 0.0,
+            "putVannaExposure": 134725.19987894438,
+            "netVannaExposure": 134725.19987894438,
+            "callCharmExposure": 0.0,
+            "putCharmExposure": -46314.96445056664,
+            "netCharmExposure": -46314.96445056664
+          },
+          {
+            "strike": 105.0,
+            "callVannaExposure": 128606.36102319707,
+            "putVannaExposure": 0.0,
+            "netVannaExposure": 128606.36102319707,
+            "callCharmExposure": -54564.72415113116,
+            "putCharmExposure": 0.0,
+            "netCharmExposure": -54564.72415113116
+          },
+          {
+            "strike": 110.0,
+            "callVannaExposure": 78321.18421629388,
+            "putVannaExposure": 0.0,
+            "netVannaExposure": 78321.18421629388,
+            "callCharmExposure": -33794.40416370587,
+            "putCharmExposure": 0.0,
+            "netCharmExposure": -33794.40416370587
+          }
+        ],
+        "quality": {
+          "usableContracts": 4,
+          "skippedContracts": 0,
+          "zeroOiContracts": 0,
+          "countsByReason": {
+            "invalidIv": 0,
+            "expired": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid_gate_mixed_adds_zero",
+      "market": {
+        "spot": 100.0,
+        "nowUtcSec": 1770000000,
+        "rate": 0.045,
+        "dividendYield": 0.015
+      },
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 105.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 1200.0,
+          "sharesPerContract": 100,
+          "iv": 0.22
+        },
+        {
+          "contractType": "call",
+          "strike": 110.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 800.0,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 95.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 1500.0,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 90.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 900.0,
+          "sharesPerContract": 100,
+          "iv": 0.26
+        },
+        {
+          "contractType": "call",
+          "strike": 100.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 500.0,
+          "sharesPerContract": 100,
+          "iv": null
+        },
+        {
+          "contractType": "put",
+          "strike": 100.0,
+          "expiryUtcSec": 1769913600,
+          "openInterest": 400.0,
+          "sharesPerContract": 100,
+          "iv": 0.2
+        },
+        {
+          "contractType": "call",
+          "strike": 115.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 0.0,
+          "sharesPerContract": 100,
+          "iv": 0.25
+        }
+      ],
+      "expected": {
+        "callVannaExposure": 207455.45278546383,
+        "putVannaExposure": 198008.63729849138,
+        "netVannaExposure": 405464.0900839552,
+        "callCharmExposure": -84968.76146751012,
+        "putCharmExposure": -74771.17822081357,
+        "netCharmExposure": -159739.9396883237,
+        "vannaRegime": "SUPPORTIVE_ON_IV_DROP",
+        "charmPinStrike": 105.0,
+        "byStrike": [
+          {
+            "strike": 90.0,
+            "callVannaExposure": 0.0,
+            "putVannaExposure": 64645.66491638735,
+            "netVannaExposure": 64645.66491638735,
+            "callCharmExposure": 0.0,
+            "putCharmExposure": -26672.578164807892,
+            "netCharmExposure": -26672.578164807892
+          },
+          {
+            "strike": 95.0,
+            "callVannaExposure": 0.0,
+            "putVannaExposure": 133362.97238210402,
+            "netVannaExposure": 133362.97238210402,
+            "callCharmExposure": 0.0,
+            "putCharmExposure": -48098.60005600567,
+            "netCharmExposure": -48098.60005600567
+          },
+          {
+            "strike": 105.0,
+            "callVannaExposure": 130037.60417845783,
+            "putVannaExposure": 0.0,
+            "netVannaExposure": 130037.60417845783,
+            "callCharmExposure": -52428.622702009874,
+            "putCharmExposure": 0.0,
+            "netCharmExposure": -52428.622702009874
+          },
+          {
+            "strike": 110.0,
+            "callVannaExposure": 77417.848607006,
+            "putVannaExposure": 0.0,
+            "netVannaExposure": 77417.848607006,
+            "callCharmExposure": -32540.138765500244,
+            "putCharmExposure": 0.0,
+            "netCharmExposure": -32540.138765500244
+          }
+        ],
+        "quality": {
+          "usableContracts": 4,
+          "skippedContracts": 2,
+          "zeroOiContracts": 1,
+          "countsByReason": {
+            "invalidIv": 1,
+            "expired": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "only_invalid_degrades_to_nan",
+      "market": {
+        "spot": 100.0,
+        "nowUtcSec": 1770000000,
+        "rate": 0.045,
+        "dividendYield": 0.015
+      },
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 100.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 500.0,
+          "sharesPerContract": 100,
+          "iv": null
+        }
+      ],
+      "expected": {
+        "callVannaExposure": "NaN",
+        "putVannaExposure": "NaN",
+        "netVannaExposure": "NaN",
+        "callCharmExposure": "NaN",
+        "putCharmExposure": "NaN",
+        "netCharmExposure": "NaN",
+        "vannaRegime": "NEUTRAL",
+        "charmPinStrike": "NaN",
+        "byStrike": [],
+        "quality": {
+          "usableContracts": 0,
+          "skippedContracts": 1,
+          "zeroOiContracts": 0,
+          "countsByReason": {
+            "invalidIv": 1,
+            "expired": 0
+          }
+        }
+      }
+    }
+  ],
+  "skewRegimeCases": [
+    {
+      "name": "smile_9_strikes_exact_deltas",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ]
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 0
+      }
+    },
+    {
+      "name": "smile_with_null_ivs_interleaved",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": null,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": null,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": null,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": null,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": null,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": null,
+            "delta": -0.88
+          }
+        ]
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.1,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.66,
+        "bf25Pts": 5.520000000000003,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 0
+      }
+    },
+    {
+      "name": "no_call_25d_bracket_returns_null",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.55
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.6
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.65
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.26,
+            "delta": 0.75
+          }
+        ]
+      },
+      "expected": {
+        "iv25CallPct": null,
+        "iv25PutPct": null,
+        "ivAtmPct": null,
+        "rr25Pts": null,
+        "bf25Pts": null,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 0
+      }
+    },
+    {
+      "name": "deltas_computed_bsm_when_missing",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.241
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.242
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.243
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.244
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.245
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.246
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.247
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.248
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.348
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33599999999999997
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.32399999999999995
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.312
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.3
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.288
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.27599999999999997
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.264
+          }
+        ]
+      },
+      "expected": {
+        "iv25CallPct": 24.50955528679802,
+        "iv25PutPct": 32.52972663866704,
+        "ivAtmPct": 27.799999999999997,
+        "rr25Pts": 8.020171351869024,
+        "bf25Pts": 0.7196409627325338,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 0
+      }
+    },
+    {
+      "name": "ivr_ivp_strict_30_sessions_override",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.11724137931034484,
+          0.13448275862068965,
+          0.15172413793103448,
+          0.16896551724137931,
+          0.18620689655172415,
+          0.20344827586206898,
+          0.2206896551724138,
+          0.23793103448275862,
+          0.25517241379310346,
+          0.27241379310344827,
+          0.2896551724137931,
+          0.30689655172413793,
+          0.32413793103448274,
+          0.3413793103448276,
+          0.35862068965517246,
+          0.3758620689655172,
+          0.3931034482758621,
+          0.41034482758620694,
+          0.4275862068965517,
+          0.44482758620689655,
+          0.4620689655172414,
+          0.47931034482758617,
+          0.496551724137931,
+          0.5137931034482759,
+          0.5310344827586206,
+          0.5482758620689655,
+          0.5655172413793104,
+          0.5827586206896552,
+          0.6
+        ],
+        "currentIvOverride": 0.28
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": 36.00000000000001,
+        "ivp": 36.666666666666664,
+        "validHistorySessions": 30
+      }
+    },
+    {
+      "name": "ivr_from_interpolated_ivatm_30_sessions",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.11724137931034484,
+          0.13448275862068965,
+          0.15172413793103448,
+          0.16896551724137931,
+          0.18620689655172415,
+          0.20344827586206898,
+          0.2206896551724138,
+          0.23793103448275862,
+          0.25517241379310346,
+          0.27241379310344827,
+          0.2896551724137931,
+          0.30689655172413793,
+          0.32413793103448274,
+          0.3413793103448276,
+          0.35862068965517246,
+          0.3758620689655172,
+          0.3931034482758621,
+          0.41034482758620694,
+          0.4275862068965517,
+          0.44482758620689655,
+          0.4620689655172414,
+          0.47931034482758617,
+          0.496551724137931,
+          0.5137931034482759,
+          0.5310344827586206,
+          0.5482758620689655,
+          0.5655172413793104,
+          0.5827586206896552,
+          0.6
+        ]
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": 25.5,
+        "ivp": 26.666666666666668,
+        "validHistorySessions": 30
+      }
+    },
+    {
+      "name": "history_len_19_below_min_degrades_null",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.12777777777777777,
+          0.15555555555555556,
+          0.18333333333333335,
+          0.2111111111111111,
+          0.2388888888888889,
+          0.26666666666666666,
+          0.29444444444444445,
+          0.3222222222222222,
+          0.35,
+          0.37777777777777777,
+          0.40555555555555556,
+          0.43333333333333335,
+          0.46111111111111114,
+          0.48888888888888893,
+          0.5166666666666667,
+          0.5444444444444444,
+          0.5722222222222222,
+          0.6
+        ],
+        "currentIvOverride": 0.28
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 19
+      }
+    },
+    {
+      "name": "constant_series_ivr_null_ivp_full",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25
+        ],
+        "currentIvOverride": 0.28
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": null,
+        "ivp": 100.0,
+        "validHistorySessions": 30
+      }
+    },
+    {
+      "name": "history_filters_null_zero_negative_keeps_30",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.11724137931034484,
+          0.13448275862068965,
+          0.15172413793103448,
+          0.16896551724137931,
+          null,
+          0.0,
+          -0.1,
+          0.18620689655172415,
+          0.20344827586206898,
+          0.2206896551724138,
+          0.23793103448275862,
+          0.25517241379310346,
+          0.27241379310344827,
+          0.2896551724137931,
+          0.30689655172413793,
+          0.32413793103448274,
+          0.3413793103448276,
+          0.35862068965517246,
+          0.3758620689655172,
+          0.3931034482758621,
+          0.41034482758620694,
+          0.4275862068965517,
+          0.44482758620689655,
+          0.4620689655172414,
+          0.47931034482758617,
+          0.496551724137931,
+          0.5137931034482759,
+          0.5310344827586206,
+          0.5482758620689655,
+          0.5655172413793104,
+          0.5827586206896552,
+          0.6
+        ],
+        "currentIvOverride": 0.28
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": 36.00000000000001,
+        "ivp": 36.666666666666664,
+        "validHistorySessions": 30
+      }
+    },
+    {
+      "name": "min_history_override_10_with_12_sessions",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.14545454545454545,
+          0.19090909090909092,
+          0.23636363636363636,
+          0.28181818181818186,
+          0.32727272727272727,
+          0.3727272727272727,
+          0.4181818181818182,
+          0.4636363636363636,
+          0.5090909090909091,
+          0.5545454545454546,
+          0.6
+        ],
+        "currentIvOverride": 0.3,
+        "minHistorySessions": 10
+      },
+      "expected": {
+        "iv25CallPct": 23.44,
+        "iv25PutPct": 33.0,
+        "ivAtmPct": 22.75,
+        "rr25Pts": 9.559999999999999,
+        "bf25Pts": 5.469999999999999,
+        "ivr": 40.0,
+        "ivp": 41.66666666666667,
+        "validHistorySessions": 12
+      }
+    },
+    {
+      "name": "expired_expiry_degrades_all_null",
+      "input": {
+        "spot": 100.0,
+        "timeToExpiryYears": 0.0,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.11724137931034484,
+          0.13448275862068965,
+          0.15172413793103448,
+          0.16896551724137931,
+          0.18620689655172415,
+          0.20344827586206898,
+          0.2206896551724138,
+          0.23793103448275862,
+          0.25517241379310346,
+          0.27241379310344827,
+          0.2896551724137931,
+          0.30689655172413793,
+          0.32413793103448274,
+          0.3413793103448276,
+          0.35862068965517246,
+          0.3758620689655172,
+          0.3931034482758621,
+          0.41034482758620694,
+          0.4275862068965517,
+          0.44482758620689655,
+          0.4620689655172414,
+          0.47931034482758617,
+          0.496551724137931,
+          0.5137931034482759,
+          0.5310344827586206,
+          0.5482758620689655,
+          0.5655172413793104,
+          0.5827586206896552,
+          0.6
+        ],
+        "currentIvOverride": 0.28
+      },
+      "expected": {
+        "iv25CallPct": null,
+        "iv25PutPct": null,
+        "ivAtmPct": null,
+        "rr25Pts": null,
+        "bf25Pts": null,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 30
+      }
+    },
+    {
+      "name": "non_positive_spot_degrades_all_null",
+      "input": {
+        "spot": 0.0,
+        "timeToExpiryYears": 0.0821917808219178,
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "contracts": [
+          {
+            "strike": 80.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.9
+          },
+          {
+            "strike": 85.0,
+            "contractType": "call",
+            "iv": 0.235,
+            "delta": 0.82
+          },
+          {
+            "strike": 90.0,
+            "contractType": "call",
+            "iv": 0.23,
+            "delta": 0.72
+          },
+          {
+            "strike": 95.0,
+            "contractType": "call",
+            "iv": 0.228,
+            "delta": 0.6
+          },
+          {
+            "strike": 100.0,
+            "contractType": "call",
+            "iv": 0.225,
+            "delta": 0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "call",
+            "iv": 0.227,
+            "delta": 0.4
+          },
+          {
+            "strike": 110.0,
+            "contractType": "call",
+            "iv": 0.232,
+            "delta": 0.28
+          },
+          {
+            "strike": 115.0,
+            "contractType": "call",
+            "iv": 0.24,
+            "delta": 0.18
+          },
+          {
+            "strike": 120.0,
+            "contractType": "call",
+            "iv": 0.25,
+            "delta": 0.1
+          },
+          {
+            "strike": 80.0,
+            "contractType": "put",
+            "iv": 0.36,
+            "delta": -0.1
+          },
+          {
+            "strike": 85.0,
+            "contractType": "put",
+            "iv": 0.345,
+            "delta": -0.15
+          },
+          {
+            "strike": 90.0,
+            "contractType": "put",
+            "iv": 0.33,
+            "delta": -0.25
+          },
+          {
+            "strike": 95.0,
+            "contractType": "put",
+            "iv": 0.31,
+            "delta": -0.4
+          },
+          {
+            "strike": 100.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.5
+          },
+          {
+            "strike": 105.0,
+            "contractType": "put",
+            "iv": 0.23,
+            "delta": -0.6
+          },
+          {
+            "strike": 110.0,
+            "contractType": "put",
+            "iv": 0.225,
+            "delta": -0.7
+          },
+          {
+            "strike": 115.0,
+            "contractType": "put",
+            "iv": 0.218,
+            "delta": -0.8
+          },
+          {
+            "strike": 120.0,
+            "contractType": "put",
+            "iv": 0.212,
+            "delta": -0.88
+          }
+        ],
+        "historicalIv1y": [
+          0.1,
+          0.11724137931034484,
+          0.13448275862068965,
+          0.15172413793103448,
+          0.16896551724137931,
+          0.18620689655172415,
+          0.20344827586206898,
+          0.2206896551724138,
+          0.23793103448275862,
+          0.25517241379310346,
+          0.27241379310344827,
+          0.2896551724137931,
+          0.30689655172413793,
+          0.32413793103448274,
+          0.3413793103448276,
+          0.35862068965517246,
+          0.3758620689655172,
+          0.3931034482758621,
+          0.41034482758620694,
+          0.4275862068965517,
+          0.44482758620689655,
+          0.4620689655172414,
+          0.47931034482758617,
+          0.496551724137931,
+          0.5137931034482759,
+          0.5310344827586206,
+          0.5482758620689655,
+          0.5655172413793104,
+          0.5827586206896552,
+          0.6
+        ],
+        "currentIvOverride": 0.28
+      },
+      "expected": {
+        "iv25CallPct": null,
+        "iv25PutPct": null,
+        "ivAtmPct": null,
+        "rr25Pts": null,
+        "bf25Pts": null,
+        "ivr": null,
+        "ivp": null,
+        "validHistorySessions": 30
+      }
+    }
+  ],
+  "heatmapCases": [
+    {
+      "name": "iron_condor_30d_grid_and_taylor",
+      "input": {
+        "referenceSpot": 100.0,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": 1,
+            "iv": 0.26,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.23313847245714925
+          },
+          {
+            "contractType": "put",
+            "strike": 95.0,
+            "quantity": -1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.9136114839141243
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": -1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0508340701396435
+          },
+          {
+            "contractType": "call",
+            "strike": 110.0,
+            "quantity": 1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.34460028844556234
+          }
+        ],
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "elapsedDays": 10.0,
+        "horizonDte": 30.0,
+        "targetSpot": 105.0,
+        "targetIvShiftPts": -10.0
+      },
+      "expected": {
+        "isValid": true,
+        "oneSigmaMoveAbs": 7.167277238512448,
+        "sigmaMultipliers": [
+          -2.0,
+          -1.33,
+          -0.67,
+          0.0,
+          0.67,
+          1.33,
+          2.0
+        ],
+        "ivShiftGridPts": [
+          -15.0,
+          -10.0,
+          -5.0,
+          0.0,
+          5.0,
+          10.0,
+          15.0
+        ],
+        "spotGrid": [
+          85.6654455229751,
+          90.46752127277844,
+          95.19792425019666,
+          100.0,
+          104.80207574980334,
+          109.53247872722156,
+          114.3345544770249
+        ],
+        "cells": [
+          [
+            {
+              "rowIndex": 0,
+              "colIndex": 0,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -357.28267042859693,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 1,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -235.33906732629794,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 2,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 67.59697704838966,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 3,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 136.79521619376055,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 4,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": 54.06042807136772,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 5,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -244.31923247430643,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 6,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -355.5493516169201,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 1,
+              "colIndex": 0,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -344.4793582385919,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 1,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -205.95326790375358,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 2,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 31.65431123434219,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 3,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 118.20459294740608,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 4,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": 18.802544613023287,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 5,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -206.51641935125386,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 6,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -336.01250833332836,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 2,
+              "colIndex": 0,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -324.37069590768726,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 1,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -186.53247240417045,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 2,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 3.0300156290333558,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 3,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 82.08971989833897,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 4,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -6.613415226446451,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 5,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -181.57542568632286,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 6,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -308.25547808483407,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 3,
+              "colIndex": 0,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -302.9269490932715,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 1,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -174.2216118686351,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 2,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -22.64546204283322,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 3,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 40.90160621437802,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 4,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -28.662927983217212,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 5,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -165.63722041146977,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 6,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -281.00798031552137,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 4,
+              "colIndex": 0,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -283.5393732361813,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 1,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -167.56743934778885,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 2,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -47.10867335581721,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 3,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 2.001268966578529,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 4,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -49.91070574569214,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 5,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -156.70955559363796,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 6,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -257.9110236231811,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 5,
+              "colIndex": 0,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -267.5583386726062,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 1,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -165.61835317324585,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 2,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -70.13052914123384,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 3,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -32.23379660118617,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 4,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -70.40407781544391,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 5,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -153.40785291273366,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 6,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -239.9773290689657,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 6,
+              "colIndex": 0,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -255.3408821223782,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 1,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -167.23056858353144,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 2,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -91.25819729976845,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 3,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -61.61301775353838,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 4,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -89.67277970295422,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 5,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -154.26285737497113,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 6,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -227.1035293489156,
+              "ivClampedLegs": 0.0
+            }
+          ]
+        ],
+        "minPnlUsd": -357.28267042859693,
+        "maxPnlUsd": 136.79521619376055,
+        "attribution": {
+          "referenceSpot": 100.0,
+          "targetSpot": 105.0,
+          "deltaSpot": 5.0,
+          "deltaIvPts": -10.0,
+          "elapsedDays": 10.0,
+          "totalBsmPnl": 10.612671193226998,
+          "totalPositionPnl": 10.612671193226998,
+          "deltaPnl": -5.2464589253670635,
+          "gammaPnl": -56.39432215921893,
+          "thetaPnl": 34.12997092318057,
+          "vegaPnl": 87.36073035775058,
+          "residualPnl": -49.237249003118166
+        }
+      }
+    },
+    {
+      "name": "zero_shock_identity",
+      "input": {
+        "referenceSpot": 100.0,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": 1,
+            "iv": 0.26,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.23313847245714925
+          },
+          {
+            "contractType": "put",
+            "strike": 95.0,
+            "quantity": -1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.9136114839141243
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": -1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0508340701396435
+          },
+          {
+            "contractType": "call",
+            "strike": 110.0,
+            "quantity": 1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.34460028844556234
+          }
+        ],
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "elapsedDays": 0.0,
+        "horizonDte": 30.0,
+        "targetSpot": 100.0,
+        "targetIvShiftPts": 0.0
+      },
+      "expected": {
+        "isValid": true,
+        "oneSigmaMoveAbs": 7.167277238512448,
+        "sigmaMultipliers": [
+          -2.0,
+          -1.33,
+          -0.67,
+          0.0,
+          0.67,
+          1.33,
+          2.0
+        ],
+        "ivShiftGridPts": [
+          -15.0,
+          -10.0,
+          -5.0,
+          0.0,
+          5.0,
+          10.0,
+          15.0
+        ],
+        "spotGrid": [
+          85.6654455229751,
+          90.46752127277844,
+          95.19792425019666,
+          100.0,
+          104.80207574980334,
+          109.53247872722156,
+          114.3345544770249
+        ],
+        "cells": [
+          [
+            {
+              "rowIndex": 0,
+              "colIndex": 0,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -351.1600411686977,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 1,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -214.40358419694067,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 2,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 53.95471328324879,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 3,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 131.64817599251236,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 4,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": 34.98138754790661,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 5,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -228.84055539345417,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 6,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -348.6043374976843,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 1,
+              "colIndex": 0,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -328.643776911371,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 1,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -186.5041276917716,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 2,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 15.698683352408228,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 3,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 96.10195309275514,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 4,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": 0.36392767396540293,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 5,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -190.34052192650267,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 6,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -318.18813078897944,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 2,
+              "colIndex": 0,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -301.8560803619006,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 1,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -170.34486397710515,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 2,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -16.177600539881844,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 3,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 46.91308762424349,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 4,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -26.259235081117673,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 5,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -167.5785256574776,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 6,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -284.10038521328664,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 3,
+              "colIndex": 0,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -277.9917806289504,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 1,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -162.61509761439785,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 2,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -46.072563738706585,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 3,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 0.0,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 4,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -51.428132364462044,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 5,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -155.8602935658838,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 6,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -255.49359105568374,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 4,
+              "colIndex": 0,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -259.4325099560596,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 1,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -161.5680986178309,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 2,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -73.71174805320244,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 3,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -40.02867217424093,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 4,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -75.50083786586713,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 5,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -152.4356442639869,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 6,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -234.54991945563785,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 5,
+              "colIndex": 0,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -246.48358789382542,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 1,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -165.14488901040997,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 2,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -98.37326421688797,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 3,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -73.1385248600823,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 4,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -97.6892397971608,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 5,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -154.6058611909931,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 6,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -220.87646086333416,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 6,
+              "colIndex": 0,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -238.4338998756301,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 1,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -171.42123778760228,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 2,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -119.91322202530253,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 3,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -100.43099357180125,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 4,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -117.58242705221456,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 5,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -160.08329181143318,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 6,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -213.06947130957408,
+              "ivClampedLegs": 0.0
+            }
+          ]
+        ],
+        "minPnlUsd": -351.1600411686977,
+        "maxPnlUsd": 131.64817599251236,
+        "attribution": {
+          "referenceSpot": 100.0,
+          "targetSpot": 100.0,
+          "deltaSpot": 0.0,
+          "deltaIvPts": 0.0,
+          "elapsedDays": 0.0,
+          "totalBsmPnl": 0.0,
+          "totalPositionPnl": 0.0,
+          "deltaPnl": -0.0,
+          "gammaPnl": -0.0,
+          "thetaPnl": 0.0,
+          "vegaPnl": -0.0,
+          "residualPnl": 0.0
+        }
+      }
+    },
+    {
+      "name": "selected_cell_row1_col5_target",
+      "input": {
+        "referenceSpot": 100.0,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": 1,
+            "iv": 0.26,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.23313847245714925
+          },
+          {
+            "contractType": "put",
+            "strike": 95.0,
+            "quantity": -1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.9136114839141243
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": -1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0508340701396435
+          },
+          {
+            "contractType": "call",
+            "strike": 110.0,
+            "quantity": 1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.34460028844556234
+          }
+        ],
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "elapsedDays": 10.0,
+        "horizonDte": 30.0,
+        "selectedCell": {
+          "row": 1,
+          "col": 5
+        }
+      },
+      "expected": {
+        "isValid": true,
+        "oneSigmaMoveAbs": 7.167277238512448,
+        "sigmaMultipliers": [
+          -2.0,
+          -1.33,
+          -0.67,
+          0.0,
+          0.67,
+          1.33,
+          2.0
+        ],
+        "ivShiftGridPts": [
+          -15.0,
+          -10.0,
+          -5.0,
+          0.0,
+          5.0,
+          10.0,
+          15.0
+        ],
+        "spotGrid": [
+          85.6654455229751,
+          90.46752127277844,
+          95.19792425019666,
+          100.0,
+          104.80207574980334,
+          109.53247872722156,
+          114.3345544770249
+        ],
+        "cells": [
+          [
+            {
+              "rowIndex": 0,
+              "colIndex": 0,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -357.28267042859693,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 1,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -235.33906732629794,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 2,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 67.59697704838966,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 3,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 136.79521619376055,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 4,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": 54.06042807136772,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 5,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -244.31923247430643,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 6,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -355.5493516169201,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 1,
+              "colIndex": 0,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -344.4793582385919,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 1,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -205.95326790375358,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 2,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 31.65431123434219,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 3,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 118.20459294740608,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 4,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": 18.802544613023287,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 5,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -206.51641935125386,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 6,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -336.01250833332836,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 2,
+              "colIndex": 0,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -324.37069590768726,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 1,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -186.53247240417045,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 2,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": 3.0300156290333558,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 3,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 82.08971989833897,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 4,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -6.613415226446451,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 5,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -181.57542568632286,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 6,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -308.25547808483407,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 3,
+              "colIndex": 0,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -302.9269490932715,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 1,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -174.2216118686351,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 2,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -22.64546204283322,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 3,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 40.90160621437802,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 4,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -28.662927983217212,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 5,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -165.63722041146977,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 6,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -281.00798031552137,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 4,
+              "colIndex": 0,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -283.5393732361813,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 1,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -167.56743934778885,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 2,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -47.10867335581721,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 3,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 2.001268966578529,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 4,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -49.91070574569214,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 5,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -156.70955559363796,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 6,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -257.9110236231811,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 5,
+              "colIndex": 0,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -267.5583386726062,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 1,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -165.61835317324585,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 2,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -70.13052914123384,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 3,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -32.23379660118617,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 4,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -70.40407781544391,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 5,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -153.40785291273366,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 6,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -239.9773290689657,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 6,
+              "colIndex": 0,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 85.6654455229751,
+              "pnlUsd": -255.3408821223782,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 1,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 90.46752127277844,
+              "pnlUsd": -167.23056858353144,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 2,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.19792425019666,
+              "pnlUsd": -91.25819729976845,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 3,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -61.61301775353838,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 4,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.80207574980334,
+              "pnlUsd": -89.67277970295422,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 5,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 109.53247872722156,
+              "pnlUsd": -154.26285737497113,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 6,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 114.3345544770249,
+              "pnlUsd": -227.1035293489156,
+              "ivClampedLegs": 0.0
+            }
+          ]
+        ],
+        "minPnlUsd": -357.28267042859693,
+        "maxPnlUsd": 136.79521619376055,
+        "attribution": {
+          "referenceSpot": 100.0,
+          "targetSpot": 109.53247872722156,
+          "deltaSpot": 9.532478727221559,
+          "deltaIvPts": -10.0,
+          "elapsedDays": 10.0,
+          "totalBsmPnl": -206.51641935125386,
+          "totalPositionPnl": -206.51641935125386,
+          "deltaPnl": -10.002351619860642,
+          "gammaPnl": -204.97791054953922,
+          "thetaPnl": 34.12997092318057,
+          "vegaPnl": 87.36073035775058,
+          "residualPnl": -113.02685846278516
+        }
+      }
+    },
+    {
+      "name": "one_sigma_override_and_positive_shift",
+      "input": {
+        "referenceSpot": 100.0,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": 1,
+            "iv": 0.26,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.23313847245714925
+          },
+          {
+            "contractType": "put",
+            "strike": 95.0,
+            "quantity": -1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.9136114839141243
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": -1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0508340701396435
+          },
+          {
+            "contractType": "call",
+            "strike": 110.0,
+            "quantity": 1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.34460028844556234
+          }
+        ],
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "elapsedDays": 5.0,
+        "horizonDte": 30.0,
+        "targetSpot": 95.0,
+        "targetIvShiftPts": 15.0,
+        "oneSigmaMoveAbs": 6.5
+      },
+      "expected": {
+        "isValid": true,
+        "oneSigmaMoveAbs": 6.5,
+        "sigmaMultipliers": [
+          -2.0,
+          -1.33,
+          -0.67,
+          0.0,
+          0.67,
+          1.33,
+          2.0
+        ],
+        "ivShiftGridPts": [
+          -15.0,
+          -10.0,
+          -5.0,
+          0.0,
+          5.0,
+          10.0,
+          15.0
+        ],
+        "spotGrid": [
+          87.0,
+          91.355,
+          95.645,
+          100.0,
+          104.355,
+          108.645,
+          113.0
+        ],
+        "cells": [
+          [
+            {
+              "rowIndex": 0,
+              "colIndex": 0,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -342.5938706626526,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 1,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -169.95502348258987,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 2,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": 77.07977239716796,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 3,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 134.60734839376377,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 4,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": 63.29482193141309,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 5,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -187.4833757920277,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 0,
+              "colIndex": 6,
+              "ivShiftPts": -15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -340.1185962042032,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 1,
+              "colIndex": 0,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -313.9700589325972,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 1,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -153.21749247590816,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 2,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": 38.49181517802376,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 3,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 107.24451011623961,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 4,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": 25.1015019126692,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 5,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -159.99264133515405,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 1,
+              "colIndex": 6,
+              "ivShiftPts": -10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -304.159761320993,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 2,
+              "colIndex": 0,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -285.1900644049072,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 1,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -144.0359212948511,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 2,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": 5.373825962377143,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 3,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 63.530965351737564,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 4,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": -4.497041901065346,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 5,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -144.14202333433383,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 2,
+              "colIndex": 6,
+              "ivShiftPts": -5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -269.16549033543953,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 3,
+              "colIndex": 0,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -261.4418502155844,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 1,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -140.57565456150215,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 2,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": -25.595622375882154,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 3,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": 18.625622415688348,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 4,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": -31.49533964610054,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 5,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -136.47075512279622,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 3,
+              "colIndex": 6,
+              "ivShiftPts": 0.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -241.387562949879,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 4,
+              "colIndex": 0,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -243.67705555538265,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 1,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -142.2036431753453,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 2,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": -54.373556040486235,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 3,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -21.31772064463977,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 4,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": -56.95472719287582,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 5,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -135.41917413824845,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 4,
+              "colIndex": 6,
+              "ivShiftPts": 5.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -221.48132202994083,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 5,
+              "colIndex": 0,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -231.62584693033534,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 1,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -147.62632219951914,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 2,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": -80.26840262080457,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 3,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -55.2001126481132,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 4,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": -80.40354346973277,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 5,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -139.1274421994561,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 5,
+              "colIndex": 6,
+              "ivShiftPts": 10.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -208.65107889642474,
+              "ivClampedLegs": 0.0
+            }
+          ],
+          [
+            {
+              "rowIndex": 6,
+              "colIndex": 0,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -2.0,
+              "spot": 87.0,
+              "pnlUsd": -224.42501146892963,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 1,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -1.33,
+              "spot": 91.355,
+              "pnlUsd": -155.33012311545545,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 2,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": -0.67,
+              "spot": 95.645,
+              "pnlUsd": -103.06470757174057,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 3,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.0,
+              "spot": 100.0,
+              "pnlUsd": -83.58757155699621,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 4,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 0.67,
+              "spot": 104.355,
+              "pnlUsd": -101.49882547145364,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 5,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 1.33,
+              "spot": 108.645,
+              "pnlUsd": -145.75443341156583,
+              "ivClampedLegs": 0.0
+            },
+            {
+              "rowIndex": 6,
+              "colIndex": 6,
+              "ivShiftPts": 15.0,
+              "sigmaMultiplier": 2.0,
+              "spot": 113.0,
+              "pnlUsd": -201.50384293909624,
+              "ivClampedLegs": 0.0
+            }
+          ]
+        ],
+        "minPnlUsd": -342.5938706626526,
+        "maxPnlUsd": 134.60734839376377,
+        "attribution": {
+          "referenceSpot": 100.0,
+          "targetSpot": 95.0,
+          "deltaSpot": -5.0,
+          "deltaIvPts": 15.0,
+          "elapsedDays": 5.0,
+          "totalBsmPnl": -109.11661198707243,
+          "totalPositionPnl": -109.11661198707243,
+          "deltaPnl": 5.2464589253670635,
+          "gammaPnl": -56.39432215921893,
+          "thetaPnl": 17.064985461590286,
+          "vegaPnl": -131.04109553662587,
+          "residualPnl": 56.007361321815026
+        }
+      }
+    },
+    {
+      "name": "invalid_no_legs",
+      "input": {
+        "referenceSpot": 100.0,
+        "legs": [],
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "elapsedDays": 10.0,
+        "horizonDte": 30.0
+      },
+      "expected": {
+        "isValid": false,
+        "oneSigmaMoveAbs": "NaN",
+        "sigmaMultipliers": [],
+        "spotGrid": [],
+        "ivShiftGridPts": [],
+        "cells": [],
+        "minPnlUsd": "NaN",
+        "maxPnlUsd": "NaN",
+        "attribution": {
+          "referenceSpot": "NaN",
+          "targetSpot": "NaN",
+          "deltaSpot": "NaN",
+          "deltaIvPts": "NaN",
+          "elapsedDays": "NaN",
+          "totalBsmPnl": "NaN",
+          "totalPositionPnl": "NaN",
+          "deltaPnl": "NaN",
+          "gammaPnl": "NaN",
+          "thetaPnl": "NaN",
+          "vegaPnl": "NaN",
+          "residualPnl": "NaN"
+        }
+      }
+    },
+    {
+      "name": "invalid_selected_cell_out_of_range",
+      "input": {
+        "referenceSpot": 100.0,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": 1,
+            "iv": 0.26,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.23313847245714925
+          },
+          {
+            "contractType": "put",
+            "strike": 95.0,
+            "quantity": -1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.9136114839141243
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": -1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0508340701396435
+          },
+          {
+            "contractType": "call",
+            "strike": 110.0,
+            "quantity": 1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.34460028844556234
+          }
+        ],
+        "rate": 0.045,
+        "dividendYield": 0.015,
+        "elapsedDays": 10.0,
+        "horizonDte": 30.0,
+        "selectedCell": {
+          "row": 7,
+          "col": 0
+        }
+      },
+      "expected": {
+        "isValid": false,
+        "oneSigmaMoveAbs": "NaN",
+        "sigmaMultipliers": [],
+        "spotGrid": [],
+        "ivShiftGridPts": [],
+        "cells": [],
+        "minPnlUsd": "NaN",
+        "maxPnlUsd": "NaN",
+        "attribution": {
+          "referenceSpot": "NaN",
+          "targetSpot": "NaN",
+          "deltaSpot": "NaN",
+          "deltaIvPts": "NaN",
+          "elapsedDays": "NaN",
+          "totalBsmPnl": "NaN",
+          "totalPositionPnl": "NaN",
+          "deltaPnl": "NaN",
+          "gammaPnl": "NaN",
+          "thetaPnl": "NaN",
+          "vegaPnl": "NaN",
+          "residualPnl": "NaN"
+        }
+      }
+    }
+  ]
+}

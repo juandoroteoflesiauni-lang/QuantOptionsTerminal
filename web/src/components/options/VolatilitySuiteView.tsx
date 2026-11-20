@@ -3,6 +3,7 @@ import { type OptionExpiryGroup, fmtNum } from '../../data/marketData';
 import type { ArOptionsQuantEnginesDto, ArOptionsResponse, UsSnapshotResponseDto, UsVolSurfaceResponseDto } from '../../data/liveTypes';
 import type { StratLeg } from './engine';
 import { computeActiveExpiryVrpAndRegime } from '../../../../src/core/options/volAnalyticsSuite';
+import { computeActiveExpirySkewAndIvRegime } from '../../../../src/core/options/volMetrics';
 import { computeForwardIvTermStructure } from '../../../../src/core/options/volSurface';
 import {
   BLOCKED_SHORT_DTE_TOOLTIP,
@@ -251,6 +252,80 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
     usVolSurface?.surface?.status === 'OPERATIONAL' ? usVolSurface.surface : null;
   const oratsIvRank =
     usVolSurface?.ivRank?.status === 'OPERATIONAL' ? usVolSurface.ivRank.row : null;
+
+  // Pieza 50: régimen de skew 25Δ (RR/BF) e IVR/IVP 1Y del vencimiento activo.
+  // `row.callIV` / `row.putIV` ya vienen en puntos porcentuales (28.5) -> decimal exacto /100.
+  const skewRegime = useMemo(() => {
+    const contracts: {
+      readonly strike: number;
+      readonly contractType: 'call' | 'put';
+      readonly iv: number | null;
+      readonly delta: number | null;
+    }[] = [];
+    for (const row of activeExpiry?.rows ?? []) {
+      const callIvDec =
+        Number.isFinite(row.callIV) && row.callIV > 0 ? row.callIV / 100 : null;
+      const putIvDec =
+        Number.isFinite(row.putIV) && row.putIV > 0 ? row.putIV / 100 : null;
+      contracts.push({
+        strike: row.strike,
+        contractType: 'call',
+        iv: callIvDec,
+        delta: Number.isFinite(row.callDelta) ? row.callDelta : null,
+      });
+      contracts.push({
+        strike: row.strike,
+        contractType: 'put',
+        iv: putIvDec,
+        delta: Number.isFinite(row.putDelta) ? row.putDelta : null,
+      });
+    }
+
+    // Proxy RV 1Y explícito (últimas 252 sesiones) cuando ORATS /ivrank no está disponible.
+    const historicalIv1y = (hist?.historySeries ?? []).slice(-252).map((p) =>
+      p.rvPct !== null && p.rvPct !== undefined && Number.isFinite(p.rvPct) && p.rvPct > 0
+        ? p.rvPct / 100
+        : null,
+    );
+
+    const continuousRate = liveOptions?.continuousRate ?? null;
+    const rateTna = liveOptions?.rateTna ?? null;
+    const rateDec =
+      continuousRate !== null && Number.isFinite(continuousRate)
+        ? continuousRate
+        : rateTna !== null && Number.isFinite(rateTna)
+          ? Math.log(1 + rateTna / 100)
+          : Number.NaN;
+
+    return computeActiveExpirySkewAndIvRegime({
+      spot: displaySpot,
+      timeToExpiryYears:
+        activeExpiry !== null && activeExpiry.daysToExpiry > 0
+          ? activeExpiry.daysToExpiry / 365
+          : Number.NaN,
+      rate: rateDec,
+      dividendYield: liveOptions?.dividendYield ?? Number.NaN,
+      contracts,
+      historicalIv1y,
+    });
+  }, [activeExpiry, displaySpot, hist, liveOptions]);
+
+  // Prioridad de IVR/IVP: ORATS 1Y (US y OPERATIONAL) o Proxy RV 1Y del vencimiento activo.
+  const ivRankOneYearDisplay = oratsIvRank?.ivRank1y ?? skewRegime.ivr;
+  const ivRankOneYearSource =
+    oratsIvRank?.ivRank1y !== null && oratsIvRank?.ivRank1y !== undefined
+      ? 'ORATS 1Y'
+      : skewRegime.ivr !== null
+        ? 'Proxy RV 1Y'
+        : '—';
+  const ivPctOneYearDisplay = oratsIvRank?.ivPct1y ?? skewRegime.ivp;
+  const ivPctOneYearSource =
+    oratsIvRank?.ivPct1y !== null && oratsIvRank?.ivPct1y !== undefined
+      ? 'ORATS 1Y'
+      : skewRegime.ivp !== null
+        ? 'Proxy RV 1Y'
+        : '—';
+
   const benchmarkText = suite
     ? `${suite.benchmarkLabel}: ${fmtNullableNumber(suite.rateTeaPct, 2, '%')}`
     : `Tasa ref.: ${fmtNullableNumber(effectiveTlrPct, 2, '%')}`;
@@ -422,6 +497,43 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
             <div className="text-[10px] text-[#9CA3AF] font-mono-num">
               ±{fmtNullableNumber(expirySuite?.expectedCone.dailyMovePct, 2, '%')} / día
             </div>
+          </div>
+        </div>
+
+        {/* Pieza 50: régimen de skew 25Δ e IVR/IVP 1Y (ORATS 1Y o Proxy RV 1Y) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">25Δ RR (Put − Call)</div>
+            <div className="text-[16px] font-extrabold font-mono-num tabular-nums text-[#F3F4F6]">
+              {fmtSignedNullable(skewRegime.rr25Pts, 1, ' pts')}
+            </div>
+            <div className="text-[10px] text-[#9CA3AF] font-mono-num tabular-nums">
+              25P {fmtNullableNumber(skewRegime.iv25PutPct, 1, '%')} / 25C{' '}
+              {fmtNullableNumber(skewRegime.iv25CallPct, 1, '%')}
+            </div>
+          </div>
+          <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">25Δ BF (Curvatura)</div>
+            <div className="text-[16px] font-extrabold font-mono-num tabular-nums text-[#F3F4F6]">
+              {fmtSignedNullable(skewRegime.bf25Pts, 1, ' pts')}
+            </div>
+            <div className="text-[10px] text-[#9CA3AF] font-mono-num tabular-nums">
+              ATM {fmtNullableNumber(skewRegime.ivAtmPct, 1, '%')}
+            </div>
+          </div>
+          <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">IVR (1Y)</div>
+            <div className="text-[16px] font-extrabold font-mono-num tabular-nums text-[#B794F4]">
+              {fmtNullableNumber(ivRankOneYearDisplay, 1, '%')}
+            </div>
+            <div className="text-[10px] text-[#9CA3AF] font-mono-num">{ivRankOneYearSource}</div>
+          </div>
+          <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">IVP (1Y)</div>
+            <div className="text-[16px] font-extrabold font-mono-num tabular-nums text-[#38BDF8]">
+              {fmtNullableNumber(ivPctOneYearDisplay, 1, '%')}
+            </div>
+            <div className="text-[10px] text-[#9CA3AF] font-mono-num">{ivPctOneYearSource}</div>
           </div>
         </div>
 

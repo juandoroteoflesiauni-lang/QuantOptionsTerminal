@@ -21,6 +21,8 @@ import type { OptionContractType } from './types.js';
 const SECONDS_PER_DAY = 86_400;
 export const DEFAULT_WHAT_IF_MIN_IV = 0.005;
 export const DEFAULT_US_OPTION_MULTIPLIER = 100;
+export const WHAT_IF_HEATMAP_SIGMA_STEPS = [-2, -1.33, -0.67, 0, 0.67, 1.33, 2] as const;
+export const WHAT_IF_HEATMAP_IV_SHIFT_STEPS = [-15, -10, -5, 0, 5, 10, 15] as const;
 
 export interface WhatIfOptionLeg {
   readonly id?: string;
@@ -594,5 +596,284 @@ export function simulateWhatIfPayoffSurface(input: WhatIfSurfaceInput): WhatIfSu
     maxLossTn: Number.isFinite(maxLossTn) ? maxLossTn : Number.NaN,
     atSpot,
     curve,
+  };
+}
+
+export interface WhatIfHeatmapInput {
+  readonly referenceSpot: number;
+  readonly legs: readonly WhatIfOptionLeg[];
+  readonly rate: number;
+  readonly dividendYield: number;
+  /** Días calendario transcurridos (T+n) para evaluar toda la grilla 7×7 y la atribución. */
+  readonly elapsedDays: number;
+  readonly horizonDte: number;
+  /** Punto objetivo para la atribución de Taylor (defaults: referenceSpot y 0 pts). */
+  readonly targetSpot?: number;
+  readonly targetIvShiftPts?: number;
+  /** Override opcional de 1σ absoluto en precio; si se omite: referenceSpot * meanLegIv * sqrt(horizonYears). */
+  readonly oneSigmaMoveAbs?: number;
+  readonly contracts?: number;
+  readonly contractMultiplier?: number;
+  readonly minVolatility?: number;
+  readonly secondsPerYear?: number;
+  /** Celda seleccionada de la matriz 7×7; si existe toma `spotGrid[col]` e `ivShiftGridPts[row]` como objetivo. */
+  readonly selectedCell?: { readonly row: number; readonly col: number } | null;
+}
+
+export interface WhatIfHeatmapCell {
+  readonly rowIndex: number;
+  readonly colIndex: number;
+  readonly ivShiftPts: number;
+  readonly sigmaMultiplier: number;
+  readonly spot: number;
+  readonly pnlUsd: number;
+  readonly ivClampedLegs: number;
+}
+
+export interface WhatIfGreekPnlAttribution {
+  readonly referenceSpot: number;
+  readonly targetSpot: number;
+  readonly deltaSpot: number;
+  readonly deltaIvPts: number;
+  readonly elapsedDays: number;
+  /** Cambio exacto BSM respecto a T+0 en referenceSpot: pnlTarget - pnlBaseT0. */
+  readonly totalBsmPnl: number;
+  /** P&L total de la posición en el punto objetivo respecto al costo de entrada. */
+  readonly totalPositionPnl: number;
+  readonly deltaPnl: number;
+  readonly gammaPnl: number;
+  readonly thetaPnl: number;
+  readonly vegaPnl: number;
+  /** totalBsmPnl - (deltaPnl + gammaPnl + thetaPnl + vegaPnl) (Vanna/Volga/Charm/orden superior). */
+  readonly residualPnl: number;
+}
+
+export interface WhatIfHeatmapAndAttributionResult {
+  readonly isValid: boolean;
+  readonly oneSigmaMoveAbs: number;
+  readonly sigmaMultipliers: readonly number[];
+  readonly spotGrid: readonly number[];
+  readonly ivShiftGridPts: readonly number[];
+  /** Matriz 7×7: rows = ΔIV (-15..+15), cols = Spot (-2σ..+2σ). */
+  readonly cells: readonly (readonly WhatIfHeatmapCell[])[];
+  readonly minPnlUsd: number;
+  readonly maxPnlUsd: number;
+  readonly attribution: WhatIfGreekPnlAttribution;
+}
+
+function buildNanHeatmapAttribution(): WhatIfGreekPnlAttribution {
+  return {
+    referenceSpot: Number.NaN,
+    targetSpot: Number.NaN,
+    deltaSpot: Number.NaN,
+    deltaIvPts: Number.NaN,
+    elapsedDays: Number.NaN,
+    totalBsmPnl: Number.NaN,
+    totalPositionPnl: Number.NaN,
+    deltaPnl: Number.NaN,
+    gammaPnl: Number.NaN,
+    thetaPnl: Number.NaN,
+    vegaPnl: Number.NaN,
+    residualPnl: Number.NaN,
+  };
+}
+
+/**
+ * Construye la matriz 2D 7×7 de P&L (rows = ΔIV en puntos, cols = Spot × σ) y la
+ * atribución de griegas de Taylor de 2.º orden en el punto objetivo, reutilizando
+ * exactamente el motor BSM multipata (`evaluatePortfolioAtState`). Degradación
+ * honesta: ante inputs inválidos devuelve `isValid: false`, `cells: []` y todos
+ * los numéricos en `NaN` sin fabricar valores de respaldo.
+ */
+export function buildWhatIfHeatmapAndAttribution(
+  input: WhatIfHeatmapInput,
+): WhatIfHeatmapAndAttributionResult {
+  const contracts = input.contracts ?? 1;
+  const contractMultiplier = input.contractMultiplier ?? DEFAULT_US_OPTION_MULTIPLIER;
+  const minVolatility = input.minVolatility ?? DEFAULT_WHAT_IF_MIN_IV;
+  const secondsPerYear = input.secondsPerYear ?? SECONDS_PER_YEAR_365;
+  const positionScale = contracts * contractMultiplier;
+  const netEntryDebitPerUnit = computeNetEntryDebitPerUnit(input.legs);
+
+  const invalidResult = (): WhatIfHeatmapAndAttributionResult => ({
+    isValid: false,
+    oneSigmaMoveAbs: Number.NaN,
+    sigmaMultipliers: [],
+    spotGrid: [],
+    ivShiftGridPts: [],
+    cells: [],
+    minPnlUsd: Number.NaN,
+    maxPnlUsd: Number.NaN,
+    attribution: buildNanHeatmapAttribution(),
+  });
+
+  const selectedCell = input.selectedCell ?? null;
+  const invalidSelectedCell =
+    selectedCell !== null &&
+    (!Number.isInteger(selectedCell.row) ||
+      !Number.isInteger(selectedCell.col) ||
+      selectedCell.row < 0 ||
+      selectedCell.row >= WHAT_IF_HEATMAP_IV_SHIFT_STEPS.length ||
+      selectedCell.col < 0 ||
+      selectedCell.col >= WHAT_IF_HEATMAP_SIGMA_STEPS.length);
+
+  if (
+    !isPositiveFinite(input.referenceSpot) ||
+    !isPositiveFinite(contracts) ||
+    !isPositiveFinite(contractMultiplier) ||
+    !isPositiveFinite(minVolatility) ||
+    !isPositiveFinite(secondsPerYear) ||
+    !Number.isFinite(input.rate) ||
+    !Number.isFinite(input.dividendYield) ||
+    !Number.isFinite(input.elapsedDays) ||
+    !Number.isFinite(input.horizonDte) ||
+    input.legs.length === 0 ||
+    !Number.isFinite(netEntryDebitPerUnit) ||
+    invalidSelectedCell
+  ) {
+    return invalidResult();
+  }
+
+  const horizonYears =
+    ((input.horizonDte > 0 ? input.horizonDte : 1) * SECONDS_PER_DAY) / secondsPerYear;
+  let legIvSum = 0;
+  let legIvCount = 0;
+  for (const leg of input.legs) {
+    if (isPositiveFinite(leg.iv)) {
+      legIvSum += leg.iv;
+      legIvCount += 1;
+    }
+  }
+  const meanLegIv = legIvCount > 0 ? legIvSum / legIvCount : Number.NaN;
+  const oneSigmaOverride = input.oneSigmaMoveAbs ?? Number.NaN;
+  const oneSigmaMoveAbs = isPositiveFinite(oneSigmaOverride)
+    ? oneSigmaOverride
+    : input.referenceSpot * meanLegIv * Math.sqrt(horizonYears);
+
+  if (!isPositiveFinite(oneSigmaMoveAbs)) {
+    return invalidResult();
+  }
+
+  const sigmaMultipliers: readonly number[] = [...WHAT_IF_HEATMAP_SIGMA_STEPS];
+  const ivShiftGridPts: readonly number[] = [...WHAT_IF_HEATMAP_IV_SHIFT_STEPS];
+  const spotGrid: readonly number[] = sigmaMultipliers.map((step) =>
+    Math.max(0.01, input.referenceSpot + step * oneSigmaMoveAbs),
+  );
+
+  const clampedElapsedDays = Math.min(Math.max(input.elapsedDays, 0), input.horizonDte);
+  const elapsedYearsTn = (clampedElapsedDays * SECONDS_PER_DAY) / secondsPerYear;
+
+  const targetSpot =
+    selectedCell !== null
+      ? (spotGrid[selectedCell.col] ?? Number.NaN)
+      : (input.targetSpot ?? input.referenceSpot);
+  const targetIvShiftPts =
+    selectedCell !== null
+      ? (ivShiftGridPts[selectedCell.row] ?? Number.NaN)
+      : (input.targetIvShiftPts ?? 0);
+
+  const baseT0 = evaluatePortfolioAtState(
+    input.referenceSpot,
+    input.legs,
+    input.rate,
+    input.dividendYield,
+    0,
+    0,
+    netEntryDebitPerUnit,
+    positionScale,
+    minVolatility,
+  );
+  const targetSnap = evaluatePortfolioAtState(
+    targetSpot,
+    input.legs,
+    input.rate,
+    input.dividendYield,
+    elapsedYearsTn,
+    targetIvShiftPts / 100,
+    netEntryDebitPerUnit,
+    positionScale,
+    minVolatility,
+  );
+
+  if (baseT0 === null || targetSnap === null) {
+    return invalidResult();
+  }
+
+  const cells: WhatIfHeatmapCell[][] = [];
+  let minPnlUsd = Number.POSITIVE_INFINITY;
+  let maxPnlUsd = Number.NEGATIVE_INFINITY;
+
+  for (let rowIndex = 0; rowIndex < ivShiftGridPts.length; rowIndex += 1) {
+    const rowIvShiftPts = ivShiftGridPts[rowIndex] ?? Number.NaN;
+    const rowCells: WhatIfHeatmapCell[] = [];
+    for (let colIndex = 0; colIndex < spotGrid.length; colIndex += 1) {
+      const cellSpot = spotGrid[colIndex] ?? Number.NaN;
+      const snapshot = evaluatePortfolioAtState(
+        cellSpot,
+        input.legs,
+        input.rate,
+        input.dividendYield,
+        elapsedYearsTn,
+        rowIvShiftPts / 100,
+        netEntryDebitPerUnit,
+        positionScale,
+        minVolatility,
+      );
+      const pnlUsd = snapshot !== null ? snapshot.pnlUsd : Number.NaN;
+      const ivClampedLegs = snapshot !== null ? snapshot.ivClampedLegs : Number.NaN;
+      if (Number.isFinite(pnlUsd)) {
+        if (pnlUsd < minPnlUsd) {
+          minPnlUsd = pnlUsd;
+        }
+        if (pnlUsd > maxPnlUsd) {
+          maxPnlUsd = pnlUsd;
+        }
+      }
+      rowCells.push({
+        rowIndex,
+        colIndex,
+        ivShiftPts: rowIvShiftPts,
+        sigmaMultiplier: sigmaMultipliers[colIndex] ?? Number.NaN,
+        spot: cellSpot,
+        pnlUsd,
+        ivClampedLegs,
+      });
+    }
+    cells.push(rowCells);
+  }
+
+  const deltaSpot = targetSpot - input.referenceSpot;
+  const deltaIvPts = targetIvShiftPts;
+  const deltaPnl = baseT0.deltaPerUnit * positionScale * deltaSpot;
+  const gammaPnl = 0.5 * baseT0.gammaPerUnit * positionScale * deltaSpot * deltaSpot;
+  const thetaPnl = baseT0.thetaDailyPerUnit * positionScale * clampedElapsedDays;
+  const vegaPnl = baseT0.vegaPer1PctPerUnit * positionScale * deltaIvPts;
+  const totalBsmPnl = targetSnap.pnlUsd - baseT0.pnlUsd;
+  const totalPositionPnl = targetSnap.pnlUsd;
+  const residualPnl = totalBsmPnl - (deltaPnl + gammaPnl + thetaPnl + vegaPnl);
+
+  return {
+    isValid: true,
+    oneSigmaMoveAbs,
+    sigmaMultipliers,
+    spotGrid,
+    ivShiftGridPts,
+    cells,
+    minPnlUsd: Number.isFinite(minPnlUsd) ? minPnlUsd : Number.NaN,
+    maxPnlUsd: Number.isFinite(maxPnlUsd) ? maxPnlUsd : Number.NaN,
+    attribution: {
+      referenceSpot: input.referenceSpot,
+      targetSpot,
+      deltaSpot,
+      deltaIvPts,
+      elapsedDays: clampedElapsedDays,
+      totalBsmPnl,
+      totalPositionPnl,
+      deltaPnl,
+      gammaPnl,
+      thetaPnl,
+      vegaPnl,
+      residualPnl,
+    },
   };
 }

@@ -171,7 +171,7 @@ function resolveContractIvBsm(
   dividendYield: number,
   contractType: OptionContractType,
 ): number {
-  if (contract.iv !== undefined) {
+  if (contract.iv !== undefined && contract.iv !== null) {
     return isPositiveFinite(contract.iv) ? contract.iv : Number.NaN;
   }
 

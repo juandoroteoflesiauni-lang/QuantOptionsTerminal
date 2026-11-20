@@ -1,4 +1,5 @@
 import { impliedDividendYieldFromForward } from './forward.js';
+import { greeksBsm } from './blackScholes.js';
 import { normCdf } from './math.js';
 import type { OptionContractType } from './types.js';
 import {
@@ -574,4 +575,298 @@ export function termSlope(
   }
   const spread = termSpread(termOrSurface, t1, t2, options);
   return Number.isFinite(spread) ? spread / (t2 - t1) : Number.NaN;
+}
+
+export interface SkewContractPointInput {
+  readonly strike: number;
+  readonly contractType: OptionContractType;
+  /** IV en decimal (ej. 0.28 = 28%). Contratos con null/NaN/<=0 se excluyen. */
+  readonly iv: number | null;
+  /** Delta BSM firmada opcional (+0..+1 para calls, -1..0 para puts). Si falta, se calcula con greeksBsm. */
+  readonly delta?: number | null;
+}
+
+export interface ActiveExpirySkewAndIvRegimeInput {
+  readonly spot: number;
+  readonly timeToExpiryYears: number;
+  readonly rate: number;
+  readonly dividendYield: number;
+  readonly contracts: readonly SkewContractPointInput[];
+  /** Serie histórica 1Y de IV (o proxy explícito) en decimal (ej. 0.25 = 25%). */
+  readonly historicalIv1y?: readonly (number | null)[] | null;
+  /** IV actual de referencia en decimal para IVR/IVP; si se omite usa ivAtm interpolada. */
+  readonly currentIvOverride?: number | null;
+  /** Mínimo de sesiones históricas válidas requeridas (default: 20). */
+  readonly minHistorySessions?: number;
+}
+
+export interface ActiveExpirySkewAndIvRegimeResult {
+  /** Volatilidades en puntos porcentuales (0–100+, ej. 24.5 = 24.5%), o null si no interpolable. */
+  readonly iv25CallPct: number | null;
+  readonly iv25PutPct: number | null;
+  readonly ivAtmPct: number | null;
+  /** RR_25 = IV_25P - IV_25C en puntos de volatilidad (ej. +3.2 pts). */
+  readonly rr25Pts: number | null;
+  /** BF_25 = 0.5 * (IV_25P + IV_25C) - IV_ATM en puntos de volatilidad. */
+  readonly bf25Pts: number | null;
+  /** IVR = ((IV - IV_min) / (IV_max - IV_min)) * 100; null si historial insuficiente o IV_max === IV_min. */
+  readonly ivr: number | null;
+  /** IVP = (% de sesiones con IV_t < IV_actual) * 100, null si historial insuficiente. */
+  readonly ivp: number | null;
+  readonly validHistorySessions: number;
+}
+
+interface SkewCurveNode {
+  /** Delta firmada para la sonrisa 25Δ, o strike para la curva OTM/ATM. */
+  readonly x: number;
+  /** IV en puntos de volatilidad (iv decimal * 100). */
+  readonly y: number;
+}
+
+function dedupeAverageDuplicateDeltas(nodes: readonly SkewCurveNode[]): readonly SkewCurveNode[] {
+  const out: SkewCurveNode[] = [];
+  let i = 0;
+  while (i < nodes.length) {
+    const current = nodes[i];
+    if (current === undefined) {
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    let sumY = current.y;
+    let count = 1;
+    while (j < nodes.length) {
+      const candidate = nodes[j];
+      if (candidate === undefined || candidate.x !== current.x) {
+        break;
+      }
+      sumY += candidate.y;
+      count += 1;
+      j += 1;
+    }
+    out.push({ x: current.x, y: sumY / count });
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Interpolación lineal con bracketing estricto (sin extrapolación) sobre nodos
+ * ordenados por `x`: nodo exacto (`|x_i - x*| <= 1e-12`) o null fuera de rango.
+ */
+function interpolateBracketed(nodes: readonly SkewCurveNode[], target: number): number | null {
+  if (nodes.length === 0 || !Number.isFinite(target)) {
+    return null;
+  }
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  if (first === undefined || last === undefined) {
+    return null;
+  }
+  for (const node of nodes) {
+    if (Math.abs(node.x - target) <= 1e-12) {
+      return node.y;
+    }
+  }
+  if (target < first.x || target > last.x) {
+    return null;
+  }
+  for (let i = 0; i < nodes.length - 1; i += 1) {
+    const lo = nodes[i];
+    const hi = nodes[i + 1];
+    if (lo === undefined || hi === undefined) {
+      continue;
+    }
+    if (lo.x < target && target < hi.x) {
+      return lo.y + ((hi.y - lo.y) * (target - lo.x)) / (hi.x - lo.x);
+    }
+  }
+  return null;
+}
+
+function resolveSkewContractDelta(
+  contract: SkewContractPointInput,
+  iv: number,
+  spot: number,
+  timeToExpiryYears: number,
+  rate: number,
+  dividendYield: number,
+): number {
+  const provided = contract.delta;
+  if (provided !== undefined && provided !== null && Number.isFinite(provided)) {
+    const validCall = contract.contractType === 'call' && provided > 0 && provided < 1;
+    const validPut = contract.contractType === 'put' && provided > -1 && provided < 0;
+    if (validCall || validPut) {
+      return provided;
+    }
+  }
+  return greeksBsm({
+    spot,
+    strike: contract.strike,
+    timeToExpiry: timeToExpiryYears,
+    rate,
+    dividendYield,
+    volatility: iv,
+    contractType: contract.contractType,
+  }).delta;
+}
+
+/**
+ * Métricas de régimen de skew del vencimiento activo:
+ * - `IV_25C`, `IV_25P`, `IV_ATM` interpoladas linealmente por delta firmada / strike OTM,
+ * - `RR_25 = IV_25P - IV_25C` (convención institucional put − call),
+ * - `BF_25 = 0.5 * (IV_25P + IV_25C) - IV_ATM`,
+ * - `IVR` e `IVP` sobre la serie histórica 1Y provista (o proxy explícito),
+ * con degradación honesta a null sin extrapolar y sin inventar datos.
+ */
+export function computeActiveExpirySkewAndIvRegime(
+  input: ActiveExpirySkewAndIvRegimeInput,
+): ActiveExpirySkewAndIvRegimeResult {
+  const validHistory = (input.historicalIv1y ?? []).filter(
+    (v): v is number => v !== null && Number.isFinite(v) && v > 0,
+  );
+  const validHistorySessions = validHistory.length;
+
+  const nullResult = (): ActiveExpirySkewAndIvRegimeResult => ({
+    iv25CallPct: null,
+    iv25PutPct: null,
+    ivAtmPct: null,
+    rr25Pts: null,
+    bf25Pts: null,
+    ivr: null,
+    ivp: null,
+    validHistorySessions,
+  });
+
+  if (!isFinitePositive(input.spot) || !isFinitePositive(input.timeToExpiryYears)) {
+    return nullResult();
+  }
+
+  const callNodes: SkewCurveNode[] = [];
+  const putNodes: SkewCurveNode[] = [];
+  const perStrike = new Map<number, { call?: number; put?: number }>();
+
+  for (const contract of input.contracts) {
+    const rawType: string = contract.contractType;
+    if (rawType !== 'call' && rawType !== 'put') {
+      continue;
+    }
+    const iv = contract.iv;
+    if (iv === null || !Number.isFinite(iv) || iv <= 0) {
+      continue;
+    }
+    if (!Number.isFinite(contract.strike) || contract.strike <= 0) {
+      continue;
+    }
+    const delta = resolveSkewContractDelta(
+      contract,
+      iv,
+      input.spot,
+      input.timeToExpiryYears,
+      input.rate,
+      input.dividendYield,
+    );
+    if (!Number.isFinite(delta)) {
+      continue;
+    }
+    const ivPct = iv * 100;
+    if (rawType === 'call') {
+      callNodes.push({ x: delta, y: ivPct });
+    } else {
+      putNodes.push({ x: delta, y: ivPct });
+    }
+    const slot = perStrike.get(contract.strike) ?? {};
+    if (rawType === 'call') {
+      if (slot.call === undefined) {
+        slot.call = ivPct;
+      }
+    } else if (slot.put === undefined) {
+      slot.put = ivPct;
+    }
+    perStrike.set(contract.strike, slot);
+  }
+
+  callNodes.sort((a, b) => a.x - b.x);
+  putNodes.sort((a, b) => a.x - b.x);
+  const callByDelta = dedupeAverageDuplicateDeltas(callNodes);
+  const putByDelta = dedupeAverageDuplicateDeltas(putNodes);
+
+  const otmByStrike: SkewCurveNode[] = [];
+  const atmTolerance = 1e-9 * input.spot;
+  const sortedStrikes = Array.from(perStrike.keys()).sort((a, b) => a - b);
+  for (const strike of sortedStrikes) {
+    const slot = perStrike.get(strike);
+    if (slot === undefined) {
+      continue;
+    }
+    let chosen: number | undefined;
+    if (Math.abs(strike - input.spot) <= atmTolerance) {
+      chosen =
+        slot.call !== undefined && slot.put !== undefined
+          ? 0.5 * (slot.call + slot.put)
+          : (slot.call ?? slot.put);
+    } else if (strike < input.spot) {
+      chosen = slot.put;
+    } else {
+      chosen = slot.call;
+    }
+    if (chosen !== undefined) {
+      otmByStrike.push({ x: strike, y: chosen });
+    }
+  }
+
+  const iv25CallPct = interpolateBracketed(callByDelta, 0.25);
+  const iv25PutPct = interpolateBracketed(putByDelta, -0.25);
+  const ivAtmPct = interpolateBracketed(otmByStrike, input.spot);
+
+  const rr25Pts =
+    iv25PutPct !== null && iv25CallPct !== null ? iv25PutPct - iv25CallPct : null;
+  const bf25Pts =
+    iv25PutPct !== null && iv25CallPct !== null && ivAtmPct !== null
+      ? 0.5 * (iv25PutPct + iv25CallPct) - ivAtmPct
+      : null;
+
+  const currentIvDec =
+    input.currentIvOverride !== null &&
+    input.currentIvOverride !== undefined &&
+    Number.isFinite(input.currentIvOverride) &&
+    input.currentIvOverride > 0
+      ? input.currentIvOverride
+      : ivAtmPct !== null
+        ? ivAtmPct / 100
+        : null;
+
+  const minSessions = input.minHistorySessions ?? 20;
+
+  let ivr: number | null = null;
+  let ivp: number | null = null;
+  if (currentIvDec !== null && validHistorySessions > 0 && validHistorySessions >= minSessions) {
+    let ivMin = Number.POSITIVE_INFINITY;
+    let ivMax = Number.NEGATIVE_INFINITY;
+    let below = 0;
+    for (const v of validHistory) {
+      if (v < ivMin) {
+        ivMin = v;
+      }
+      if (v > ivMax) {
+        ivMax = v;
+      }
+      if (v < currentIvDec) {
+        below += 1;
+      }
+    }
+    ivr = ivMax > ivMin ? ((currentIvDec - ivMin) / (ivMax - ivMin)) * 100 : null;
+    ivp = (below / validHistorySessions) * 100;
+  }
+
+  return {
+    iv25CallPct,
+    iv25PutPct,
+    ivAtmPct,
+    rr25Pts,
+    bf25Pts,
+    ivr,
+    ivp,
+    validHistorySessions,
+  };
 }

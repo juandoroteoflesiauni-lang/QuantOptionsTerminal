@@ -38,6 +38,10 @@ export type GammaFlipStatus =
   | 'indeterminate';
 export type IvResolutionMode = 'ivThenMidPrice' | 'ivOnly' | 'midPriceOnly';
 export type StraddlePriceSource = 'marketOrModel' | 'marketOnly';
+export type VannaRegime =
+  | 'SUPPORTIVE_ON_IV_DROP'
+  | 'PRESSURE_ON_IV_DROP'
+  | 'NEUTRAL';
 
 export type ContractSkipReason =
   | 'invalidContractType'
@@ -67,7 +71,7 @@ export interface ExposureContractInput {
   readonly forward?: number;
   readonly rate?: number;
   readonly dividendYield?: number;
-  readonly iv?: number;
+  readonly iv?: number | null;
   readonly midPrice?: number;
   readonly bid?: number;
   readonly ask?: number;
@@ -226,6 +230,10 @@ export interface DealerExposureResult {
   readonly callCharmExposure: number;
   readonly putCharmExposure: number;
   readonly netCharmExposure: number;
+  /** Régimen de flujo de re-hedging de dealers ante una compresión de IV (`Δσ < 0`). */
+  readonly vannaRegime: VannaRegime;
+  /** Strike con máximo |Net Charm Exposure| (degradación honesta a `NaN` sin datos). */
+  readonly charmPinStrike: number;
   readonly callWallStrike: number;
   readonly putWallStrike: number;
   readonly gammaFlipSpot: number;
@@ -507,7 +515,11 @@ function resolveContractIv(
   ivSolverOptions: ImpliedVolSolverOptions | undefined,
 ): { readonly iv: number; readonly errorReason: ContractSkipReason | null } {
   if (ivResolutionMode !== 'midPriceOnly') {
-    if (contract.iv !== undefined && Number.isFinite(contract.iv)) {
+    if (
+      contract.iv !== undefined &&
+      contract.iv !== null &&
+      Number.isFinite(contract.iv)
+    ) {
       if (contract.iv > 0) {
         return { iv: contract.iv, errorReason: null };
       }
@@ -1287,6 +1299,58 @@ export function computeWallsFromStrikes(
   return { callWallStrike, putWallStrike };
 }
 
+/**
+ * Clasifica el régimen de Vanna de dealers ante una compresión de IV (`Δσ < 0`):
+ * al caer la IV el cambio en delta USD de dealers es `-netVex`, por lo que el flujo
+ * de re-hedging es `+netVex`. `netVex > 0` implica que dealers compran subyacente
+ * al comprimirse la IV (`SUPPORTIVE_ON_IV_DROP`); `netVex < 0` implica que venden
+ * (`PRESSURE_ON_IV_DROP`). Valores no finitos o dentro de la banda neutral degradan
+ * honestamente a `NEUTRAL`.
+ */
+export function classifyVannaRegime(netVex: number, neutralEpsilon = 1e-6): VannaRegime {
+  if (!Number.isFinite(netVex) || Math.abs(netVex) <= neutralEpsilon) {
+    return 'NEUTRAL';
+  }
+  return netVex > 0 ? 'SUPPORTIVE_ON_IV_DROP' : 'PRESSURE_ON_IV_DROP';
+}
+
+/**
+ * Devuelve el strike con máximo `|netCharmExposure|` finito estrictamente positivo.
+ * Desempate determinístico: menor `|strike - spot|`, luego menor strike.
+ * Retorna `NaN` si no hay filas o ningún charm finito distinto de cero.
+ */
+export function computeCharmPinStrike(
+  byStrike: readonly StrikeExposure[],
+  spot: number,
+): number {
+  if (!isRuntimeArray(byStrike) || byStrike.length === 0) {
+    return Number.NaN;
+  }
+
+  let bestStrike = Number.NaN;
+  let bestAbsCharm = 0;
+
+  for (const row of byStrike) {
+    const absCharm = Math.abs(row.netCharmExposure);
+    if (!Number.isFinite(absCharm) || absCharm <= 0) {
+      continue;
+    }
+    const isBetter =
+      absCharm > bestAbsCharm ||
+      (absCharm === bestAbsCharm &&
+        (Number.isNaN(bestStrike) ||
+          Math.abs(row.strike - spot) < Math.abs(bestStrike - spot) ||
+          (Math.abs(row.strike - spot) === Math.abs(bestStrike - spot) &&
+            row.strike < bestStrike)));
+    if (isBetter) {
+      bestAbsCharm = absCharm;
+      bestStrike = row.strike;
+    }
+  }
+
+  return bestStrike;
+}
+
 function resolveExpiryIvAtm(
   expiryItems: readonly PreparedContract[],
   spot: number,
@@ -1589,6 +1653,8 @@ function invalidDealerExposureResult(
     callCharmExposure: Number.NaN,
     putCharmExposure: Number.NaN,
     netCharmExposure: Number.NaN,
+    vannaRegime: 'NEUTRAL',
+    charmPinStrike: Number.NaN,
     callWallStrike: Number.NaN,
     putWallStrike: Number.NaN,
     gammaFlipSpot: Number.NaN,
@@ -1931,6 +1997,8 @@ export function computeDealerExposure(
     callCharmExposure,
     putCharmExposure,
     netCharmExposure: callCharmExposure + putCharmExposure,
+    vannaRegime: classifyVannaRegime(callVannaExposure + putVannaExposure),
+    charmPinStrike: computeCharmPinStrike(byStrike, market.spot),
     callWallStrike: walls.callWallStrike,
     putWallStrike: walls.putWallStrike,
     gammaFlipSpot: flip.gammaFlipSpot,

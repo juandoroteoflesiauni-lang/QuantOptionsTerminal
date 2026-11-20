@@ -68,6 +68,7 @@ import { solveImpliedVolBsm } from '../core/options/impliedVol.js';
 import {
   computeDealerExposure,
   type ExposureContractInput,
+  type VannaRegime,
 } from '../core/options/exposure.js';
 import {
   computeSignedOptionsOrderFlow,
@@ -913,6 +914,10 @@ export interface ArOptionsResponse {
   readonly exposureSummary: {
     readonly netGex: number | null;
     readonly netDex: number | null;
+    readonly netVex: number | null;
+    readonly netCex: number | null;
+    readonly vannaRegime: VannaRegime;
+    readonly charmPinStrike: number | null;
     readonly callWallStrike: number | null;
     readonly putWallStrike: number | null;
     readonly gammaFlipSpot: number | null;
@@ -935,6 +940,10 @@ export interface ArOptionsResponse {
       readonly callGex: number | null;
       readonly putGex: number | null;
       readonly netGex: number | null;
+      readonly vex?: number | null;
+      readonly cex?: number | null;
+      readonly netVannaExposure?: number | null;
+      readonly netCharmExposure?: number | null;
     }[];
   } | null;
   readonly costSchedule: {
@@ -8225,6 +8234,10 @@ export class ArgentinaMarketRuntime {
           exposureSummary = {
             netGex: sanitizeFinite(expResult.netGex),
             netDex: sanitizeFinite(expResult.netDex),
+            netVex: sanitizeFinite(expResult.netVannaExposure),
+            netCex: sanitizeFinite(expResult.netCharmExposure),
+            vannaRegime: expResult.vannaRegime,
+            charmPinStrike: sanitizeFinite(expResult.charmPinStrike),
             callWallStrike: sanitizeFinite(expResult.callWallStrike),
             putWallStrike: sanitizeFinite(expResult.putWallStrike),
             gammaFlipSpot: sanitizeFinite(expResult.gammaFlipSpot),
@@ -8247,6 +8260,8 @@ export class ArgentinaMarketRuntime {
               callGex: sanitizeFinite(s.callGex),
               putGex: sanitizeFinite(s.putGex),
               netGex: sanitizeFinite(s.netGex),
+              vex: sanitizeFinite(s.netVannaExposure),
+              cex: sanitizeFinite(s.netCharmExposure),
             })),
           };
         }

@@ -811,6 +811,10 @@ export interface ArOptionsResponse {
   readonly exposureSummary: {
     readonly netGex: number | null;
     readonly netDex: number | null;
+    readonly netVex: number | null;
+    readonly netCex: number | null;
+    readonly vannaRegime: 'SUPPORTIVE_ON_IV_DROP' | 'PRESSURE_ON_IV_DROP' | 'NEUTRAL';
+    readonly charmPinStrike: number | null;
     readonly callWallStrike: number | null;
     readonly putWallStrike: number | null;
     readonly gammaFlipSpot: number | null;
@@ -833,6 +837,10 @@ export interface ArOptionsResponse {
       readonly callGex: number | null;
       readonly putGex: number | null;
       readonly netGex: number | null;
+      readonly vex?: number | null;
+      readonly cex?: number | null;
+      readonly netVannaExposure?: number | null;
+      readonly netCharmExposure?: number | null;
     }[];
   } | null;
   readonly costSchedule: {
@@ -982,6 +990,10 @@ export interface UsStrikeExposureDto {
   readonly putGex: number | null;
   readonly netGex: number | null;
   readonly netDex?: number | null;
+  readonly netVannaExposure?: number | null;
+  readonly netCharmExposure?: number | null;
+  readonly vex?: number | null;
+  readonly cex?: number | null;
 }
 
 export interface UsTerminalBarsResponseDto {
@@ -1083,6 +1095,10 @@ export interface UsSnapshotResponseDto {
   readonly exposureSummary?: {
     readonly netGex: number | null;
     readonly netDex: number | null;
+    readonly netVex?: number | null;
+    readonly netCex?: number | null;
+    readonly vannaRegime?: 'SUPPORTIVE_ON_IV_DROP' | 'PRESSURE_ON_IV_DROP' | 'NEUTRAL';
+    readonly charmPinStrike?: number | null;
     readonly callWallStrike: number | null;
     readonly putWallStrike: number | null;
     readonly gammaFlipSpot: number | null;
