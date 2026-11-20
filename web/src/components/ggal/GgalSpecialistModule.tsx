@@ -57,14 +57,12 @@ import { CompanyLogo } from '../common/CompanyLogo';
 import type { OrderTicketPreset } from '../Overlays';
 import { GgalDualChartView } from './GgalDualChartView';
 import {
-  getMarketLiveClock,
-  getMarketLiveFx,
-  getMarketLiveQuote,
+  getMarketStreamMetaClock,
   pushLiveOrderBook,
   tickFlashClass,
+  useAtomicMarketQuote,
   useLivePriceFlash,
-  useMarketFocusSymbol,
-  useMarketLiveStream,
+  useMarketStreamMeta,
 } from '../../api/useMarketLiveStream';
 
 export type GgalTabId =
@@ -219,12 +217,11 @@ export const GgalSpecialistModule: React.FC<{
   onOpenOrderTicket: (preset: OrderTicketPreset) => void;
 }> = ({ onOpenOrderTicket }) => {
   const [activeTab, setActiveTab] = useState<GgalTabId>('parity-gap');
-  const liveStream = useMarketLiveStream();
-  useMarketFocusSymbol('GGAL');
-  const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
-  const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
-  const liveFx = getMarketLiveFx(liveStream);
-  const liveClock = getMarketLiveClock(liveStream);
+  const liveArGgal = useAtomicMarketQuote('AR', 'GGAL', 250);
+  const liveUsGgal = useAtomicMarketQuote('US', 'GGAL', 250);
+  const liveStreamMeta = useMarketStreamMeta(500);
+  const liveFx = liveStreamMeta.isFresh ? liveStreamMeta.liveFx : null;
+  const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
   const arFlash = useLivePriceFlash(liveArGgal?.price ?? null);
   const usFlash = useLivePriceFlash(liveUsGgal?.price ?? null);
   // Pieza 32: origen del feed de opciones US/OPRA (Tradier Live o Massive) + ORATS.
@@ -1260,7 +1257,7 @@ export const GgalSpecialistModule: React.FC<{
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
                 <div
-                  className={`rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold transition-colors duration-500 ${tickFlashClass(arFlash)}`}
+                  className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(arFlash)}`}
                 >
                   {fmtCurrency(liveArGgal?.price ?? parityData.result.spot.byma24hArs, '$ ', 2)}
                 </div>
@@ -1287,7 +1284,7 @@ export const GgalSpecialistModule: React.FC<{
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
                 <div
-                  className={`rounded px-1 font-mono-num text-[23px] leading-[28px] font-bold transition-colors duration-500 ${tickFlashClass(usFlash)}`}
+                  className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(usFlash)}`}
                 >
                   {fmtCurrency(liveUsGgal?.price ?? parityData.result.spot.adrMidUsd, 'US$ ', 2)}
                 </div>
@@ -2502,7 +2499,7 @@ export const GgalSpecialistModule: React.FC<{
                             <tr
                               key={row.strategyKind}
                               onClick={() => setM6StrategyKind(row.strategyKind)}
-                              className={`cursor-pointer transition-colors ${
+                              className={`cursor-pointer ${
                                 isSelected
                                   ? 'bg-[#211B3A]/60 text-[#FFFFFF]'
                                   : 'hover:bg-[#161622] text-[#D1D5DB]'
@@ -2875,7 +2872,7 @@ export const GgalSpecialistModule: React.FC<{
 
       {/* MODAL INGESTA ANEXO B IAMC */}
       {anexoModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-[2px] p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(13,17,23,0.92)] p-4">
           <form
             onSubmit={(e) => void handleIngestAnexoB(e)}
             className="w-full max-w-2xl rounded-[12px] bg-[#11111A] border border-[#2A2A3B] p-5 space-y-4"

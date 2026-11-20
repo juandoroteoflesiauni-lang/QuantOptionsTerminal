@@ -1,4 +1,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  L2_THROTTLE_MS,
+  TABLE_THROTTLE_MS,
+  createAtomicKeyedStore,
+  normalizeOptionContractKey,
+} from '../../../src/core/atomicQuoteStore';
 import { appendLiveTapeTick, type LiveFxSnapshot, type LiveTapeTick } from '../../../src/core/realtimePropagation';
 import { refreshBackendHealth } from '../data/liveRuntimeBridge';
 
@@ -184,6 +190,86 @@ let state: MarketLiveStreamState = {
 };
 
 const listeners = new Set<() => void>();
+const metaListeners = new Set<() => void>();
+const freshnessListeners = new Set<() => void>();
+const quoteStore = createAtomicKeyedStore<MarketLiveQuote>();
+const optionQuoteStore = createAtomicKeyedStore<MarketLiveOptionQuote>();
+const orderBookStore = createAtomicKeyedStore<MarketLiveOrderBook>();
+const barUpdateListenersBySymbol = new Map<string, Set<(event: LiveBarUpdateEvent) => void>>();
+
+export interface MarketLiveOptionQuote {
+  readonly symbol: string;
+  readonly underlying: string;
+  readonly time: number;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly mid: number | null;
+  readonly last: number | null;
+  readonly size: number | null;
+}
+
+export interface LiveBarUpdateEvent {
+  readonly symbol: string;
+  readonly time: number;
+  readonly formingBar: {
+    readonly time: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+    readonly volume: number;
+    readonly vw?: number;
+  } | null;
+  readonly lastClosedBar: {
+    readonly time: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+    readonly volume: number;
+    readonly vw?: number;
+  } | null;
+  readonly projectedEma21: number | null;
+  readonly projectedSessionVwap: number | null;
+  readonly projectedAvwap: number | null;
+}
+
+export interface MarketStreamMeta {
+  readonly status: 'CONNECTING' | 'LIVE' | 'RECONNECTING';
+  readonly transport: LiveStreamTransport | null;
+  readonly isLive: boolean;
+  readonly isFresh: boolean;
+  readonly arSourceMode: MarketLiveStreamState['arSourceMode'];
+  readonly usSourceMode: MarketLiveStreamState['usSourceMode'];
+  readonly cclMedian: number | null;
+  readonly mepMedian: number | null;
+  readonly liveFx: LiveFxSnapshot | null;
+  readonly lastServerTimeSec: number | null;
+  readonly lastReceivedAtMs: number | null;
+  readonly ticksPerSecond: number;
+}
+
+export interface MarketViewScope {
+  readonly view: string;
+  readonly focusSymbol: string | null;
+  readonly focusMarket: 'AR' | 'US' | null;
+}
+
+let metaState: MarketStreamMeta = {
+  status: state.status,
+  transport: state.transport,
+  isLive: state.isLive,
+  isFresh: false,
+  arSourceMode: state.arSourceMode,
+  usSourceMode: state.usSourceMode,
+  cclMedian: state.cclMedian,
+  mepMedian: state.mepMedian,
+  liveFx: state.liveFx,
+  lastServerTimeSec: state.lastServerTimeSec,
+  lastReceivedAtMs: state.lastReceivedAtMs,
+  ticksPerSecond: state.ticksPerSecond,
+};
+
 let managerCount = 0;
 let socket: WebSocket | null = null;
 let socketGeneration = 0;
@@ -191,11 +277,17 @@ let openTimeout: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let releaseTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let freshnessTimer: ReturnType<typeof setTimeout> | null = null;
+let legacyNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+let lastLegacyNotifyAtMs = 0;
+let metaNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+let lastMetaNotifyAtMs = 0;
 let pollInFlight = false;
 let pollGeneration = 0;
 let lastBatchReceivedAtMs: number | null = null;
 let lastDeltaRevision = 0;
 let marketFocusSymbol: string | null = null;
+let currentViewScope: MarketViewScope | null = null;
 const pendingLegacyQuotes = new Map<string, MarketLiveQuote>();
 let legacyFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const pendingMarketBatches: MarketBatchWire[] = [];
@@ -209,6 +301,55 @@ function sendFocusMessage(): void {
   } catch {
     // Un fallo de envío no tumba el socket compartido.
   }
+}
+
+function sendViewScopeMessage(): void {
+  if (socket === null || socket.readyState !== WebSocket.OPEN || currentViewScope === null) return;
+  try {
+    socket.send(
+      JSON.stringify({
+        type: 'set_view_scope',
+        view: currentViewScope.view,
+        focusSymbol: currentViewScope.focusSymbol,
+        focusMarket: currentViewScope.focusMarket,
+      }),
+    );
+  } catch {
+    // Un fallo de envío no tumba el socket compartido.
+  }
+}
+
+export function setMarketViewScope(scope: MarketViewScope): void {
+  const cleanView = scope.view.trim().toLowerCase();
+  const cleanSymbol =
+    scope.focusSymbol !== null && scope.focusSymbol.trim() !== ''
+      ? scope.focusSymbol.trim().toUpperCase()
+      : null;
+  const cleanMarket = scope.focusMarket;
+  if (
+    currentViewScope !== null &&
+    currentViewScope.view === cleanView &&
+    currentViewScope.focusSymbol === cleanSymbol &&
+    currentViewScope.focusMarket === cleanMarket
+  ) {
+    return;
+  }
+  currentViewScope = {
+    view: cleanView,
+    focusSymbol: cleanSymbol,
+    focusMarket: cleanMarket,
+  };
+  sendViewScopeMessage();
+}
+
+export function useMarketViewScope(
+  view: string,
+  focusSymbol: string | null,
+  focusMarket: 'AR' | 'US' | null,
+): void {
+  useEffect(() => {
+    setMarketViewScope({ view, focusSymbol, focusMarket });
+  }, [view, focusSymbol, focusMarket]);
 }
 
 export function setMarketFocusSymbol(symbol: string | null | undefined): void {
@@ -229,9 +370,198 @@ export function useMarketFocusSymbol(symbol: string | null | undefined): void {
   }, [normalized]);
 }
 
+function marketQuotesEqual(a: MarketLiveQuote, b: MarketLiveQuote): boolean {
+  return (
+    a.price === b.price &&
+    a.previousClose === b.previousClose &&
+    a.changePct === b.changePct &&
+    a.dayLow === b.dayLow &&
+    a.dayHigh === b.dayHigh &&
+    a.volume === b.volume &&
+    a.turnover === b.turnover &&
+    a.asOfUtcSec === b.asOfUtcSec &&
+    a.source === b.source &&
+    a.direction === b.direction &&
+    a.settlement === b.settlement &&
+    a.sessionPhase === b.sessionPhase &&
+    a.extendedPrice === b.extendedPrice &&
+    a.extendedChangePct === b.extendedChangePct &&
+    a.regularClose === b.regularClose
+  );
+}
+
+function optionQuotesEqual(a: MarketLiveOptionQuote, b: MarketLiveOptionQuote): boolean {
+  return (
+    a.bid === b.bid &&
+    a.ask === b.ask &&
+    a.mid === b.mid &&
+    a.last === b.last &&
+    a.size === b.size &&
+    a.time === b.time
+  );
+}
+
+function orderBooksEqual(a: MarketLiveOrderBook, b: MarketLiveOrderBook): boolean {
+  if (
+    a.symbol !== b.symbol ||
+    a.asOfUtcSec !== b.asOfUtcSec ||
+    a.microprice !== b.microprice ||
+    a.micropriceL1 !== b.micropriceL1 ||
+    a.vpin !== b.vpin ||
+    a.bids.length !== b.bids.length ||
+    a.asks.length !== b.asks.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < a.bids.length; i += 1) {
+    const ab = a.bids[i];
+    const bb = b.bids[i];
+    if (ab?.price !== bb?.price || ab?.size !== bb?.size || ab?.orderCount !== bb?.orderCount) {
+      return false;
+    }
+  }
+  for (let i = 0; i < a.asks.length; i += 1) {
+    const aa = a.asks[i];
+    const ba = b.asks[i];
+    if (aa?.price !== ba?.price || aa?.size !== ba?.size || aa?.orderCount !== ba?.orderCount) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function refreshFreshnessWatchdog(): void {
+  if (freshnessTimer !== null) {
+    clearTimeout(freshnessTimer);
+    freshnessTimer = null;
+  }
+  if (!state.isLive || state.lastReceivedAtMs === null) {
+    if (metaState.isFresh) {
+      metaState = { ...metaState, isFresh: false };
+      freshnessListeners.forEach((fn) => fn());
+      metaListeners.forEach((fn) => fn());
+    }
+    return;
+  }
+  const remaining = QUOTE_RECEIVE_FRESHNESS_MS - (Date.now() - state.lastReceivedAtMs);
+  if (remaining <= 0) {
+    if (metaState.isFresh) {
+      metaState = { ...metaState, isFresh: false };
+      freshnessListeners.forEach((fn) => fn());
+      metaListeners.forEach((fn) => fn());
+    }
+    return;
+  }
+  freshnessTimer = setTimeout(() => {
+    freshnessTimer = null;
+    if (metaState.isFresh) {
+      metaState = { ...metaState, isFresh: false };
+      freshnessListeners.forEach((fn) => fn());
+      metaListeners.forEach((fn) => fn());
+    }
+  }, remaining + 50);
+}
+
+function emitMetaListeners(immediate: boolean): void {
+  if (immediate) {
+    if (metaNotifyTimer !== null) {
+      clearTimeout(metaNotifyTimer);
+      metaNotifyTimer = null;
+    }
+    lastMetaNotifyAtMs = Date.now();
+    metaListeners.forEach((fn) => fn());
+    return;
+  }
+  const now = Date.now();
+  const elapsed = now - lastMetaNotifyAtMs;
+  if (elapsed >= TABLE_THROTTLE_MS) {
+    if (metaNotifyTimer !== null) {
+      clearTimeout(metaNotifyTimer);
+      metaNotifyTimer = null;
+    }
+    lastMetaNotifyAtMs = now;
+    metaListeners.forEach((fn) => fn());
+    return;
+  }
+  if (metaNotifyTimer !== null) return;
+  metaNotifyTimer = setTimeout(() => {
+    metaNotifyTimer = null;
+    lastMetaNotifyAtMs = Date.now();
+    metaListeners.forEach((fn) => fn());
+  }, Math.max(0, TABLE_THROTTLE_MS - elapsed));
+}
+
 function notify(next: MarketLiveStreamState): void {
+  const prev = state;
   state = next;
-  listeners.forEach((listener) => listener());
+  const isFresh =
+    next.isLive &&
+    next.lastReceivedAtMs !== null &&
+    Date.now() - next.lastReceivedAtMs <= QUOTE_RECEIVE_FRESHNESS_MS;
+  const connChanged =
+    prev.status !== next.status ||
+    prev.transport !== next.transport ||
+    prev.isLive !== next.isLive ||
+    prev.arSourceMode !== next.arSourceMode ||
+    prev.usSourceMode !== next.usSourceMode;
+  const metaChanged =
+    connChanged ||
+    metaState.isFresh !== isFresh ||
+    metaState.cclMedian !== next.cclMedian ||
+    metaState.mepMedian !== next.mepMedian ||
+    metaState.lastReceivedAtMs !== next.lastReceivedAtMs ||
+    metaState.ticksPerSecond !== next.ticksPerSecond ||
+    metaState.liveFx !== next.liveFx;
+
+  const prevFresh = metaState.isFresh;
+  if (metaChanged) {
+    metaState = {
+      status: next.status,
+      transport: next.transport,
+      isLive: next.isLive,
+      isFresh,
+      arSourceMode: next.arSourceMode,
+      usSourceMode: next.usSourceMode,
+      cclMedian: next.cclMedian,
+      mepMedian: next.mepMedian,
+      liveFx: next.liveFx,
+      lastServerTimeSec: next.lastServerTimeSec,
+      lastReceivedAtMs: next.lastReceivedAtMs,
+      ticksPerSecond: next.ticksPerSecond,
+    };
+    if (prevFresh !== isFresh) {
+      freshnessListeners.forEach((fn) => fn());
+    }
+    emitMetaListeners(connChanged);
+  }
+  refreshFreshnessWatchdog();
+
+  if (connChanged || next.totalBatches <= 1) {
+    if (legacyNotifyTimer !== null) {
+      clearTimeout(legacyNotifyTimer);
+      legacyNotifyTimer = null;
+    }
+    lastLegacyNotifyAtMs = Date.now();
+    listeners.forEach((listener) => listener());
+    return;
+  }
+  const now = Date.now();
+  const elapsed = now - lastLegacyNotifyAtMs;
+  if (elapsed >= TABLE_THROTTLE_MS) {
+    if (legacyNotifyTimer !== null) {
+      clearTimeout(legacyNotifyTimer);
+      legacyNotifyTimer = null;
+    }
+    lastLegacyNotifyAtMs = now;
+    listeners.forEach((listener) => listener());
+    return;
+  }
+  if (legacyNotifyTimer !== null) return;
+  legacyNotifyTimer = setTimeout(() => {
+    legacyNotifyTimer = null;
+    lastLegacyNotifyAtMs = Date.now();
+    listeners.forEach((listener) => listener());
+  }, Math.max(0, TABLE_THROTTLE_MS - elapsed));
 }
 
 function finitePositive(value: unknown): number | null {
@@ -351,6 +681,14 @@ export function getMarketLiveQuote(
 }
 
 export function pushLiveOrderBook(snapshot: MarketLiveOrderBook): void {
+  const cleanSymbol = snapshot.symbol.trim().toUpperCase();
+  if (cleanSymbol !== '') {
+    orderBookStore.set(
+      cleanSymbol,
+      cleanSymbol === snapshot.symbol ? snapshot : { ...snapshot, symbol: cleanSymbol },
+      orderBooksEqual,
+    );
+  }
   notify({ ...state, version: state.version + 1, liveOrderBook: snapshot });
 }
 
@@ -623,6 +961,17 @@ function parseFutures(raw: unknown): readonly MarketLiveFuture[] | null {
   return raw.map(parseFuture).filter((row): row is MarketLiveFuture => row !== null);
 }
 
+function normalizeRemovedQuoteKey(rawKey: string): string {
+  const parts = rawKey.split(':');
+  const market = parts[0] === 'AR' ? 'AR' : parts[0] === 'US' ? 'US' : null;
+  const symbol = parts[1];
+  const settlement = parts[2];
+  if (market !== null && symbol !== undefined && symbol !== '') {
+    return liveQuoteKey(market, symbol, settlement);
+  }
+  return rawKey;
+}
+
 function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport): boolean {
   if (batch.type !== 'MARKET_TICK_BATCH' || !Array.isArray(batch.quotes)) return false;
   clearPendingLegacy();
@@ -682,6 +1031,17 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     if (tapeTick !== null) {
       liveTape = pushTapeTick(liveTape, tapeTick);
     }
+    quoteStore.set(key, parsedQuote, marketQuotesEqual);
+  }
+  const staleKeys: string[] = [];
+  for (const [existingKey] of quoteStore.entries()) {
+    if (nextQuotes[existingKey] === undefined) staleKeys.push(existingKey);
+  }
+  for (const staleKey of staleKeys) {
+    quoteStore.delete(staleKey);
+  }
+  if (parsedOrderBook !== null) {
+    orderBookStore.set(parsedOrderBook.symbol, parsedOrderBook, orderBooksEqual);
   }
 
   notify({
@@ -732,12 +1092,17 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     for (const [key, quote] of Object.entries(nextQuotes)) {
       if ((quote.market === 'AR' && arSourceMode === 'NO_DATA') || (quote.market === 'US' && usSourceMode === 'NO_DATA')) {
         delete nextQuotes[key];
+        quoteStore.delete(key);
       }
     }
   }
   if (Array.isArray(batch.removed)) {
-    for (const key of batch.removed) {
-      if (typeof key === 'string') delete nextQuotes[key];
+    for (const rawKey of batch.removed) {
+      if (typeof rawKey === 'string') {
+        const key = normalizeRemovedQuoteKey(rawKey);
+        delete nextQuotes[key];
+        quoteStore.delete(key);
+      }
     }
   }
   let changedTicks = 0;
@@ -751,6 +1116,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     if (parsed === null) continue;
     if (parsed.direction !== null) changedTicks += 1;
     nextQuotes[key] = parsed;
+    quoteStore.set(key, parsed, marketQuotesEqual);
   }
   const cauciones = arSourceMode === 'NO_DATA'
     ? []
@@ -768,6 +1134,9 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
   const parsedLiveFx = parseLiveFx(batch.liveFx);
   const liveFx = parsedLiveFx ?? state.liveFx;
   const parsedOrderBook = parseOrderBook(batch.liveOrderBook);
+  if (parsedOrderBook !== null) {
+    orderBookStore.set(parsedOrderBook.symbol, parsedOrderBook, orderBooksEqual);
+  }
   const liveOrderBook = parsedOrderBook ?? state.liveOrderBook;
   let liveTape = Array.isArray(batch.tape) ? parseTape(batch.tape) : state.liveTape;
   for (const [key, parsedQuote] of Object.entries(nextQuotes)) {
@@ -859,6 +1228,7 @@ function applyTickDeltaSequence(
         (quote.market === 'US' && latestUsSourceMode === 'NO_DATA')
       ) {
         delete nextQuotes[key];
+        quoteStore.delete(key);
       }
     }
   }
@@ -866,8 +1236,12 @@ function applyTickDeltaSequence(
   let changedTicks = 0;
   for (const batch of valid) {
     if (Array.isArray(batch.removed)) {
-      for (const key of batch.removed) {
-        if (typeof key === 'string') delete nextQuotes[key];
+      for (const rawKey of batch.removed) {
+        if (typeof rawKey === 'string') {
+          const key = normalizeRemovedQuoteKey(rawKey);
+          delete nextQuotes[key];
+          quoteStore.delete(key);
+        }
       }
     }
     const batchQuotes = Array.isArray(batch.quotes) ? batch.quotes : [];
@@ -886,6 +1260,7 @@ function applyTickDeltaSequence(
       if (parsed === null) continue;
       if (parsed.direction !== null) changedTicks += 1;
       nextQuotes[key] = parsed;
+      quoteStore.set(key, parsed, marketQuotesEqual);
     }
   }
 
@@ -911,7 +1286,10 @@ function applyTickDeltaSequence(
     const parsedLiveFx = parseLiveFx(batch.liveFx);
     if (parsedLiveFx !== null) liveFx = parsedLiveFx;
     const parsedOrderBook = parseOrderBook(batch.liveOrderBook);
-    if (parsedOrderBook !== null) liveOrderBook = parsedOrderBook;
+    if (parsedOrderBook !== null) {
+      liveOrderBook = parsedOrderBook;
+      orderBookStore.set(parsedOrderBook.symbol, parsedOrderBook, orderBooksEqual);
+    }
     if (Array.isArray(batch.tape)) liveTape = parseTape(batch.tape);
   }
 
@@ -971,6 +1349,7 @@ function flushLegacyQuotes(): void {
   const nextQuotes = { ...state.quotesBySymbol };
   pendingLegacyQuotes.forEach((quote, key) => {
     nextQuotes[key] = quote;
+    quoteStore.set(key, quote, marketQuotesEqual);
   });
   pendingLegacyQuotes.clear();
   notify({
@@ -1184,6 +1563,103 @@ function queueMarketBatch(batch: MarketBatchWire, transport: LiveStreamTransport
   scheduleMarketBatchFlush();
 }
 
+function parseSerializedBar(raw: unknown): LiveBarUpdateEvent['formingBar'] {
+  if (!isRecord(raw)) return null;
+  const time = finitePositive(raw['time']);
+  const open = finitePositive(raw['open']);
+  const high = finitePositive(raw['high']);
+  const low = finitePositive(raw['low']);
+  const close = finitePositive(raw['close']);
+  const volume = finiteNumber(raw['volume']);
+  if (
+    time === null ||
+    open === null ||
+    high === null ||
+    low === null ||
+    close === null ||
+    volume === null
+  ) {
+    return null;
+  }
+  const vw = finitePositive(raw['vw']);
+  return vw !== null
+    ? { time, open, high, low, close, volume, vw }
+    : { time, open, high, low, close, volume };
+}
+
+function dispatchBarUpdateEvent(raw: Record<string, unknown>): void {
+  if (raw['cluster'] !== 'stocks' || typeof raw['symbol'] !== 'string') return;
+  const symbol = raw['symbol'].trim().toUpperCase();
+  const listenersForSym = barUpdateListenersBySymbol.get(symbol);
+  if (listenersForSym === undefined || listenersForSym.size === 0) return;
+  const time = finitePositive(raw['time']);
+  if (time === null) return;
+  const event: LiveBarUpdateEvent = {
+    symbol,
+    time,
+    formingBar: parseSerializedBar(raw['formingBar']),
+    lastClosedBar: parseSerializedBar(raw['lastClosedBar']),
+    projectedEma21: nullableNumber(raw['projectedEma21']),
+    projectedSessionVwap: nullableNumber(raw['projectedSessionVwap']),
+    projectedAvwap: nullableNumber(raw['projectedAvwap']),
+  };
+  for (const listener of listenersForSym) {
+    try {
+      listener(event);
+    } catch {
+      // Un listener con error nunca tumba el socket compartido.
+    }
+  }
+}
+
+function applyOptionQuotesBatch(parsed: Record<string, unknown>): void {
+  const rawQuotes = parsed['quotes'];
+  if (!Array.isArray(rawQuotes)) return;
+  const serverTimeSec = finitePositive(parsed['serverTimeSec']) ?? Math.floor(Date.now() / 1_000);
+  for (const item of rawQuotes) {
+    if (!isRecord(item) || typeof item['symbol'] !== 'string') continue;
+    const key = normalizeOptionContractKey(item['symbol']);
+    if (key === '') continue;
+    const underlying =
+      typeof item['underlying'] === 'string' && item['underlying'].trim() !== ''
+        ? item['underlying'].trim().toUpperCase()
+        : '';
+    const nextOpt: MarketLiveOptionQuote = {
+      symbol: key,
+      underlying,
+      time: finitePositive(item['time']) ?? serverTimeSec,
+      bid: nullableNumber(item['bid']),
+      ask: nullableNumber(item['ask']),
+      mid: nullableNumber(item['mid']),
+      last: nullableNumber(item['last']),
+      size: nullableNumber(item['size']),
+    };
+    optionQuoteStore.set(key, nextOpt, optionQuotesEqual);
+  }
+}
+
+export function subscribeLiveBarUpdate(
+  symbol: string,
+  listener: (event: LiveBarUpdateEvent) => void,
+): () => void {
+  const clean = symbol.trim().toUpperCase();
+  if (clean === '') return () => undefined;
+  let set = barUpdateListenersBySymbol.get(clean);
+  if (set === undefined) {
+    set = new Set();
+    barUpdateListenersBySymbol.set(clean, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = barUpdateListenersBySymbol.get(clean);
+    if (current === undefined) return;
+    current.delete(listener);
+    if (current.size === 0) {
+      barUpdateListenersBySymbol.delete(clean);
+    }
+  };
+}
+
 function flushMarketBatches(): void {
   const batches = pendingMarketBatches.splice(0, pendingMarketBatches.length);
   const transport = pendingMarketBatchTransport;
@@ -1204,7 +1680,10 @@ function flushMarketBatches(): void {
       if (!isRecord(raw)) continue;
       if (raw['type'] === 'ggal_bar_tick') {
         dispatchGgalBarTick(raw);
-      } else if (raw['type'] === 'trade' || raw['type'] === 'quote' || raw['type'] === 'bar_update') {
+      } else if (raw['type'] === 'bar_update') {
+        dispatchBarUpdateEvent(raw);
+        applyLegacyStockEvent(raw);
+      } else if (raw['type'] === 'trade' || raw['type'] === 'quote') {
         applyLegacyStockEvent(raw);
       }
     }
@@ -1227,9 +1706,15 @@ function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
     } else if (parsed['type'] === 'market_batch') {
       queueMarketBatch(parsed as MarketBatchWire, transport);
       if (transport === 'WS') stopPolling();
+    } else if (parsed['type'] === 'option_quotes_batch') {
+      applyOptionQuotesBatch(parsed);
+      if (transport === 'WS') stopPolling();
     } else if (parsed['type'] === 'ggal_bar_tick') {
       dispatchGgalBarTick(parsed);
     } else {
+      if (parsed['type'] === 'bar_update') {
+        dispatchBarUpdateEvent(parsed);
+      }
       applyLegacyStockEvent(parsed);
     }
   } catch {
@@ -1318,6 +1803,7 @@ function connectSocket(): void {
     openTimeout = null;
     next.send(JSON.stringify({ action: 'subscribe', symbols: ['*'] }));
     sendFocusMessage();
+    sendViewScopeMessage();
     notify({ ...state, version: state.version + 1, status: 'LIVE', transport: 'WS', isLive: true });
     void refreshBackendHealth();
   });
@@ -1416,5 +1902,214 @@ export function useMarketLiveStream(options: { readonly manageConnection?: boole
     [manage],
   );
   const getSnapshot = useCallback(() => state, []);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/** Pieza 48: administra la conexión compartida sin suscribir React state a cada tick. */
+export function useMarketStreamConnection(enabled = true): void {
+  useEffect(() => {
+    if (!enabled) return;
+    acquireConnection();
+    return () => {
+      releaseConnection();
+    };
+  }, [enabled]);
+}
+
+export function getAtomicMarketQuote(
+  market: LiveStreamMarket,
+  symbol: string,
+  settlement?: string | null,
+): MarketLiveQuote | null {
+  if (!metaState.isFresh) return null;
+  const exact = quoteStore.get(liveQuoteKey(market, symbol, settlement));
+  if (exact !== undefined) return exact;
+  if (settlement === undefined || settlement === null || settlement === '') {
+    return (
+      quoteStore.get(liveQuoteKey(market, symbol, '24hs')) ??
+      quoteStore.get(liveQuoteKey(market, symbol, 'CI')) ??
+      null
+    );
+  }
+  return null;
+}
+
+export function subscribeAtomicQuoteValue(
+  market: LiveStreamMarket,
+  symbol: string,
+  listener: (quote: MarketLiveQuote) => void,
+  settlement?: string | null,
+): () => void {
+  const cleanSymbol = symbol.trim().toUpperCase();
+  if (cleanSymbol === '') return () => undefined;
+  const key = liveQuoteKey(market, cleanSymbol, settlement);
+  return quoteStore.subscribeKeyValue(key, listener);
+}
+
+export function useAtomicMarketQuote(
+  market: LiveStreamMarket,
+  symbol: string,
+  throttleMs = TABLE_THROTTLE_MS,
+  settlement?: string | null,
+): MarketLiveQuote | null {
+  const cleanSymbol = symbol.trim().toUpperCase();
+  const key = liveQuoteKey(market, cleanSymbol, settlement);
+  const fallbackCiKey =
+    settlement === undefined || settlement === null || settlement === ''
+      ? liveQuoteKey(market, cleanSymbol, 'CI')
+      : null;
+
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (cleanSymbol === '') return () => undefined;
+      const unsubMain = quoteStore.subscribeKeyThrottled(key, throttleMs, listener);
+      const unsubCi =
+        fallbackCiKey !== null && fallbackCiKey !== key
+          ? quoteStore.subscribeKeyThrottled(fallbackCiKey, throttleMs, listener)
+          : null;
+      freshnessListeners.add(listener);
+      return () => {
+        unsubMain();
+        unsubCi?.();
+        freshnessListeners.delete(listener);
+      };
+    },
+    [cleanSymbol, fallbackCiKey, key, throttleMs],
+  );
+
+  const getSnapshot = useCallback(
+    () => (cleanSymbol === '' ? null : getAtomicMarketQuote(market, cleanSymbol, settlement)),
+    [cleanSymbol, market, settlement],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function useAtomicOptionQuote(
+  contractSymbol: string | null | undefined,
+  throttleMs = TABLE_THROTTLE_MS,
+): MarketLiveOptionQuote | null {
+  const key =
+    contractSymbol !== undefined && contractSymbol !== null && contractSymbol.trim() !== ''
+      ? normalizeOptionContractKey(contractSymbol)
+      : '';
+
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (key === '') return () => undefined;
+      return optionQuoteStore.subscribeKeyThrottled(key, throttleMs, listener);
+    },
+    [key, throttleMs],
+  );
+
+  const getSnapshot = useCallback(
+    () => (key === '' ? null : (optionQuoteStore.get(key) ?? null)),
+    [key],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function useAtomicOrderBook(
+  symbol: string | null | undefined,
+  throttleMs = L2_THROTTLE_MS,
+): MarketLiveOrderBook | null {
+  const cleanSymbol =
+    symbol !== undefined && symbol !== null && symbol.trim() !== ''
+      ? symbol.trim().toUpperCase()
+      : '';
+
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (cleanSymbol === '') return () => undefined;
+      return orderBookStore.subscribeKeyThrottled(cleanSymbol, throttleMs, listener);
+    },
+    [cleanSymbol, throttleMs],
+  );
+
+  const getSnapshot = useCallback(
+    () => (cleanSymbol === '' ? null : (orderBookStore.get(cleanSymbol) ?? null)),
+    [cleanSymbol],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function getMarketStreamMetaSnapshot(): MarketStreamMeta {
+  return metaState;
+}
+
+export function subscribeMarketStreamMeta(listener: () => void): () => void {
+  metaListeners.add(listener);
+  return () => {
+    metaListeners.delete(listener);
+  };
+}
+
+export function isMarketStreamMetaFresh(meta: MarketStreamMeta): boolean {
+  return meta.isFresh;
+}
+
+export function getMarketStreamMetaClock(meta: MarketStreamMeta): string | null {
+  if (!meta.isFresh || meta.lastReceivedAtMs === null) return null;
+  return new Date(meta.lastReceivedAtMs).toLocaleTimeString('es-AR', { hour12: false });
+}
+
+export function getMarketLiveCauciones(): readonly MarketLiveCaucion[] {
+  return metaState.isFresh ? state.cauciones : [];
+}
+
+export function useMarketStreamMeta(throttleMs = 500): MarketStreamMeta {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let lastFired = 0;
+      const onMeta = () => {
+        const now = Date.now();
+        const elapsed = now - lastFired;
+        if (elapsed >= throttleMs) {
+          if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          lastFired = now;
+          listener();
+          return;
+        }
+        if (timer !== null) return;
+        timer = setTimeout(() => {
+          timer = null;
+          lastFired = Date.now();
+          listener();
+        }, Math.max(0, throttleMs - elapsed));
+      };
+      metaListeners.add(onMeta);
+      return () => {
+        metaListeners.delete(onMeta);
+        if (timer !== null) clearTimeout(timer);
+      };
+    },
+    [throttleMs],
+  );
+  const getSnapshot = useCallback(() => metaState, []);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function useThrottledMarketQuotesTick(throttleMs = TABLE_THROTTLE_MS): number {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const unsub = quoteStore.subscribeAnyThrottled(throttleMs, listener);
+      freshnessListeners.add(listener);
+      return () => {
+        unsub();
+        freshnessListeners.delete(listener);
+      };
+    },
+    [throttleMs],
+  );
+  const getSnapshot = useCallback(
+    () => (metaState.isFresh ? quoteStore.getVersion() : -1),
+    [],
+  );
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

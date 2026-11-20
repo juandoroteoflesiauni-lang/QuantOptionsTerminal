@@ -134,7 +134,7 @@ export const PriceCell: React.FC<{
 
   return (
     <span
-      className={`inline-flex items-center justify-end px-1.5 py-0.5 rounded-[6px] font-mono-num transition-colors ${flashClass} ${className}`}
+      className={`inline-flex items-center justify-end px-1.5 py-0.5 rounded-[6px] font-mono-num tabular-nums ${flashClass} ${className}`}
     >
       <span key={finite ? value : 'na'} className={flashDirection ? 'num-roll' : ''}>
         {finite ? `${prefix}${fmtNum(value, decimals)}${suffix}` : '—'}

@@ -1,4 +1,5 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { layoutCurveLabels } from '../../../src/core/bondCurveLayout';
 import {
   TrendingUp,
@@ -55,15 +56,30 @@ import {
 import { CompanyLogo } from './common/CompanyLogo';
 import {
   formatExtendedSessionBadge,
-  getMarketLiveQuote,
-  getMarketLiveClock,
-  isMarketLiveStreamFresh,
+  getAtomicMarketQuote,
+  getMarketLiveCauciones,
+  getMarketStreamMetaClock,
   tickFlashClass,
-  useMarketFocusSymbol,
+  useAtomicMarketQuote,
   useMarketLiveStream,
+  useMarketStreamMeta,
+  useThrottledMarketQuotesTick,
   useTickFlash,
   type LiveUsSessionPhase,
 } from '../api/useMarketLiveStream';
+
+const PCT_WIDTH_STYLES: readonly React.CSSProperties[] = Array.from({ length: 101 }, (_, i) =>
+  Object.freeze({ width: `${String(i)}%` }),
+);
+const PCT_LEFT_STYLES: readonly React.CSSProperties[] = Array.from({ length: 101 }, (_, i) =>
+  Object.freeze({ left: `calc(${String(i)}% - 1px)` }),
+);
+const POS_BAR_STYLES: readonly React.CSSProperties[] = Array.from({ length: 101 }, (_, i) =>
+  Object.freeze({ width: `${String(i)}%`, backgroundColor: '#2EDC7E' }),
+);
+const NEG_BAR_STYLES: readonly React.CSSProperties[] = Array.from({ length: 101 }, (_, i) =>
+  Object.freeze({ width: `${String(i)}%`, backgroundColor: '#FF5468' }),
+);
 
 const TickFlash: React.FC<{
   readonly value: number | null;
@@ -73,7 +89,7 @@ const TickFlash: React.FC<{
   const direction = useTickFlash(value);
   return (
     <span
-      className={`inline-flex items-center justify-end rounded-[4px] px-1 py-0.5 transition-colors duration-500 ${tickFlashClass(direction)} ${className}`}
+      className={`inline-flex items-center justify-end rounded-[4px] px-1 py-0.5 tabular-nums ${tickFlashClass(direction)} ${className}`}
     >
       {children}
     </span>
@@ -135,11 +151,11 @@ const LogoHeatTileImpl: React.FC<{
           </span>
         </div>
         {Number.isFinite(effectivePrice) ? (
-          <span className={`font-mono-num text-[11px] transition-colors duration-500 shrink-0 ${tickFlashClass(flashDirection)}`}>
+          <span className={`font-mono-num tabular-nums text-[11px] shrink-0 ${tickFlashClass(flashDirection)}`}>
             ${fmtNum(effectivePrice, effectivePrice < 1000 ? 1 : 0)}
           </span>
         ) : price ? (
-          <span className="font-mono-num text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] transition-colors shrink-0">
+          <span className="font-mono-num tabular-nums text-[11px] text-[#9CA3AF] group-hover:text-[#D1D4DC] shrink-0">
             {price}
           </span>
         ) : null}
@@ -223,10 +239,11 @@ const DayRangeBar: React.FC<{ readonly row: NormalizedPanelRow }> = ({ row }) =>
     Number.isFinite(row.dayHigh) &&
     row.dayHigh > row.dayLow;
   if (!hasRange) {
-    return <span className="text-[var(--text-tertiary)] font-mono-num">—</span>;
+    return <span className="text-[var(--text-tertiary)] font-mono-num tabular-nums">—</span>;
   }
   const posPct = Math.max(0, Math.min(100, ((row.last - row.dayLow) / (row.dayHigh - row.dayLow)) * 100));
-  const barColor = posPct >= 50 ? '#22C55E' : '#EF4444';
+  const pctBucket = Math.max(0, Math.min(100, Math.round(posPct)));
+  const isPos = posPct >= 50;
   return (
     <div
       className="inline-flex items-center gap-2"
@@ -237,22 +254,23 @@ const DayRangeBar: React.FC<{ readonly row: NormalizedPanelRow }> = ({ row }) =>
       </span>
       <div className="relative h-[6px] w-[54px] rounded-full bg-[#1C1C28]">
         <div
-          className="absolute inset-y-0 left-0 rounded-full"
-          style={{ width: `${posPct}%`, backgroundColor: barColor }}
+          className={`absolute inset-y-0 left-0 rounded-full ${isPos ? 'bg-[#22C55E]' : 'bg-[#EF4444]'}`}
+          style={PCT_WIDTH_STYLES[pctBucket]}
         />
         <span
-          className="absolute -top-[2px] h-[10px] w-[2px] rounded-full"
-          style={{ left: `calc(${posPct}% - 1px)`, backgroundColor: barColor }}
+          className={`absolute -top-[2px] h-[10px] w-[2px] rounded-full ${isPos ? 'bg-[#22C55E]' : 'bg-[#EF4444]'}`}
+          style={PCT_LEFT_STYLES[pctBucket]}
         />
       </div>
       <span className="text-[10.5px] font-mono-num tabular-nums text-[var(--text-secondary)]">
         {fmtNum(row.dayHigh, 2)}
       </span>
       <span
-        className="w-[36px] text-right text-[10.5px] font-mono-num tabular-nums"
-        style={{ color: barColor }}
+        className={`w-[36px] text-right text-[10.5px] font-mono-num tabular-nums ${
+          isPos ? 'text-[#22C55E]' : 'text-[#EF4444]'
+        }`}
       >
-        {Math.round(posPct)}%
+        {pctBucket}%
       </span>
     </div>
   );
@@ -263,108 +281,6 @@ const formatVolMillionsShared = (value: number | null | undefined, currencyPrefi
   if (Math.abs(value) >= 1_000) return `${currencyPrefix}${fmtNum(value / 1_000, 2)}B`;
   return `${currencyPrefix}${fmtNum(value, 1)}M`;
 };
-
-const PanelTableRow: React.FC<{
-  readonly row: NormalizedPanelRow;
-  readonly denseRowClass: string;
-  readonly currencyPrefix: string;
-  readonly onSelectRow: (symbol: string) => void;
-}> = memo(({ row, denseRowClass, currencyPrefix, onSelectRow }) => {
-  const extBadge = formatExtendedSessionBadge(row.sessionPhase);
-  const displayDeltaPct =
-    extBadge !== null && row.extendedChangePct !== undefined && row.extendedChangePct !== null && Number.isFinite(row.extendedChangePct)
-      ? row.extendedChangePct
-      : row.return1dPct;
-  return (
-    <tr
-      onClick={() => onSelectRow(row.symbol)}
-      className={`${denseRowClass} hover:bg-[#171724] transition-colors cursor-pointer`}
-    >
-      <td className="px-3 text-left">
-        <div className="flex items-center gap-2 min-w-0">
-          <CompanyLogo ticker={row.symbol} name={row.name} size={denseRowClass.includes('h-8') ? 'xs' : 'sm'} />
-          <span className="font-bold text-[#F3F4F6] tracking-tight">{row.symbol}</span>
-          {extBadge !== null && (
-            <span className="rounded px-1 py-0.2 font-mono-num text-[8.5px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
-              {extBadge}
-            </span>
-          )}
-          <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">{row.name}</span>
-        </div>
-      </td>
-      <td className="px-2.5 font-semibold text-[#F3F4F6]">
-        <TickFlash value={Number.isFinite(row.last) ? row.last : null}>
-          {Number.isFinite(row.last) ? `${'$ '}${fmtNum(row.last, row.last >= 1000 ? 0 : 2)}` : '—'}
-        </TickFlash>
-      </td>
-      <td className="px-2.5">
-        <DeltaPill value={displayDeltaPct} size="sm" />
-      </td>
-      <td className="px-2.5 text-[#A5A6BA]">{formatVolMillionsShared(row.volumeM, currencyPrefix)}</td>
-      <td className="px-3 text-right"><DayRangeBar row={row} /></td>
-    </tr>
-  );
-}, (prev, next) => (
-  prev.denseRowClass === next.denseRowClass &&
-  prev.currencyPrefix === next.currencyPrefix &&
-  prev.row.symbol === next.row.symbol &&
-  prev.row.name === next.row.name &&
-  prev.row.last === next.row.last &&
-  prev.row.return1dPct === next.row.return1dPct &&
-  prev.row.extendedChangePct === next.row.extendedChangePct &&
-  prev.row.sessionPhase === next.row.sessionPhase &&
-  prev.row.volumeM === next.row.volumeM &&
-  prev.row.dayLow === next.row.dayLow &&
-  prev.row.dayHigh === next.row.dayHigh &&
-  prev.row.dayRangePos === next.row.dayRangePos
-));
-
-const RiskTableRow: React.FC<{
-  readonly row: NormalizedPanelRow;
-  readonly currencyPrefix: string;
-  readonly onSelectRow: (symbol: string) => void;
-}> = memo(({ row, currencyPrefix, onSelectRow }) => (
-  <tr
-    key={row.symbol}
-    onClick={() => onSelectRow(row.symbol)}
-    className="h-8 hover:bg-[#171724] cursor-pointer transition-colors"
-  >
-    <td className="px-3 text-left">
-      <div className="flex items-center gap-2">
-        <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
-        <span className="font-bold text-[#F3F4F6]">{row.symbol}</span>
-      </div>
-    </td>
-    <td className={`px-2.5 ${Number.isFinite(row.realizedVol30dPct) && row.realizedVol30dPct >= 45 ? 'text-[#F5B544] font-semibold' : 'text-[#D1D4DC]'}`}>
-      {Number.isFinite(row.realizedVol30dPct) ? `${fmtNum(row.realizedVol30dPct, 1)}%` : '—'}
-    </td>
-    <td
-      className={`px-2.5 font-semibold ${
-        !Number.isFinite(row.beta)
-          ? 'text-[#6D6D84]'
-          : row.beta >= 1.25
-            ? 'text-[#8B7CF6]'
-            : row.beta < 0.7
-              ? 'text-[#38BDF8]'
-              : 'text-[#D1D4DC]'
-      }`}
-    >
-      {fmtNum(row.beta, 2)}
-    </td>
-    <td className="px-2.5"><DeltaPill value={row.return30dPct} size="sm" /></td>
-    <td className="px-2.5"><DeltaPill value={row.returnYtdOr252dPct} size="sm" /></td>
-    <td className="px-3 text-[#A5A6BA]">{formatVolMillionsShared(row.avgVolume40dM, currencyPrefix)}</td>
-  </tr>
-), (prev, next) => (
-  prev.currencyPrefix === next.currencyPrefix &&
-  prev.row.symbol === next.row.symbol &&
-  prev.row.name === next.row.name &&
-  prev.row.realizedVol30dPct === next.row.realizedVol30dPct &&
-  prev.row.beta === next.row.beta &&
-  prev.row.return30dPct === next.row.return30dPct &&
-  prev.row.returnYtdOr252dPct === next.row.returnYtdOr252dPct &&
-  prev.row.avgVolume40dM === next.row.avgVolume40dM
-));
 
 const areLogoHeatTilePropsEqual = (
   prev: React.ComponentProps<typeof LogoHeatTileImpl>,
@@ -381,6 +297,668 @@ const LogoHeatTile: React.FC<React.ComponentProps<typeof LogoHeatTileImpl>> = me
   LogoHeatTileImpl,
   areLogoHeatTilePropsEqual,
 );
+
+const PANEL_GRID_CLASS =
+  'grid grid-cols-[minmax(190px,1.5fr)_minmax(88px,0.75fr)_minmax(78px,0.7fr)_minmax(86px,0.75fr)_minmax(170px,1.1fr)]';
+const RISK_GRID_CLASS = 'grid grid-cols-[minmax(115px,1.15fr)_repeat(5,minmax(78px,0.85fr))]';
+const CEDEAR_GRID_CLASS =
+  'grid grid-cols-[minmax(195px,1.4fr)_minmax(115px,0.9fr)_minmax(90px,0.8fr)_minmax(76px,0.7fr)_minmax(60px,0.5fr)_minmax(110px,0.9fr)_minmax(150px,1.2fr)_minmax(80px,0.7fr)_minmax(72px,0.6fr)_minmax(155px,1.2fr)]';
+
+interface CedearAdrDisplayRow {
+  readonly key: string;
+  readonly kind: 'CEDEAR' | 'ADR';
+  readonly ticker: string;
+  readonly usTicker: string;
+  readonly name: string;
+  readonly sector: string;
+  readonly color: string;
+  readonly usLast: number;
+  readonly usDeltaPct: number;
+  readonly ratioStr: string;
+  readonly ratioNum: number;
+  readonly localArs: number;
+  readonly fairArsPrice: number;
+  readonly cclImplicit: number;
+  readonly cclMismatchPct: number;
+  readonly cclMismatchArs: number;
+  readonly iv30d: number;
+  readonly ivSource: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
+  readonly volMultiple: number;
+  readonly hasUsOptions: boolean;
+  readonly hasBymaOptions: boolean;
+  readonly arbitrageSignal: string;
+}
+
+const PanelVirtualRow: React.FC<{
+  readonly mode: 'AR' | 'US';
+  readonly row: NormalizedPanelRow;
+  readonly denseRowClass: string;
+  readonly currencyPrefix: string;
+}> = memo(({ mode, row, denseRowClass, currencyPrefix }) => {
+  const live = useAtomicMarketQuote(mode, row.symbol, 250);
+  const resolvedRow: NormalizedPanelRow = live === null
+    ? row
+    : {
+        ...row,
+        last: live.price,
+        prevClose: live.previousClose ?? row.prevClose,
+        dayLow: live.dayLow ?? row.dayLow,
+        dayHigh: live.dayHigh ?? row.dayHigh,
+        volumeM: live.turnover !== null ? live.turnover / 1_000_000 : row.volumeM,
+        return1dPct: live.changePct ?? row.return1dPct,
+        sessionPhase: mode === 'US' ? (live.sessionPhase ?? row.sessionPhase ?? null) : null,
+        extendedPrice: mode === 'US' ? (live.extendedPrice ?? row.extendedPrice ?? null) : null,
+        extendedChangePct: mode === 'US' ? (live.extendedChangePct ?? row.extendedChangePct ?? null) : null,
+      };
+  const extBadge = formatExtendedSessionBadge(resolvedRow.sessionPhase);
+  const displayDeltaPct =
+    extBadge !== null &&
+    resolvedRow.extendedChangePct !== undefined &&
+    resolvedRow.extendedChangePct !== null &&
+    Number.isFinite(resolvedRow.extendedChangePct)
+      ? resolvedRow.extendedChangePct
+      : resolvedRow.return1dPct;
+  return (
+    <div
+      data-id={resolvedRow.symbol}
+      className={`${PANEL_GRID_CLASS} h-full items-center border-b border-[#1A1A26] hover:bg-[#171724] cursor-pointer text-right font-mono-num tabular-nums ${
+        denseRowClass.includes('text-') ? '' : 'text-[12px]'
+      }`}
+    >
+      <div className="px-3 text-left min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <CompanyLogo ticker={resolvedRow.symbol} name={resolvedRow.name} size={denseRowClass.includes('h-8') ? 'xs' : 'sm'} />
+          <span className="font-bold text-[#F3F4F6] tracking-tight">{resolvedRow.symbol}</span>
+          {extBadge !== null && (
+            <span className="rounded px-1 py-0.2 font-mono-num text-[8.5px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
+              {extBadge}
+            </span>
+          )}
+          <span className="text-[11px] font-sans text-[#6D6D84] truncate max-w-[135px]">{resolvedRow.name}</span>
+        </div>
+      </div>
+      <div className="px-2.5 font-semibold text-[#F3F4F6]">
+        <TickFlash value={Number.isFinite(resolvedRow.last) ? resolvedRow.last : null}>
+          {Number.isFinite(resolvedRow.last) ? `$ ${fmtNum(resolvedRow.last, resolvedRow.last >= 1000 ? 0 : 2)}` : '—'}
+        </TickFlash>
+      </div>
+      <div className="px-2.5 flex justify-end">
+        <DeltaPill value={displayDeltaPct} size="sm" />
+      </div>
+      <div className="px-2.5 text-[#A5A6BA]">{formatVolMillionsShared(resolvedRow.volumeM, currencyPrefix)}</div>
+      <div className="px-3 text-right">
+        <DayRangeBar row={resolvedRow} />
+      </div>
+    </div>
+  );
+});
+
+const VirtualizedEquityPanelTable: React.FC<{
+  readonly mode: 'AR' | 'US';
+  readonly list: readonly NormalizedPanelRow[];
+  readonly denseRowClass: string;
+  readonly currencyPrefix: string;
+  readonly onSelectRow: (symbol: string) => void;
+}> = memo(({ mode, list, denseRowClass, currencyPrefix, onSelectRow }) => {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const onSelectRowRef = useRef(onSelectRow);
+  onSelectRowRef.current = onSelectRow;
+  const rowHeightPx = denseRowClass.includes('h-11') ? 42 : denseRowClass.includes('h-9') ? 34 : 28;
+
+  const rowVirtualizer = useVirtualizer({
+    count: list.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => rowHeightPx,
+    overscan: 6,
+    getItemKey: (idx) => list[idx]?.symbol ?? idx,
+  });
+
+  const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
+    const symbol = el?.dataset['id'];
+    if (symbol) onSelectRowRef.current(symbol);
+  }, []);
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  return (
+    <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[520px]">
+      <div className="min-w-[612px]">
+        <div
+          className={`${PANEL_GRID_CLASS} sticky top-0 z-10 bg-[#0D0D14] border-b border-[#1E1E2B] text-right text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]`}
+        >
+          <div className="py-2 px-3 text-left">papel</div>
+          <div className="py-2 px-2.5">precio</div>
+          <div className="py-2 px-2.5">var</div>
+          <div className="py-2 px-2.5">operado</div>
+          <div className="py-2 px-3">rango del día</div>
+        </div>
+        {list.length === 0 ? (
+          <div className="py-6 text-center text-[12px] text-[#787B86] font-sans">
+            Sin especies coincidentes en esta selección.
+          </div>
+        ) : (
+          <div
+            onClick={handleContainerClick}
+            className="relative w-full"
+            style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+          >
+            {virtualRows.map((virtualRow) => {
+              const row = list[virtualRow.index];
+              if (!row) return null;
+              return (
+                <div
+                  key={virtualRow.key}
+                  className="perf-virtual-row absolute left-0 top-0 w-full"
+                  style={{
+                    height: `${String(rowHeightPx)}px`,
+                    transform: `translateY(${String(virtualRow.start)}px)`,
+                  }}
+                >
+                  <PanelVirtualRow
+                    mode={mode}
+                    row={row}
+                    denseRowClass={denseRowClass}
+                    currencyPrefix={currencyPrefix}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+const VirtualizedRankingList: React.FC<{
+  readonly rankedRows: readonly { readonly row: NormalizedPanelRow; readonly val: number }[];
+  readonly maxAbsRank: number;
+  readonly rankHorizon: 'Día' | 'Mes' | 'Año';
+  readonly onSelectRow: (symbol: string) => void;
+}> = memo(({ rankedRows, maxAbsRank, rankHorizon, onSelectRow }) => {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const onSelectRowRef = useRef(onSelectRow);
+  onSelectRowRef.current = onSelectRow;
+
+  const rowVirtualizer = useVirtualizer({
+    count: rankedRows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28,
+    overscan: 6,
+    getItemKey: (idx) => rankedRows[idx]?.row.symbol ?? idx,
+  });
+
+  const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
+    const symbol = el?.dataset['id'];
+    if (symbol) onSelectRowRef.current(symbol);
+  }, []);
+
+  if (rankedRows.length === 0) {
+    return (
+      <div className="max-h-[380px] py-10 text-center text-[12px] text-[#6D6D84]">
+        Sin datos cerrados suficientes para {rankHorizon} — sin fallback.
+      </div>
+    );
+  }
+
+  return (
+    <div ref={parentRef} className="perf-table-viewport max-h-[380px] overflow-y-auto pr-1">
+      <div
+        onClick={handleContainerClick}
+        className="relative w-full"
+        style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+      >
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const item = rankedRows[virtualRow.index];
+          if (!item) return null;
+          const { row, val } = item;
+          const pos = val >= 0;
+          const widthBucket = Math.max(4, Math.min(100, Math.round((Math.abs(val) / maxAbsRank) * 100)));
+          return (
+            <button
+              key={virtualRow.key}
+              type="button"
+              data-id={row.symbol}
+              className="perf-virtual-row absolute left-0 top-0 w-full flex items-center gap-2.5 px-2 rounded-[6px] hover:bg-[#171724] text-left cursor-pointer"
+              style={{
+                height: '28px',
+                transform: `translateY(${String(virtualRow.start)}px)`,
+              }}
+            >
+              <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
+              <span className="w-14 font-mono-num tabular-nums text-[11.5px] font-bold text-[#F3F4F6] shrink-0">
+                {row.symbol}
+              </span>
+              <div className="flex-1 h-2 rounded-full bg-[#181824] overflow-hidden">
+                <div
+                  className="h-full rounded-full"
+                  style={pos ? POS_BAR_STYLES[widthBucket] : NEG_BAR_STYLES[widthBucket]}
+                />
+              </div>
+              <span
+                className={`w-16 text-right font-mono-num tabular-nums text-[11.5px] font-semibold shrink-0 ${
+                  pos ? 'text-[#2EDC7E]' : 'text-[#FF5468]'
+                }`}
+              >
+                {fmtPct(val, 2)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+const VirtualizedRiskTable: React.FC<{
+  readonly riskRows: readonly NormalizedPanelRow[];
+  readonly currencyPrefix: string;
+  readonly onSelectRow: (symbol: string) => void;
+}> = memo(({ riskRows, currencyPrefix, onSelectRow }) => {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const onSelectRowRef = useRef(onSelectRow);
+  onSelectRowRef.current = onSelectRow;
+
+  const rowVirtualizer = useVirtualizer({
+    count: riskRows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28,
+    overscan: 6,
+    getItemKey: (idx) => riskRows[idx]?.symbol ?? idx,
+  });
+
+  const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
+    const symbol = el?.dataset['id'];
+    if (symbol) onSelectRowRef.current(symbol);
+  }, []);
+
+  return (
+    <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[395px]">
+      <div className="min-w-[520px]">
+        <div
+          className={`${RISK_GRID_CLASS} sticky top-0 z-10 bg-[#0D0D14] border-b border-[#1E1E2B] text-right text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]`}
+        >
+          <div className="py-2 px-3 text-left">papel</div>
+          <div className="py-2 px-2.5">volatilidad</div>
+          <div className="py-2 px-2.5">beta</div>
+          <div className="py-2 px-2.5">mes</div>
+          <div className="py-2 px-2.5">año</div>
+          <div className="py-2 px-3">promedio 40</div>
+        </div>
+        <div
+          onClick={handleContainerClick}
+          className="relative w-full font-mono-num tabular-nums text-[12px]"
+          style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const row = riskRows[virtualRow.index];
+            if (!row) return null;
+            return (
+              <div
+                key={virtualRow.key}
+                data-id={row.symbol}
+                className={`perf-virtual-row ${RISK_GRID_CLASS} absolute left-0 top-0 w-full items-center border-b border-[#1A1A26] hover:bg-[#171724] cursor-pointer text-right`}
+                style={{
+                  height: '28px',
+                  transform: `translateY(${String(virtualRow.start)}px)`,
+                }}
+              >
+                <div className="px-3 text-left flex items-center gap-2 min-w-0">
+                  <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
+                  <span className="font-bold text-[#F3F4F6]">{row.symbol}</span>
+                </div>
+                <div
+                  className={`px-2.5 ${
+                    Number.isFinite(row.realizedVol30dPct) && row.realizedVol30dPct >= 45
+                      ? 'text-[#F5B544] font-semibold'
+                      : 'text-[#D1D4DC]'
+                  }`}
+                >
+                  {Number.isFinite(row.realizedVol30dPct) ? `${fmtNum(row.realizedVol30dPct, 1)}%` : '—'}
+                </div>
+                <div
+                  className={`px-2.5 font-semibold ${
+                    !Number.isFinite(row.beta)
+                      ? 'text-[#6D6D84]'
+                      : row.beta >= 1.25
+                        ? 'text-[#8B7CF6]'
+                        : row.beta < 0.7
+                          ? 'text-[#38BDF8]'
+                          : 'text-[#D1D4DC]'
+                  }`}
+                >
+                  {fmtNum(row.beta, 2)}
+                </div>
+                <div className="px-2.5 flex justify-end">
+                  <DeltaPill value={row.return30dPct} size="sm" />
+                </div>
+                <div className="px-2.5 flex justify-end">
+                  <DeltaPill value={row.returnYtdOr252dPct} size="sm" />
+                </div>
+                <div className="px-3 text-[#A5A6BA]">{formatVolMillionsShared(row.avgVolume40dM, currencyPrefix)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const CedearVirtualRow: React.FC<{
+  readonly row: CedearAdrDisplayRow;
+  readonly cclMedian: number | null;
+  readonly compact: boolean;
+}> = memo(({ row, cclMedian, compact }) => {
+  const usQuote = useAtomicMarketQuote('US', row.usTicker, 250);
+  const arQuote = useAtomicMarketQuote('AR', row.ticker, 250);
+  const usLast = usQuote?.price ?? row.usLast;
+  const usDeltaPct = usQuote?.changePct ?? row.usDeltaPct;
+  const localArs = arQuote?.price ?? row.localArs;
+  const fairArsPrice =
+    Number.isFinite(usLast) &&
+    usLast > 0 &&
+    cclMedian !== null &&
+    cclMedian > 0 &&
+    Number.isFinite(row.ratioNum) &&
+    row.ratioNum > 0
+      ? (usLast * cclMedian) / row.ratioNum
+      : row.fairArsPrice;
+  const cclImplicit =
+    Number.isFinite(localArs) &&
+    localArs > 0 &&
+    Number.isFinite(usLast) &&
+    usLast > 0 &&
+    Number.isFinite(row.ratioNum) &&
+    row.ratioNum > 0
+      ? (localArs * row.ratioNum) / usLast
+      : row.cclImplicit;
+  const cclMismatchPct =
+    cclMedian !== null && cclMedian > 0 && Number.isFinite(cclImplicit)
+      ? ((cclImplicit - cclMedian) / cclMedian) * 100
+      : row.cclMismatchPct;
+  const cclMismatchArs =
+    Number.isFinite(localArs) && Number.isFinite(fairArsPrice)
+      ? localArs - fairArsPrice
+      : row.cclMismatchArs;
+
+  const hasMismatch = Number.isFinite(cclMismatchPct);
+  const isDiscount = hasMismatch && cclMismatchPct <= -1.2;
+  const isPremium = hasMismatch && cclMismatchPct >= 1.2;
+  const mismatchBadgeCls = isDiscount
+    ? 'text-[#2EDC7E] bg-[#2EDC7E]/12 border-[#2EDC7E]/30'
+    : isPremium
+      ? 'text-[#F5B544] bg-[#F5B544]/12 border-[#F5B544]/30'
+      : 'text-[#9CA3AF] bg-[#1A1A26] border-[#262636]';
+
+  return (
+    <div
+      data-id={row.key}
+      data-price={Number.isFinite(localArs) ? String(localArs) : '0'}
+      className={`${CEDEAR_GRID_CLASS} h-full items-center border-b border-[#181824] hover:bg-[#181C27] cursor-pointer text-right font-mono-num tabular-nums text-[12px]`}
+    >
+      <div className="px-3.5 text-left min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <CompanyLogo ticker={row.usTicker || row.ticker} name={row.name} size={compact ? 'xs' : 'sm'} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold text-[#F3F4F6] leading-tight">{row.ticker}</span>
+              {row.usTicker && row.usTicker !== row.ticker && (
+                <span className="text-[10px] text-[#787B86] font-mono-num">({row.usTicker})</span>
+              )}
+              {row.kind === 'ADR' && (
+                <button
+                  type="button"
+                  data-action="detail"
+                  data-ticker={row.ticker}
+                  className="text-[9.5px] px-1.5 py-0.2 rounded bg-[#1F2637] text-[#60A5FA] hover:bg-[#2A334A] font-sans font-semibold cursor-pointer"
+                >
+                  Ficha
+                </button>
+              )}
+            </div>
+            <div className="text-[11px] font-sans text-[#787B86] truncate max-w-[165px]">{row.name}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-2 text-left font-sans">
+        <div className="flex flex-col gap-0.5">
+          <span
+            className={`inline-flex w-fit px-1.5 py-0.2 rounded text-[9.5px] font-semibold ${
+              row.kind === 'ADR'
+                ? 'bg-[#2EDC7E]/15 text-[#2EDC7E]'
+                : 'bg-[#38BDF8]/12 text-[#38BDF8]'
+            }`}
+          >
+            {row.kind === 'ADR' ? 'ADR BYMA' : 'CEDEAR'}
+          </span>
+          <span className="text-[10.5px] text-[#787B86] truncate max-w-[110px]">{row.sector}</span>
+        </div>
+      </div>
+
+      <div className="px-2.5 font-bold text-[#F3F4F6]">
+        <TickFlash value={Number.isFinite(usLast) ? usLast : null}>
+          {Number.isFinite(usLast) ? `US$ ${fmtNum(usLast, 2)}` : '—'}
+        </TickFlash>
+      </div>
+
+      <div className="px-2.5 flex justify-end">
+        <DeltaPill value={usDeltaPct} size="sm" />
+      </div>
+
+      <div className="px-2.5 text-[#9CA3AF] text-[11px]">{row.ratioStr}</div>
+
+      <div className="px-2.5 leading-tight">
+        <TickFlash value={Number.isFinite(localArs) ? localArs : null}>
+          <span className="block font-bold text-[#38BDF8]">
+            {Number.isFinite(localArs) ? `$ ${fmtNum(localArs, 0)}` : '—'}
+          </span>
+        </TickFlash>
+        {Number.isFinite(fairArsPrice) && (
+          <div className="text-[10px] text-[#787B86]">Par: $ {fmtNum(fairArsPrice, 0)}</div>
+        )}
+      </div>
+
+      <div className="px-2.5 leading-tight">
+        <div className="font-semibold text-[#D1D4DC]">
+          {Number.isFinite(cclImplicit) ? `$ ${fmtNum(cclImplicit, 2)}` : '—'}
+        </div>
+        {hasMismatch ? (
+          <div className="mt-0.5 inline-flex items-center gap-1">
+            <span className={`px-1.5 py-0.2 rounded border text-[9.5px] font-semibold ${mismatchBadgeCls}`}>
+              {isDiscount ? 'DESC ' : isPremium ? 'PRIMA ' : ''}
+              {cclMismatchPct >= 0 ? '+' : ''}
+              {fmtNum(cclMismatchPct, 2)}%
+              {Number.isFinite(cclMismatchArs)
+                ? ` (${cclMismatchArs >= 0 ? '+' : '-'}$ ${fmtNum(Math.abs(cclMismatchArs), 0)})`
+                : ''}
+            </span>
+          </div>
+        ) : (
+          <div className="text-[10px] text-[#787B86]">—</div>
+        )}
+      </div>
+
+      <div className="px-2.5">
+        {Number.isFinite(row.iv30d) ? (
+          <div className="inline-flex items-center gap-1">
+            <span className="text-[#E5E7EB] font-semibold">{fmtNum(row.iv30d, 1)} %</span>
+            {row.ivSource !== 'NONE' && (
+              <span className="text-[9px] px-1 py-0.2 rounded bg-[#181C27] text-[#9CA3AF] border border-[#232733]">
+                {row.ivSource === 'OPRA_IV' ? 'IV' : 'RV30'}
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="text-[#787B86]">—</span>
+        )}
+      </div>
+
+      <div className="px-2.5">
+        {Number.isFinite(row.volMultiple) ? (
+          <span
+            className={`text-[11.5px] font-semibold ${
+              row.volMultiple >= 1.5
+                ? 'text-[#A78BFA]'
+                : row.volMultiple >= 1.2
+                  ? 'text-[#2EDC7E]'
+                  : 'text-[#9CA3AF]'
+            }`}
+          >
+            {fmtNum(row.volMultiple, 1)}×
+          </span>
+        ) : (
+          <span className="text-[#787B86]">—</span>
+        )}
+      </div>
+
+      <div className="px-3.5 text-left font-sans text-[11.5px] truncate">
+        <div className="flex items-center gap-1 truncate">
+          {row.hasUsOptions && (
+            <span className="px-1.5 py-0.2 rounded bg-[#3B82F6]/15 text-[#60A5FA] text-[9.5px] font-semibold font-mono-num shrink-0">
+              OPRA
+            </span>
+          )}
+          {row.hasBymaOptions && (
+            <span className="px-1.5 py-0.2 rounded bg-[#2EDC7E]/15 text-[#2EDC7E] text-[9.5px] font-semibold font-mono-num shrink-0">
+              BYMA OPC
+            </span>
+          )}
+          <span
+            className={`truncate ${
+              isDiscount
+                ? 'text-[#2EDC7E] font-semibold'
+                : isPremium
+                  ? 'text-[#F5B544] font-semibold'
+                  : 'text-[#9CA3AF]'
+            }`}
+          >
+            {row.arbitrageSignal || '—'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const VirtualizedCedearsTable: React.FC<{
+  readonly rows: readonly CedearAdrDisplayRow[];
+  readonly cclMedian: number | null;
+  readonly density: 'densa' | 'normal' | 'comoda';
+  readonly onSelectStock: (ticker: string) => void;
+  readonly onOpenOrderTicket: (preset: {
+    ticker: string;
+    side: 'Compra' | 'Venta';
+    price: number;
+    qty: number;
+    instrumentLabel: string;
+  }) => void;
+}> = memo(({ rows, cclMedian, density, onSelectStock, onOpenOrderTicket }) => {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const rowsByKeyRef = useRef<ReadonlyMap<string, CedearAdrDisplayRow>>(new Map());
+  rowsByKeyRef.current = useMemo(() => new Map(rows.map((r) => [r.key, r])), [rows]);
+  const onSelectStockRef = useRef(onSelectStock);
+  onSelectStockRef.current = onSelectStock;
+  const onOpenTicketRef = useRef(onOpenOrderTicket);
+  onOpenTicketRef.current = onOpenOrderTicket;
+
+  const rowHeightPx = 48;
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => rowHeightPx,
+    overscan: 6,
+    getItemKey: (idx) => rows[idx]?.key ?? idx,
+  });
+
+  const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const detailBtn = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-action="detail"]');
+    if (detailBtn) {
+      e.stopPropagation();
+      const sym = detailBtn.dataset['ticker'];
+      if (sym) onSelectStockRef.current(sym);
+      return;
+    }
+    const rowEl = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
+    const key = rowEl?.dataset['id'];
+    if (!key) return;
+    const item = rowsByKeyRef.current.get(key);
+    if (!item) return;
+    const livePrice = Number(rowEl?.dataset['price']);
+    const ticketPx = Number.isFinite(livePrice) && livePrice > 0
+      ? livePrice
+      : Number.isFinite(item.localArs)
+        ? item.localArs
+        : 0;
+    onOpenTicketRef.current({
+      ticker: item.ticker,
+      side: 'Compra',
+      price: ticketPx,
+      qty: 10,
+      instrumentLabel:
+        item.kind === 'ADR'
+          ? `${item.ticker} BYMA (ADR ${item.usTicker} · ${item.ratioStr})`
+          : `CEDEAR ${item.name} (Ratio ${item.ratioStr})`,
+    });
+  }, []);
+
+  return (
+    <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[580px]">
+      <div className="min-w-[1105px]">
+        <div
+          className={`${CEDEAR_GRID_CLASS} sticky top-0 z-10 bg-[#0B0E14] border-b border-[#1E1E2B] text-right text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]`}
+        >
+          <div className="py-2.5 px-3.5 text-left">Ticker / Subyacente</div>
+          <div className="py-2.5 px-2 text-left">Tipo / Sector</div>
+          <div className="py-2.5 px-2.5">NYSE (USD)</div>
+          <div className="py-2.5 px-2.5">Var. USD</div>
+          <div className="py-2.5 px-2.5">Ratio</div>
+          <div className="py-2.5 px-2.5">Local BYMA (ARS)</div>
+          <div className="py-2.5 px-2.5">CCL Implícito &amp; Desfase ARS</div>
+          <div className="py-2.5 px-2.5">VI 30d</div>
+          <div className="py-2.5 px-2.5">Vol. Relativo</div>
+          <div className="py-2.5 px-3.5 text-left">Señal Arbitraje / Opciones</div>
+        </div>
+        {rows.length === 0 ? (
+          <div className="py-8 text-center font-sans text-[12px] text-[#787B86]">
+            Sin instrumentos para el filtro seleccionado.
+          </div>
+        ) : (
+          <div
+            onClick={handleContainerClick}
+            className="relative w-full"
+            style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const r = rows[virtualRow.index];
+              if (!r) return null;
+              return (
+                <div
+                  key={virtualRow.key}
+                  className="perf-virtual-row absolute left-0 top-0 w-full"
+                  style={{
+                    height: `${String(rowHeightPx)}px`,
+                    transform: `translateY(${String(virtualRow.start)}px)`,
+                  }}
+                >
+                  <CedearVirtualRow
+                    row={r}
+                    cclMedian={cclMedian}
+                    compact={density === 'densa'}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
 
 const EquitySixPanelsGrid: React.FC<{
   readonly mode: 'AR' | 'US';
@@ -401,11 +979,11 @@ const EquitySixPanelsGrid: React.FC<{
   onSelectRow,
   denseRowClass = 'h-8 text-[12px]',
 }) => {
-  const liveStream = useMarketLiveStream();
+  const liveQuoteTick = useThrottledMarketQuotesTick(250);
   const rows = useMemo(
     () =>
       inputRows.map((row) => {
-        const live = getMarketLiveQuote(liveStream, mode, row.symbol);
+        const live = getAtomicMarketQuote(mode, row.symbol);
         if (live === null) return row;
         const dayLow = live.dayLow ?? row.dayLow;
         const dayHigh = live.dayHigh ?? row.dayHigh;
@@ -426,7 +1004,7 @@ const EquitySixPanelsGrid: React.FC<{
           extendedChangePct: mode === 'US' ? (live.extendedChangePct ?? row.extendedChangePct ?? null) : null,
         };
       }),
-    [inputRows, liveStream, mode],
+    [inputRows, liveQuoteTick, mode],
   );
   const [selectedSector, setSelectedSector] = useState<string>('Todos');
   const [restSearch, setRestSearch] = useState<string>('');
@@ -538,39 +1116,14 @@ const EquitySixPanelsGrid: React.FC<{
     return `${currencyPrefix}${fmtNum(m, 1)}M`;
   };
 
-  const renderPanelTable = (list: readonly NormalizedPanelRow[], maxHeightClass?: string) => (
-    <div className={`overflow-x-auto ${maxHeightClass ?? ''}`}>
-      <table className="w-full border-collapse text-right">
-        <thead className="sticky top-0 bg-[#0D0D14] z-10">
-          <tr className="border-b border-[#1E1E2B] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
-            <th className="py-2 px-3 text-left">papel</th>
-            <th className="py-2 px-2.5">precio</th>
-            <th className="py-2 px-2.5">var</th>
-            <th className="py-2 px-2.5">operado</th>
-            <th className="py-2 px-3">rango del día</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[#1A1A26] font-mono-num">
-          {list.length === 0 ? (
-            <tr>
-              <td colSpan={5} className="py-6 text-center text-[12px] text-[#787B86] font-sans">
-                Sin especies coincidentes en esta selección.
-              </td>
-            </tr>
-          ) : (
-            list.map((r) => (
-              <PanelTableRow
-                key={r.symbol}
-                row={r}
-                denseRowClass={denseRowClass}
-                currencyPrefix={currencyPrefix}
-                onSelectRow={onSelectRow}
-              />
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
+  const renderPanelTable = (list: readonly NormalizedPanelRow[]) => (
+    <VirtualizedEquityPanelTable
+      mode={mode}
+      list={list}
+      denseRowClass={denseRowClass}
+      currencyPrefix={currencyPrefix}
+      onSelectRow={onSelectRow}
+    />
   );
 
   return (
@@ -621,7 +1174,7 @@ const EquitySixPanelsGrid: React.FC<{
               <span className="text-[#FF5468] font-semibold">{leaderStats.dec} bajan</span>
             </div>
           </div>
-          {renderPanelTable(leaderRows, 'max-h-[520px] overflow-y-auto')}
+          {renderPanelTable(leaderRows)}
         </div>
 
         <div className="xl:col-span-6 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden flex flex-col">
@@ -644,7 +1197,7 @@ const EquitySixPanelsGrid: React.FC<{
               className="px-2.5 py-1 rounded-[7px] bg-[#08080D] border border-[#242436] text-[11.5px] text-[#F3F4F6] placeholder:text-[#6D6D84] outline-none focus:border-[#8B7CF6] w-44"
             />
           </div>
-          {renderPanelTable(restRows, 'max-h-[520px] overflow-y-auto')}
+          {renderPanelTable(restRows)}
         </div>
       </div>
 
@@ -662,7 +1215,7 @@ const EquitySixPanelsGrid: React.FC<{
                   key={h}
                   type="button"
                   onClick={() => setRankHorizon(h)}
-                  className={`px-2.5 py-1 rounded-[5px] text-[11px] font-semibold cursor-pointer transition-colors ${
+                  className={`px-2.5 py-1 rounded-[5px] text-[11px] font-semibold cursor-pointer ${
                     rankHorizon === h
                       ? 'bg-[#8B7CF6] text-white'
                       : 'text-[#8E90A6] hover:text-[#F3F4F6]'
@@ -674,47 +1227,12 @@ const EquitySixPanelsGrid: React.FC<{
             </div>
           </div>
 
-          <div className="space-y-1.5 max-h-[380px] overflow-y-auto pr-1">
-            {rankedRows.length === 0 ? (
-              <div className="py-10 text-center text-[12px] text-[#6D6D84]">
-                Sin datos cerrados suficientes para {rankHorizon} — sin fallback.
-              </div>
-            ) : (
-              rankedRows.map(({ row, val }) => {
-                const pos = val >= 0;
-                const widthPct = Math.max(4, Math.min(100, (Math.abs(val) / maxAbsRank) * 100));
-                return (
-                  <button
-                    key={row.symbol}
-                    type="button"
-                    onClick={() => onSelectRow(row.symbol)}
-                    className="w-full flex items-center gap-2.5 px-2 py-1 rounded-[6px] hover:bg-[#171724] text-left cursor-pointer transition-colors"
-                  >
-                    <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
-                    <span className="w-14 font-mono-num text-[11.5px] font-bold text-[#F3F4F6] shrink-0">
-                      {row.symbol}
-                    </span>
-                    <div className="flex-1 h-2 rounded-full bg-[#181824] overflow-hidden">
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${widthPct}%`,
-                          backgroundColor: pos ? '#2EDC7E' : '#FF5468',
-                        }}
-                      />
-                    </div>
-                    <span
-                      className={`w-16 text-right font-mono-num text-[11.5px] font-semibold shrink-0 ${
-                        pos ? 'text-[#2EDC7E]' : 'text-[#FF5468]'
-                      }`}
-                    >
-                      {fmtPct(val, 2)}
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
+          <VirtualizedRankingList
+            rankedRows={rankedRows}
+            maxAbsRank={maxAbsRank}
+            rankHorizon={rankHorizon}
+            onSelectRow={onSelectRow}
+          />
         </div>
 
         <div className="xl:col-span-7 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden flex flex-col">
@@ -728,30 +1246,11 @@ const EquitySixPanelsGrid: React.FC<{
             </div>
             <span className="text-[11px] font-mono-num text-[#6D6D84]">Benchmark: {benchmarkLabel}</span>
           </div>
-          <div className="overflow-x-auto max-h-[395px] overflow-y-auto">
-            <table className="w-full border-collapse text-right">
-              <thead className="sticky top-0 bg-[#0D0D14] z-10">
-                <tr className="border-b border-[#1E1E2B] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
-                  <th className="py-2 px-3 text-left">papel</th>
-                  <th className="py-2 px-2.5">volatilidad</th>
-                  <th className="py-2 px-2.5">beta</th>
-                  <th className="py-2 px-2.5">mes</th>
-                  <th className="py-2 px-2.5">año</th>
-                  <th className="py-2 px-3">promedio 40</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#1A1A26] font-mono-num text-[12px]">
-                {riskRows.map((r) => (
-                  <RiskTableRow
-                    key={r.symbol}
-                    row={r}
-                    currencyPrefix={currencyPrefix}
-                    onSelectRow={onSelectRow}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <VirtualizedRiskTable
+            riskRows={riskRows}
+            currencyPrefix={currencyPrefix}
+            onSelectRow={onSelectRow}
+          />
         </div>
       </div>
 
@@ -1016,11 +1515,13 @@ export const HomeDashboard: React.FC<{
   }) => void;
 }> = ({ onSelectStock, onNavigate }) => {
   const liveMarket = useLiveMarketState();
-  const liveStream = useMarketLiveStream();
+  const streamMeta = useMarketStreamMeta(500);
+  const quoteTick = useThrottledMarketQuotesTick(250);
+  const liveClock = streamMeta.isFresh ? getMarketStreamMetaClock(streamMeta) : null;
   const liveLeaderStocks = useMemo(
     () =>
       AR_STOCKS.map((stock) => {
-        const quote = getMarketLiveQuote(liveStream, 'AR', stock.ticker);
+        const quote = getAtomicMarketQuote('AR', stock.ticker);
         return quote === null
           ? stock
           : {
@@ -1032,12 +1533,12 @@ export const HomeDashboard: React.FC<{
               volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : stock.volumeM,
             };
       }),
-    [liveStream],
+    [quoteTick],
   );
   const liveGeneralStocks = useMemo(
     () =>
       AR_GENERAL_PANEL_STOCKS.map((stock) => {
-        const quote = getMarketLiveQuote(liveStream, 'AR', stock.ticker);
+        const quote = getAtomicMarketQuote('AR', stock.ticker);
         return quote === null
           ? stock
           : {
@@ -1049,17 +1550,17 @@ export const HomeDashboard: React.FC<{
               volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : stock.volumeM,
             };
       }),
-    [liveStream],
+    [quoteTick],
   );
-  const liveStreamFresh = isMarketLiveStreamFresh(liveStream);
+  const liveStreamFresh = streamMeta.isFresh;
   const cclMedian =
-    (liveStreamFresh ? liveStream.cclMedian : null) ??
+    (liveStreamFresh ? streamMeta.cclMedian : null) ??
     liveMarket.overview?.cclMedian ??
     liveMarket.macro?.variables.ccl ??
     GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.value ??
     null;
   const mepMedian =
-    (liveStreamFresh ? liveStream.mepMedian : null) ??
+    (liveStreamFresh ? streamMeta.mepMedian : null) ??
     liveMarket.overview?.mepMedian ??
     liveMarket.macro?.variables.mep ??
     null;
@@ -1072,7 +1573,7 @@ export const HomeDashboard: React.FC<{
       ? ((cclMedian / mepMedian) - 1) * 100
       : null;
   const canjeGapPct =
-    liveStreamFresh && liveStream.cclMedian !== null
+    liveStreamFresh && streamMeta.cclMedian !== null
       ? computedCanjePct
       : liveMarket.overview?.mepCclGapPct ??
         liveMarket.macro?.variables.canjePct ??
@@ -1120,7 +1621,7 @@ export const HomeDashboard: React.FC<{
   return (
     <div className="space-y-4 animate-module">
       <InsightBanner variant={Number.isFinite(avgDelta) && avgDelta < 0 ? 'neg' : 'pos'} tag="Resumen de Rueda">
-        <RealTimeBadge clock={getMarketLiveClock(liveStream)} />{' '}
+        <RealTimeBadge clock={liveClock} />{' '}
         Panel Líder BYMA promedio{' '}
         <strong className="text-[var(--text-primary)] font-mono-num">{fmtPct(avgDelta, 2)}</strong> ({advCount} en alza ·{' '}
         {decCount} en baja) · Dólar CCL implícito:{' '}
@@ -1249,7 +1750,9 @@ export const MonitoringModule: React.FC<{
   }) => void;
 }> = ({ subPanel, onSelectSubPanel, density, tickFlashes, onSelectStock, onOpenOrderTicket }) => {
   const liveMarket = useLiveMarketState();
-  const liveStream = useMarketLiveStream();
+  const streamMeta = useMarketStreamMeta(500);
+  const quoteTick = useThrottledMarketQuotesTick(250);
+  const liveClock = streamMeta.isFresh ? getMarketStreamMetaClock(streamMeta) : null;
 
   useEffect(() => {
     void requestMonitoringPanel(subPanel);
@@ -1286,8 +1789,9 @@ export const MonitoringModule: React.FC<{
       })
     | null;
 
-  const liveStreamFresh = isMarketLiveStreamFresh(liveStream);
-  const streamedCauciones: readonly ArCaucionRowExt[] = liveStreamFresh ? liveStream.cauciones.map((row) => ({
+  const liveStreamFresh = streamMeta.isFresh;
+  const rawStreamCauciones = liveStreamFresh ? getMarketLiveCauciones() : [];
+  const streamedCauciones: readonly ArCaucionRowExt[] = rawStreamCauciones.map((row) => ({
     termDays: row.termDays,
     label: `${String(row.termDays)} días`,
     currency: row.currency,
@@ -1300,18 +1804,18 @@ export const MonitoringModule: React.FC<{
     referenceInstrument: row.referenceInstrument,
     originLabel: row.source === 'PRIMARY_ECO_WS' ? 'Eco Primary XOMS en vivo' : row.source === 'BMB_HOMEBROKER' ? 'BMB HomeBroker en vivo' : row.source === 'IOL_REST' ? 'IOL REST v2 en vivo' : 'Referencia BCRA / LECAP',
     source: row.source,
-  })) : [];
+  }));
   const liveCauciones: readonly ArCaucionRowExt[] =
-    liveStreamFresh && liveStream.arSourceMode === 'NO_DATA'
+    liveStreamFresh && streamMeta.arSourceMode === 'NO_DATA'
       ? []
       : streamedCauciones.length > 0
         ? streamedCauciones
         : monitoringExt?.cauciones ?? [];
   const caucionesStatus =
-    liveStreamFresh && liveStream.arSourceMode === 'NO_DATA'
+    liveStreamFresh && streamMeta.arSourceMode === 'NO_DATA'
       ? 'NO_DATA'
-      : liveStreamFresh && (liveStream.arSourceMode === 'LIVE_PRIMARY' || liveStream.arSourceMode === 'LIVE_BMB' || liveStream.arSourceMode === 'LIVE_IOL') && streamedCauciones.length > 0
-        ? liveStream.arSourceMode
+      : liveStreamFresh && (streamMeta.arSourceMode === 'LIVE_PRIMARY' || streamMeta.arSourceMode === 'LIVE_BMB' || streamMeta.arSourceMode === 'LIVE_IOL') && streamedCauciones.length > 0
+        ? streamMeta.arSourceMode
         : monitoringExt?.caucionesStatus ?? 'NO_DATA';
   const bmbHealth = monitoringExt?.bmbHealth;
   const totalCaucionVol = liveCauciones.reduce(
@@ -1319,34 +1823,9 @@ export const MonitoringModule: React.FC<{
     0,
   );
   const caucionesCount = liveCauciones.length > 0 ? liveCauciones.length : CAUCIONES_DATA.length;
-  const cclMedian = (liveStreamFresh ? liveStream.cclMedian : null) ?? liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
+  const cclMedian = (liveStreamFresh ? streamMeta.cclMedian : null) ?? liveMarket.monitoring?.cclMedian ?? liveMarket.overview?.cclMedian ?? null;
   const [cedearFilterMode, setCedearFilterMode] = useState<'all' | 'mispriced' | 'byma_opts' | 'adrs'>('all');
   const [cedearSearch, setCedearSearch] = useState<string>('');
-
-  interface CedearAdrDisplayRow {
-    readonly key: string;
-    readonly kind: 'CEDEAR' | 'ADR';
-    readonly ticker: string;
-    readonly usTicker: string;
-    readonly name: string;
-    readonly sector: string;
-    readonly color: string;
-    readonly usLast: number;
-    readonly usDeltaPct: number;
-    readonly ratioStr: string;
-    readonly ratioNum: number;
-    readonly localArs: number;
-    readonly fairArsPrice: number;
-    readonly cclImplicit: number;
-    readonly cclMismatchPct: number;
-    readonly cclMismatchArs: number;
-    readonly iv30d: number;
-    readonly ivSource: 'OPRA_IV' | 'MASSIVE_RV30D' | 'NONE';
-    readonly volMultiple: number;
-    readonly hasUsOptions: boolean;
-    readonly hasBymaOptions: boolean;
-    readonly arbitrageSignal: string;
-  }
 
   const combinedCedearsAndAdrs: readonly CedearAdrDisplayRow[] = useMemo(() => {
     const usMetaMap = new Map(US_MARKET_DATA.map((u) => [u.ticker.toUpperCase(), u]));
@@ -1571,8 +2050,8 @@ export const MonitoringModule: React.FC<{
           }));
 
     return [...adrRows, ...cedearRows].map((row) => {
-      const usQuote = getMarketLiveQuote(liveStream, 'US', row.usTicker);
-      const arQuote = getMarketLiveQuote(liveStream, 'AR', row.ticker);
+      const usQuote = getAtomicMarketQuote('US', row.usTicker);
+      const arQuote = getAtomicMarketQuote('AR', row.ticker);
       const usLast = usQuote?.price ?? row.usLast;
       const localArs = arQuote?.price ?? row.localArs;
       const fairArsPrice =
@@ -1598,7 +2077,7 @@ export const MonitoringModule: React.FC<{
           Number.isFinite(localArs) && Number.isFinite(fairArsPrice) ? localArs - fairArsPrice : Number.NaN,
       };
     });
-  }, [liveMarket.monitoring?.cedears, liveMarket.monitoring?.stocks, cclMedian, liveMarket.version, liveStream]);
+  }, [liveMarket.monitoring?.cedears, liveMarket.monitoring?.stocks, cclMedian, liveMarket.version, quoteTick]);
 
   const cedearRadarSummary = useMemo(() => {
     const discounts = [...combinedCedearsAndAdrs]
@@ -1664,7 +2143,7 @@ export const MonitoringModule: React.FC<{
   ];
 
   const monitorBonds = BONDS_DATA.map((bond) => {
-    const quote = getMarketLiveQuote(liveStream, 'AR', bond.ticker);
+    const quote = getAtomicMarketQuote('AR', bond.ticker);
     return quote === null
       ? bond
       : {
@@ -1676,7 +2155,7 @@ export const MonitoringModule: React.FC<{
   });
 
   const stockDeltas = AR_STOCKS.map((s) => {
-    const live = getMarketLiveQuote(liveStream, 'AR', s.ticker);
+    const live = getAtomicMarketQuote('AR', s.ticker);
     return live?.changePct ?? s.deltaPct;
   }).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const medianStockDelta = stockDeltas.length > 0 ? stockDeltas[Math.floor(stockDeltas.length / 2)] : Number.NaN;
@@ -1734,7 +2213,7 @@ export const MonitoringModule: React.FC<{
 
   return (
     <div className="space-y-4 animate-module">
-      <RealTimeBadge clock={getMarketLiveClock(liveStream)} />
+      <RealTimeBadge clock={liveClock} />
       {/* Sub-navegación de Monitoreo */}
       <div className="qc-card p-4 flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2123,221 +2602,13 @@ export const MonitoringModule: React.FC<{
               />
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-right">
-                <thead>
-                  <tr className="bg-[#0B0E14] border-b border-[#1E1E2B] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]">
-                    <th className="py-2.5 px-3.5 text-left">Ticker / Subyacente</th>
-                    <th className="py-2.5 px-2 text-left">Tipo / Sector</th>
-                    <th className="py-2.5 px-2.5">NYSE (USD)</th>
-                    <th className="py-2.5 px-2.5">Var. USD</th>
-                    <th className="py-2.5 px-2.5">Ratio</th>
-                    <th className="py-2.5 px-2.5">Local BYMA (ARS)</th>
-                    <th className="py-2.5 px-2.5">CCL Implícito &amp; Desfase ARS</th>
-                    <th className="py-2.5 px-2.5">VI 30d</th>
-                    <th className="py-2.5 px-2.5">Vol. Relativo</th>
-                    <th className="py-2.5 px-3.5 text-left">Señal Arbitraje / Opciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#181824] font-mono-num">
-                  {filteredCedearsAndAdrs.length === 0 ? (
-                    <tr>
-                      <td colSpan={10} className="py-8 text-center font-sans text-[12px] text-[#787B86]">
-                        Sin instrumentos para el filtro seleccionado.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredCedearsAndAdrs.map((r) => {
-                      const hasMismatch = Number.isFinite(r.cclMismatchPct);
-                      const isDiscount = hasMismatch && r.cclMismatchPct <= -1.2;
-                      const isPremium = hasMismatch && r.cclMismatchPct >= 1.2;
-                      const mismatchBadgeCls = isDiscount
-                        ? 'text-[#2EDC7E] bg-[#2EDC7E]/12 border-[#2EDC7E]/30'
-                        : isPremium
-                        ? 'text-[#F5B544] bg-[#F5B544]/12 border-[#F5B544]/30'
-                        : 'text-[#9CA3AF] bg-[#1A1A26] border-[#262636]';
-
-                      return (
-                        <tr
-                          key={r.key}
-                          onClick={() =>
-                            onOpenOrderTicket({
-                              ticker: r.ticker,
-                              side: 'Compra',
-                              price: Number.isFinite(r.localArs) ? r.localArs : 0,
-                              qty: 10,
-                              instrumentLabel:
-                                r.kind === 'ADR'
-                                  ? `${r.ticker} BYMA (ADR ${r.usTicker} · ${r.ratioStr})`
-                                  : `CEDEAR ${r.name} (Ratio ${r.ratioStr})`,
-                            })
-                          }
-                          className={`${rowH} hover:bg-[#181C27] transition-colors cursor-pointer`}
-                        >
-                          <td className="px-3.5 text-left">
-                            <div className="flex items-center gap-2.5">
-                              <CompanyLogo
-                                ticker={r.usTicker || r.ticker}
-                                name={r.name}
-                                size={rowH.startsWith('h-8') ? 'xs' : 'sm'}
-                              />
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="font-bold text-[#F3F4F6] leading-tight">
-                                    {r.ticker}
-                                  </span>
-                                  {r.usTicker && r.usTicker !== r.ticker && (
-                                    <span className="text-[10px] text-[#787B86] font-mono-num">
-                                      ({r.usTicker})
-                                    </span>
-                                  )}
-                                  {r.kind === 'ADR' && (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onSelectStock(r.ticker);
-                                      }}
-                                      className="text-[9.5px] px-1.5 py-0.2 rounded bg-[#1F2637] text-[#60A5FA] hover:bg-[#2A334A] font-sans font-semibold cursor-pointer"
-                                    >
-                                      Ficha
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="text-[11px] font-sans text-[#787B86] truncate max-w-[165px]">
-                                  {r.name}
-                                </div>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-2 text-left font-sans">
-                            <div className="flex flex-col gap-0.5">
-                              <span
-                                className={`inline-flex w-fit px-1.5 py-0.2 rounded text-[9.5px] font-semibold ${
-                                  r.kind === 'ADR'
-                                    ? 'bg-[#2EDC7E]/15 text-[#2EDC7E]'
-                                    : 'bg-[#38BDF8]/12 text-[#38BDF8]'
-                                }`}
-                              >
-                                {r.kind === 'ADR' ? 'ADR BYMA' : 'CEDEAR'}
-                              </span>
-                              <span className="text-[10.5px] text-[#787B86] truncate max-w-[120px]">
-                                {r.sector}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-2.5 font-bold text-[#F3F4F6]">
-                            <TickFlash value={Number.isFinite(r.usLast) ? r.usLast : null}>
-                              {Number.isFinite(r.usLast) ? `US$ ${fmtNum(r.usLast, 2)}` : '—'}
-                            </TickFlash>
-                          </td>
-                          <td className="px-2.5">
-                            <DeltaPill value={r.usDeltaPct} size="sm" />
-                          </td>
-                          <td className="px-2.5 text-[#9CA3AF] text-[11px]">{r.ratioStr}</td>
-                          <td className="px-2.5">
-                            <TickFlash value={Number.isFinite(r.localArs) ? r.localArs : null}>
-                              <span className="block font-bold text-[#38BDF8]">
-                                {Number.isFinite(r.localArs) ? `$ ${fmtNum(r.localArs, 0)}` : '—'}
-                              </span>
-                            </TickFlash>
-                            {Number.isFinite(r.fairArsPrice) && (
-                              <div className="text-[10px] text-[#787B86]">
-                                Par: $ {fmtNum(r.fairArsPrice, 0)}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-2.5">
-                            <div className="font-semibold text-[#D1D4DC]">
-                              {Number.isFinite(r.cclImplicit)
-                                ? `$ ${fmtNum(r.cclImplicit, 2)}`
-                                : '—'}
-                            </div>
-                            {hasMismatch ? (
-                              <div className="mt-0.5 inline-flex items-center gap-1">
-                                <span
-                                  className={`px-1.5 py-0.2 rounded border text-[9.5px] font-semibold ${mismatchBadgeCls}`}
-                                >
-                                  {isDiscount ? 'DESC ' : isPremium ? 'PRIMA ' : ''}
-                                  {r.cclMismatchPct >= 0 ? '+' : ''}
-                                  {fmtNum(r.cclMismatchPct, 2)}%
-                                  {Number.isFinite(r.cclMismatchArs)
-                                    ? ` (${r.cclMismatchArs >= 0 ? '+' : '-'}$ ${fmtNum(
-                                        Math.abs(r.cclMismatchArs),
-                                        0,
-                                      )})`
-                                    : ''}
-                                </span>
-                              </div>
-                            ) : (
-                              <div className="text-[10px] text-[#787B86]">—</div>
-                            )}
-                          </td>
-                          <td className="px-2.5">
-                            {Number.isFinite(r.iv30d) ? (
-                              <div className="inline-flex items-center gap-1">
-                                <span className="text-[#E5E7EB] font-semibold">
-                                  {fmtNum(r.iv30d, 1)} %
-                                </span>
-                                {r.ivSource !== 'NONE' && (
-                                  <span className="text-[9px] px-1 py-0.2 rounded bg-[#181C27] text-[#9CA3AF] border border-[#232733]">
-                                    {r.ivSource === 'OPRA_IV' ? 'IV' : 'RV30'}
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-[#787B86]">—</span>
-                            )}
-                          </td>
-                          <td className="px-2.5">
-                            {Number.isFinite(r.volMultiple) ? (
-                              <span
-                                className={`text-[11.5px] font-semibold ${
-                                  r.volMultiple >= 1.5
-                                    ? 'text-[#A78BFA]'
-                                    : r.volMultiple >= 1.2
-                                    ? 'text-[#2EDC7E]'
-                                    : 'text-[#9CA3AF]'
-                                }`}
-                              >
-                                {fmtNum(r.volMultiple, 1)}×
-                              </span>
-                            ) : (
-                              <span className="text-[#787B86]">—</span>
-                            )}
-                          </td>
-                          <td className="px-3.5 text-left font-sans text-[11.5px]">
-                            <div className="flex flex-wrap items-center gap-1">
-                              {r.hasUsOptions && (
-                                <span className="px-1.5 py-0.2 rounded bg-[#3B82F6]/15 text-[#60A5FA] text-[9.5px] font-semibold font-mono-num">
-                                  OPRA
-                                </span>
-                              )}
-                              {r.hasBymaOptions && (
-                                <span className="px-1.5 py-0.2 rounded bg-[#2EDC7E]/15 text-[#2EDC7E] text-[9.5px] font-semibold font-mono-num">
-                                  BYMA OPC
-                                </span>
-                              )}
-                              <span
-                                className={
-                                  isDiscount
-                                    ? 'text-[#2EDC7E] font-semibold'
-                                    : isPremium
-                                    ? 'text-[#F5B544] font-semibold'
-                                    : 'text-[#9CA3AF]'
-                                }
-                              >
-                                {r.arbitrageSignal || '—'}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <VirtualizedCedearsTable
+              rows={filteredCedearsAndAdrs}
+              cclMedian={cclMedian}
+              density={density}
+              onSelectStock={onSelectStock}
+              onOpenOrderTicket={onOpenOrderTicket}
+            />
           </div>
         </div>
       )}
@@ -2660,10 +2931,10 @@ export const USMarketModule: React.FC<{
   }) => void;
 }> = ({ onOpenOrderTicket }) => {
   const liveMarket = useLiveMarketState();
-  const liveStream = useMarketLiveStream();
+  const streamMeta = useMarketStreamMeta(500);
+  const quoteTick = useThrottledMarketQuotesTick(250);
+  const liveClock = streamMeta.isFresh ? getMarketStreamMetaClock(streamMeta) : null;
   const [directUsPanelAnalytics, setDirectUsPanelAnalytics] = useState<EquityPanelAnalyticsDto | null>(null);
-  const [focusedUsSymbol, setFocusedUsSymbol] = useState<string | null>(null);
-  useMarketFocusSymbol(focusedUsSymbol);
   // Pieza 32: estado real de proveedores US (Massive WS/REST pool, Tradier Live, ORATS).
   const usProviders = useUsProvidersStatus();
   const prov = usProviders?.providers;
@@ -2778,7 +3049,7 @@ export const USMarketModule: React.FC<{
     return baseRows.map((base) => {
       const extra = analyticsRows.find((r) => r.symbol === base.symbol) ?? null;
       const uq = unifiedQuoteMap.get(base.symbol);
-      const live = getMarketLiveQuote(liveStream, 'US', base.symbol);
+      const live = getAtomicMarketQuote('US', base.symbol);
       const uqVolM =
         finiteOrNull(uq?.tradedVolumeUsd) !== null
           ? (uq!.tradedVolumeUsd as number) / 1_000_000
@@ -2829,14 +3100,13 @@ export const USMarketModule: React.FC<{
         extendedChangePct: live?.extendedChangePct ?? extra?.extendedChangePct ?? null,
       };
     });
-  }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version, liveStream]);
+  }, [usPanelAnalytics, spyUnifiedQuotes, liveMarket.version, quoteTick]);
 
   const handleSelectUsRow = (symbol: string) => {
     const row = usPanelRows.find((r) => r.symbol === symbol);
     if (!row) return;
-    setFocusedUsSymbol(symbol);
     const staticItem = staticMetaMap.get(symbol);
-    const live = getMarketLiveQuote(liveStream, 'US', symbol);
+    const live = getAtomicMarketQuote('US', symbol);
     const staticArsPrice = staticItem?.cedearArsPrice ?? Number.NaN;
     const price = Number.isFinite(staticArsPrice) ? staticArsPrice : live?.price ?? row.last;
     onOpenOrderTicket({
@@ -2853,7 +3123,7 @@ export const USMarketModule: React.FC<{
 
   const withLiveUsQuote = (item: (typeof US_MARKET_DATA)[number] | undefined) => {
     if (item === undefined) return undefined;
-    const live = getMarketLiveQuote(liveStream, 'US', item.ticker);
+    const live = getAtomicMarketQuote('US', item.ticker);
     if (live === null) {
       return {
         ...item,
@@ -2893,14 +3163,14 @@ export const USMarketModule: React.FC<{
     ust10y !== null && ust2y !== null && Number.isFinite(ust10y) && Number.isFinite(ust2y)
       ? Math.round((ust10y - ust2y) * 100)
       : null;
-  const liveVix = getMarketLiveQuote(liveStream, 'US', 'I:VIX');
+  const liveVix = getAtomicMarketQuote('US', 'I:VIX');
   const vixVal = liveVix?.price ?? spyCtx?.vixLevel ?? GLOBAL_INDICATORS.find((g) => g.id === 'vix')?.value ?? Number.NaN;
   const vixDelta = liveVix?.changePct ?? GLOBAL_INDICATORS.find((g) => g.id === 'vix')?.deltaPct;
 
   return (
     <div className="space-y-4 animate-module">
       <InsightBanner variant="default" tag="Wall Street en Vivo">
-        <RealTimeBadge clock={getMarketLiveClock(liveStream)} />{' '}
+        <RealTimeBadge clock={liveClock} />{' '}
         {spyExtBadge !== null && (
           <span className="inline-flex items-center rounded-full border border-[#F5B544]/35 bg-[#F5B544]/10 px-1.5 py-0.5 font-mono-num text-[9.5px] font-bold text-[#F5B544] mr-1">
             {spyExtBadge}

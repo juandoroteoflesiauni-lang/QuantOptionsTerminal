@@ -1,0 +1,525 @@
+{
+  "meta": {
+    "highWaterMark": 262144,
+    "lowWaterMark": 65536,
+    "killWaterMark": 4194304,
+    "maxMissedHeartbeats": 2,
+    "backpressureCloseCode": 1013
+  },
+  "extractUnderlying": [
+    {
+      "input": "O:SPY261218C00600000",
+      "expected": "SPY"
+    },
+    {
+      "input": "o:nvda261120p00140000",
+      "expected": "NVDA"
+    },
+    {
+      "input": "GGAL261218C00055000",
+      "expected": "GGAL"
+    },
+    {
+      "input": "BRK.B261218C00450000",
+      "expected": "BRK.B"
+    },
+    {
+      "input": "O:AAPL270115P00220000",
+      "expected": "AAPL"
+    },
+    {
+      "input": "SPY",
+      "expected": null
+    },
+    {
+      "input": "O:123456C00100000",
+      "expected": null
+    },
+    {
+      "input": "",
+      "expected": null
+    }
+  ],
+  "optionEmitCases": [
+    {
+      "view": "stock_detail",
+      "focusSymbol": "NVDA",
+      "underlying": "NVDA",
+      "expected": false
+    },
+    {
+      "view": "ggal_specialist",
+      "focusSymbol": "GGAL",
+      "underlying": "GGAL",
+      "expected": false
+    },
+    {
+      "view": "monitoring",
+      "focusSymbol": null,
+      "underlying": "SPY",
+      "expected": false
+    },
+    {
+      "view": "options",
+      "focusSymbol": "NVDA",
+      "underlying": "NVDA",
+      "expected": true
+    },
+    {
+      "view": "options",
+      "focusSymbol": "NVDA",
+      "underlying": "SPY",
+      "expected": false
+    },
+    {
+      "view": "options",
+      "focusSymbol": null,
+      "underlying": "NVDA",
+      "expected": false
+    },
+    {
+      "view": null,
+      "focusSymbol": "NVDA",
+      "underlying": "NVDA",
+      "expected": false
+    }
+  ],
+  "l2ScopeCases": [
+    {
+      "view": "ggal_specialist",
+      "focusSymbol": "NVDA",
+      "expected": "GGAL"
+    },
+    {
+      "view": "stock_detail",
+      "focusSymbol": "YPFD",
+      "expected": "YPFD"
+    },
+    {
+      "view": "stock_detail",
+      "focusSymbol": null,
+      "expected": null
+    },
+    {
+      "view": "options",
+      "focusSymbol": "GGAL",
+      "expected": null
+    },
+    {
+      "view": "monitoring",
+      "focusSymbol": "GGAL",
+      "expected": null
+    },
+    {
+      "view": null,
+      "focusSymbol": "GGAL",
+      "expected": null
+    }
+  ],
+  "backpressureCases": [
+    {
+      "bufferedAmount": 0,
+      "currentlyConflating": false,
+      "expected": {
+        "action": "SEND",
+        "nextConflating": false
+      }
+    },
+    {
+      "bufferedAmount": 65536,
+      "currentlyConflating": true,
+      "expected": {
+        "action": "SEND",
+        "nextConflating": false
+      }
+    },
+    {
+      "bufferedAmount": 65537,
+      "currentlyConflating": true,
+      "expected": {
+        "action": "COALESCE",
+        "nextConflating": true
+      }
+    },
+    {
+      "bufferedAmount": 262144,
+      "currentlyConflating": false,
+      "expected": {
+        "action": "SEND",
+        "nextConflating": false
+      }
+    },
+    {
+      "bufferedAmount": 262145,
+      "currentlyConflating": false,
+      "expected": {
+        "action": "COALESCE",
+        "nextConflating": true
+      }
+    },
+    {
+      "bufferedAmount": 4194304,
+      "currentlyConflating": true,
+      "expected": {
+        "action": "COALESCE",
+        "nextConflating": true
+      }
+    },
+    {
+      "bufferedAmount": 4194305,
+      "currentlyConflating": false,
+      "expected": {
+        "action": "KILL",
+        "nextConflating": true
+      }
+    },
+    {
+      "bufferedAmount": 4194305,
+      "currentlyConflating": true,
+      "expected": {
+        "action": "KILL",
+        "nextConflating": true
+      }
+    }
+  ],
+  "heartbeatSequence": [
+    {
+      "pongReceived": true,
+      "consecutiveMissed": 0,
+      "expected": {
+        "action": "PING",
+        "nextMissed": 0
+      }
+    },
+    {
+      "pongReceived": false,
+      "consecutiveMissed": 0,
+      "expected": {
+        "action": "PING",
+        "nextMissed": 1
+      }
+    },
+    {
+      "pongReceived": true,
+      "consecutiveMissed": 1,
+      "expected": {
+        "action": "PING",
+        "nextMissed": 0
+      }
+    },
+    {
+      "pongReceived": false,
+      "consecutiveMissed": 0,
+      "expected": {
+        "action": "PING",
+        "nextMissed": 1
+      }
+    },
+    {
+      "pongReceived": false,
+      "consecutiveMissed": 1,
+      "expected": {
+        "action": "TERMINATE",
+        "nextMissed": 2
+      }
+    }
+  ],
+  "marketQuoteDiffCases": [
+    {
+      "name": "initial_none",
+      "prev": null,
+      "next": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "expected": true
+    },
+    {
+      "name": "identical",
+      "prev": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "next": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "expected": false
+    },
+    {
+      "name": "price_changed",
+      "prev": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "next": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.55,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "expected": true
+    },
+    {
+      "name": "timestamp_only_changed",
+      "prev": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "next": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580681,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "expected": true
+    },
+    {
+      "name": "phase_changed",
+      "prev": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "RTH",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "next": {
+        "market": "US",
+        "symbol": "NVDA",
+        "price": 142.5,
+        "previousClose": 140.0,
+        "changePct": 1.7857,
+        "dayLow": 139.5,
+        "dayHigh": 143.1,
+        "volume": 1200000,
+        "turnover": 171000000,
+        "asOfUtcSec": 1794580680,
+        "source": "TRADIER_WS",
+        "settlement": null,
+        "sessionPhase": "AFTER_HOURS",
+        "extendedPrice": null,
+        "extendedChangePct": null,
+        "regularClose": 140.0
+      },
+      "expected": true
+    }
+  ],
+  "optionQuoteDiffCases": [
+    {
+      "name": "initial_none",
+      "prev": null,
+      "next": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "expected": true
+    },
+    {
+      "name": "identical",
+      "prev": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "next": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "expected": false
+    },
+    {
+      "name": "time_only_unchanged_quote",
+      "prev": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "next": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580690,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "expected": false
+    },
+    {
+      "name": "bid_changed",
+      "prev": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "next": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.25,
+        "ask": 5.4,
+        "mid": 5.325,
+        "last": 5.35,
+        "size": 10
+      },
+      "expected": true
+    },
+    {
+      "name": "last_trade_changed",
+      "prev": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.35,
+        "size": 10
+      },
+      "next": {
+        "symbol": "O:NVDA261120C00140000",
+        "underlying": "NVDA",
+        "time": 1794580680,
+        "bid": 5.2,
+        "ask": 5.4,
+        "mid": 5.3,
+        "last": 5.4,
+        "size": 25
+      },
+      "expected": true
+    }
+  ]
+}

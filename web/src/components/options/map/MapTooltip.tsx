@@ -50,7 +50,7 @@ export const MapTooltip: React.FC<{
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.98 }}
           transition={{ duration: 0.16, ease: FX_EASE }}
-          className="pointer-events-none absolute z-20 bg-[#121620]/95 backdrop-blur-md border border-white/10 p-2.5 rounded-lg shadow-2xl text-[12px] leading-[18px] whitespace-nowrap"
+          className="pointer-events-none absolute z-20 bg-[rgba(13,17,23,0.94)] border border-white/10 p-2.5 rounded-lg shadow-2xl text-[12px] leading-[18px] whitespace-nowrap"
           style={{
             left: `${(p.x / geo.W) * 100}%`,
             top: `${(p.y / geo.H) * 100}%`,

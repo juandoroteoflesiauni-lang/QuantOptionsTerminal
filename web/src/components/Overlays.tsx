@@ -62,7 +62,7 @@ export const OrderTicketDrawer: React.FC<{
   const totalAmount = side === 'Compra' ? grossAmount + fees : grossAmount - fees;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/55 backdrop-blur-[2px]">
+    <div className="fixed inset-0 z-50 flex justify-end bg-[rgba(13,17,23,0.92)]">
       <div
         className="w-full max-w-[380px] h-full bg-[var(--bg-sidebar)] border-l border-[var(--border-strong)] p-5 flex flex-col justify-between overflow-y-auto"
         style={{ boxShadow: 'var(--elev-3)' }}
@@ -320,7 +320,7 @@ export const CommandPaletteModal: React.FC<{
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4 bg-black/65 backdrop-blur-[4px]"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4 bg-[rgba(13,17,23,0.92)]"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -456,7 +456,7 @@ export const ShortcutsModal: React.FC<{ open: boolean; onClose: () => void }> = 
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-[3px]"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[rgba(13,17,23,0.92)]"
     >
       <div
         onClick={(e) => e.stopPropagation()}

@@ -213,6 +213,11 @@ import {
   GgalTickStreamEngine,
 } from './ggalTickStream.js';
 import {
+  extractOptionUnderlying,
+  hasOptionQuoteChanged,
+  type LiveOptionQuoteSnapshot,
+} from './wsViewScopeBackpressure.js';
+import {
   deepHistoryFromUtcSec,
   GGAL_DEEP_HISTORY_MAX_BARS,
   GgalAdrDeepHistoryStore,
@@ -3883,6 +3888,7 @@ export class MarketRuntime {
     }
   >();
   private readonly subscribedOptionContracts = new Set<string>();
+  private readonly liveOptionQuotes = new Map<string, LiveOptionQuoteSnapshot>();
   private readonly wsListeners = new Set<(event: RuntimeWsBroadcast) => void>();
   private readonly wheelHistoryBySymbol = new Map<string, WheelSnapshotInput[]>();
   private readonly usPriorSmileCache = new Map<
@@ -5364,6 +5370,7 @@ export class MarketRuntime {
       this.optionsWsClient = null;
     }
     this.subscribedOptionContracts.clear();
+    this.liveOptionQuotes.clear();
   }
 
   private async ensureOptionQuoteSubscriptions(contractTickers: readonly string[]): Promise<void> {
@@ -5578,6 +5585,24 @@ export class MarketRuntime {
     }
   }
 
+  public getLiveOptionQuotes(underlying?: string): readonly LiveOptionQuoteSnapshot[] {
+    if (underlying === undefined || underlying.trim() === '') {
+      return [...this.liveOptionQuotes.values()];
+    }
+    const target = underlying.trim().toUpperCase();
+    const out: LiveOptionQuoteSnapshot[] = [];
+    for (const quote of this.liveOptionQuotes.values()) {
+      if (quote.underlying === target) {
+        out.push(quote);
+      }
+    }
+    return out;
+  }
+
+  public getLiveOptionQuoteSnapshot(symbol: string): LiveOptionQuoteSnapshot | undefined {
+    return this.liveOptionQuotes.get(symbol.trim().toUpperCase());
+  }
+
   private handleOptionWsEvents(events: readonly WsNormalizedEvent[]): void {
     const serverTimeSec = Math.floor(this.nowMsFn() / 1_000);
     for (const ev of events) {
@@ -5590,6 +5615,22 @@ export class MarketRuntime {
           time: serverTimeSec,
         });
       } else if (ev.ev === 'T') {
+        const key = ev.sym.trim().toUpperCase();
+        const prev = this.liveOptionQuotes.get(key);
+        const underlying = prev?.underlying ?? extractOptionUnderlying(key) ?? '';
+        const last = sanitizeFinite(ev.price);
+        const size = sanitizeFinite(ev.size);
+        const next: LiveOptionQuoteSnapshot = {
+          symbol: key,
+          underlying,
+          time: ev.timeSec,
+          bid: prev?.bid ?? null,
+          ask: prev?.ask ?? null,
+          mid: prev?.mid ?? null,
+          last,
+          size,
+        };
+        this.liveOptionQuotes.set(key, next);
         this.emitBroadcast({
           type: 'trade',
           cluster: 'options',
@@ -5599,9 +5640,26 @@ export class MarketRuntime {
           size: ev.size,
         });
       } else if (ev.ev === 'Q') {
+        const key = ev.sym.trim().toUpperCase();
+        const prev = this.liveOptionQuotes.get(key);
+        const underlying = prev?.underlying ?? extractOptionUnderlying(key) ?? '';
         const bid = sanitizeFinite(ev.bidPrice);
         const ask = sanitizeFinite(ev.askPrice);
         const mid = bid !== null && ask !== null && ask >= bid ? 0.5 * (bid + ask) : null;
+        const next: LiveOptionQuoteSnapshot = {
+          symbol: key,
+          underlying,
+          time: ev.timeSec,
+          bid,
+          ask,
+          mid,
+          last: prev?.last ?? null,
+          size: prev?.size ?? null,
+        };
+        this.liveOptionQuotes.set(key, next);
+        if (!hasOptionQuoteChanged(prev, next)) {
+          continue;
+        }
         this.emitBroadcast({
           type: 'quote',
           cluster: 'options',

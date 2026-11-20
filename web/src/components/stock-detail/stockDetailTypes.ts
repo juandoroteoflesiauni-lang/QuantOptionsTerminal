@@ -131,6 +131,12 @@ export interface StockChartSeriesBundle {
   readonly vrpPct: number | null;
   readonly barsAvailable: boolean;
   readonly intradayUnavailableReason: string | null;
+  readonly lastClosedEma?: {
+    readonly 9: number | null;
+    readonly 21: number | null;
+    readonly 50: number | null;
+    readonly 200: number | null;
+  };
 }
 
 export interface StockExecutionDeckData {

@@ -29,6 +29,7 @@ import {
 import {
   GLOBAL_INDICATORS,
   AR_STOCKS,
+  AR_GENERAL_PANEL_STOCKS,
   INITIAL_POSITIONS,
   INITIAL_ALERTS,
   PortfolioPosition,
@@ -36,7 +37,10 @@ import {
   fmtNum,
   fmtPctTable,
 } from './data/marketData';
-import { startLiveRuntimePolling, useLiveMarketState } from './data/liveRuntimeBridge';
+import { startLiveRuntimePolling, useLiveMarketStatus } from './data/liveRuntimeBridge';
+import { useMarketViewScope } from './api/useMarketLiveStream';
+import { parseOptionsUnderlyingKey } from './data/optionsUnderlying';
+import { resolveStockDetailRoute } from './components/stock-detail/stockDetailRouting';
 import { HelpTooltip } from './components/DesignSystem';
 import { OptionsModule, OptionsSubView } from './components/OptionsModule';
 import { StockDetailView } from './components/StockDetailView';
@@ -81,6 +85,8 @@ type PageId =
   | 'alertas'
   | 'configuracion';
 
+const EMPTY_TICK_FLASHES: Readonly<Record<string, 'up' | 'down' | null>> = Object.freeze({});
+
 export default function App() {
   // Estado principal de navegación
   const [activePage, setActivePage] = useState<PageId>('inicio');
@@ -104,9 +110,54 @@ export default function App() {
   const [orderDrawerOpen, setOrderDrawerOpen] = useState(false);
   const [orderPreset, setOrderPreset] = useState<OrderTicketPreset | null>(null);
 
-  // Estado vivo desde backend real (/api/ar/*, /api/snapshot, /ws)
-  const liveMarket = useLiveMarketState();
+  // Estado de conectividad/warmup ligero (sin precios calientes en el árbol raíz)
+  const liveMarket = useLiveMarketStatus();
   const feedsHealth = useFeedsHealthPulse();
+
+  const viewScope = useMemo((): {
+    readonly view: string;
+    readonly focusSymbol: string | null;
+    readonly focusMarket: 'AR' | 'US' | null;
+  } => {
+    if (activePage === 'acciones') {
+      const cleanRaw = selectedTicker.trim().toUpperCase() || 'GGAL';
+      const route = resolveStockDetailRoute({
+        rawTicker: cleanRaw,
+        isArLocalSymbol:
+          AR_STOCKS.some((stock) => stock.ticker === cleanRaw) ||
+          AR_GENERAL_PANEL_STOCKS.some((stock) => stock.ticker === cleanRaw),
+      });
+      return {
+        view: 'stock_detail',
+        focusSymbol: route?.providerSymbol ?? cleanRaw,
+        focusMarket: route?.market ?? 'AR',
+      };
+    }
+    if (activePage === 'opciones') {
+      const sel = parseOptionsUnderlyingKey(selectedOptionsUnderlying);
+      return {
+        view: 'options',
+        focusSymbol: sel.symbol,
+        focusMarket: sel.market,
+      };
+    }
+    if (activePage === 'ggal-specialist') {
+      return { view: 'ggal_specialist', focusSymbol: 'GGAL', focusMarket: 'AR' };
+    }
+    if (activePage === 'monitoreo') {
+      return { view: 'monitoring', focusSymbol: null, focusMarket: 'AR' };
+    }
+    if (activePage === 'eeuu') {
+      return { view: 'us_market', focusSymbol: null, focusMarket: 'US' };
+    }
+    if (activePage === 'inicio') {
+      return { view: 'home', focusSymbol: null, focusMarket: null };
+    }
+    return { view: activePage, focusSymbol: null, focusMarket: null };
+  }, [activePage, selectedOptionsUnderlying, selectedTicker]);
+
+  useMarketViewScope(viewScope.view, viewScope.focusSymbol, viewScope.focusMarket);
+
   const globalConnectivity = useMemo(
     () =>
       resolveGlobalConnectivityStatus({
@@ -123,7 +174,6 @@ export default function App() {
   const [positions, setPositions] = useState<PortfolioPosition[]>(INITIAL_POSITIONS);
   const [alerts, setAlerts] = useState<AlertItem[]>(INITIAL_ALERTS);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [clockStr, setClockStr] = useState(() => new Date().toTimeString().slice(0, 8));
 
   // Sincronizar atributo data-theme
   useEffect(() => {
@@ -133,14 +183,6 @@ export default function App() {
       document.documentElement.removeAttribute('data-theme');
     }
   }, [theme]);
-
-  // Reloj y polling / WebSocket en tiempo real (cero ticks simulados)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setClockStr(new Date().toTimeString().slice(0, 8));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     return startLiveRuntimePolling(liveTicksEnabled);
@@ -679,7 +721,7 @@ export default function App() {
             {/* Renderizado del módulo activo */}
             {activePage === 'inicio' && (
               <HomeDashboard
-                tickFlashes={liveMarket.tickFlashes}
+                tickFlashes={EMPTY_TICK_FLASHES}
                 onSelectStock={handleSelectStockDetail}
                 onNavigate={(p) => setActivePage(p as PageId)}
                 onOpenOrderTicket={handleOpenOrderTicket}
@@ -691,7 +733,7 @@ export default function App() {
                 subPanel={monitorPanel}
                 onSelectSubPanel={setMonitorPanel}
                 density={density}
-                tickFlashes={liveMarket.tickFlashes}
+                tickFlashes={EMPTY_TICK_FLASHES}
                 onSelectStock={handleSelectStockDetail}
                 onOpenOrderTicket={handleOpenOrderTicket}
               />

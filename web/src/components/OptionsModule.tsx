@@ -41,12 +41,12 @@ import {
 } from '../data/optionsUnderlying';
 import { OptionsSymbolSelector } from './OptionsSymbolSelector';
 import {
-  getMarketLiveClock,
-  getMarketLiveQuote,
+  getMarketStreamMetaClock,
+  useAtomicMarketQuote,
   useLivePriceFlash,
-  useMarketLiveStream,
-  useThrottledLiveValue,
+  useMarketStreamMeta,
 } from '../api/useMarketLiveStream';
+import { VirtualizedOptionChainTable } from './options/VirtualizedOptionChainTable';
 import {
   HelpTooltip,
   InsightBanner,
@@ -76,7 +76,6 @@ import {
   type BidirectionalFlowRow,
   type BuilderLeg,
   type EnrichedChainRow,
-  type InlineAxisMarker,
   type StrategyFamilyId,
   type VisualPayoffCardData,
   buildBidirectionalFlow,
@@ -718,33 +717,6 @@ function buildDetailedSpreadMatrix(
   });
 }
 
-function safeAnalyticalBsmGamma(
-  spot: number,
-  strike: number,
-  ivPct: number,
-  daysToExpiry: number,
-  rateDec: number,
-): number {
-  if (
-    !Number.isFinite(spot) ||
-    spot <= 0 ||
-    !Number.isFinite(strike) ||
-    strike <= 0 ||
-    !Number.isFinite(ivPct) ||
-    ivPct <= 0
-  ) {
-    return Number.NaN;
-  }
-  const t = Math.max((Number.isFinite(daysToExpiry) && daysToExpiry > 0 ? daysToExpiry : 1) / 365, 1e-4);
-  const sigma = Math.max(ivPct / 100, 1e-4);
-  const r = Number.isFinite(rateDec) ? rateDec : 0;
-  const sqrtT = Math.sqrt(t);
-  const d1 = (Math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrtT);
-  const nd1Prime = Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI);
-  const g = nd1Prime / (spot * sigma * sqrtT);
-  return Number.isFinite(g) ? g : Number.NaN;
-}
-
 export const OptionsModule: React.FC<{
   activeSubView: OptionsSubView;
   onSelectSubView: (v: OptionsSubView) => void;
@@ -767,7 +739,6 @@ export const OptionsModule: React.FC<{
   onOpenOrderTicket,
 }) => {
   const liveMarket = useLiveMarketState();
-  const liveStream = useMarketLiveStream();
   const selectedUnderlyingKey = parseOptionsUnderlyingKey(selectedUnderlying).key;
   const underlyingMeta = parseOptionsUnderlyingKey(selectedUnderlyingKey);
   const upperUnderlying = underlyingMeta.symbol;
@@ -919,15 +890,18 @@ export const OptionsModule: React.FC<{
   const displayDeltaPct =
     usMeta?.deltaPct ?? overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
   const usUnderlying = underlyingMeta.market === 'US';
-  const liveUnderlyingQuote = getMarketLiveQuote(liveStream, usUnderlying ? 'US' : 'AR', upperUnderlying);
-  const throttledLivePrice = useThrottledLiveValue(liveUnderlyingQuote?.price ?? Number.NaN, 1_000);
-  const displaySpot = Number.isFinite(throttledLivePrice)
-    ? throttledLivePrice
-    : liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
+  const liveUnderlyingQuote = useAtomicMarketQuote(usUnderlying ? 'US' : 'AR', upperUnderlying, 250);
+  const liveStreamMeta = useMarketStreamMeta(1_000);
+  const displaySpot =
+    liveUnderlyingQuote !== null &&
+    Number.isFinite(liveUnderlyingQuote.price) &&
+    liveUnderlyingQuote.price > 0
+      ? liveUnderlyingQuote.price
+      : liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
   const headerSpot = liveUnderlyingQuote?.price ?? displaySpot;
   const headerDeltaPct = liveUnderlyingQuote?.changePct ?? displayDeltaPct;
   const headerFlash = useLivePriceFlash(liveUnderlyingQuote?.price ?? null);
-  const liveClock = getMarketLiveClock(liveStream);
+  const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
 
   const activeExpiry = useMemo(() => {
     if (GGAL_OPTION_EXPIRIES.length === 0) return null;
@@ -1619,9 +1593,6 @@ export const OptionsModule: React.FC<{
     return 'bg-[#3B181C] text-[#F87171] border border-[#64252C]';
   };
 
-  const rowHeightClass =
-    density === 'densa' ? 'h-8 text-[12px]' : density === 'comoda' ? 'h-11 text-[13px]' : 'h-9 text-[12px]';
-
   const syncTimeLabel = liveOptions?.asOfUtcSec
     ? new Date(liveOptions.asOfUtcSec * 1000).toLocaleTimeString('es-AR')
     : liveMarket.lastSyncUtcSec
@@ -1703,7 +1674,7 @@ export const OptionsModule: React.FC<{
               </span>
               <div className="flex flex-wrap items-baseline gap-2.5">
                 <span
-                  className={`rounded px-1 font-mono-num text-[22px] font-extrabold tracking-tight transition-colors duration-[400ms] ${
+                  className={`rounded px-1 font-mono-num tabular-nums text-[22px] font-extrabold tracking-tight ${
                     !Number.isFinite(headerDeltaPct)
                       ? 'text-[#FFFFFF]'
                       : headerDeltaPct < 0
@@ -3926,8 +3897,6 @@ export const OptionsModule: React.FC<{
                 onlySigmaRange,
               });
 
-              const sideColCount = colMode === 'completa' ? 8 : 5;
-
               const handleQuoteClick = (
                 e: React.MouseEvent,
                 item: EnrichedChainRow,
@@ -3958,131 +3927,6 @@ export const OptionsModule: React.FC<{
                 });
               };
 
-              const renderHoldingsCell = (holdings: number, ticker: string, isLeftBorder = false) => (
-                <td
-                  title={holdings !== 0 ? `${ticker}: tenencia neta ${holdings > 0 ? '+' : ''}${holdings} lotes` : `${ticker}: sin tenencia`}
-                  className={`px-2 py-1.5 text-center font-mono-num text-[11.5px] bg-[#0A0A0D] ${
-                    isLeftBorder ? '' : ''
-                  } ${
-                    holdings > 0
-                      ? 'text-[#22C55E] font-semibold'
-                      : holdings < 0
-                        ? 'text-[#EF4444] font-semibold'
-                        : 'text-[#374151]'
-                  }`}
-                >
-                  {holdings > 0 ? `+${fmtNum(holdings, 0)}` : holdings < 0 ? fmtNum(holdings, 0) : ''}
-                </td>
-              );
-
-              const renderVarCell = (valPct: number) => {
-                if (!Number.isFinite(valPct)) {
-                  return <td className="px-2 py-1.5 font-mono-num text-[11.5px] text-[#6B7280] bg-[#0A0A0D]">—</td>;
-                }
-                const cls =
-                  valPct > 0 ? 'text-[#22C55E]' : valPct < 0 ? 'text-[#EF4444]' : 'text-[#6B7280]';
-                return (
-                  <td className={`px-2 py-1.5 font-mono-num text-[11.5px] bg-[#0A0A0D] ${cls}`}>
-                    {valPct > 0 ? '+' : ''}
-                    {fmtNum(valPct, 1)}%
-                  </td>
-                );
-              };
-
-              const renderTheoCell = (theo: number, ask: number) => {
-                const isCheap =
-                  Number.isFinite(ask) &&
-                  ask > 0 &&
-                  Number.isFinite(theo) &&
-                  theo > 0 &&
-                  ask < theo * 0.98;
-                return (
-                  <td
-                    className={`px-2 py-1.5 font-mono-num text-[12px] bg-[#0A0A0D] ${
-                      !Number.isFinite(theo) || theo < 0
-                        ? 'text-[#6B7280]'
-                        : isCheap
-                          ? 'text-[#4ADE80]'
-                          : 'text-[#9CA3AF]'
-                    }`}
-                  >
-                    {Number.isFinite(theo) && theo >= 0 ? fmtNum(theo, 2) : '—'}
-                  </td>
-                );
-              };
-
-              const renderBidAskCell = (
-                e: React.MouseEvent | null,
-                _type: 'Call' | 'Put',
-                _orderSide: 'Compra' | 'Venta',
-                px: number,
-                size: number,
-                isBid: boolean,
-                item: EnrichedChainRow,
-                optType: 'Call' | 'Put',
-                ticker: string
-              ) => {
-                const hasPx = Number.isFinite(px) && px > 0;
-                const hasSize = Number.isFinite(size) && size > 0;
-                const actionSide: 'Compra' | 'Venta' = isBid ? 'Venta' : 'Compra';
-                void e;
-                return (
-                  <td
-                    onClick={(ev) => handleQuoteClick(ev, item, optType, actionSide, px, ticker)}
-                    title={
-                      hasPx
-                        ? `${ticker} · Click para ${actionSide.toLowerCase()} a ${fmtNum(px, 2)} (Shift+Click envía a Armado a mano)`
-                        : `${ticker} · Sin punta`
-                    }
-                    className={`px-2 py-1.5 font-mono-num text-[12px] bg-[#0A0A0D] transition-colors ${
-                      hasPx ? 'hover:bg-[#16161F] cursor-pointer' : ''
-                    }`}
-                  >
-                    {hasPx ? (
-                      <span className="inline-flex items-baseline justify-end gap-1">
-                        <span className={isBid ? 'text-[#22C55E] font-medium' : 'text-[#EF4444] font-medium'}>
-                          {fmtNum(px, 2)}
-                        </span>
-                        {hasSize && <span className="text-[10.5px] text-[#6B7280]">×{fmtNum(size, 0)}</span>}
-                      </span>
-                    ) : (
-                      <span className="text-[#6B7280]">—</span>
-                    )}
-                  </td>
-                );
-              };
-
-              const renderAxisMarkerRow = (marker: InlineAxisMarker) => (
-                <tr key={marker.id} className="bg-[#0A0A0D]">
-                  <td colSpan={sideColCount} className="p-0 bg-[#0A0A0D]">
-                    <div
-                      className={
-                        marker.kind === 'spot' ? 'h-[1px] w-full bg-[#38BDF8]/35' : 'h-[1px] w-full bg-[#1C1C24]'
-                      }
-                    />
-                  </td>
-                  <td className="py-1 px-2 text-center bg-[#111116] border-x border-[#1C1C24]">
-                    <span
-                      title={marker.tooltip}
-                      className={
-                        marker.kind === 'spot'
-                          ? 'inline-block rounded-full bg-[#38BDF8] text-[#08080D] font-bold font-mono-num text-[10.5px] px-2.5 py-0.5 leading-tight'
-                          : 'inline-block rounded-full bg-[#1E1E2B] text-[#9CA3AF] font-mono-num text-[10px] font-semibold px-2 py-0.5 leading-tight'
-                      }
-                    >
-                      {marker.label}
-                    </span>
-                  </td>
-                  <td colSpan={sideColCount} className="p-0 bg-[#0A0A0D]">
-                    <div
-                      className={
-                        marker.kind === 'spot' ? 'h-[1px] w-full bg-[#38BDF8]/35' : 'h-[1px] w-full bg-[#1C1C24]'
-                      }
-                    />
-                  </td>
-                </tr>
-              );
-
               const callBarPct = Number.isFinite(summary.callSharePct)
                 ? Math.min(100, Math.max(0, summary.callSharePct))
                 : 0;
@@ -4095,7 +3939,7 @@ export const OptionsModule: React.FC<{
                   {/* Encabezado de Vencimiento — 3 Líneas Compactas */}
                   <div
                     onClick={() => setExpandedExpiries((prev) => ({ ...prev, [exp.id]: !isOpen }))}
-                    className="px-4 py-3 bg-[#111116] border-b border-[#1C1C24] cursor-pointer hover:bg-[#15151D] transition-colors space-y-2"
+                    className="px-4 py-3 bg-[#111116] border-b border-[#1C1C24] cursor-pointer hover:bg-[#15151D] space-y-2"
                   >
                     {/* Línea 1: Fecha + días + estado */}
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4198,417 +4042,18 @@ export const OptionsModule: React.FC<{
                   </div>
 
                   {isOpen && (
-                    <div className="overflow-x-auto bg-[#0A0A0D]">
-                      <table className="w-full border-collapse text-right">
-                        <thead>
-                          <tr className="border-b border-[#1C1C24] text-[10.5px] font-bold uppercase tracking-[0.08em]">
-                            <th
-                              colSpan={sideColCount}
-                              style={{ backgroundColor: 'rgba(229, 199, 107, 0.08)', color: '#E5C76B' }}
-                              className="py-1.5 px-3 text-center"
-                            >
-                              CALL
-                            </th>
-                            <th className="py-1.5 px-3 text-center bg-[#111116] text-[#9CA3AF] border-x border-[#1C1C24]">
-                              BASE
-                            </th>
-                            <th
-                              colSpan={sideColCount}
-                              style={{ backgroundColor: 'rgba(183, 148, 244, 0.08)', color: '#B794F4' }}
-                              className="py-1.5 px-3 text-center"
-                            >
-                              PUT
-                            </th>
-                          </tr>
-                          <tr className="border-b border-[#1C1C24] bg-[#0D0D12] text-[10.5px] font-medium text-[#6B7280]">
-                            {colMode === 'completa' && (
-                              <>
-                                <th className="py-2 px-2">Delta Δ</th>
-                                <th className="py-2 px-2">VI %</th>
-                                <th className="py-2 px-2">teórico</th>
-                                <th className="py-2 px-2">últ.</th>
-                                <th className="py-2 px-2">var%</th>
-                                <th className="py-2 px-2">compra</th>
-                                <th className="py-2 px-2">venta</th>
-                                <th className="py-2 px-2 text-center">tenencia</th>
-                              </>
-                            )}
-                            {colMode === 'griegas' && (
-                              <>
-                                <th className="py-2 px-2">Gamma Γ</th>
-                                <th className="py-2 px-2">Theta Θ (d)</th>
-                                <th className="py-2 px-2">Vega ν</th>
-                                <th className="py-2 px-2">VI %</th>
-                                <th className="py-2 px-2">Delta Δ</th>
-                              </>
-                            )}
-                            {colMode === 'valortiempo' && (
-                              <>
-                                <th className="py-2 px-2">teórico</th>
-                                <th className="py-2 px-2">Val. Intrínseco</th>
-                                <th className="py-2 px-2">Val. Tiempo $</th>
-                                <th className="py-2 px-2">Tasa % s/Spot</th>
-                                <th className="py-2 px-2">últ.</th>
-                              </>
-                            )}
-                            {colMode === 'liquidez' && (
-                              <>
-                                <th className="py-2 px-2">Rotación OI</th>
-                                <th className="py-2 px-2">Int. Abierto</th>
-                                <th className="py-2 px-2">Lotes Hoy</th>
-                                <th className="py-2 px-2">compra</th>
-                                <th className="py-2 px-2">venta</th>
-                              </>
-                            )}
-
-                            <th className="py-2 px-3 text-center bg-[#111116] text-[#9CA3AF] border-x border-[#1C1C24]">
-                              BASE
-                            </th>
-
-                            {colMode === 'completa' && (
-                              <>
-                                <th className="py-2 px-2 text-center">tenencia</th>
-                                <th className="py-2 px-2">compra</th>
-                                <th className="py-2 px-2">venta</th>
-                                <th className="py-2 px-2">var%</th>
-                                <th className="py-2 px-2">últ.</th>
-                                <th className="py-2 px-2">teórico</th>
-                                <th className="py-2 px-2">VI %</th>
-                                <th className="py-2 px-2">Delta Δ</th>
-                              </>
-                            )}
-                            {colMode === 'griegas' && (
-                              <>
-                                <th className="py-2 px-2">Delta Δ</th>
-                                <th className="py-2 px-2">VI %</th>
-                                <th className="py-2 px-2">Vega ν</th>
-                                <th className="py-2 px-2">Theta Θ (d)</th>
-                                <th className="py-2 px-2">Gamma Γ</th>
-                              </>
-                            )}
-                            {colMode === 'valortiempo' && (
-                              <>
-                                <th className="py-2 px-2">últ.</th>
-                                <th className="py-2 px-2">Tasa % s/Spot</th>
-                                <th className="py-2 px-2">Val. Tiempo $</th>
-                                <th className="py-2 px-2">Val. Intrínseco</th>
-                                <th className="py-2 px-2">teórico</th>
-                              </>
-                            )}
-                            {colMode === 'liquidez' && (
-                              <>
-                                <th className="py-2 px-2">compra</th>
-                                <th className="py-2 px-2">venta</th>
-                                <th className="py-2 px-2">Lotes Hoy</th>
-                                <th className="py-2 px-2">Int. Abierto</th>
-                                <th className="py-2 px-2">Rotación OI</th>
-                              </>
-                            )}
-                          </tr>
-                        </thead>
-
-                        <tbody className="divide-y divide-[#1C1C24] font-mono-num">
-                          {filteredRows.length === 0 ? (
-                            <tr>
-                              <td colSpan={sideColCount * 2 + 1} className="py-6 text-center text-[12px] text-[#6B7280]">
-                                Ninguna base dentro de la banda ±{sigmaMultiplier}σ seleccionada. Desactivá el filtro o ampliá a ±2σ.
-                              </td>
-                            </tr>
-                          ) : (
-                            <>
-                              {beforeFirst.map(renderAxisMarkerRow)}
-                              {filteredRows.map((item: EnrichedChainRow, idx: number) => {
-                                const { row } = item;
-                                const spotValid = Number.isFinite(displaySpot) && displaySpot > 0;
-                                const callGammaSafe = Number.isFinite(row.callGamma)
-                                  ? row.callGamma
-                                  : safeAnalyticalBsmGamma(
-                                      displaySpot,
-                                      row.strike,
-                                      row.callIV,
-                                      exp.daysToExpiry,
-                                      effectiveRateDec
-                                    );
-                                const putGammaSafe = Number.isFinite(row.putGamma)
-                                  ? row.putGamma
-                                  : safeAnalyticalBsmGamma(
-                                      displaySpot,
-                                      row.strike,
-                                      row.putIV,
-                                      exp.daysToExpiry,
-                                      effectiveRateDec
-                                    );
-                                const callOiRatio =
-                                  Number.isFinite(row.callOpenInterest) && row.callOpenInterest > 0
-                                    ? (row.callVolumeLots / row.callOpenInterest) * 100
-                                    : Number.NaN;
-                                const putOiRatio =
-                                  Number.isFinite(row.putOpenInterest) && row.putOpenInterest > 0
-                                    ? (row.putVolumeLots / row.putOpenInterest) * 100
-                                    : Number.NaN;
-                                const trailingMarkers = afterIndex.get(idx) ?? [];
-
-                                return (
-                                  <React.Fragment key={row.strike}>
-                                    <tr className={`${rowHeightClass} bg-[#0A0A0D] hover:bg-[#13131A] transition-colors`}>
-                                      {/* CALL SIDE */}
-                                      {colMode === 'completa' && (
-                                        <>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {fmtNum(row.callDelta, 2)}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.callIV) ? `${fmtNum(row.callIV, 1)}%` : '—'}
-                                          </td>
-                                          {renderTheoCell(item.callTheoreticalPrice, row.callAsk)}
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {Number.isFinite(row.callLast) ? fmtNum(row.callLast, 2) : '—'}
-                                          </td>
-                                          {renderVarCell(item.callChangePct)}
-                                          {renderBidAskCell(
-                                            null,
-                                            'Call',
-                                            'Venta',
-                                            row.callBid,
-                                            item.callBidSize,
-                                            true,
-                                            item,
-                                            'Call',
-                                            row.callTicker
-                                          )}
-                                          {renderBidAskCell(
-                                            null,
-                                            'Call',
-                                            'Compra',
-                                            row.callAsk,
-                                            item.callAskSize,
-                                            false,
-                                            item,
-                                            'Call',
-                                            row.callTicker
-                                          )}
-                                          {renderHoldingsCell(item.callHoldings, row.callTicker)}
-                                        </>
-                                      )}
-
-                                      {colMode === 'griegas' && (
-                                        <>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {fmtNum(callGammaSafe, 5)}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#EF4444]">
-                                            {Number.isFinite(row.callTheta) ? `-${fmtNum(Math.abs(row.callTheta), 2)}` : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.callVega) ? fmtNum(row.callVega, 2) : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.callIV) ? `${fmtNum(row.callIV, 1)}%` : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {fmtNum(row.callDelta, 2)}
-                                          </td>
-                                        </>
-                                      )}
-
-                                      {colMode === 'valortiempo' && (
-                                        <>
-                                          {renderTheoCell(item.callTheoreticalPrice, row.callAsk)}
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {spotValid ? fmtNum(Math.max(0, displaySpot - row.strike), 2) : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {Number.isFinite(row.callTimeValue) ? fmtNum(row.callTimeValue, 2) : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.callTimeValuePct)
-                                              ? `${fmtNum(row.callTimeValuePct, 2)}%`
-                                              : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {Number.isFinite(row.callLast) ? fmtNum(row.callLast, 2) : '—'}
-                                          </td>
-                                        </>
-                                      )}
-
-                                      {colMode === 'liquidez' && (
-                                        <>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(callOiRatio) ? `${fmtNum(callOiRatio, 1)}%` : '—'}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {fmtNum(row.callOpenInterest, 0)}
-                                          </td>
-                                          <td title={row.callTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {fmtNum(row.callVolumeLots, 0)}
-                                          </td>
-                                          {renderBidAskCell(
-                                            null,
-                                            'Call',
-                                            'Venta',
-                                            row.callBid,
-                                            item.callBidSize,
-                                            true,
-                                            item,
-                                            'Call',
-                                            row.callTicker
-                                          )}
-                                          {renderBidAskCell(
-                                            null,
-                                            'Call',
-                                            'Compra',
-                                            row.callAsk,
-                                            item.callAskSize,
-                                            false,
-                                            item,
-                                            'Call',
-                                            row.callTicker
-                                          )}
-                                        </>
-                                      )}
-
-                                      {/* BASE CENTRAL */}
-                                      <td
-                                        title={`Call: ${row.callTicker} · Put: ${row.putTicker}`}
-                                        className="px-3 py-1 text-center bg-[#111116] border-x border-[#1C1C24]"
-                                      >
-                                        <div className="flex flex-col items-center leading-tight">
-                                          <span className="font-bold text-[#F3F4F6]">
-                                            {fmtNum(row.strike, row.strike % 1 === 0 ? 0 : 2)}
-                                          </span>
-                                          <span className="text-[10px] font-normal text-[#6B7280]">
-                                            {Number.isFinite(row.distancePct)
-                                              ? `${row.distancePct > 0 ? '+' : ''}${fmtNum(row.distancePct, 1)}%`
-                                              : '—'}
-                                          </span>
-                                        </div>
-                                      </td>
-
-                                      {/* PUT SIDE (simétrica centro -> derecha) */}
-                                      {colMode === 'completa' && (
-                                        <>
-                                          {renderHoldingsCell(item.putHoldings, row.putTicker)}
-                                          {renderBidAskCell(
-                                            null,
-                                            'Put',
-                                            'Venta',
-                                            row.putBid,
-                                            item.putBidSize,
-                                            true,
-                                            item,
-                                            'Put',
-                                            row.putTicker
-                                          )}
-                                          {renderBidAskCell(
-                                            null,
-                                            'Put',
-                                            'Compra',
-                                            row.putAsk,
-                                            item.putAskSize,
-                                            false,
-                                            item,
-                                            'Put',
-                                            row.putTicker
-                                          )}
-                                          {renderVarCell(item.putChangePct)}
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {Number.isFinite(row.putLast) ? fmtNum(row.putLast, 2) : '—'}
-                                          </td>
-                                          {renderTheoCell(item.putTheoreticalPrice, row.putAsk)}
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.putIV) ? `${fmtNum(row.putIV, 1)}%` : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {fmtNum(row.putDelta, 2)}
-                                          </td>
-                                        </>
-                                      )}
-
-                                      {colMode === 'griegas' && (
-                                        <>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {fmtNum(row.putDelta, 2)}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.putIV) ? `${fmtNum(row.putIV, 1)}%` : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.putVega) ? fmtNum(row.putVega, 2) : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#EF4444]">
-                                            {Number.isFinite(row.putTheta) ? `-${fmtNum(Math.abs(row.putTheta), 2)}` : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {fmtNum(putGammaSafe, 5)}
-                                          </td>
-                                        </>
-                                      )}
-
-                                      {colMode === 'valortiempo' && (
-                                        <>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {Number.isFinite(row.putLast) ? fmtNum(row.putLast, 2) : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(row.putTimeValuePct)
-                                              ? `${fmtNum(row.putTimeValuePct, 2)}%`
-                                              : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {Number.isFinite(row.putTimeValue) ? fmtNum(row.putTimeValue, 2) : '—'}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {spotValid ? fmtNum(Math.max(0, row.strike - displaySpot), 2) : '—'}
-                                          </td>
-                                          {renderTheoCell(item.putTheoreticalPrice, row.putAsk)}
-                                        </>
-                                      )}
-
-                                      {colMode === 'liquidez' && (
-                                        <>
-                                          {renderBidAskCell(
-                                            null,
-                                            'Put',
-                                            'Venta',
-                                            row.putBid,
-                                            item.putBidSize,
-                                            true,
-                                            item,
-                                            'Put',
-                                            row.putTicker
-                                          )}
-                                          {renderBidAskCell(
-                                            null,
-                                            'Put',
-                                            'Compra',
-                                            row.putAsk,
-                                            item.putAskSize,
-                                            false,
-                                            item,
-                                            'Put',
-                                            row.putTicker
-                                          )}
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#E5E7EB]">
-                                            {fmtNum(row.putVolumeLots, 0)}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {fmtNum(row.putOpenInterest, 0)}
-                                          </td>
-                                          <td title={row.putTicker} className="px-2 py-1.5 text-[#9CA3AF]">
-                                            {Number.isFinite(putOiRatio) ? `${fmtNum(putOiRatio, 1)}%` : '—'}
-                                          </td>
-                                        </>
-                                      )}
-                                    </tr>
-                                    {trailingMarkers.map(renderAxisMarkerRow)}
-                                  </React.Fragment>
-                                );
-                              })}
-                            </>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
+                    <VirtualizedOptionChainTable
+                      filteredRows={filteredRows}
+                      beforeFirst={beforeFirst}
+                      afterIndex={afterIndex}
+                      colMode={colMode}
+                      density={density}
+                      sigmaMultiplier={sigmaMultiplier}
+                      displaySpot={displaySpot}
+                      daysToExpiry={exp.daysToExpiry}
+                      effectiveRateDec={effectiveRateDec}
+                      onQuoteClick={handleQuoteClick}
+                    />
                   )}
                 </div>
               );

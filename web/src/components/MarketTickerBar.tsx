@@ -11,11 +11,17 @@ import {
 import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
 import {
   formatExtendedSessionBadge,
-  getMarketLiveQuote,
-  isMarketLiveStreamFresh,
+  getAtomicMarketQuote,
+  getMarketStreamMetaClock,
+  getMarketStreamMetaSnapshot,
+  isMarketStreamMetaFresh,
+  subscribeAtomicQuoteValue,
+  subscribeMarketStreamMeta,
   tickFlashClass,
-  useMarketLiveStream,
+  useMarketStreamConnection,
+  useMarketStreamMeta,
   type LiveUsSessionPhase,
+  type MarketLiveQuote,
 } from '../api/useMarketLiveStream';
 import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
@@ -240,7 +246,7 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       )}
 
       <span
-        className={`font-mono-num text-[12px] font-bold whitespace-nowrap transition-colors duration-500 ${
+        className={`font-mono-num text-[12px] font-bold whitespace-nowrap ${
           flash === null ? 'text-[#ECEDF2]' : tickFlashClass(flash.dir)
         }`}
       >
@@ -276,7 +282,7 @@ const SeamlessMarqueeTrack: React.FC<{
   return (
     <div className="qc-marquee-viewport flex-1 min-w-0 py-1">
       <div
-        className="qc-marquee-track"
+        className="qc-marquee-track ticker-track"
         style={{ '--marquee-duration': `${durationSeconds}s` } as React.CSSProperties}
       >
         {/* Mitad A (Original) */}
@@ -307,6 +313,105 @@ const SeamlessMarqueeTrack: React.FC<{
 
 SeamlessMarqueeTrack.displayName = 'SeamlessMarqueeTrack';
 
+function quoteToTickerUpdate(
+  id: string,
+  market: 'AR' | 'US',
+  quote: MarketLiveQuote,
+): LiveTickerUpdate {
+  const extBadge = formatExtendedSessionBadge(quote.sessionPhase);
+  const displayPrice =
+    extBadge !== null && quote.extendedPrice !== undefined && quote.extendedPrice !== null
+      ? quote.extendedPrice
+      : quote.price;
+  const displayChangePct =
+    extBadge !== null && quote.extendedChangePct !== undefined && quote.extendedChangePct !== null
+      ? quote.extendedChangePct
+      : quote.changePct ?? Number.NaN;
+  return {
+    id,
+    symbol: id,
+    price: displayPrice,
+    changePct: displayChangePct,
+    dir: quote.direction,
+    sessionPhase: market === 'US' ? (quote.sessionPhase ?? null) : null,
+  };
+}
+
+const MarketSessionStatusPill: React.FC<{
+  readonly marketStatus: MarketSessionState;
+  readonly feedStatus: FeedStatus;
+  readonly onCycleMarketStatus?: () => void;
+}> = memo(({ marketStatus, feedStatus, onCycleMarketStatus }) => {
+  const meta = useMarketStreamMeta(1_000);
+  const streamIsFresh = isMarketStreamMetaFresh(meta);
+  const liveClock = getMarketStreamMetaClock(meta) ?? '--:--:--';
+  const feedTag = streamIsFresh
+    ? meta.arSourceMode === 'LIVE_BMB'
+      ? 'EN VIVO · BMB'
+      : meta.arSourceMode === 'LIVE_IOL'
+        ? 'EN VIVO · IOL'
+        : `EN VIVO · ${meta.transport ?? 'WS'}`
+    : feedStatus === 'LIVE'
+      ? 'EN VIVO'
+      : feedStatus === 'EOD_CIERRE'
+      ? 'EOD CIERRE'
+      : feedStatus === 'DIFERIDO_20M'
+      ? 'DIFERIDO 20M'
+      : feedStatus === 'PARTIAL'
+      ? 'PARCIAL'
+      : meta.status === 'CONNECTING' || meta.status === 'RECONNECTING'
+        ? 'CONECTANDO ...'
+        : 'SIN FEED';
+
+  const isOpen = marketStatus === 'Abierto' && feedStatus !== 'NO_DATA';
+  const isExtended =
+    marketStatus === 'Pre-Market' ||
+    marketStatus === 'After-Hours' ||
+    feedStatus === 'EOD_CIERRE' ||
+    feedStatus === 'DIFERIDO_20M' ||
+    feedStatus === 'PARTIAL';
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onCycleMarketStatus}
+        title="Click para cambiar sesión (Abierto, Pre-Market, After-Hours, Cerrado)"
+        className={`inline-flex items-center gap-2 px-3 h-[30px] rounded-full border text-[11.5px] font-mono-num font-semibold cursor-pointer ${
+          isOpen
+            ? 'bg-[#0D221E] text-[#22C55E] border-[#164E3F] hover:border-[#22C55E]/60'
+            : isExtended
+            ? 'bg-[#281E0E] text-[#F5B544] border-[#59411A]'
+            : 'bg-[#1A1318] text-[#F23645] border-[#4A2229]'
+        }`}
+      >
+        <span className="relative flex h-2 w-2">
+          {isOpen && (
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#22C55E] opacity-75" />
+          )}
+          <span
+            className={`relative inline-flex rounded-full h-2 w-2 ${
+              isOpen ? 'bg-[#22C55E]' : isExtended ? 'bg-[#F5B544]' : 'bg-[#F23645]'
+            }`}
+          />
+        </span>
+        <span className="tracking-tight whitespace-nowrap">
+          NYSE / BYMA: {marketStatus} · {feedTag}
+          {streamIsFresh ? ` · ${liveClock} · ${String(meta.ticksPerSecond)} ticks/s` : ''}
+        </span>
+      </button>
+
+      {streamIsFresh && (
+        <span className="hidden lg:inline-flex items-center gap-1 rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
+          ● Tiempo real {liveClock}
+        </span>
+      )}
+    </>
+  );
+});
+
+MarketSessionStatusPill.displayName = 'MarketSessionStatusPill';
+
 /* ============================================================================
    7. COMPONENTE PRINCIPAL: `MarketTickerBar`
    Layout: [Extremo Izquierdo Fijo] + [Marquee Central Infinito] + [Extremo Derecho Fijo]
@@ -328,49 +433,57 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   liveFeedEnabled = true,
   feedsHealth,
 }) => {
-  const liveStream = useMarketLiveStream({ manageConnection: liveFeedEnabled });
+  useMarketStreamConnection(liveFeedEnabled);
   const [feedsDrawerOpen, setFeedsDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (!liveFeedEnabled) return;
-    const updates: LiveTickerUpdate[] = [];
-    const streamFresh = isMarketLiveStreamFresh(liveStream);
-    const pushQuote = (id: string, market: 'AR' | 'US', symbol: string): void => {
-      const quote = getMarketLiveQuote(liveStream, market, symbol);
-      if (quote === null) return;
-      const extBadge = formatExtendedSessionBadge(quote.sessionPhase);
-      const displayPrice =
-        extBadge !== null && quote.extendedPrice !== undefined && quote.extendedPrice !== null
-          ? quote.extendedPrice
-          : quote.price;
-      const displayChangePct =
-        extBadge !== null && quote.extendedChangePct !== undefined && quote.extendedChangePct !== null
-          ? quote.extendedChangePct
-          : quote.changePct ?? Number.NaN;
-      updates.push({
-        id,
-        symbol: id,
-        price: displayPrice,
-        changePct: displayChangePct,
-        dir: quote.direction,
-        sessionPhase: market === 'US' ? (quote.sessionPhase ?? null) : null,
-      });
+    const unsubs: (() => void)[] = [];
+    const initialUpdates: LiveTickerUpdate[] = [];
+    const bindSymbol = (id: string, market: 'AR' | 'US', symbol: string): void => {
+      const existing = getAtomicMarketQuote(market, symbol);
+      if (existing !== null) {
+        initialUpdates.push(quoteToTickerUpdate(id, market, existing));
+      }
+      unsubs.push(
+        subscribeAtomicQuoteValue(market, symbol, (quote) => {
+          globalTickerStore.applyRealUpdates([quoteToTickerUpdate(id, market, quote)], true);
+        }),
+      );
     };
+
     for (const symbol of ['SPY', 'QQQ', 'IWM', 'DIA', 'NVDA', 'AAPL']) {
-      pushQuote(symbol, 'US', symbol);
+      bindSymbol(symbol, 'US', symbol);
     }
-    pushQuote('VIX', 'US', 'I:VIX');
+    bindSymbol('VIX', 'US', 'I:VIX');
     for (const symbol of ['GGAL', 'SUPV', 'TXAR', 'YPFD', 'PAMP', 'BMA']) {
-      pushQuote(symbol, 'AR', symbol);
+      bindSymbol(symbol, 'AR', symbol);
     }
-    if (streamFresh && liveStream.cclMedian !== null) {
-      updates.push({ id: 'CCL', symbol: 'Dólar CCL', price: liveStream.cclMedian, changePct: Number.NaN, dir: null });
+
+    const publishFxFromMeta = (): void => {
+      const meta = getMarketStreamMetaSnapshot();
+      if (!meta.isFresh) return;
+      const fxUpdates: LiveTickerUpdate[] = [];
+      if (meta.cclMedian !== null) {
+        fxUpdates.push({ id: 'CCL', symbol: 'Dólar CCL', price: meta.cclMedian, changePct: Number.NaN, dir: null });
+      }
+      if (meta.mepMedian !== null) {
+        fxUpdates.push({ id: 'MEP', symbol: 'Dólar MEP', price: meta.mepMedian, changePct: Number.NaN, dir: null });
+      }
+      if (fxUpdates.length > 0) {
+        globalTickerStore.applyRealUpdates(fxUpdates, true);
+      }
+    };
+    publishFxFromMeta();
+    unsubs.push(subscribeMarketStreamMeta(publishFxFromMeta));
+    if (initialUpdates.length > 0) {
+      globalTickerStore.applyRealUpdates(initialUpdates, true);
     }
-    if (streamFresh && liveStream.mepMedian !== null) {
-      updates.push({ id: 'MEP', symbol: 'Dólar MEP', price: liveStream.mepMedian, changePct: Number.NaN, dir: null });
-    }
-    if (updates.length > 0) globalTickerStore.applyRealUpdates(updates, true);
-  }, [liveFeedEnabled, liveStream]);
+
+    return () => {
+      for (const unsub of unsubs) unsub();
+    };
+  }, [liveFeedEnabled]);
 
   // Suscripción a actualizaciones reales emitidas por liveRuntimeBridge (Data912 / BYMA / Massive WS)
   useEffect(() => {
@@ -379,37 +492,6 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
       globalTickerStore.applyRealUpdates(updates);
     });
   }, [liveFeedEnabled]);
-
-  const streamIsFresh = isMarketLiveStreamFresh(liveStream);
-  const liveClock =
-    liveStream.lastReceivedAtMs !== null
-      ? new Date(liveStream.lastReceivedAtMs).toLocaleTimeString('es-AR', { hour12: false })
-      : '--:--:--';
-  const feedTag = streamIsFresh
-    ? liveStream.arSourceMode === 'LIVE_BMB'
-      ? 'EN VIVO · BMB'
-      : liveStream.arSourceMode === 'LIVE_IOL'
-        ? 'EN VIVO · IOL'
-        : `EN VIVO · ${liveStream.transport ?? 'WS'}`
-    : feedStatus === 'LIVE'
-      ? 'EN VIVO'
-      : feedStatus === 'EOD_CIERRE'
-      ? 'EOD CIERRE'
-      : feedStatus === 'DIFERIDO_20M'
-      ? 'DIFERIDO 20M'
-      : feedStatus === 'PARTIAL'
-      ? 'PARCIAL'
-      : liveStream.status === 'CONNECTING' || liveStream.status === 'RECONNECTING'
-        ? 'CONECTANDO ...'
-        : 'SIN FEED';
-
-  const isOpen = marketStatus === 'Abierto' && feedStatus !== 'NO_DATA';
-  const isExtended =
-    marketStatus === 'Pre-Market' ||
-    marketStatus === 'After-Hours' ||
-    feedStatus === 'EOD_CIERRE' ||
-    feedStatus === 'DIFERIDO_20M' ||
-    feedStatus === 'PARTIAL';
 
   const feedsPulseFresh =
     feedsHealth.lastPulseAtMs !== null && Date.now() - feedsHealth.lastPulseAtMs <= 15_000;
@@ -452,39 +534,11 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
         )}
 
         {/* Badge de Estado de Mercado con LED circular pulsante */}
-        <button
-          type="button"
-          onClick={onCycleMarketStatus}
-          title="Click para cambiar sesión (Abierto, Pre-Market, After-Hours, Cerrado)"
-          className={`inline-flex items-center gap-2 px-3 h-[30px] rounded-full border text-[11.5px] font-mono-num font-semibold transition-all cursor-pointer ${
-            isOpen
-              ? 'bg-[#0D221E] text-[#22C55E] border-[#164E3F] hover:border-[#22C55E]/60'
-              : isExtended
-              ? 'bg-[#281E0E] text-[#F5B544] border-[#59411A]'
-              : 'bg-[#1A1318] text-[#F23645] border-[#4A2229]'
-          }`}
-        >
-          <span className="relative flex h-2 w-2">
-            {isOpen && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#22C55E] opacity-75" />
-            )}
-            <span
-              className={`relative inline-flex rounded-full h-2 w-2 ${
-                isOpen ? 'bg-[#22C55E]' : isExtended ? 'bg-[#F5B544]' : 'bg-[#F23645]'
-              }`}
-            />
-          </span>
-          <span className="tracking-tight whitespace-nowrap">
-            NYSE / BYMA: {marketStatus} · {feedTag}
-            {streamIsFresh ? ` · ${liveClock} · ${String(liveStream.ticksPerSecond)} ticks/s` : ''}
-          </span>
-        </button>
-
-        {streamIsFresh && (
-          <span className="hidden lg:inline-flex items-center gap-1 rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
-            ● Tiempo real {liveClock}
-          </span>
-        )}
+        <MarketSessionStatusPill
+          marketStatus={marketStatus}
+          feedStatus={feedStatus}
+          onCycleMarketStatus={onCycleMarketStatus}
+        />
 
         <button
           type="button"

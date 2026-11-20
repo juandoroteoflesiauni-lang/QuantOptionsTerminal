@@ -70,6 +70,20 @@ import { loadOratsClientConfigFromEnv } from './oratsHybridClient.js';
 import { probeFmpPlans } from './fmpPlanProbe.js';
 import { collectBrokerSecretsFromEnv } from './primaryRofexLoader.js';
 import { redactSecrets } from './runtimeCache.js';
+import {
+  WS_BACKPRESSURE_CLOSE_CODE,
+  computeOrderBookSignature,
+  evaluateHeartbeatSweep,
+  evaluateWsBackpressure,
+  extractOptionUnderlying,
+  hasMarketQuoteChanged,
+  hasOptionQuoteChanged,
+  normalizeViewScope,
+  resolveScopedL2Symbol,
+  shouldEmitGgalBarTickToClient,
+  shouldEmitOptionQuoteToClient,
+  type LiveOptionQuoteSnapshot,
+} from './wsViewScopeBackpressure.js';
 
 const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i;
 
@@ -83,6 +97,9 @@ export interface HttpWsServerOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly startRuntimeWs?: boolean;
   readonly enableBackgroundWarmup?: boolean;
+  readonly heartbeatIntervalMs?: number;
+  readonly optionFlushIntervalMs?: number;
+  readonly getClientBufferedAmount?: (ws: WebSocket) => number;
 }
 
 export interface HttpWsServerHandle {
@@ -96,15 +113,41 @@ export interface HttpWsServerHandle {
   stop(): Promise<void>;
 }
 
+interface ScopedOrderBookPayload {
+  readonly symbol: string;
+  readonly bids: readonly { readonly price: number; readonly size: number; readonly orderCount: number | null }[];
+  readonly asks: readonly { readonly price: number; readonly size: number; readonly orderCount: number | null }[];
+  readonly microprice: number | null;
+  readonly micropriceL1: number | null;
+  readonly vpin: number | null;
+  readonly asOfUtcSec: number | null;
+  readonly source: string;
+}
+
 interface ClientSubscriptionState {
   symbols: Set<string> | null;
   needsSnapshot: boolean;
   healthOnly: boolean;
   /** Pieza 40: dueño del lease dinámico y símbolo de alta frecuencia. */
   ownerId: string;
+  /** Pieza 48: scope de vista activa y control de contrapresión/revisión por cliente. */
+  view: string | null;
   focusSymbol: string | null;
+  focusMarket: 'AR' | 'US' | null;
+  clientDeltaRevision: number;
+  backpressureActive: boolean;
+  coalescedDeltaQuotes: Map<string, ReturnType<MarketRuntime['getLiveUsQuotes']>[number]>;
+  coalescedDeltaRemoved: Set<string>;
+  coalescedCauciones: readonly unknown[] | null;
+  coalescedFutures: readonly unknown[] | null;
   marketEvents: Map<string, RuntimeWsBroadcast>;
   focusEvents: Map<string, RuntimeWsBroadcast>;
+  optionQuotesBuffer: Map<string, LiveOptionQuoteSnapshot>;
+  lastSentOptionQuotes: Map<string, LiveOptionQuoteSnapshot>;
+  lastSentStockQuotes: Map<string, string>;
+  lastSentL2Sig: string | null;
+  pongReceived: boolean;
+  missedHeartbeats: number;
 }
 
 function isBenignSocketError(err: unknown): boolean {
@@ -332,6 +375,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const port = options.port ?? 8787;
   const startRuntimeWs = options.startRuntimeWs ?? false;
   const enableBackgroundWarmup = options.enableBackgroundWarmup ?? false;
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 20_000;
+  const optionFlushIntervalMs = options.optionFlushIntervalMs ?? 200;
+  const getClientBufferedAmount = options.getClientBufferedAmount ?? ((ws: WebSocket): number => ws.bufferedAmount);
   let warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY' = 'IDLE';
 
   const clientStates = new WeakMap<WebSocket, ClientSubscriptionState>();
@@ -339,13 +385,75 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   let deltaRevision = 0;
   let marketTickTimer: ReturnType<typeof setInterval> | null = null;
   let focusTickTimer: ReturnType<typeof setInterval> | null = null;
+  let optionQuotesTimer: ReturnType<typeof setInterval> | null = null;
   let feedsHealthTimer: ReturnType<typeof setInterval> | null = null;
   let wsClientIdSequence = 0;
   let previousDeltaQuotes = new Map<string, (ReturnType<MarketRuntime['getLiveUsQuotes']>)[number]>();
   let previousDeltaCauciones = '';
   let previousDeltaFutures = '';
 
-  const buildMarketTickBatch = () => {
+  const resolveLiveOrderBookForSymbol = (symbol: string): ScopedOrderBookPayload | null => {
+    const clean = symbol.trim().toUpperCase();
+    if (clean === '') return null;
+    const bmbSnap = arRuntime.getCachedBmbSnapshot();
+    const bmbBook = bmbSnap?.orderBooksBySymbol[clean];
+    if (bmbBook !== undefined && (bmbBook.bids.length > 0 || bmbBook.asks.length > 0)) {
+      return {
+        symbol: clean,
+        bids: bmbBook.bids.map((l) => ({ price: l.price, size: l.size, orderCount: l.orderCount ?? null })),
+        asks: bmbBook.asks.map((l) => ({ price: l.price, size: l.size, orderCount: l.orderCount ?? null })),
+        microprice: null,
+        micropriceL1: null,
+        vpin: null,
+        asOfUtcSec: bmbBook.asOfUtcSec,
+        source: bmbBook.source,
+      };
+    }
+    const primaryBook = arRuntime.getCachedPrimaryMervBook(clean);
+    if (primaryBook !== null && (primaryBook.bids.length > 0 || primaryBook.asks.length > 0)) {
+      return {
+        symbol: clean,
+        bids: primaryBook.bids.map((l) => ({ price: l.price, size: l.size, orderCount: l.orderCount ?? null })),
+        asks: primaryBook.asks.map((l) => ({ price: l.price, size: l.size, orderCount: l.orderCount ?? null })),
+        microprice: null,
+        micropriceL1: null,
+        vpin: null,
+        asOfUtcSec: primaryBook.asOfUtcSec,
+        source: primaryBook.source,
+      };
+    }
+    return null;
+  };
+
+  const clearClientBuffers = (state: ClientSubscriptionState): void => {
+    state.marketEvents.clear();
+    state.focusEvents.clear();
+    state.coalescedDeltaQuotes.clear();
+    state.coalescedDeltaRemoved.clear();
+    state.coalescedCauciones = null;
+    state.coalescedFutures = null;
+    state.optionQuotesBuffer.clear();
+  };
+
+  const checkClientBackpressure = (
+    client: WebSocket,
+    state: ClientSubscriptionState,
+  ): 'SEND' | 'COALESCE' | 'KILL' => {
+    const decision = evaluateWsBackpressure(getClientBufferedAmount(client), state.backpressureActive);
+    state.backpressureActive = decision.nextConflating;
+    if (decision.action === 'KILL') {
+      clearClientBuffers(state);
+      try {
+        client.close(WS_BACKPRESSURE_CLOSE_CODE, 'backpressure_kill_water_mark');
+      } catch {
+        // Ignore close errors if already closing.
+      }
+      return 'KILL';
+    }
+    return decision.action;
+  };
+
+  const buildMarketTickBatch = (clientRevision?: number) => {
     marketTickSequence += 1;
     const ar = arRuntime.getLiveArMarketSnapshot();
     const quotes = [...runtime.getLiveUsQuotes(), ...ar.quotes];
@@ -353,7 +461,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     return {
       type: 'MARKET_TICK_BATCH' as const,
       sequence: marketTickSequence,
-      deltaRevision,
+      deltaRevision: clientRevision ?? deltaRevision,
       serverTimeSec: Math.floor(Date.now() / 1_000),
       quotes,
       liveFx,
@@ -418,12 +526,12 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     deltaRevision += 1;
     const snapshot = buildMarketTickBatch();
     const nextQuotes = new Map<string, (typeof snapshot.quotes)[number]>(
-      snapshot.quotes.map((quote) => [`${quote.market}:${quote.symbol}`, quote] as const),
+      snapshot.quotes.map((quote) => [`${quote.market}:${quote.symbol}:${quote.settlement ?? ''}`, quote] as const),
     );
     const changed: typeof snapshot.quotes[number][] = [];
     for (const [key, quote] of nextQuotes) {
       const previous = previousDeltaQuotes.get(key);
-      if (previous === undefined || JSON.stringify(previous) !== JSON.stringify(quote)) changed.push(quote);
+      if (hasMarketQuoteChanged(previous, quote)) changed.push(quote);
     }
     const removed = [...previousDeltaQuotes.keys()].filter((key) => !nextQuotes.has(key));
     const caucionesJson = JSON.stringify(snapshot.cauciones);
@@ -444,13 +552,25 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     };
   };
 
-  const sendMarketTickBatch = (client: WebSocket): void => {
-    if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) return;
+  const sendMarketTickBatch = (client: WebSocket, state?: ClientSubscriptionState): void => {
+    if (client.readyState !== WebSocket.OPEN) return;
+    if (state !== undefined) {
+      if (checkClientBackpressure(client, state) !== 'SEND') return;
+      client.send(JSON.stringify(buildMarketTickBatch(state.clientDeltaRevision)));
+      return;
+    }
+    if (getClientBufferedAmount(client) > 1_048_576) return;
     client.send(JSON.stringify(buildMarketTickBatch()));
   };
 
   const sendFeedsHealthPulse = (client: WebSocket, pulse: FeedsHealthPulse): void => {
-    if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) return;
+    if (client.readyState !== WebSocket.OPEN) return;
+    const state = clientStates.get(client);
+    if (state !== undefined) {
+      if (checkClientBackpressure(client, state) !== 'SEND') return;
+    } else if (getClientBufferedAmount(client) > 1_048_576) {
+      return;
+    }
     client.send(JSON.stringify(pulse));
   };
 
@@ -458,13 +578,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     client: WebSocket,
     state: ClientSubscriptionState,
     events: readonly RuntimeWsBroadcast[],
-    delta: ReturnType<typeof buildTickDelta> | null,
+    delta: Record<string, unknown> | null,
   ): void => {
     if (client.readyState !== WebSocket.OPEN) return;
-    if (client.bufferedAmount > 1_048_576) {
-      state.needsSnapshot = true;
-      return;
-    }
     const payload: Record<string, unknown> = {
       type: 'market_batch',
       serverTimeSec: Math.floor(Date.now() / 1_000),
@@ -476,30 +592,124 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   };
 
   const flushGeneralMarketBatches = (): void => {
-    const delta = buildTickDelta();
+    const globalDelta = buildTickDelta();
     for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
       const state = clientStates.get(client);
       if (state === undefined || state.healthOnly) continue;
-      if (state.needsSnapshot) {
-        sendMarketTickBatch(client);
-        state.needsSnapshot = false;
-        state.marketEvents.clear();
-        state.focusEvents.clear();
+
+      for (const quote of globalDelta.quotes) {
+        const key = `${quote.market}:${quote.symbol}:${quote.settlement ?? ''}`;
+        state.coalescedDeltaQuotes.set(key, quote);
+        state.coalescedDeltaRemoved.delete(key);
+      }
+      for (const removedKey of globalDelta.removed) {
+        state.coalescedDeltaQuotes.delete(removedKey);
+        state.coalescedDeltaRemoved.add(removedKey);
+      }
+      if (globalDelta.cauciones !== undefined) {
+        state.coalescedCauciones = globalDelta.cauciones;
+      }
+      if (globalDelta.futures !== undefined) {
+        state.coalescedFutures = globalDelta.futures;
+      }
+
+      if (checkClientBackpressure(client, state) !== 'SEND') {
         continue;
       }
-      sendMarketBatch(client, state, [...state.marketEvents.values()], delta);
+
+      if (state.needsSnapshot) {
+        sendMarketTickBatch(client, state);
+        state.needsSnapshot = false;
+        clearClientBuffers(state);
+        continue;
+      }
+
+      const l2Sym = resolveScopedL2Symbol(state);
+      let liveOrderBook: ScopedOrderBookPayload | undefined;
+      if (l2Sym !== null) {
+        const book = resolveLiveOrderBookForSymbol(l2Sym);
+        const sig = computeOrderBookSignature(book);
+        if (book !== null && sig !== null && sig !== state.lastSentL2Sig) {
+          liveOrderBook = book;
+          state.lastSentL2Sig = sig;
+        }
+      }
+
+      state.clientDeltaRevision += 1;
+      const clientDelta: Record<string, unknown> = {
+        type: globalDelta.type,
+        sequence: globalDelta.sequence,
+        serverTimeSec: globalDelta.serverTimeSec,
+        liveFx: globalDelta.liveFx,
+        cclMedian: globalDelta.cclMedian,
+        mepMedian: globalDelta.mepMedian,
+        arSourceMode: globalDelta.arSourceMode,
+        usSourceMode: globalDelta.usSourceMode,
+        arFeedStatus: globalDelta.arFeedStatus,
+        futuresSource: globalDelta.futuresSource,
+        deltaRevision: state.clientDeltaRevision,
+        quotes: [...state.coalescedDeltaQuotes.values()],
+        removed: [...state.coalescedDeltaRemoved],
+        ...(state.coalescedCauciones !== null ? { cauciones: state.coalescedCauciones } : {}),
+        ...(state.coalescedFutures !== null ? { futures: state.coalescedFutures } : {}),
+        ...(liveOrderBook !== undefined ? { liveOrderBook } : {}),
+      };
+
+      sendMarketBatch(client, state, [...state.marketEvents.values()], clientDelta);
       state.marketEvents.clear();
+      state.coalescedDeltaQuotes.clear();
+      state.coalescedDeltaRemoved.clear();
+      state.coalescedCauciones = null;
+      state.coalescedFutures = null;
     }
   };
 
   const flushFocusedMarketBatches = (): void => {
     for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
       const state = clientStates.get(client);
       if (state === undefined || state.healthOnly || state.focusSymbol === null) continue;
+      if (state.focusEvents.size === 0) continue;
+      if (checkClientBackpressure(client, state) !== 'SEND') {
+        continue;
+      }
       const events = [...state.focusEvents.values()];
-      if (events.length === 0) continue;
       sendMarketBatch(client, state, events, null);
       state.focusEvents.clear();
+    }
+  };
+
+  const flushOptionQuotesBatches = (): void => {
+    const serverTimeSec = Math.floor(Date.now() / 1_000);
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const state = clientStates.get(client);
+      if (state === undefined || state.healthOnly || state.view !== 'options') continue;
+      if (state.optionQuotesBuffer.size === 0) continue;
+      if (checkClientBackpressure(client, state) !== 'SEND') {
+        continue;
+      }
+      const changed: LiveOptionQuoteSnapshot[] = [];
+      for (const quote of state.optionQuotesBuffer.values()) {
+        if (!shouldEmitOptionQuoteToClient(state, quote.underlying)) continue;
+        const prev = state.lastSentOptionQuotes.get(quote.symbol);
+        if (hasOptionQuoteChanged(prev, quote)) {
+          changed.push(quote);
+          state.lastSentOptionQuotes.set(quote.symbol, quote);
+        }
+      }
+      state.optionQuotesBuffer.clear();
+      if (changed.length > 0) {
+        client.send(
+          JSON.stringify({
+            type: 'option_quotes_batch',
+            underlying: state.focusSymbol,
+            serverTimeSec,
+            quotes: changed,
+          }),
+        );
+      }
     }
   };
 
@@ -1172,7 +1382,6 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     }
   });
 
-  const clientAlive = new WeakMap<WebSocket, boolean>();
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   wss.on('connection', (ws, request) => {
@@ -1188,14 +1397,28 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       needsSnapshot: false,
       healthOnly,
       ownerId: `ws-${String(++wsClientIdSequence)}`,
+      view: null,
       focusSymbol: null,
+      focusMarket: null,
+      clientDeltaRevision: 0,
+      backpressureActive: false,
+      coalescedDeltaQuotes: new Map(),
+      coalescedDeltaRemoved: new Set(),
+      coalescedCauciones: null,
+      coalescedFutures: null,
       marketEvents: new Map(),
       focusEvents: new Map(),
+      optionQuotesBuffer: new Map(),
+      lastSentOptionQuotes: new Map(),
+      lastSentStockQuotes: new Map(),
+      lastSentL2Sig: null,
+      pongReceived: true,
+      missedHeartbeats: 0,
     };
     clientStates.set(ws, state);
-    clientAlive.set(ws, true);
     ws.on('pong', () => {
-      clientAlive.set(ws, true);
+      state.pongReceived = true;
+      state.missedHeartbeats = 0;
     });
     ws.on('error', (err) => {
       if (isBenignSocketError(err)) return;
@@ -1214,21 +1437,70 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         sendFeedsHealthPulse(ws, feedsHealthMonitor.getPulse());
       } else {
         ws.send(JSON.stringify(connectedEvent));
-        sendMarketTickBatch(ws);
+        sendMarketTickBatch(ws, state);
       }
     }
 
     ws.on('close', () => {
       runtime.releaseMassiveStockOwner(state.ownerId);
-      state.marketEvents.clear();
-      state.focusEvents.clear();
+      clearClientBuffers(state);
+      state.lastSentOptionQuotes.clear();
+      state.lastSentStockQuotes.clear();
     });
 
     ws.on('message', (raw) => {
       try {
         const text = typeof raw === 'string' ? raw : Buffer.from(raw as Uint8Array).toString('utf-8');
-        const parsed = JSON.parse(text) as { readonly action?: unknown; readonly symbols?: unknown; readonly symbol?: unknown };
-        if (parsed.action === 'subscribe' && Array.isArray(parsed.symbols)) {
+        const parsed = JSON.parse(text) as {
+          readonly type?: unknown;
+          readonly action?: unknown;
+          readonly symbols?: unknown;
+          readonly symbol?: unknown;
+          readonly view?: unknown;
+          readonly focusSymbol?: unknown;
+          readonly focusMarket?: unknown;
+        };
+        if (parsed.type === 'set_view_scope') {
+          const scope = normalizeViewScope({
+            view: parsed.view,
+            focusSymbol: parsed.focusSymbol,
+            focusMarket: parsed.focusMarket,
+          });
+          const previousFocus = state.focusSymbol;
+          const previousMarket = state.focusMarket;
+          state.view = scope.view;
+          state.focusSymbol = scope.focusSymbol;
+          state.focusMarket = scope.focusMarket;
+
+          for (const [key, event] of state.focusEvents) {
+            if (event.type === 'status') continue;
+            if (scope.focusSymbol === null || event.symbol !== scope.focusSymbol) {
+              state.marketEvents.set(key, event);
+            }
+          }
+          state.focusEvents.clear();
+
+          if (
+            previousFocus !== null &&
+            previousMarket !== 'AR' &&
+            (previousFocus !== scope.focusSymbol || scope.focusMarket === 'AR')
+          ) {
+            runtime.releaseMassiveStockSymbol(previousFocus, state.ownerId);
+          }
+          if (scope.focusSymbol !== null && scope.focusMarket !== 'AR') {
+            runtime.acquireMassiveStockSymbol(scope.focusSymbol, state.ownerId);
+          }
+
+          state.optionQuotesBuffer.clear();
+          state.lastSentOptionQuotes.clear();
+          state.lastSentL2Sig = null;
+
+          if (scope.view === 'options' && scope.focusSymbol !== null) {
+            for (const quote of runtime.getLiveOptionQuotes(scope.focusSymbol)) {
+              state.optionQuotesBuffer.set(quote.symbol, quote);
+            }
+          }
+        } else if (parsed.action === 'subscribe' && Array.isArray(parsed.symbols)) {
           const nextSet = new Set<string>();
           for (const item of parsed.symbols) {
             if (typeof item === 'string' && item.trim() !== '') {
@@ -1266,14 +1538,54 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     if (event.type === 'status') {
       const serialized = JSON.stringify(event);
       for (const client of wss.clients) {
-        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > 1_048_576) {
+        if (client.readyState !== WebSocket.OPEN) {
           continue;
         }
         const state = clientStates.get(client);
         if (state === undefined || state.healthOnly) continue;
+        if (checkClientBackpressure(client, state) !== 'SEND') continue;
         if (shouldSendBroadcast(state, event)) {
           client.send(serialized);
         }
+      }
+      return;
+    }
+
+    if ((event.type === 'trade' || event.type === 'quote') && event.cluster === 'options') {
+      const underlying = extractOptionUnderlying(event.symbol);
+      if (underlying === null) return;
+      const key = event.symbol.trim().toUpperCase();
+      const runtimeSnapshot = runtime.getLiveOptionQuoteSnapshot(key);
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        const state = clientStates.get(client);
+        if (state === undefined || state.healthOnly) continue;
+        if (!shouldEmitOptionQuoteToClient(state, underlying)) continue;
+        const prevOpt = state.optionQuotesBuffer.get(key) ?? state.lastSentOptionQuotes.get(key);
+        const optSnapshot: LiveOptionQuoteSnapshot =
+          runtimeSnapshot ??
+          (event.type === 'trade'
+            ? {
+                symbol: key,
+                underlying,
+                time: event.time,
+                bid: prevOpt?.bid ?? null,
+                ask: prevOpt?.ask ?? null,
+                mid: prevOpt?.mid ?? null,
+                last: event.price,
+                size: event.size,
+              }
+            : {
+                symbol: key,
+                underlying,
+                time: event.time,
+                bid: event.bid,
+                ask: event.ask,
+                mid: event.mid,
+                last: prevOpt?.last ?? null,
+                size: prevOpt?.size ?? null,
+              });
+        state.optionQuotesBuffer.set(key, optSnapshot);
       }
       return;
     }
@@ -1289,7 +1601,17 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       }
       const state = clientStates.get(client);
       if (state === undefined || state.healthOnly) continue;
+      if (event.type === 'ggal_bar_tick' && !shouldEmitGgalBarTickToClient(state)) {
+        continue;
+      }
       if (!shouldSendBroadcast(state, event)) continue;
+      if (event.type === 'quote' && event.cluster === 'stocks') {
+        const sig = `${String(event.bid ?? '')}|${String(event.ask ?? '')}|${String(event.mid ?? '')}`;
+        if (state.lastSentStockQuotes.get(event.symbol) === sig) {
+          continue;
+        }
+        state.lastSentStockQuotes.set(event.symbol, sig);
+      }
       if (state.focusSymbol !== null && event.symbol === state.focusSymbol) {
         state.focusEvents.set(key, event);
       } else {
@@ -1327,6 +1649,11 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       }, 50);
       focusTickTimer.unref();
 
+      optionQuotesTimer = setInterval(() => {
+        flushOptionQuotesBatches();
+      }, optionFlushIntervalMs);
+      optionQuotesTimer.unref();
+
       feedsHealthTimer = setInterval(() => {
         const pulse = feedsHealthMonitor.getPulse();
         for (const client of wss.clients) {
@@ -1338,18 +1665,22 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       heartbeatTimer = setInterval(() => {
         for (const client of wss.clients) {
           if (client.readyState !== WebSocket.OPEN) continue;
-          if (clientAlive.get(client) === false) {
+          const state = clientStates.get(client);
+          if (state === undefined) continue;
+          const decision = evaluateHeartbeatSweep(state.pongReceived, state.missedHeartbeats);
+          state.missedHeartbeats = decision.nextMissed;
+          if (decision.action === 'TERMINATE') {
             client.terminate();
             continue;
           }
-          clientAlive.set(client, false);
+          state.pongReceived = false;
           try {
             client.ping();
           } catch {
             client.terminate();
           }
         }
-      }, 20_000);
+      }, heartbeatIntervalMs);
       heartbeatTimer.unref();
 
       if (startRuntimeWs) {
@@ -1383,6 +1714,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       marketTickTimer = null;
       if (focusTickTimer !== null) clearInterval(focusTickTimer);
       focusTickTimer = null;
+      if (optionQuotesTimer !== null) clearInterval(optionQuotesTimer);
+      optionQuotesTimer = null;
       if (feedsHealthTimer !== null) clearInterval(feedsHealthTimer);
       feedsHealthTimer = null;
       if (heartbeatTimer !== null) clearInterval(heartbeatTimer);

@@ -189,7 +189,7 @@ export const StockDetailSymbolSelector: React.FC<StockDetailSymbolSelectorProps>
     <div
       onClick={onClose}
       role="presentation"
-      className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[8vh] bg-black/65 backdrop-blur-[4px]"
+      className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[8vh] bg-[rgba(13,17,23,0.92)]"
     >
       <div
         onClick={(event) => event.stopPropagation()}

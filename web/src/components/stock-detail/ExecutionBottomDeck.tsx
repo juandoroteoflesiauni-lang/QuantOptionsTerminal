@@ -212,7 +212,7 @@ export const ExecutionBottomDeck: React.FC<{
 
         {/* Tabla L2 5 Puntas */}
         {book && (book.bids.length > 0 || book.asks.length > 0) ? (
-          <div className="grid grid-cols-2 gap-2 font-mono-num text-[11px]">
+          <div className="perf-table-viewport grid grid-cols-2 gap-2 font-mono-num tabular-nums text-[11px]">
             <div className="flex flex-col gap-1">
               <div className="flex justify-between text-[9px] uppercase text-[#6D738E] px-1">
                 <span>Vol.</span>

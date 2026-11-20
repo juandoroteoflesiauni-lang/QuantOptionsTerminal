@@ -2024,3 +2024,30 @@ export function buildSvgLinePath(
   }
   return parts.join(' ');
 }
+
+export function safeAnalyticalBsmGamma(
+  spot: number,
+  strike: number,
+  ivPct: number,
+  daysToExpiry: number,
+  rateDec: number,
+): number {
+  if (
+    !Number.isFinite(spot) ||
+    spot <= 0 ||
+    !Number.isFinite(strike) ||
+    strike <= 0 ||
+    !Number.isFinite(ivPct) ||
+    ivPct <= 0
+  ) {
+    return Number.NaN;
+  }
+  const t = Math.max((Number.isFinite(daysToExpiry) && daysToExpiry > 0 ? daysToExpiry : 1) / 365, 1e-4);
+  const sigma = Math.max(ivPct / 100, 1e-4);
+  const r = Number.isFinite(rateDec) ? rateDec : 0;
+  const sqrtT = Math.sqrt(t);
+  const d1 = (Math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrtT);
+  const nd1Prime = Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI);
+  const g = nd1Prime / (spot * sigma * sqrtT);
+  return Number.isFinite(g) ? g : Number.NaN;
+}

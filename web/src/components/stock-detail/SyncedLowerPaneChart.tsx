@@ -130,8 +130,13 @@ export const SyncedLowerPaneChart: React.FC<{
         borderColor: '#1E1E2B',
         timeVisible: true,
         secondsVisible: false,
+        enableConflation: true,
+        conflationThresholdFactor: 1.0,
+        precomputeConflationOnInit: true,
+        precomputeConflationPriority: 'background',
       },
-      width: el.clientWidth,
+      autoSize: false,
+      width: Math.max(1, Math.floor(el.clientWidth)),
       height: 190,
     });
 
@@ -167,6 +172,15 @@ export const SyncedLowerPaneChart: React.FC<{
     histSeriesRef.current = hist;
     lineSeriesRef.current = line;
     baselineSeriesRef.current = baseline;
+    ivPriceLineRef.current = line.createPriceLine({
+      price: 0,
+      color: '#8B7CF6',
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      lineVisible: false,
+      axisLabelVisible: false,
+      title: 'IV ATM',
+    });
 
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
       if (
@@ -192,12 +206,17 @@ export const SyncedLowerPaneChart: React.FC<{
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
-    const resizeObserver = new ResizeObserver(() => {
-      if (!containerRef.current) return;
-      const w = containerRef.current.clientWidth;
-      if (w > 0) {
-        chart.applyOptions({ width: w, height: 190 });
-      }
+    let resizeRafId: number | null = null;
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      const inlineSize = entry?.contentBoxSize?.[0]?.inlineSize ?? containerRef.current?.clientWidth ?? 0;
+      const w = Math.floor(inlineSize);
+      if (w <= 0) return;
+      if (resizeRafId !== null) window.cancelAnimationFrame(resizeRafId);
+      resizeRafId = window.requestAnimationFrame(() => {
+        resizeRafId = null;
+        chart.resize(w, 190);
+      });
     });
     resizeObserver.observe(el);
 
@@ -236,6 +255,7 @@ export const SyncedLowerPaneChart: React.FC<{
     };
 
     return () => {
+      if (resizeRafId !== null) window.cancelAnimationFrame(resizeRafId);
       resizeObserver.disconnect();
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
@@ -244,6 +264,7 @@ export const SyncedLowerPaneChart: React.FC<{
       histSeriesRef.current = null;
       lineSeriesRef.current = null;
       baselineSeriesRef.current = null;
+      ivPriceLineRef.current = null;
       applyExternalRangeRef.current = null;
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
@@ -265,11 +286,6 @@ export const SyncedLowerPaneChart: React.FC<{
     const line = lineSeriesRef.current;
     const baseline = baselineSeriesRef.current;
     if (!chart || !hist || !line || !baseline) return;
-
-    if (ivPriceLineRef.current) {
-      line.removePriceLine(ivPriceLineRef.current);
-      ivPriceLineRef.current = null;
-    }
 
     const firstBarTime = bundle.bars[0]?.time ?? null;
     const lastBarTime = bundle.bars[bundle.bars.length - 1]?.time ?? null;
@@ -296,11 +312,18 @@ export const SyncedLowerPaneChart: React.FC<{
       hist.setData([]);
       line.setData([]);
       baseline.setData([]);
+      ivPriceLineRef.current?.applyOptions({
+        price: 0,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'IV ATM',
+      });
       return;
     }
 
     // Poblar la serie activa antes de vaciar las inactivas para que el
     // timeScale nunca quede sin puntos y preserve el rango visible al cambiar de modo.
+    let showIvLine = false;
     if (mode === 'CVD') {
       line.applyOptions({
         color: '#38BDF8',
@@ -365,15 +388,24 @@ export const SyncedLowerPaneChart: React.FC<{
         (rv) => rv !== undefined && Number.isFinite(rv),
       );
       if (bundle.ivAtmPct !== null && Number.isFinite(bundle.ivAtmPct) && bundle.ivAtmPct > 0) {
-        ivPriceLineRef.current = line.createPriceLine({
-          price: bundle.ivAtmPct,
-          color: '#8B7CF6',
-          lineWidth: 2,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `IV ATM ${fmtNum(bundle.ivAtmPct, 1)}%`,
-        });
+        showIvLine = true;
       }
+    }
+
+    if (showIvLine && bundle.ivAtmPct !== null) {
+      ivPriceLineRef.current?.applyOptions({
+        price: bundle.ivAtmPct,
+        lineVisible: true,
+        axisLabelVisible: true,
+        title: `IV ATM ${fmtNum(bundle.ivAtmPct, 1)}%`,
+      });
+    } else {
+      ivPriceLineRef.current?.applyOptions({
+        price: 0,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'IV ATM',
+      });
     }
 
     const modeChanged = prevModeRef.current !== mode;

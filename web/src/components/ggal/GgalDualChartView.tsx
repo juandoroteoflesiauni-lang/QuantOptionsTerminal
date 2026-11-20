@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CandlestickSeries,
   ColorType,
@@ -8,6 +8,7 @@ import {
   createChart,
   type AutoscaleInfo,
   type IChartApi,
+  type IPriceLine,
   type IPrimitivePaneRenderer,
   type IPrimitivePaneView,
   type ISeriesApi,
@@ -22,7 +23,6 @@ import {
 } from 'lightweight-charts';
 import { AlertTriangle, Layers, RefreshCw } from 'lucide-react';
 import { projectLiveEma } from '../../../../src/core/ema';
-import { subscribeGgalBarTick } from '../../api/useMarketLiveStream';
 import {
   appendLiveTapeTick,
   projectLiveCandle,
@@ -53,11 +53,14 @@ import {
 } from '../../../../src/core/ggal/chartCoordGuard';
 import {
   formatExtendedSessionBadge,
-  getMarketLiveClock,
-  getMarketLiveQuote,
+  getMarketStreamMetaClock,
+  subscribeAtomicQuoteValue,
+  subscribeGgalBarTick,
   tickFlashClass,
+  useAtomicMarketQuote,
+  useAtomicOrderBook,
   useLivePriceFlash,
-  useMarketLiveStream,
+  useMarketStreamMeta,
   type MarketLiveQuote,
 } from '../../api/useMarketLiveStream';
 
@@ -786,6 +789,7 @@ function L2LadderPanel({
   readonly microstructureError: string | null;
   readonly coordMode: GgalDualChartCoordMode;
 }) {
+  const liveBook = useAtomicOrderBook('GGAL', 100);
   const micro =
     microstructure !== null && microstructure.microstructure.status === 'OPERATIONAL'
       ? microstructure.microstructure
@@ -799,13 +803,65 @@ function L2LadderPanel({
   const micropriceL1 = micro !== null ? applyFactor(micro.micropriceL1, factor) : Number.NaN;
   const midPrice = micro !== null ? applyFactor(micro.midPrice, factor) : Number.NaN;
 
+  const effectiveLadder: GgalL2LadderStateDto | null = useMemo(() => {
+    if (
+      liveBook !== null &&
+      liveBook.symbol === 'GGAL' &&
+      (liveBook.bids.length > 0 || liveBook.asks.length > 0)
+    ) {
+      const arsScale = coordMode === 'ARS_BYMA' ? 1 : factor;
+      if (Number.isFinite(arsScale) && arsScale > 0) {
+        const resolvedProvider = ((): Extract<
+          GgalL2LadderStateDto,
+          { readonly available: true }
+        >['activeProvider'] => {
+          const src = liveBook.source;
+          if (
+            src === 'PRIMARY_MATRIZ_WS' ||
+            src === 'PPI_REST' ||
+            src === 'IOL_REST' ||
+            src === 'BMB_HOMEBROKER_BRIDGE' ||
+            src === 'MAE_MARKETDATA_V1'
+          ) {
+            return src;
+          }
+          if (src.includes('BMB')) return 'BMB_HOMEBROKER_BRIDGE';
+          if (src.includes('PRIMARY')) return 'PRIMARY_MATRIZ_WS';
+          return ladder?.activeProvider ?? 'PRIMARY_MATRIZ_WS';
+        })();
+        return {
+          symbol: ladder?.symbol ?? 'GGAL',
+          available: true,
+          qualityTier: 'REALTIME_L2_TICK',
+          activeProvider: resolvedProvider,
+          asOfUtcSec: liveBook.asOfUtcSec ?? ladder?.asOfUtcSec ?? Math.floor(Date.now() / 1_000),
+          bids: liveBook.bids.slice(0, 5).map((lvl, idx) => ({
+            level: (idx + 1) as 1 | 2 | 3 | 4 | 5,
+            price: lvl.price * arsScale,
+            size: lvl.size,
+            orderCount: lvl.orderCount,
+          })),
+          asks: liveBook.asks.slice(0, 5).map((lvl, idx) => ({
+            level: (idx + 1) as 1 | 2 | 3 | 4 | 5,
+            price: lvl.price * arsScale,
+            size: lvl.size,
+            orderCount: lvl.orderCount,
+          })),
+          bookStatus: 'LIVE',
+          isEodCached: false,
+        };
+      }
+    }
+    return ladder;
+  }, [coordMode, factor, ladder, liveBook]);
+
   const sortedBids =
-    ladder !== null && ladder.available
-      ? [...ladder.bids].sort((a, b) => b.price - a.price)
+    effectiveLadder !== null && effectiveLadder.available
+      ? [...effectiveLadder.bids].sort((a, b) => b.price - a.price)
       : [];
   const sortedAsks =
-    ladder !== null && ladder.available
-      ? [...ladder.asks].sort((a, b) => b.price - a.price)
+    effectiveLadder !== null && effectiveLadder.available
+      ? [...effectiveLadder.asks].sort((a, b) => b.price - a.price)
       : [];
   const maxSize = Math.max(
     1,
@@ -832,37 +888,37 @@ function L2LadderPanel({
               Escalera L2 en Vivo (5 Puntas BI/OF)
             </div>
             <div className="font-mono text-[9px] text-[#6B7280]">
-              BMB / Primary · {ladder?.activeProvider ?? 'SIN FEED'} · {ladder?.qualityTier ?? '—'}
+              BMB / Primary · {effectiveLadder?.activeProvider ?? 'SIN FEED'} · {effectiveLadder?.qualityTier ?? '—'}
             </div>
           </div>
           <span className="rounded border border-[#1C1C24] bg-[#111116] px-1.5 py-0.5 font-mono text-[9px] text-[#9CA3AF]">
-            {ladder?.asOfUtcSec !== undefined ? formatTimestamp(ladder.asOfUtcSec) : '—'}
+            {effectiveLadder?.asOfUtcSec !== undefined ? formatTimestamp(effectiveLadder.asOfUtcSec) : '—'}
           </span>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 py-1.5">
-        {ladder === null ? (
+      <div className="perf-table-viewport flex-1 overflow-y-auto px-2 py-1.5 tabular-nums">
+        {effectiveLadder === null ? (
           <div className="flex h-full items-center justify-center px-4 text-center font-mono text-[10px] text-[#6B7280]">
             Sin payload de libro L2.
           </div>
-        ) : !ladder.available ? (
+        ) : !effectiveLadder.available ? (
           <div className="rounded border border-[#1C1C24] bg-[#111116] p-2.5">
             <div className="font-mono text-[10px] font-semibold text-[#E5E7EB]">
-              {ladder.reason === 'OUT_OF_SESSION' ? 'BMB BRIDGE ARMADO' : 'L2 NO DISPONIBLE'}
+              {effectiveLadder.reason === 'OUT_OF_SESSION' ? 'BMB BRIDGE ARMADO' : 'L2 NO DISPONIBLE'}
             </div>
             <p className="mt-1 text-[10px] leading-relaxed text-[#9CA3AF]">
-              {ladder.reason === 'OUT_OF_SESSION'
+              {effectiveLadder.reason === 'OUT_OF_SESSION'
                 ? BMB_OUT_OF_SESSION_MESSAGE
-                : `Motivo: ${ladder.reason}`}
+                : `Motivo: ${effectiveLadder.reason}`}
             </p>
             <p className="mt-1 font-mono text-[9px] text-[#6B7280]">
-              Feed: {ladder.activeProvider ?? 'NINGUNO'} · Tier: {ladder.qualityTier}
+              Feed: {effectiveLadder.activeProvider ?? 'NINGUNO'} · Tier: {effectiveLadder.qualityTier}
             </p>
           </div>
         ) : (
           <>
-            {(ladder.bookStatus === 'EOD_CIERRE' || ladder.isEodCached === true) && (
+            {(effectiveLadder.bookStatus === 'EOD_CIERRE' || effectiveLadder.isEodCached === true) && (
               <div className="mb-1 flex items-center justify-between rounded border border-[#F59E0B]/30 bg-[#35280F]/40 px-1.5 py-0.5 font-mono text-[9px] text-[#F5B544]">
                 <span>EOD / CIERRE</span>
                 <span>Último snapshot L2</span>
@@ -1050,6 +1106,54 @@ function KeyLevelsPanel({
   );
 }
 
+const GgalToolbarSpotBadge = memo(function GgalToolbarSpotBadge({
+  coordMode,
+  fallbackSpot,
+}: {
+  readonly coordMode: GgalDualChartCoordMode;
+  readonly fallbackSpot: number | null | undefined;
+}) {
+  const liveArGgal = useAtomicMarketQuote('AR', 'GGAL', 250);
+  const liveUsGgal = useAtomicMarketQuote('US', 'GGAL', 250);
+  const streamMeta = useMarketStreamMeta(500);
+  const adrExtBadge = formatExtendedSessionBadge(liveUsGgal?.sessionPhase);
+  const adrExtChangePct = liveUsGgal?.extendedChangePct ?? null;
+  const liveDisplaySpot =
+    coordMode === 'ARS_BYMA'
+      ? liveArGgal?.price ?? null
+      : coordMode === 'USD_ADR_NASDAQ'
+        ? liveUsGgal?.price ?? null
+        : liveArGgal !== null && liveUsGgal !== null && liveUsGgal.price > 0
+          ? (liveArGgal.price * 10) / liveUsGgal.price
+          : null;
+  const liveClock = streamMeta.isFresh ? getMarketStreamMetaClock(streamMeta) : null;
+  const liveSpotFlash = useLivePriceFlash(liveDisplaySpot);
+
+  return (
+    <>
+      <span>
+        Spot:{' '}
+        <strong className={`rounded px-1 tabular-nums ${tickFlashClass(liveSpotFlash)}`}>
+          {formatCoordPrice(liveDisplaySpot ?? fallbackSpot, coordMode)}
+        </strong>
+      </span>
+      {liveDisplaySpot !== null && liveClock !== null && (
+        <span
+          className={`rounded-full border px-1.5 py-0.5 tabular-nums ${
+            (coordMode === 'USD_ADR_NASDAQ' || coordMode === 'RATIO_CCL') && adrExtBadge !== null
+              ? 'border-[#F5B544]/40 bg-[#F5B544]/10 text-[#F5B544]'
+              : 'border-[#22C55E]/35 bg-[#22C55E]/10 text-[#22C55E]'
+          }`}
+        >
+          {(coordMode === 'USD_ADR_NASDAQ' || coordMode === 'RATIO_CCL') && adrExtBadge !== null
+            ? `● ${adrExtBadge}${adrExtChangePct !== null ? ` (${adrExtChangePct >= 0 ? '+' : ''}${adrExtChangePct.toFixed(2).replace('.', ',')}%)` : ''} · ${liveClock}`
+            : `● Tiempo real ${liveClock}`}
+        </span>
+      )}
+    </>
+  );
+});
+
 export function GgalDualChartView({
   payload,
   microstructure,
@@ -1064,26 +1168,17 @@ export function GgalDualChartView({
   onChangeAvwapAnchor,
   onRefresh,
 }: GgalDualChartViewProps) {
-  const liveStream = useMarketLiveStream();
-  const liveArGgal = getMarketLiveQuote(liveStream, 'AR', 'GGAL');
-  const liveUsGgal = getMarketLiveQuote(liveStream, 'US', 'GGAL');
-  const adrExtBadge = formatExtendedSessionBadge(liveUsGgal?.sessionPhase);
-  const adrExtChangePct = liveUsGgal?.extendedChangePct ?? null;
-  const liveDisplaySpot = coordMode === 'ARS_BYMA'
-    ? liveArGgal?.price ?? null
-    : coordMode === 'USD_ADR_NASDAQ'
-      ? liveUsGgal?.price ?? null
-      : liveArGgal !== null && liveUsGgal !== null && liveUsGgal.price > 0
-        ? (liveArGgal.price * 10) / liveUsGgal.price
-        : null;
-  const liveClock = getMarketLiveClock(liveStream);
-  const liveSpotFlash = useLivePriceFlash(liveDisplaySpot);
   const lastBarRef = useRef<LiveChartBar | null>(null);
   const closedBarsRef = useRef<readonly LiveChartBar[]>([]);
-  const emaBaselinesRef = useRef<{ readonly 9: number; readonly 21: number; readonly 50: number; readonly 200: number } | null>(null);
+  const emaBaselinesRef = useRef<{ 9: number; 21: number; 50: number; 200: number } | null>(null);
+  const emaEndRef = useRef<{ 9: number; 21: number; 50: number; 200: number } | null>(null);
   const emaSeriesRefs = useRef<Partial<Record<9 | 21 | 50 | 200, ISeriesApi<'Line'>>>>({});
   const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const cvdSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const cclBrechaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const rsBmaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const rsBbarSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const rsSupvSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   // Pieza 39: volumen + AVWAP con refs nombradas para updates tick-a-tick.
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const avwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -1091,12 +1186,13 @@ export function GgalDualChartView({
   const avwapMinus1SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const avwapPlus2SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const avwapMinus2SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const priceLineSlotsRef = useRef<Record<LevelId, IPriceLine> | null>(null);
   // Leyenda OHLCV: DOM directo (sin setState por pixel de mouse).
   const crosshairLegendRef = useRef<HTMLDivElement | null>(null);
   const lastCvdRef = useRef<number | null>(null);
   const tapeRef = useRef<readonly LiveTapeTick[]>([]);
-  const previousArQuoteRef = useRef<MarketLiveQuote | null>(null);
-  const previousUsQuoteRef = useRef<MarketLiveQuote | null>(null);
+  const lastDatasetSigRef = useRef<string | null>(null);
+  const tickRafIdRef = useRef<number | null>(null);
   const [subPaneMode, setSubPaneMode] = useState<GgalSubPaneIndicatorMode>('CVD_LEE_READY');
   const [greekMode, setGreekMode] = useState<GgalGreekProfileMode>('SIGNED_GEX');
   const [toggles, setToggles] = useState<OverlayToggleState>({
@@ -1165,6 +1261,8 @@ export function GgalDualChartView({
   latestPayloadRef.current = safePayload;
   const togglesRef = useRef(toggles);
   togglesRef.current = toggles;
+  const subPaneModeRef = useRef(subPaneMode);
+  subPaneModeRef.current = subPaneMode;
 
   const coneLabel = useMemo(() => resolveConeLabel(timeframe, safePayload), [timeframe, safePayload]);
   const hasCone = (safePayload?.expectedCone?.length ?? 0) >= 2;
@@ -1195,7 +1293,9 @@ export function GgalDualChartView({
     };
 
     const mainChart = createChart(mainEl, {
-      autoSize: true,
+      autoSize: false,
+      width: Math.max(1, Math.floor(mainEl.clientWidth)),
+      height: Math.max(1, Math.floor(mainEl.clientHeight)),
       layout: commonLayout,
       grid: commonGrid,
       rightPriceScale: {
@@ -1207,11 +1307,17 @@ export function GgalDualChartView({
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 2,
+        enableConflation: true,
+        conflationThresholdFactor: 1.0,
+        precomputeConflationOnInit: true,
+        precomputeConflationPriority: 'background',
       },
     });
 
     const subChart = createChart(subEl, {
-      autoSize: true,
+      autoSize: false,
+      width: Math.max(1, Math.floor(subEl.clientWidth)),
+      height: Math.max(1, Math.floor(subEl.clientHeight)),
       layout: commonLayout,
       grid: commonGrid,
       rightPriceScale: {
@@ -1223,6 +1329,10 @@ export function GgalDualChartView({
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 2,
+        enableConflation: true,
+        conflationThresholdFactor: 1.0,
+        precomputeConflationOnInit: true,
+        precomputeConflationPriority: 'background',
       },
     });
 
@@ -1265,6 +1375,115 @@ export function GgalDualChartView({
     });
     volumeSeriesRef.current = volumeSeries;
 
+    const initialToggles = togglesRef.current;
+    const initialSubPaneMode = subPaneModeRef.current;
+
+    const addPersistentOverlay = (
+      color: string,
+      width: number,
+      lineStyle: LineStyle,
+      visible: boolean,
+    ): ISeriesApi<'Line'> =>
+      mainChart.addSeries(LineSeries, {
+        color,
+        lineWidth: asLineWidth(width),
+        lineStyle,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        visible,
+        autoscaleInfoProvider: () => null,
+      });
+
+    emaSeriesRefs.current = {
+      9: addPersistentOverlay(INDICATOR_COLORS.ema9, 1.25, LineStyle.Solid, initialToggles.showEmas),
+      21: addPersistentOverlay(INDICATOR_COLORS.ema21, 1.25, LineStyle.Solid, initialToggles.showEmas),
+      50: addPersistentOverlay(INDICATOR_COLORS.ema50, 1.5, LineStyle.Solid, initialToggles.showEmas),
+      200: addPersistentOverlay(INDICATOR_COLORS.ema200, 2, LineStyle.Solid, initialToggles.showEmas),
+    };
+    vwapSeriesRef.current = addPersistentOverlay(
+      INDICATOR_COLORS.sessionVwap,
+      1.5,
+      LineStyle.Solid,
+      initialToggles.showSessionVwap,
+    );
+    avwapSeriesRef.current = addPersistentOverlay(
+      INDICATOR_COLORS.avwap,
+      1.75,
+      LineStyle.Solid,
+      initialToggles.showAvwap,
+    );
+    avwapPlus1SeriesRef.current = addPersistentOverlay(
+      INDICATOR_COLORS.avwapBand,
+      1,
+      LineStyle.Dashed,
+      initialToggles.showAvwap,
+    );
+    avwapMinus1SeriesRef.current = addPersistentOverlay(
+      INDICATOR_COLORS.avwapBand,
+      1,
+      LineStyle.Dashed,
+      initialToggles.showAvwap,
+    );
+    avwapPlus2SeriesRef.current = addPersistentOverlay(
+      INDICATOR_COLORS.avwapBand,
+      1,
+      LineStyle.Dotted,
+      initialToggles.showAvwap,
+    );
+    avwapMinus2SeriesRef.current = addPersistentOverlay(
+      INDICATOR_COLORS.avwapBand,
+      1,
+      LineStyle.Dotted,
+      initialToggles.showAvwap,
+    );
+
+    const createHiddenWall = (color: string, title: string): IPriceLine =>
+      candleSeries.createPriceLine({
+        price: 0,
+        color,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title,
+      });
+
+    priceLineSlotsRef.current = {
+      callWall: createHiddenWall('#E5C76B', 'Call Wall'),
+      putWall: createHiddenWall('#A78BFA', 'Put Wall'),
+      zeroGamma: createHiddenWall('#E5E7EB', 'Zero-Gamma'),
+      maxPain: createHiddenWall('#9CA3AF', 'Max Pain'),
+    };
+
+    cvdSeriesRef.current = subChart.addSeries(LineSeries, {
+      color: '#E5C76B',
+      lineWidth: 2,
+      visible: initialSubPaneMode === 'CVD_LEE_READY',
+    });
+    cclBrechaSeriesRef.current = subChart.addSeries(LineSeries, {
+      color: '#38BDF8',
+      lineWidth: 2,
+      visible: initialSubPaneMode === 'CCL_BRECHA_PCT',
+    });
+    rsBmaSeriesRef.current = subChart.addSeries(LineSeries, {
+      color: '#F3F4F6',
+      lineWidth: 1,
+      title: 'vs BMA',
+      visible: initialSubPaneMode === 'REL_STRENGTH_BANKS',
+    });
+    rsBbarSeriesRef.current = subChart.addSeries(LineSeries, {
+      color: '#38BDF8',
+      lineWidth: 1,
+      title: 'vs BBAR',
+      visible: initialSubPaneMode === 'REL_STRENGTH_BANKS',
+    });
+    rsSupvSeriesRef.current = subChart.addSeries(LineSeries, {
+      color: '#F472B6',
+      lineWidth: 1,
+      title: 'vs SUPV',
+      visible: initialSubPaneMode === 'REL_STRENGTH_BANKS',
+    });
+
     const primitive = new GgalChartOverlayPrimitive({
       payload: latestPayloadRef.current,
       toggles: togglesRef.current,
@@ -1300,40 +1519,68 @@ export function GgalDualChartView({
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(handleMainRange);
     subChart.timeScale().subscribeVisibleLogicalRangeChange(handleSubRange);
 
-    let lastContainerWidth = mainEl.clientWidth;
+    let lastContainerWidth = Math.floor(mainEl.clientWidth);
+    let resizeRafId: number | null = null;
     const resizeObserver =
       typeof ResizeObserver !== 'undefined'
         ? new ResizeObserver((entries) => {
-            const w = entries[0]?.contentRect.width ?? mainEl.clientWidth;
-            if (w <= 0) return;
-            if (lastContainerWidth <= 40 && w > 40 && latestBarCountRef.current > 0) {
-              isSyncingRef.current = true;
-              try {
-                const count = latestBarCountRef.current;
-                const vr = computeDualChartVisibleRange({
-                  totalBars: count,
-                  maxVisibleBars: 220,
-                  rightPaddingBars: (latestPayloadRef.current?.expectedCone?.length ?? 0) >= 2 ? 5 : 2,
-                });
-                mainChart.priceScale('right').applyOptions({ autoScale: true });
-                subChart.priceScale('right').applyOptions({ autoScale: true });
-                if (count <= 220) {
-                  mainChart.timeScale().fitContent();
-                  subChart.timeScale().fitContent();
-                } else if (vr !== null) {
-                  mainChart.timeScale().setVisibleLogicalRange(vr);
-                  subChart.timeScale().setVisibleLogicalRange(vr);
-                }
-              } finally {
-                isSyncingRef.current = false;
+            let mainW = Math.floor(mainEl.clientWidth);
+            let mainH = Math.floor(mainEl.clientHeight);
+            let subW = Math.floor(subEl.clientWidth);
+            let subH = Math.floor(subEl.clientHeight);
+            for (const entry of entries) {
+              const box = entry.contentBoxSize?.[0];
+              const iw = box?.inlineSize ?? entry.contentRect.width;
+              const ih = box?.blockSize ?? entry.contentRect.height;
+              if (entry.target === mainEl) {
+                mainW = Math.floor(iw);
+                mainH = Math.floor(ih);
+              } else if (entry.target === subEl) {
+                subW = Math.floor(iw);
+                subH = Math.floor(ih);
               }
             }
-            lastContainerWidth = w;
+            if (mainW <= 0 && subW <= 0) return;
+            if (resizeRafId !== null) window.cancelAnimationFrame(resizeRafId);
+            resizeRafId = window.requestAnimationFrame(() => {
+              resizeRafId = null;
+              if (mainW > 0 && mainH > 0) mainChart.resize(mainW, mainH);
+              if (subW > 0 && subH > 0) subChart.resize(subW, subH);
+              if (lastContainerWidth <= 40 && mainW > 40 && latestBarCountRef.current > 0) {
+                isSyncingRef.current = true;
+                try {
+                  const count = latestBarCountRef.current;
+                  const vr = computeDualChartVisibleRange({
+                    totalBars: count,
+                    maxVisibleBars: 220,
+                    rightPaddingBars: (latestPayloadRef.current?.expectedCone?.length ?? 0) >= 2 ? 5 : 2,
+                  });
+                  mainChart.priceScale('right').applyOptions({ autoScale: true });
+                  subChart.priceScale('right').applyOptions({ autoScale: true });
+                  if (count <= 220) {
+                    mainChart.timeScale().fitContent();
+                    subChart.timeScale().fitContent();
+                  } else if (vr !== null) {
+                    mainChart.timeScale().setVisibleLogicalRange(vr);
+                    subChart.timeScale().setVisibleLogicalRange(vr);
+                  }
+                } finally {
+                  isSyncingRef.current = false;
+                }
+              }
+              if (mainW > 0) lastContainerWidth = mainW;
+            });
           })
         : null;
     resizeObserver?.observe(mainEl);
+    resizeObserver?.observe(subEl);
 
     return () => {
+      if (resizeRafId !== null) window.cancelAnimationFrame(resizeRafId);
+      if (tickRafIdRef.current !== null) {
+        window.cancelAnimationFrame(tickRafIdRef.current);
+        tickRafIdRef.current = null;
+      }
       resizeObserver?.disconnect();
       mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(handleMainRange);
       subChart.timeScale().unsubscribeVisibleLogicalRangeChange(handleSubRange);
@@ -1343,48 +1590,32 @@ export function GgalDualChartView({
       mainChartRef.current = null;
       subChartRef.current = null;
       candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      emaSeriesRefs.current = {};
+      vwapSeriesRef.current = null;
+      avwapSeriesRef.current = null;
+      avwapPlus1SeriesRef.current = null;
+      avwapMinus1SeriesRef.current = null;
+      avwapPlus2SeriesRef.current = null;
+      avwapMinus2SeriesRef.current = null;
+      cvdSeriesRef.current = null;
+      cclBrechaSeriesRef.current = null;
+      rsBmaSeriesRef.current = null;
+      rsBbarSeriesRef.current = null;
+      rsSupvSeriesRef.current = null;
+      priceLineSlotsRef.current = null;
       primitiveRef.current = null;
     };
   }, []);
 
-  const overlaySeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
-  const subSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
-  const priceLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
-
-  // Populate / update both panes and the main-chart overlays.
+  // 1) Dataset histórico: setData() únicamente cuando cambia símbolo/coordMode/timeframe/avwap/snapshot real.
   useEffect(() => {
     const mainChart = mainChartRef.current;
     const subChart = subChartRef.current;
     const candleSeries = candleSeriesRef.current;
-    const primitive = primitiveRef.current;
-    if (mainChart === null || subChart === null || candleSeries === null || primitive === null) {
+    if (mainChart === null || subChart === null || candleSeries === null) {
       return;
     }
-
-    for (const series of overlaySeriesRef.current) {
-      mainChart.removeSeries(series);
-    }
-    overlaySeriesRef.current = [];
-
-    for (const series of subSeriesRef.current) {
-      subChart.removeSeries(series);
-    }
-    subSeriesRef.current = [];
-    emaSeriesRefs.current = {};
-    vwapSeriesRef.current = null;
-    cvdSeriesRef.current = null;
-    avwapSeriesRef.current = null;
-    avwapPlus1SeriesRef.current = null;
-    avwapMinus1SeriesRef.current = null;
-    avwapPlus2SeriesRef.current = null;
-    avwapMinus2SeriesRef.current = null;
-
-    for (const priceLine of priceLinesRef.current) {
-      candleSeries.removePriceLine(priceLine);
-    }
-    priceLinesRef.current = [];
-
-    primitive.setState({ payload: safePayload, toggles, coneLabel });
 
     const scaleModeKey = `${coordMode}|${timeframe}`;
     const scaleModeChanged = prevScaleModeRef.current !== scaleModeKey;
@@ -1393,24 +1624,59 @@ export function GgalDualChartView({
     const bars = safePayload?.status === 'OPERATIONAL' ? (safePayload.bars ?? []) : [];
     latestBarCountRef.current = bars.length;
 
-    if (scaleModeChanged || safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0) {
+    const datasetSig =
+      safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0
+        ? `EMPTY|${scaleModeKey}`
+        : `${safePayload.timeframe}|${safePayload.coordMode}|${safePayload.avwapAnchor}|${String(safePayload.asOfUtcSec)}|${String(bars.length)}|${String(bars[0]?.timeSec ?? 0)}|${String(bars[bars.length - 1]?.timeSec ?? 0)}`;
+
+    if (lastDatasetSigRef.current === datasetSig) {
+      return;
+    }
+    lastDatasetSigRef.current = datasetSig;
+
+    if (safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0) {
       isSyncingRef.current = true;
       try {
         candleSeries.setData([]);
         volumeSeriesRef.current?.setData([]);
+        emaSeriesRefs.current[9]?.setData([]);
+        emaSeriesRefs.current[21]?.setData([]);
+        emaSeriesRefs.current[50]?.setData([]);
+        emaSeriesRefs.current[200]?.setData([]);
+        vwapSeriesRef.current?.setData([]);
+        avwapSeriesRef.current?.setData([]);
+        avwapPlus1SeriesRef.current?.setData([]);
+        avwapMinus1SeriesRef.current?.setData([]);
+        avwapPlus2SeriesRef.current?.setData([]);
+        avwapMinus2SeriesRef.current?.setData([]);
+        cvdSeriesRef.current?.setData([]);
+        cclBrechaSeriesRef.current?.setData([]);
+        rsBmaSeriesRef.current?.setData([]);
+        rsBbarSeriesRef.current?.setData([]);
+        rsSupvSeriesRef.current?.setData([]);
         mainChart.priceScale('right').applyOptions({ autoScale: true });
         subChart.priceScale('right').applyOptions({ autoScale: true });
       } finally {
         isSyncingRef.current = false;
       }
-    }
-
-    if (safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0) {
       lastFitKeyRef.current = null;
       lastBarRef.current = null;
       closedBarsRef.current = [];
       emaBaselinesRef.current = null;
+      emaEndRef.current = null;
+      lastCvdRef.current = null;
+      tapeRef.current = [];
       return;
+    }
+
+    if (scaleModeChanged) {
+      isSyncingRef.current = true;
+      try {
+        mainChart.priceScale('right').applyOptions({ autoScale: true });
+        subChart.priceScale('right').applyOptions({ autoScale: true });
+      } finally {
+        isSyncingRef.current = false;
+      }
     }
 
     candleSeries.setData(
@@ -1429,6 +1695,7 @@ export function GgalDualChartView({
         color: bar.close >= bar.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
       })),
     );
+
     const lastBar = bars[bars.length - 1];
     lastBarRef.current = lastBar ?? null;
     closedBarsRef.current = bars.slice(0, Math.max(0, bars.length - 1));
@@ -1438,168 +1705,63 @@ export function GgalDualChartView({
       50: safePayload.ema50 !== undefined && safePayload.ema50.length > 1 ? (safePayload.ema50[safePayload.ema50.length - 2]?.value ?? Number.NaN) : Number.NaN,
       200: safePayload.ema200 !== undefined && safePayload.ema200.length > 1 ? (safePayload.ema200[safePayload.ema200.length - 2]?.value ?? Number.NaN) : Number.NaN,
     };
+    emaEndRef.current = {
+      9: safePayload.ema9 !== undefined && safePayload.ema9.length > 0 ? (safePayload.ema9[safePayload.ema9.length - 1]?.value ?? Number.NaN) : Number.NaN,
+      21: safePayload.ema21 !== undefined && safePayload.ema21.length > 0 ? (safePayload.ema21[safePayload.ema21.length - 1]?.value ?? Number.NaN) : Number.NaN,
+      50: safePayload.ema50 !== undefined && safePayload.ema50.length > 0 ? (safePayload.ema50[safePayload.ema50.length - 1]?.value ?? Number.NaN) : Number.NaN,
+      200: safePayload.ema200 !== undefined && safePayload.ema200.length > 0 ? (safePayload.ema200[safePayload.ema200.length - 1]?.value ?? Number.NaN) : Number.NaN,
+    };
 
-    const addLineOverlay = (
+    const setLinePts = (
+      series: ISeriesApi<'Line'> | undefined | null,
       pts: readonly { readonly timeSec: number; readonly value: number }[] | undefined,
-      color: string,
-      width: number,
-      lineStyle: LineStyle = LineStyle.Solid,
-    ): ISeriesApi<'Line'> | null => {
-      if (pts === undefined || pts.length === 0) return null;
-      const line = mainChart.addSeries(LineSeries, {
-        color,
-        lineWidth: asLineWidth(width),
-        lineStyle,
-        lastValueVisible: false,
-        priceLineVisible: false,
-        autoscaleInfoProvider: () => null,
-      });
-      line.setData(
-        pts.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.value })),
+    ): void => {
+      if (!series) return;
+      series.setData(
+        pts !== undefined && pts.length > 0
+          ? pts.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.value }))
+          : [],
       );
-      overlaySeriesRef.current.push(line);
-      return line;
     };
 
-    if (toggles.showEmas) {
-      const ema9Series = addLineOverlay(safePayload.ema9, INDICATOR_COLORS.ema9, 1.25);
-      if (ema9Series !== null) emaSeriesRefs.current[9] = ema9Series;
-      const ema21Series = addLineOverlay(safePayload.ema21, INDICATOR_COLORS.ema21, 1.25);
-      if (ema21Series !== null) emaSeriesRefs.current[21] = ema21Series;
-      const ema50Series = addLineOverlay(safePayload.ema50, INDICATOR_COLORS.ema50, 1.5);
-      if (ema50Series !== null) emaSeriesRefs.current[50] = ema50Series;
-      const ema200Series = addLineOverlay(safePayload.ema200, INDICATOR_COLORS.ema200, 2);
-      if (ema200Series !== null) emaSeriesRefs.current[200] = ema200Series;
-    }
+    setLinePts(emaSeriesRefs.current[9], safePayload.ema9);
+    setLinePts(emaSeriesRefs.current[21], safePayload.ema21);
+    setLinePts(emaSeriesRefs.current[50], safePayload.ema50);
+    setLinePts(emaSeriesRefs.current[200], safePayload.ema200);
 
-    if (
-      toggles.showAvwap &&
-      safePayload.avwapBands !== undefined &&
-      safePayload.avwapBands.length > 0
-    ) {
-      avwapSeriesRef.current = addLineOverlay(
-        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.avwap })),
-        INDICATOR_COLORS.avwap,
-        1.75,
-      );
-      avwapPlus1SeriesRef.current = addLineOverlay(
-        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus1Sigma })),
-        INDICATOR_COLORS.avwapBand,
-        1,
-        LineStyle.Dashed,
-      );
-      avwapMinus1SeriesRef.current = addLineOverlay(
-        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus1Sigma })),
-        INDICATOR_COLORS.avwapBand,
-        1,
-        LineStyle.Dashed,
-      );
-      avwapPlus2SeriesRef.current = addLineOverlay(
-        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.plus2Sigma })),
-        INDICATOR_COLORS.avwapBand,
-        1,
-        LineStyle.Dotted,
-      );
-      avwapMinus2SeriesRef.current = addLineOverlay(
-        safePayload.avwapBands.map((band) => ({ timeSec: band.timeSec, value: band.minus2Sigma })),
-        INDICATOR_COLORS.avwapBand,
-        1,
-        LineStyle.Dotted,
-      );
-    }
+    const avwapBands = safePayload.avwapBands ?? [];
+    avwapSeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.avwap })));
+    avwapPlus1SeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.plus1Sigma })));
+    avwapMinus1SeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.minus1Sigma })));
+    avwapPlus2SeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.plus2Sigma })));
+    avwapMinus2SeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.minus2Sigma })));
 
-    if (toggles.showSessionVwap && bars.length > 0) {
-      const marketTz =
-        safePayload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
-      const vwapSeries = computeSessionVwapSeries(bars, marketTz);
-      const vwapLine = addLineOverlay(vwapSeries, INDICATOR_COLORS.sessionVwap, 1.5);
-      if (vwapLine !== null) vwapSeriesRef.current = vwapLine;
-    }
-
-    const addWallLine = (price: number | null | undefined, color: string, title: string) => {
-      if (price === null || price === undefined || !Number.isFinite(price)) return;
-      const priceLine = candleSeries.createPriceLine({
-        price,
-        color,
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title,
-      });
-      priceLinesRef.current.push(priceLine);
-    };
-
-    const levelValues: Record<LevelId, number | null | undefined> = {
-      callWall: safePayload.callWall,
-      putWall: safePayload.putWall,
-      zeroGamma: safePayload.zeroGamma,
-      maxPain: safePayload.maxPain,
-    };
-    for (const spec of LEVEL_SPECS) {
-      if (levelVisibility[spec.id]) {
-        addWallLine(levelValues[spec.id], spec.color, spec.label);
-      }
-    }
+    const marketTz = safePayload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+    const vwapSeriesPts = computeSessionVwapSeries(bars, marketTz);
+    setLinePts(vwapSeriesRef.current, vwapSeriesPts);
 
     const subPaneSeries = safePayload.subPaneSeries ?? [];
-    if (subPaneMode === 'CVD_LEE_READY') {
-      const series = subChart.addSeries(LineSeries, { color: '#E5C76B', lineWidth: 2 });
-      series.setData(
-        subPaneSeries.map((pt) => ({
-          time: pt.timeSec as UTCTimestamp,
-          value: pt.cvdLeeReady,
-        })),
-      );
-      subSeriesRef.current.push(series);
-      cvdSeriesRef.current = series;
-      const lastCvdPoint = subPaneSeries[subPaneSeries.length - 1];
-      lastCvdRef.current = lastCvdPoint !== undefined && Number.isFinite(lastCvdPoint.cvdLeeReady) ? lastCvdPoint.cvdLeeReady : null;
-      tapeRef.current = [];
-    } else if (subPaneMode === 'CCL_BRECHA_PCT') {
-      const series = subChart.addSeries(LineSeries, { color: '#38BDF8', lineWidth: 2 });
-      series.setData(
-        subPaneSeries.map((pt) => ({
-          time: pt.timeSec as UTCTimestamp,
-          value: pt.cclBrechaPct,
-        })),
-      );
-      subSeriesRef.current.push(series);
-    } else {
-      const seriesBma = subChart.addSeries(LineSeries, {
-        color: '#F3F4F6',
-        lineWidth: 1,
-        title: 'vs BMA',
-      });
-      const seriesBbar = subChart.addSeries(LineSeries, {
-        color: '#38BDF8',
-        lineWidth: 1,
-        title: 'vs BBAR',
-      });
-      const seriesSupv = subChart.addSeries(LineSeries, {
-        color: '#F472B6',
-        lineWidth: 1,
-        title: 'vs SUPV',
-      });
-      seriesBma.setData(
-        subPaneSeries.map((pt) => ({
-          time: pt.timeSec as UTCTimestamp,
-          value: pt.relStrengthBma,
-        })),
-      );
-      seriesBbar.setData(
-        subPaneSeries.map((pt) => ({
-          time: pt.timeSec as UTCTimestamp,
-          value: pt.relStrengthBbar,
-        })),
-      );
-      seriesSupv.setData(
-        subPaneSeries.map((pt) => ({
-          time: pt.timeSec as UTCTimestamp,
-          value: pt.relStrengthSupv,
-        })),
-      );
-      subSeriesRef.current.push(seriesBma, seriesBbar, seriesSupv);
-    }
+    cvdSeriesRef.current?.setData(
+      subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.cvdLeeReady })),
+    );
+    cclBrechaSeriesRef.current?.setData(
+      subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.cclBrechaPct })),
+    );
+    rsBmaSeriesRef.current?.setData(
+      subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthBma })),
+    );
+    rsBbarSeriesRef.current?.setData(
+      subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthBbar })),
+    );
+    rsSupvSeriesRef.current?.setData(
+      subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthSupv })),
+    );
+    const lastCvdPoint = subPaneSeries[subPaneSeries.length - 1];
+    lastCvdRef.current =
+      lastCvdPoint !== undefined && Number.isFinite(lastCvdPoint.cvdLeeReady)
+        ? lastCvdPoint.cvdLeeReady
+        : null;
+    tapeRef.current = [];
 
     const fitKey = `${safePayload.timeframe}|${safePayload.coordMode}|${safePayload.avwapAnchor}|${String(safePayload.asOfUtcSec)}|${String(bars.length)}`;
     if (lastFitKeyRef.current !== fitKey || scaleModeChanged) {
@@ -1627,150 +1789,278 @@ export function GgalDualChartView({
         isSyncingRef.current = false;
       }
     }
-  }, [safePayload, coordMode, timeframe, toggles, subPaneMode, levelVisibility, coneLabel]);
+  }, [safePayload, coordMode, timeframe]);
 
-  // Live tick projection: updates the forming candle, EMAs, session VWAP and CVD
-  // without rebuilding the historical series or refitting the time scale.
+  // 2) Visibilidad de overlays y primitiva custom sin setData().
   useEffect(() => {
-    const activeQuote = coordMode === 'USD_ADR_NASDAQ' ? liveUsGgal : liveArGgal;
-    const previousQuote = coordMode === 'USD_ADR_NASDAQ' ? previousUsQuoteRef.current : previousArQuoteRef.current;
-    const activePrice = coordMode === 'ARS_BYMA'
-      ? liveArGgal?.price ?? null
-      : coordMode === 'USD_ADR_NASDAQ'
-        ? liveUsGgal?.price ?? null
-        : liveArGgal !== null && liveUsGgal !== null && liveUsGgal.price > 0
-          ? (liveArGgal.price * 10) / liveUsGgal.price
-          : null;
-    const activeTimeSec = activeQuote?.asOfUtcSec ?? null;
-    if (activePrice === null || activeTimeSec === null || !Number.isFinite(activePrice) || !Number.isInteger(activeTimeSec)) {
-      previousArQuoteRef.current = liveArGgal;
-      previousUsQuoteRef.current = liveUsGgal;
-      return;
-    }
-    const bar = lastBarRef.current;
-    if (bar === null) {
-      previousArQuoteRef.current = liveArGgal;
-      previousUsQuoteRef.current = liveUsGgal;
-      return;
-    }
-    const volumeDelta =
-      activeQuote !== null &&
-      previousQuote !== null &&
-      activeQuote.volume !== null &&
-      previousQuote.volume !== null
-        ? Math.max(0, activeQuote.volume - previousQuote.volume)
-        : 0;
-    const projectedBar = projectLiveCandle(
-      bar,
-      { price: activePrice, timeSec: activeTimeSec, volumeDelta },
-      resolveBarSeconds(timeframe),
-    );
-    if (projectedBar === null) {
-      previousArQuoteRef.current = liveArGgal;
-      previousUsQuoteRef.current = liveUsGgal;
-      return;
-    }
-    if (projectedBar.timeSec !== bar.timeSec) {
-      closedBarsRef.current = [...closedBarsRef.current, bar];
-    }
-    lastBarRef.current = projectedBar;
-    candleSeriesRef.current?.update({
-      time: projectedBar.timeSec as UTCTimestamp,
-      open: projectedBar.open,
-      high: projectedBar.high,
-      low: projectedBar.low,
-      close: projectedBar.close,
-    });
+    primitiveRef.current?.setState({ payload: safePayload, toggles, coneLabel });
+    emaSeriesRefs.current[9]?.applyOptions({ visible: toggles.showEmas });
+    emaSeriesRefs.current[21]?.applyOptions({ visible: toggles.showEmas });
+    emaSeriesRefs.current[50]?.applyOptions({ visible: toggles.showEmas });
+    emaSeriesRefs.current[200]?.applyOptions({ visible: toggles.showEmas });
+    vwapSeriesRef.current?.applyOptions({ visible: toggles.showSessionVwap });
+    avwapSeriesRef.current?.applyOptions({ visible: toggles.showAvwap });
+    avwapPlus1SeriesRef.current?.applyOptions({ visible: toggles.showAvwap });
+    avwapMinus1SeriesRef.current?.applyOptions({ visible: toggles.showAvwap });
+    avwapPlus2SeriesRef.current?.applyOptions({ visible: toggles.showAvwap });
+    avwapMinus2SeriesRef.current?.applyOptions({ visible: toggles.showAvwap });
+  }, [safePayload, toggles, coneLabel]);
 
-    const baselines = emaBaselinesRef.current;
-    if (baselines !== null) {
-      const ema9 = projectLiveEma(baselines[9], activePrice, 9);
-      if (Number.isFinite(ema9) && emaSeriesRefs.current[9] !== undefined) {
-        emaSeriesRefs.current[9]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema9 });
-      }
-      const ema21 = projectLiveEma(baselines[21], activePrice, 21);
-      if (Number.isFinite(ema21) && emaSeriesRefs.current[21] !== undefined) {
-        emaSeriesRefs.current[21]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema21 });
-      }
-      const ema50 = projectLiveEma(baselines[50], activePrice, 50);
-      if (Number.isFinite(ema50) && emaSeriesRefs.current[50] !== undefined) {
-        emaSeriesRefs.current[50]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema50 });
-      }
-      const ema200 = projectLiveEma(baselines[200], activePrice, 200);
-      if (Number.isFinite(ema200) && emaSeriesRefs.current[200] !== undefined) {
-        emaSeriesRefs.current[200]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: ema200 });
-      }
+  // 3) Cambio de sub-panel sin destruir/recrear series.
+  useEffect(() => {
+    cvdSeriesRef.current?.applyOptions({ visible: subPaneMode === 'CVD_LEE_READY' });
+    cclBrechaSeriesRef.current?.applyOptions({ visible: subPaneMode === 'CCL_BRECHA_PCT' });
+    rsBmaSeriesRef.current?.applyOptions({ visible: subPaneMode === 'REL_STRENGTH_BANKS' });
+    rsBbarSeriesRef.current?.applyOptions({ visible: subPaneMode === 'REL_STRENGTH_BANKS' });
+    rsSupvSeriesRef.current?.applyOptions({ visible: subPaneMode === 'REL_STRENGTH_BANKS' });
+    subChartRef.current?.priceScale('right').applyOptions({ autoScale: true });
+  }, [subPaneMode]);
+
+  // 4) IPriceLine persistentes actualizadas in-place con applyOptions.
+  useEffect(() => {
+    const slots = priceLineSlotsRef.current;
+    if (slots === null) return;
+    const isOperational = safePayload?.status === 'OPERATIONAL';
+    const levelValues: Record<LevelId, number | null | undefined> = {
+      callWall: safePayload?.callWall,
+      putWall: safePayload?.putWall,
+      zeroGamma: safePayload?.zeroGamma,
+      maxPain: safePayload?.maxPain,
+    };
+    for (const spec of LEVEL_SPECS) {
+      const price = levelValues[spec.id];
+      const show =
+        isOperational &&
+        levelVisibility[spec.id] &&
+        price !== null &&
+        price !== undefined &&
+        Number.isFinite(price);
+      slots[spec.id].applyOptions({
+        price: show && price !== null && price !== undefined ? price : 0,
+        lineVisible: show,
+        axisLabelVisible: show,
+        title: show ? spec.label : '',
+      });
     }
+  }, [safePayload, levelVisibility]);
 
-    if (vwapSeriesRef.current !== null) {
-      const marketTz = coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
-      const vwapPoint = projectLiveSessionVwap(closedBarsRef.current, projectedBar, marketTz);
-      if (vwapPoint !== null) {
-        vwapSeriesRef.current.update({ time: vwapPoint.timeSec as UTCTimestamp, value: vwapPoint.value });
-      }
-    }
-
-    if (activeQuote !== null && previousQuote !== null && activeQuote.asOfUtcSec !== null) {
-      const tapeTick: LiveTapeTick = {
-        market: activeQuote.market,
-        symbol: activeQuote.symbol,
-        price: activeQuote.price,
-        size:
-          activeQuote.volume !== null && previousQuote.volume !== null
-            ? Math.max(0, activeQuote.volume - previousQuote.volume)
-            : null,
-        side: activeQuote.direction === 'down' ? 'SELL' : 'BUY',
-        timeSec: activeQuote.asOfUtcSec,
-      };
-      tapeRef.current = appendLiveTapeTick(tapeRef.current, tapeTick);
-    }
-
-    if (subPaneMode === 'CVD_LEE_READY' && cvdSeriesRef.current !== null && lastCvdRef.current !== null) {
-      const projectedCvd = projectLiveCvd(lastCvdRef.current, tapeRef.current);
-      if (Number.isFinite(projectedCvd)) {
-        cvdSeriesRef.current.update({ time: projectedBar.timeSec as UTCTimestamp, value: projectedCvd });
-      }
-    }
-
-    previousArQuoteRef.current = liveArGgal;
-    previousUsQuoteRef.current = liveUsGgal;
-  }, [liveArGgal?.revision, liveUsGgal?.revision, coordMode, timeframe, subPaneMode]);
-
-  // Pieza 39: tick-by-tick real del backend (`ggal_bar_tick`) -> series.update()
-  // directo por refs; sin re-render de React ni .setData() completo.
+  // 5) Bus imperativo 60 FPS en rAF: coalescing de ticks WS/quotes sin setState ni setData().
   useEffect(() => {
     const mode = coordMode === 'USD_ADR_NASDAQ' ? 'ADR' : coordMode === 'ARS_BYMA' ? 'ARS' : 'CCL';
+    let latestArQuote: MarketLiveQuote | null = null;
+    let latestUsQuote: MarketLiveQuote | null = null;
+    let prevActiveQuote: MarketLiveQuote | null = null;
+    let pendingQuoteDirty = false;
+    let pendingBarTick: Parameters<Parameters<typeof subscribeGgalBarTick>[0]>[0] | null = null;
+
     const updateLine = (series: ISeriesApi<'Line'> | null | undefined, value: number | null, timeSec: number): void => {
       if (series === null || series === undefined || value === null || !Number.isFinite(value)) return;
       series.update({ time: timeSec as UTCTimestamp, value });
     };
-    return subscribeGgalBarTick((event) => {
-      if (event.mode !== mode || event.timeframe !== timeframe) return;
-      const bar = event.bar;
-      if (!Number.isFinite(bar.close) || !Number.isFinite(bar.timeSec) || bar.timeSec <= 0) return;
+
+    const flushFrame = (): void => {
+      tickRafIdRef.current = null;
+      const barTick = pendingBarTick;
+      pendingBarTick = null;
+      if (barTick !== null) {
+        const b = barTick.bar;
+        const currentLast = lastBarRef.current;
+        if (
+          Number.isFinite(b.close) &&
+          Number.isFinite(b.timeSec) &&
+          b.timeSec > 0 &&
+          (currentLast === null || b.timeSec >= currentLast.timeSec)
+        ) {
+          if (currentLast !== null && b.timeSec > currentLast.timeSec) {
+            closedBarsRef.current = [...closedBarsRef.current, currentLast];
+            if (emaEndRef.current !== null) {
+              emaBaselinesRef.current = { ...emaEndRef.current };
+            }
+          }
+          lastBarRef.current = {
+            timeSec: b.timeSec,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            volume: b.volume,
+          };
+          candleSeriesRef.current?.update({
+            time: b.timeSec as UTCTimestamp,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+          });
+          volumeSeriesRef.current?.update({
+            time: b.timeSec as UTCTimestamp,
+            value: b.volume,
+            color: b.close >= b.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
+          });
+          const pt = barTick.indicatorsPoint;
+          updateLine(emaSeriesRefs.current[9], pt.ema9, pt.timeSec);
+          updateLine(emaSeriesRefs.current[21], pt.ema21, pt.timeSec);
+          updateLine(emaSeriesRefs.current[50], pt.ema50, pt.timeSec);
+          updateLine(emaSeriesRefs.current[200], pt.ema200, pt.timeSec);
+          updateLine(vwapSeriesRef.current, pt.sessionVwap, pt.timeSec);
+          updateLine(avwapSeriesRef.current, pt.avwap, pt.timeSec);
+          updateLine(avwapPlus1SeriesRef.current, pt.avwapPlus1Sigma, pt.timeSec);
+          updateLine(avwapMinus1SeriesRef.current, pt.avwapMinus1Sigma, pt.timeSec);
+          if (emaEndRef.current !== null) {
+            emaEndRef.current = {
+              9: pt.ema9 ?? emaEndRef.current[9],
+              21: pt.ema21 ?? emaEndRef.current[21],
+              50: pt.ema50 ?? emaEndRef.current[50],
+              200: pt.ema200 ?? emaEndRef.current[200],
+            };
+          }
+        }
+      }
+
+      if (!pendingQuoteDirty) return;
+      pendingQuoteDirty = false;
+      const activeQuote = coordMode === 'USD_ADR_NASDAQ' ? latestUsQuote : latestArQuote;
+      const previousQuote = prevActiveQuote;
+      prevActiveQuote = activeQuote;
+      const activePrice =
+        coordMode === 'ARS_BYMA'
+          ? latestArQuote?.price ?? null
+          : coordMode === 'USD_ADR_NASDAQ'
+            ? latestUsQuote?.price ?? null
+            : latestArQuote !== null && latestUsQuote !== null && latestUsQuote.price > 0
+              ? (latestArQuote.price * 10) / latestUsQuote.price
+              : null;
+      const activeTimeSec = activeQuote?.asOfUtcSec ?? null;
+      const bar = lastBarRef.current;
+      if (
+        activePrice === null ||
+        activeTimeSec === null ||
+        !Number.isFinite(activePrice) ||
+        !Number.isInteger(activeTimeSec) ||
+        bar === null
+      ) {
+        return;
+      }
+      const volumeDelta =
+        activeQuote !== null &&
+        previousQuote !== null &&
+        activeQuote.volume !== null &&
+        previousQuote.volume !== null
+          ? Math.max(0, activeQuote.volume - previousQuote.volume)
+          : 0;
+      const projectedBar = projectLiveCandle(
+        bar,
+        { price: activePrice, timeSec: activeTimeSec, volumeDelta },
+        resolveBarSeconds(timeframe),
+      );
+      if (projectedBar === null || projectedBar.timeSec < bar.timeSec) {
+        return;
+      }
+      if (projectedBar.timeSec > bar.timeSec) {
+        closedBarsRef.current = [...closedBarsRef.current, bar];
+        if (emaEndRef.current !== null) {
+          emaBaselinesRef.current = { ...emaEndRef.current };
+        }
+      }
+      lastBarRef.current = projectedBar;
       candleSeriesRef.current?.update({
-        time: bar.timeSec as UTCTimestamp,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
+        time: projectedBar.timeSec as UTCTimestamp,
+        open: projectedBar.open,
+        high: projectedBar.high,
+        low: projectedBar.low,
+        close: projectedBar.close,
       });
-      volumeSeriesRef.current?.update({
-        time: bar.timeSec as UTCTimestamp,
-        value: bar.volume,
-        color: bar.close >= bar.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
-      });
-      const point = event.indicatorsPoint;
-      updateLine(emaSeriesRefs.current[9], point.ema9, point.timeSec);
-      updateLine(emaSeriesRefs.current[21], point.ema21, point.timeSec);
-      updateLine(emaSeriesRefs.current[50], point.ema50, point.timeSec);
-      updateLine(emaSeriesRefs.current[200], point.ema200, point.timeSec);
-      updateLine(vwapSeriesRef.current, point.sessionVwap, point.timeSec);
-      updateLine(avwapSeriesRef.current, point.avwap, point.timeSec);
-      updateLine(avwapPlus1SeriesRef.current, point.avwapPlus1Sigma, point.timeSec);
-      updateLine(avwapMinus1SeriesRef.current, point.avwapMinus1Sigma, point.timeSec);
+
+      const baselines = emaBaselinesRef.current;
+      if (baselines !== null) {
+        const nextEma9 = projectLiveEma(baselines[9], activePrice, 9);
+        if (Number.isFinite(nextEma9)) {
+          emaSeriesRefs.current[9]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: nextEma9 });
+        }
+        const nextEma21 = projectLiveEma(baselines[21], activePrice, 21);
+        if (Number.isFinite(nextEma21)) {
+          emaSeriesRefs.current[21]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: nextEma21 });
+        }
+        const nextEma50 = projectLiveEma(baselines[50], activePrice, 50);
+        if (Number.isFinite(nextEma50)) {
+          emaSeriesRefs.current[50]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: nextEma50 });
+        }
+        const nextEma200 = projectLiveEma(baselines[200], activePrice, 200);
+        if (Number.isFinite(nextEma200)) {
+          emaSeriesRefs.current[200]?.update({ time: projectedBar.timeSec as UTCTimestamp, value: nextEma200 });
+        }
+        emaEndRef.current = {
+          9: Number.isFinite(nextEma9) ? nextEma9 : baselines[9],
+          21: Number.isFinite(nextEma21) ? nextEma21 : baselines[21],
+          50: Number.isFinite(nextEma50) ? nextEma50 : baselines[50],
+          200: Number.isFinite(nextEma200) ? nextEma200 : baselines[200],
+        };
+      }
+
+      if (vwapSeriesRef.current !== null) {
+        const marketTz = coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+        const vwapPoint = projectLiveSessionVwap(closedBarsRef.current, projectedBar, marketTz);
+        if (vwapPoint !== null) {
+          vwapSeriesRef.current.update({ time: vwapPoint.timeSec as UTCTimestamp, value: vwapPoint.value });
+        }
+      }
+
+      if (activeQuote !== null && previousQuote !== null && activeQuote.asOfUtcSec !== null) {
+        const tapeTick: LiveTapeTick = {
+          market: activeQuote.market,
+          symbol: activeQuote.symbol,
+          price: activeQuote.price,
+          size:
+            activeQuote.volume !== null && previousQuote.volume !== null
+              ? Math.max(0, activeQuote.volume - previousQuote.volume)
+              : null,
+          side: activeQuote.direction === 'down' ? 'SELL' : 'BUY',
+          timeSec: activeQuote.asOfUtcSec,
+        };
+        tapeRef.current = appendLiveTapeTick(tapeRef.current, tapeTick);
+      }
+
+      if (subPaneMode === 'CVD_LEE_READY' && cvdSeriesRef.current !== null && lastCvdRef.current !== null) {
+        const projectedCvd = projectLiveCvd(lastCvdRef.current, tapeRef.current);
+        if (Number.isFinite(projectedCvd)) {
+          cvdSeriesRef.current.update({ time: projectedBar.timeSec as UTCTimestamp, value: projectedCvd });
+        }
+      }
+    };
+
+    const scheduleFlush = (): void => {
+      if (tickRafIdRef.current !== null) return;
+      tickRafIdRef.current = window.requestAnimationFrame(flushFrame);
+    };
+
+    const unsubBar = subscribeGgalBarTick((event) => {
+      if (event.mode !== mode || event.timeframe !== timeframe) return;
+      pendingBarTick = event;
+      scheduleFlush();
     });
-  }, [coordMode, timeframe]);
+
+    const unsubAr = subscribeAtomicQuoteValue('AR', 'GGAL', (quote) => {
+      latestArQuote = quote;
+      pendingQuoteDirty = true;
+      scheduleFlush();
+    });
+
+    const unsubUs = subscribeAtomicQuoteValue('US', 'GGAL', (quote) => {
+      latestUsQuote = quote;
+      pendingQuoteDirty = true;
+      scheduleFlush();
+    });
+
+    return () => {
+      unsubBar();
+      unsubAr();
+      unsubUs();
+      if (tickRafIdRef.current !== null) {
+        window.cancelAnimationFrame(tickRafIdRef.current);
+        tickRafIdRef.current = null;
+      }
+    };
+  }, [coordMode, timeframe, subPaneMode]);
 
   // Pieza 39: crosshair desacoplado de React — la leyenda OHLCV se actualiza
   // escribiendo textContent directo del DOM (prohibido setState por pixel).
@@ -1790,8 +2080,13 @@ export function GgalDualChartView({
         `C ${formatNumber(bar.close)} · V ${bar.volume > 0 ? formatNumber(bar.volume) : '—'}`;
     };
     const handler = (param: MouseEventParams): void => {
+      if (param.time === undefined) {
+        renderLegend(null);
+        return;
+      }
       const data = param.seriesData.get(candleSeriesRef.current as ISeriesApi<'Candlestick'>);
       if (data === undefined || data === null) {
+        renderLegend(null);
         return;
       }
       const candidate = data as { open?: number; high?: number; low?: number; close?: number };
@@ -1801,6 +2096,7 @@ export function GgalDualChartView({
         typeof candidate.low !== 'number' ||
         typeof candidate.close !== 'number'
       ) {
+        renderLegend(null);
         return;
       }
       const volumePoint =
@@ -1966,27 +2262,7 @@ export function GgalDualChartView({
           <span className="rounded border border-[#1C1C24] bg-[#111116] px-1.5 py-0.5 text-[#E5C76B]">
             AVWAP desde {chartStats.avwapDate}
           </span>
-          <span>
-            Spot:{' '}
-            <strong
-              className={`rounded px-1 transition-colors duration-500 ${tickFlashClass(liveSpotFlash)}`}
-            >
-              {formatCoordPrice(liveDisplaySpot ?? payload?.spotPrice, coordMode)}
-            </strong>
-          </span>
-          {liveDisplaySpot !== null && liveClock !== null && (
-            <span
-              className={`rounded-full border px-1.5 py-0.5 ${
-                (coordMode === 'USD_ADR_NASDAQ' || coordMode === 'RATIO_CCL') && adrExtBadge !== null
-                  ? 'border-[#F5B544]/40 bg-[#F5B544]/10 text-[#F5B544]'
-                  : 'border-[#22C55E]/35 bg-[#22C55E]/10 text-[#22C55E]'
-              }`}
-            >
-              {(coordMode === 'USD_ADR_NASDAQ' || coordMode === 'RATIO_CCL') && adrExtBadge !== null
-                ? `● ${adrExtBadge}${adrExtChangePct !== null ? ` (${adrExtChangePct >= 0 ? '+' : ''}${adrExtChangePct.toFixed(2).replace('.', ',')}%)` : ''} · ${liveClock}`
-                : `● Tiempo real ${liveClock}`}
-            </span>
-          )}
+          <GgalToolbarSpotBadge coordMode={coordMode} fallbackSpot={payload?.spotPrice} />
           <span
             className={`rounded border px-1.5 py-0.5 ${
               hasCone

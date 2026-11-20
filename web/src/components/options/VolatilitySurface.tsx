@@ -432,7 +432,7 @@ export const VolatilitySurface: React.FC<{
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.98 }}
                 transition={{ duration: 0.18, ease: FX_EASE }}
-                className="pointer-events-none absolute top-3 z-10 px-3 py-2.5 rounded-[10px] bg-[#0D1017]/80 backdrop-blur-md border border-[var(--fx-line-strong)] shadow-xl text-[12px] font-mono-num"
+                className="pointer-events-none absolute top-3 z-10 px-3 py-2.5 rounded-[10px] bg-[rgba(13,17,23,0.94)] border border-[var(--fx-line-strong)] shadow-xl text-[12px] font-mono-num"
                 style={
                   hoveredX > SW * 0.68
                     ? { right: `calc(${((SW - hoveredX) / SW) * 100}% + 12px)` }
@@ -546,7 +546,7 @@ export const VolatilitySurface: React.FC<{
                                     animate={{ opacity: 1, scale: 1, y: 0 }}
                                     exit={{ opacity: 0, scale: 0.98 }}
                                     transition={{ duration: 0.18, ease: FX_EASE }}
-                                    className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-20 w-max px-3 py-2 rounded-[10px] bg-[#0D1017]/75 backdrop-blur-md border border-[var(--fx-line-strong)] text-left text-[11.5px] shadow-xl"
+                                    className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-20 w-max px-3 py-2 rounded-[10px] bg-[rgba(13,17,23,0.94)] border border-[var(--fx-line-strong)] text-left text-[11.5px] shadow-xl"
                                   >
                                     <div className="text-white font-bold">
                                       Base {fk(k)} · {tCell.label} {tCell.days}d

@@ -96,7 +96,24 @@ let state: LiveMarketState = {
   warmupStatus: 'IDLE',
 };
 
+export interface LiveMarketStatus {
+  readonly isBackendConnected: boolean;
+  readonly feedStatus: FeedStatus;
+  readonly marketState: ArOverviewResponse['marketState'] | null;
+  readonly marketStateLabel: string;
+  readonly warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY';
+}
+
+let statusSnapshot: LiveMarketStatus = {
+  isBackendConnected: state.isBackendConnected,
+  feedStatus: state.feedStatus,
+  marketState: state.marketState,
+  marketStateLabel: state.marketStateLabel,
+  warmupStatus: state.warmupStatus,
+};
+
 const listeners = new Set<StoreListener>();
+const statusListeners = new Set<StoreListener>();
 const tickerListeners = new Set<TickerListener>();
 const seqByKey = new Map<string, number>();
 const abortByKey = new Map<string, AbortController>();
@@ -111,6 +128,22 @@ const DEFAULT_FETCH_TIMEOUT_MS = 25_000;
 
 function notify(): void {
   state = { ...state, version: state.version + 1 };
+  if (
+    statusSnapshot.isBackendConnected !== state.isBackendConnected ||
+    statusSnapshot.feedStatus !== state.feedStatus ||
+    statusSnapshot.marketState !== state.marketState ||
+    statusSnapshot.marketStateLabel !== state.marketStateLabel ||
+    statusSnapshot.warmupStatus !== state.warmupStatus
+  ) {
+    statusSnapshot = {
+      isBackendConnected: state.isBackendConnected,
+      feedStatus: state.feedStatus,
+      marketState: state.marketState,
+      marketStateLabel: state.marketStateLabel,
+      warmupStatus: state.warmupStatus,
+    };
+    statusListeners.forEach((fn) => fn());
+  }
   listeners.forEach((fn) => fn());
 }
 
@@ -956,6 +989,19 @@ export function useLiveMarketState(): LiveMarketState {
     },
     () => state,
     () => state
+  );
+}
+
+export function useLiveMarketStatus(): LiveMarketStatus {
+  return useSyncExternalStore(
+    (listener) => {
+      statusListeners.add(listener);
+      return () => {
+        statusListeners.delete(listener);
+      };
+    },
+    () => statusSnapshot,
+    () => statusSnapshot,
   );
 }
 

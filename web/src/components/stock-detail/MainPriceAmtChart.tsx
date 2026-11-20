@@ -90,7 +90,15 @@ export const MainPriceAmtChart: React.FC<{
   const ema200Ref = useRef<ISeriesApi<'Line'> | null>(null);
   const vwapRef = useRef<ISeriesApi<'Line'> | null>(null);
   const avwapRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const priceLinesRef = useRef<IPriceLine[]>([]);
+  const priceLineSlotsRef = useRef<{
+    readonly callWall: IPriceLine;
+    readonly putWall: IPriceLine;
+    readonly zeroGamma: IPriceLine;
+    readonly poc: IPriceLine;
+    readonly vah: IPriceLine;
+    readonly val: IPriceLine;
+    readonly npocs: readonly IPriceLine[];
+  } | null>(null);
   const suppressingRangeEventRef = useRef(false);
   const latestBarsRef = useRef(bundle.bars);
   const keyLevelsRef = useRef(keyLevels);
@@ -250,8 +258,13 @@ export const MainPriceAmtChart: React.FC<{
         borderColor: '#1E1E2B',
         timeVisible: true,
         secondsVisible: false,
+        enableConflation: true,
+        conflationThresholdFactor: 1.0,
+        precomputeConflationOnInit: true,
+        precomputeConflationPriority: 'background',
       },
-      width: el.clientWidth,
+      autoSize: false,
+      width: Math.max(1, Math.floor(el.clientWidth)),
       height: 390,
     });
 
@@ -289,9 +302,81 @@ export const MainPriceAmtChart: React.FC<{
     ema200Ref.current = ema200;
     vwapRef.current = vwap;
     avwapRef.current = avwap;
+    priceLineSlotsRef.current = {
+      callWall: candles.createPriceLine({
+        price: 0,
+        color: '#2EDC7E',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'CALL WALL',
+      }),
+      putWall: candles.createPriceLine({
+        price: 0,
+        color: '#FF5468',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'PUT WALL',
+      }),
+      zeroGamma: candles.createPriceLine({
+        price: 0,
+        color: '#A78BFA',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dotted,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'ZERO-GAMMA',
+      }),
+      poc: candles.createPriceLine({
+        price: 0,
+        color: '#FACC15',
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'POC',
+      }),
+      vah: candles.createPriceLine({
+        price: 0,
+        color: '#60A5FA',
+        lineWidth: 2,
+        lineStyle: LineStyle.SparseDotted,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'VAH',
+      }),
+      val: candles.createPriceLine({
+        price: 0,
+        color: '#60A5FA',
+        lineWidth: 2,
+        lineStyle: LineStyle.SparseDotted,
+        lineVisible: false,
+        axisLabelVisible: false,
+        title: 'VAL',
+      }),
+      npocs: Array.from({ length: 6 }, () =>
+        candles.createPriceLine({
+          price: 0,
+          color: '#FB923C',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dotted,
+          lineVisible: false,
+          axisLabelVisible: false,
+          title: 'nPOC',
+        }),
+      ),
+    };
 
+    let overlayRafId: number | null = null;
     const scheduleOverlayPaint = () => {
-      window.requestAnimationFrame(paintZoneOverlay);
+      if (overlayRafId !== null) return;
+      overlayRafId = window.requestAnimationFrame(() => {
+        overlayRafId = null;
+        paintZoneOverlay();
+      });
     };
 
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
@@ -311,10 +396,18 @@ export const MainPriceAmtChart: React.FC<{
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
-    const resizeObserver = new ResizeObserver(() => {
-      if (!containerRef.current) return;
-      chart.applyOptions({ width: containerRef.current.clientWidth, height: 390 });
-      scheduleOverlayPaint();
+    let resizeRafId: number | null = null;
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      const inlineSize = entry?.contentBoxSize?.[0]?.inlineSize ?? containerRef.current?.clientWidth ?? 0;
+      const w = Math.floor(inlineSize);
+      if (w <= 0) return;
+      if (resizeRafId !== null) window.cancelAnimationFrame(resizeRafId);
+      resizeRafId = window.requestAnimationFrame(() => {
+        resizeRafId = null;
+        chart.resize(w, 390);
+        paintZoneOverlay();
+      });
     });
     resizeObserver.observe(el);
 
@@ -346,6 +439,8 @@ export const MainPriceAmtChart: React.FC<{
     };
 
     return () => {
+      if (resizeRafId !== null) window.cancelAnimationFrame(resizeRafId);
+      if (overlayRafId !== null) window.cancelAnimationFrame(overlayRafId);
       el.removeEventListener('pointerup', onPointerInteraction);
       el.removeEventListener('wheel', onPointerInteraction);
       resizeObserver.disconnect();
@@ -354,6 +449,14 @@ export const MainPriceAmtChart: React.FC<{
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      ema9Ref.current = null;
+      ema21Ref.current = null;
+      ema50Ref.current = null;
+      ema200Ref.current = null;
+      vwapRef.current = null;
+      avwapRef.current = null;
+      priceLineSlotsRef.current = null;
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
     };
@@ -414,103 +517,116 @@ export const MainPriceAmtChart: React.FC<{
         })
         .filter((d): d is { readonly time: UTCTimestamp; readonly value: number } => d !== null);
 
-    ema9Ref.current?.setData(overlays.emas ? toLineData(bundle.ema9) : []);
-    ema21Ref.current?.setData(overlays.emas ? toLineData(bundle.ema21) : []);
-    ema50Ref.current?.setData(overlays.emas ? toLineData(bundle.ema50) : []);
-    ema200Ref.current?.setData(overlays.emas ? toLineData(bundle.ema200) : []);
-    vwapRef.current?.setData(
-      overlays.sessionVwap && timeframe !== '1D' ? toLineData(bundle.sessionVwap) : [],
-    );
-    avwapRef.current?.setData(overlays.avwap ? toLineData(bundle.avwapSeries) : []);
+    ema9Ref.current?.setData(toLineData(bundle.ema9));
+    ema21Ref.current?.setData(toLineData(bundle.ema21));
+    ema50Ref.current?.setData(toLineData(bundle.ema50));
+    ema200Ref.current?.setData(toLineData(bundle.ema200));
+    vwapRef.current?.setData(toLineData(bundle.sessionVwap));
+    avwapRef.current?.setData(toLineData(bundle.avwapSeries));
 
     chart.timeScale().fitContent();
     window.requestAnimationFrame(paintZoneOverlay);
-  }, [bundle, overlays, timeframe, paintZoneOverlay]);
+  }, [bundle, timeframe, paintZoneOverlay]);
 
-  // Muros de opciones (Call Wall, Put Wall, Zero-Gamma) + Niveles AMT (POC/VAH/VAL/NPOCs) vía createPriceLine nativas
   useEffect(() => {
-    const candles = candleSeriesRef.current;
-    if (!candles) return;
+    ema9Ref.current?.applyOptions({ visible: overlays.emas });
+    ema21Ref.current?.applyOptions({ visible: overlays.emas });
+    ema50Ref.current?.applyOptions({ visible: overlays.emas });
+    ema200Ref.current?.applyOptions({ visible: overlays.emas });
+    vwapRef.current?.applyOptions({ visible: overlays.sessionVwap && timeframe !== '1D' });
+    avwapRef.current?.applyOptions({ visible: overlays.avwap });
+  }, [overlays.emas, overlays.sessionVwap, overlays.avwap, timeframe]);
 
-    for (const pl of priceLinesRef.current) {
-      candles.removePriceLine(pl);
-    }
-    priceLinesRef.current = [];
+  // Muros de opciones (Call Wall, Put Wall, Zero-Gamma) + Niveles AMT (POC/VAH/VAL/NPOCs) reutilizando IPriceLine in-place
+  useEffect(() => {
+    const slots = priceLineSlotsRef.current;
+    if (!slots) return;
 
-    if (!bundle.barsAvailable || bundle.bars.length === 0) return;
-
-    const addLine = (
+    const updateSlot = (
+      pl: IPriceLine,
+      enabled: boolean,
       price: number | null,
       title: string,
       color: string,
-      style: LineStyle,
       isHighlighted: boolean,
     ) => {
-      if (price === null || !Number.isFinite(price) || price <= 0) return;
-      const pl = candles.createPriceLine({
+      if (!enabled || price === null || !Number.isFinite(price) || price <= 0) {
+        pl.applyOptions({ price: 0, lineVisible: false, axisLabelVisible: false, title: '' });
+        return;
+      }
+      pl.applyOptions({
         price,
         color,
         lineWidth: isHighlighted ? 3 : 2,
-        lineStyle: style,
+        lineVisible: true,
         axisLabelVisible: true,
         title,
       });
-      priceLinesRef.current.push(pl);
     };
 
+    const hasBars = bundle.barsAvailable && bundle.bars.length > 0;
     const pxPrefix = currencySymbol === 'USD' ? 'US$' : '$';
-    if (overlays.optionWalls) {
-      addLine(
-        keyLevels.callWall,
-        `CALL WALL · ${pxPrefix}${fmtNum(keyLevels.callWall, 0)}`,
-        '#2EDC7E',
-        LineStyle.Dashed,
-        highlightedLevel === 'CALL_WALL',
-      );
-      addLine(
-        keyLevels.putWall,
-        `PUT WALL · ${pxPrefix}${fmtNum(keyLevels.putWall, 0)}`,
-        '#FF5468',
-        LineStyle.Dashed,
-        highlightedLevel === 'PUT_WALL',
-      );
-      addLine(
-        keyLevels.zeroGamma,
-        `ZERO-GAMMA · ${pxPrefix}${fmtNum(keyLevels.zeroGamma, 2)}`,
-        highlightedLevel === 'ZERO_GAMMA' ? '#C4B5FD' : '#A78BFA',
-        LineStyle.Dotted,
-        highlightedLevel === 'ZERO_GAMMA',
-      );
-    }
+    updateSlot(
+      slots.callWall,
+      hasBars && overlays.optionWalls,
+      keyLevels.callWall,
+      `CALL WALL · ${pxPrefix}${fmtNum(keyLevels.callWall, 0)}`,
+      '#2EDC7E',
+      highlightedLevel === 'CALL_WALL',
+    );
+    updateSlot(
+      slots.putWall,
+      hasBars && overlays.optionWalls,
+      keyLevels.putWall,
+      `PUT WALL · ${pxPrefix}${fmtNum(keyLevels.putWall, 0)}`,
+      '#FF5468',
+      highlightedLevel === 'PUT_WALL',
+    );
+    updateSlot(
+      slots.zeroGamma,
+      hasBars && overlays.optionWalls,
+      keyLevels.zeroGamma,
+      `ZERO-GAMMA · ${pxPrefix}${fmtNum(keyLevels.zeroGamma, 2)}`,
+      highlightedLevel === 'ZERO_GAMMA' ? '#C4B5FD' : '#A78BFA',
+      highlightedLevel === 'ZERO_GAMMA',
+    );
+    updateSlot(
+      slots.poc,
+      hasBars && overlays.volumeProfile,
+      keyLevels.poc,
+      `POC · ${pxPrefix}${fmtNum(keyLevels.poc, 2)}`,
+      '#FACC15',
+      highlightedLevel === 'POC',
+    );
+    updateSlot(
+      slots.vah,
+      hasBars && overlays.volumeProfile,
+      keyLevels.vah,
+      'VAH',
+      '#60A5FA',
+      highlightedLevel === 'VAH',
+    );
+    updateSlot(
+      slots.val,
+      hasBars && overlays.volumeProfile,
+      keyLevels.val,
+      'VAL',
+      '#60A5FA',
+      highlightedLevel === 'VAL',
+    );
 
-    if (overlays.volumeProfile) {
-      addLine(
-        keyLevels.poc,
-        `POC · ${pxPrefix}${fmtNum(keyLevels.poc, 2)}`,
-        '#FACC15',
-        LineStyle.Solid,
-        highlightedLevel === 'POC',
+    const visibleNpocs = hasBars && overlays.nakedPocs ? keyLevels.nakedPocs.slice(0, 6) : [];
+    for (let i = 0; i < slots.npocs.length; i++) {
+      const slot = slots.npocs[i]!;
+      const np = visibleNpocs[i];
+      updateSlot(
+        slot,
+        np !== undefined,
+        np?.price ?? null,
+        np ? `nPOC ${np.sessionDate.slice(5)}` : 'nPOC',
+        '#FB923C',
+        false,
       );
-      addLine(
-        keyLevels.vah,
-        `VAH`,
-        '#60A5FA',
-        LineStyle.SparseDotted,
-        highlightedLevel === 'VAH',
-      );
-      addLine(
-        keyLevels.val,
-        `VAL`,
-        '#60A5FA',
-        LineStyle.SparseDotted,
-        highlightedLevel === 'VAL',
-      );
-    }
-
-    if (overlays.nakedPocs) {
-      for (const np of keyLevels.nakedPocs.slice(0, 6)) {
-        addLine(np.price, `nPOC ${np.sessionDate.slice(5)}`, '#FB923C', LineStyle.Dotted, false);
-      }
     }
 
     window.requestAnimationFrame(paintZoneOverlay);
