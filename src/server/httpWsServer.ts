@@ -661,6 +661,16 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         return;
       }
 
+      if (pathname === '/api/options/catalysts') {
+        const symbol = params.get('symbol')?.trim() || 'SPY';
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const catalysts = await runtime.getSymbolCatalysts(symbol, {
+          ...(forceRefresh ? { forceRefresh: true } : {}),
+        });
+        sendJson(res, 200, catalysts);
+        return;
+      }
+
       if (pathname === '/api/us/providers-status') {        const usProviders = runtime.getUsProvidersStatus();
         const oratsStatus = ggalRuntime.getOratsStatus();
         const tradierLive = usProviders.TRADIER_LIVE;

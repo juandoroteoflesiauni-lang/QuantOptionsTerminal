@@ -921,10 +921,16 @@ export interface ArOptionsResponse {
     readonly expectedMoveExpirySec?: number | null;
     readonly expectedMoveExpiryCode?: string | null;
     readonly expectedMoveDays?: number | null;
+    readonly quality?: {
+      readonly usableContracts: number;
+      readonly usableOpenInterest: number;
+    };
     readonly byStrike?: readonly {
       readonly strike: number;
       readonly callOi: number | null;
       readonly putOi: number | null;
+      readonly callVolume?: number | null;
+      readonly putVolume?: number | null;
       readonly callGex: number | null;
       readonly putGex: number | null;
       readonly netGex: number | null;
@@ -8193,10 +8199,16 @@ export class ArgentinaMarketRuntime {
             expectedMoveExpirySec: frontExp?.expiryUtcSec ?? null,
             expectedMoveExpiryCode: frontExp?.expiryCode ?? null,
             expectedMoveDays: frontExp?.days ?? null,
+            quality: {
+              usableContracts: expResult.quality.usableContracts,
+              usableOpenInterest: expResult.quality.usableOpenInterest,
+            },
             byStrike: expResult.byStrike.map((s) => ({
               strike: s.strike,
               callOi: sanitizeFinite(s.callOpenInterest),
               putOi: sanitizeFinite(s.putOpenInterest),
+              callVolume: sanitizeFinite(s.callVolume),
+              putVolume: sanitizeFinite(s.putVolume),
               callGex: sanitizeFinite(s.callGex),
               putGex: sanitizeFinite(s.putGex),
               netGex: sanitizeFinite(s.netGex),

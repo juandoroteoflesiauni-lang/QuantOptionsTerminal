@@ -10,6 +10,7 @@ import type {
   FeedStatus,
   OptionsUnderlyingsResponseDto,
   OptionsUnderlyingMetaDto,
+  SymbolCatalystsResponseDto,
   TerminalTimeframe,
   UsSnapshotResponseDto,
   UsTerminalBarsResponseDto,
@@ -57,6 +58,10 @@ export interface LiveMarketState {
   readonly usVolSurfaceStatusBySymbol: Readonly<
     Record<string, 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA'>
   >;
+  readonly optionsCatalystsBySymbol: Readonly<Record<string, SymbolCatalystsResponseDto | null>>;
+  readonly optionsCatalystsStatusBySymbol: Readonly<
+    Record<string, 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA'>
+  >;
   readonly tickFlashes: Readonly<Record<string, 'up' | 'down' | null>>;
   readonly isBackendConnected: boolean;
   readonly warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY';
@@ -83,6 +88,8 @@ let state: LiveMarketState = {
   optionsUnderlyingsStatus: 'IDLE',
   usVolSurfaceBySymbol: {},
   usVolSurfaceStatusBySymbol: {},
+  optionsCatalystsBySymbol: {},
+  optionsCatalystsStatusBySymbol: {},
   tickFlashes: {},
   isBackendConnected: false,
   warmupStatus: 'IDLE',
@@ -603,6 +610,28 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
             snap.exposureSummary.expectedMove?.straddleMovePct ??
             snap.exposureSummary.expectedMove?.formulaMovePct ??
             null,
+          ...(snap.exposureSummary.quality
+            ? {
+                quality: {
+                  usableContracts: snap.exposureSummary.quality.usableContracts,
+                  usableOpenInterest: snap.exposureSummary.quality.usableOpenInterest,
+                },
+              }
+            : {}),
+          ...(snap.exposureSummary.byStrike
+            ? {
+                byStrike: snap.exposureSummary.byStrike.map((s) => ({
+                  strike: s.strike,
+                  callOi: s.callOi,
+                  putOi: s.putOi,
+                  callVolume: s.callVolume ?? null,
+                  putVolume: s.putVolume ?? null,
+                  callGex: s.callGex,
+                  putGex: s.putGex,
+                  netGex: s.netGex,
+                })),
+              }
+            : {}),
         }
       : null,
     costSchedule: {
@@ -613,6 +642,9 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       bondsVatExempt: true,
     },
     primaryLiquidExpiryCode: snap.optionsChain?.selectedExpirationDate ?? null,
+    ...(snap.volSurfaceSummary?.forwardIvSegments
+      ? { forwardIvSegments: snap.volSurfaceSummary.forwardIvSegments }
+      : {}),
     quantEngines,
     providerErrors: [],
   };
@@ -641,6 +673,15 @@ export async function requestOptionsChain(
       isBackendConnected: true,
       usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: snap },
       optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: mapped },
+      ...(snap.catalysts
+        ? {
+            optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [clean]: snap.catalysts },
+            optionsCatalystsStatusBySymbol: {
+              ...state.optionsCatalystsStatusBySymbol,
+              [clean]: snap.catalysts.available ? 'OK' : 'NO_DATA',
+            },
+          }
+        : {}),
       feedStatus: combineFeedStatus(state.feedStatus, mapped.feedStatus),
       lastSyncUtcSec: snap.asOfUtcSec,
     };
@@ -721,6 +762,52 @@ export async function requestUsVolSurface(
     usVolSurfaceStatusBySymbol: {
       ...state.usVolSurfaceStatusBySymbol,
       [selection.key]: res.status === 'NO_DATA' ? 'NO_DATA' : 'OK',
+    },
+  };
+  notify();
+}
+
+export async function requestOptionsCatalysts(
+  underlying: string,
+  force = false,
+): Promise<void> {
+  const selection = parseOptionsUnderlyingKey(underlying);
+  if (selection.market !== 'US') return;
+  const symbolKey = selection.symbol;
+  if (!symbolKey) return;
+  const status = state.optionsCatalystsStatusBySymbol[symbolKey] ?? 'IDLE';
+  if (status === 'LOADING' || (status === 'OK' && !force)) return;
+  state = {
+    ...state,
+    optionsCatalystsStatusBySymbol: {
+      ...state.optionsCatalystsStatusBySymbol,
+      [symbolKey]: 'LOADING',
+    },
+  };
+  notify();
+  const res = await fetchJsonGuarded<SymbolCatalystsResponseDto>(
+    `options:catalysts:${symbolKey}${force ? ':force' : ''}`,
+    `/api/options/catalysts?symbol=${encodeURIComponent(symbolKey)}${force ? '&refresh=1' : ''}`,
+    { force },
+  );
+  if (!res) {
+    state = {
+      ...state,
+      optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [symbolKey]: null },
+      optionsCatalystsStatusBySymbol: {
+        ...state.optionsCatalystsStatusBySymbol,
+        [symbolKey]: 'NO_DATA',
+      },
+    };
+    notify();
+    return;
+  }
+  state = {
+    ...state,
+    optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [symbolKey]: res },
+    optionsCatalystsStatusBySymbol: {
+      ...state.optionsCatalystsStatusBySymbol,
+      [symbolKey]: res.available ? 'OK' : 'NO_DATA',
     },
   };
   notify();

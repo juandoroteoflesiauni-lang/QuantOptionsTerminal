@@ -29,6 +29,7 @@ import {
   OptionChainRow,
 } from '../data/marketData';
 import {
+  requestOptionsCatalysts,
   requestOptionsChain,
   requestOptionsUniverse,
   requestUsVolSurface,
@@ -87,6 +88,24 @@ import {
   resolveActiveVolAnalyticsSuite,
   resolveExpiryVolSuite,
 } from './options/optionsDerived';
+import {
+  type CreditOptionQuoteInput,
+  type CreditStructureCandidate,
+  type CreditStructureKind,
+  type SpreadExecutionMode,
+  rankCreditStructures,
+  resolveDefaultSpreadModeFromRegime,
+} from '../../../src/core/terminal/structureOptimizer';
+import { evaluateCatalystWindow } from '../../../src/core/options/catalysts';
+import {
+  computeForwardIvTermStructure,
+  type ForwardIvSegmentResult,
+} from '../../../src/core/options/volSurface';
+import { computeActiveExpiryVrpAndRegime } from '../../../src/core/options/volAnalyticsSuite';
+import { classifyDealerGammaRegimeFromSummary } from '../../../src/core/options/exposure';
+import { extractRiskNeutralDistributionQ } from '../../../src/core/options/probabilisticDivergence';
+import type { WhatIfOptionLeg } from '../../../src/core/options/whatIfPayoff';
+import { WhatIfPayoffSimulator } from './options/WhatIfPayoffSimulator';
 
 export type OptionsSubView =
   | 'mapa'
@@ -178,7 +197,9 @@ function getLiquiditySemaphoreBadgeStyle(sem?: LiquiditySemaphore | string): str
 const PayoffStrategyCard: React.FC<{
   card: VisualPayoffCardData;
   onExecute: (card: VisualPayoffCardData) => void;
-}> = ({ card, onExecute }) => {
+  isSelected?: boolean;
+  onInspect?: (card: VisualPayoffCardData) => void;
+}> = ({ card, onExecute, isSelected = false, onInspect }) => {
   const clipAboveId = `clip-above-${card.id}`;
   const clipBelowId = `clip-below-${card.id}`;
 
@@ -198,7 +219,13 @@ const PayoffStrategyCard: React.FC<{
   const targetX = card.targetLinePct !== undefined ? xStart + (card.targetLinePct / 100) * xWidth : null;
 
   return (
-    <div className="rounded-[12px] bg-[#12141A] border border-[#232733] hover:border-[#343A4D] p-5 flex flex-col justify-between gap-4 transition-all">
+    <div
+      className={`rounded-[12px] bg-[#12141A] border p-5 flex flex-col justify-between gap-4 transition-all ${
+        isSelected
+          ? 'border-[#38BDF8]/80 shadow-[0_0_0_1px_rgba(56,189,248,0.35)]'
+          : 'border-[#232733] hover:border-[#343A4D]'
+      }`}
+    >
       {/* Header de la Card */}
       <div className="space-y-1.5">
         <div className="flex items-start justify-between gap-2">
@@ -333,7 +360,22 @@ const PayoffStrategyCard: React.FC<{
         </div>
       </div>
 
-      <div className="pt-2 text-center">
+      <div className="pt-2 flex items-center justify-between gap-2">
+        {onInspect ? (
+          <button
+            type="button"
+            onClick={() => onInspect(card)}
+            className={`px-2.5 py-1 rounded-[7px] border text-[12px] font-semibold transition-colors cursor-pointer ${
+              isSelected
+                ? 'border-[#38BDF8]/60 bg-[#38BDF8]/15 text-[#38BDF8]'
+                : 'border-[#2D3242] bg-[#0B0E14] text-[#9CA3AF] hover:text-white'
+            }`}
+          >
+            {isSelected ? 'En Inspector ✓' : 'Simular What-If'}
+          </button>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
           onClick={() => onExecute(card)}
@@ -383,6 +425,133 @@ function findAtmIdx(rows: readonly OptionChainRow[], spot: number): number {
     }
   });
   return bestIdx;
+}
+
+/* ============================================================================
+   CONVERSORES PUROS PARA SIMULADOR PAYOFF WHAT-IF (PIEZA 46)
+   ============================================================================ */
+function buildWhatIfLegsFromPricedLegs(
+  pricedLegs: readonly PricedLeg[],
+  defaultDays: number,
+  fallbackIvDec: number,
+): { readonly legs: readonly WhatIfOptionLeg[]; readonly horizonDte: number } {
+  const validDaysList: number[] = [];
+  const legs: WhatIfOptionLeg[] = [];
+  for (let i = 0; i < pricedLegs.length; i += 1) {
+    const leg = pricedLegs[i];
+    if (!leg) continue;
+    const d = leg.days !== undefined && Number.isFinite(leg.days) && leg.days > 0 ? leg.days : defaultDays;
+    if (Number.isFinite(d) && d > 0) validDaysList.push(d);
+    const iv =
+      Number.isFinite(leg.iv) && leg.iv > 0
+        ? leg.iv
+        : Number.isFinite(fallbackIvDec) && fallbackIvDec > 0
+          ? fallbackIvDec
+          : Number.NaN;
+    if (!Number.isFinite(leg.K) || leg.K <= 0 || !Number.isFinite(d) || d <= 0 || !Number.isFinite(iv) || !Number.isFinite(leg.premium)) {
+      return { legs: [], horizonDte: Math.max(1, Math.round(defaultDays || 1)) };
+    }
+    legs.push({
+      id: `strat-leg-${i}-${leg.type}-${leg.K}`,
+      contractType: leg.type === 'C' ? 'call' : 'put',
+      strike: leg.K,
+      quantity: leg.side * leg.ratio,
+      iv,
+      timeToExpiry: d / 365,
+      entryPrice: leg.premium,
+    });
+  }
+  const horizonDte =
+    validDaysList.length > 0 ? Math.max(1, Math.min(...validDaysList)) : Math.max(1, Math.round(defaultDays || 1));
+  return { legs, horizonDte };
+}
+
+function buildWhatIfLegsFromCreditCandidate(
+  candidate: CreditStructureCandidate,
+  daysToExpiry: number,
+  fallbackIvDec: number,
+): readonly WhatIfOptionLeg[] {
+  if (!Number.isFinite(daysToExpiry) || daysToExpiry <= 0) return [];
+  const legs: WhatIfOptionLeg[] = [];
+  for (let i = 0; i < candidate.legs.length; i += 1) {
+    const leg = candidate.legs[i];
+    if (!leg) continue;
+    const iv =
+      Number.isFinite(leg.iv) && leg.iv > 0
+        ? leg.iv
+        : Number.isFinite(fallbackIvDec) && fallbackIvDec > 0
+          ? fallbackIvDec
+          : Number.NaN;
+    if (!Number.isFinite(iv) || iv <= 0 || !Number.isFinite(leg.executionPrice)) return [];
+    legs.push({
+      id: `cred-leg-${i}-${leg.contractType}-${leg.strike}`,
+      contractType: leg.contractType,
+      strike: leg.strike,
+      quantity: (leg.side === 'BUY' ? 1 : -1) * leg.quantity,
+      iv,
+      timeToExpiry: daysToExpiry / 365,
+      entryPrice: leg.executionPrice,
+    });
+  }
+  return legs;
+}
+
+function buildWhatIfLegsFromDebitCell(
+  cell: SpreadCellMetric,
+  rows: readonly OptionChainRow[],
+  daysToExpiry: number,
+  fallbackIvDec: number,
+): readonly WhatIfOptionLeg[] {
+  if (!Number.isFinite(daysToExpiry) || daysToExpiry <= 0) return [];
+  const longRow = rows.find((r) => Math.abs(r.strike - cell.longStrike) < 1e-6);
+  const shortRow = rows.find((r) => Math.abs(r.strike - cell.shortStrike) < 1e-6);
+  const isCall = cell.side === 'CALL';
+  const rawLongPx = isCall
+    ? longRow?.callAsk && longRow.callAsk > 0
+      ? longRow.callAsk
+      : longRow?.callLast
+    : longRow?.putAsk && longRow.putAsk > 0
+      ? longRow.putAsk
+      : longRow?.putLast;
+  const rawShortPx = isCall
+    ? shortRow?.callBid && shortRow.callBid > 0
+      ? shortRow.callBid
+      : shortRow?.callLast
+    : shortRow?.putBid && shortRow.putBid > 0
+      ? shortRow.putBid
+      : shortRow?.putLast;
+  const longIvRaw = isCall ? longRow?.callIV : longRow?.putIV;
+  const shortIvRaw = isCall ? shortRow?.callIV : shortRow?.putIV;
+  const longIv = longIvRaw && Number.isFinite(longIvRaw) && longIvRaw > 0 ? longIvRaw / 100 : fallbackIvDec;
+  const shortIv = shortIvRaw && Number.isFinite(shortIvRaw) && shortIvRaw > 0 ? shortIvRaw / 100 : fallbackIvDec;
+  if (!Number.isFinite(longIv) || longIv <= 0 || !Number.isFinite(shortIv) || shortIv <= 0) return [];
+
+  const shortEntry = rawShortPx !== undefined && Number.isFinite(rawShortPx) && rawShortPx >= 0 ? rawShortPx : 0;
+  const longEntry =
+    rawLongPx !== undefined && Number.isFinite(rawLongPx) && rawLongPx > 0
+      ? rawLongPx
+      : shortEntry + cell.debit;
+
+  return [
+    {
+      id: `deb-long-${cell.side}-${cell.longStrike}`,
+      contractType: isCall ? 'call' : 'put',
+      strike: cell.longStrike,
+      quantity: 1,
+      iv: longIv,
+      timeToExpiry: daysToExpiry / 365,
+      entryPrice: longEntry,
+    },
+    {
+      id: `deb-short-${cell.side}-${cell.shortStrike}`,
+      contractType: isCall ? 'call' : 'put',
+      strike: cell.shortStrike,
+      quantity: -1,
+      iv: shortIv,
+      timeToExpiry: daysToExpiry / 365,
+      entryPrice: shortEntry,
+    },
+  ];
 }
 
 /* ============================================================================
@@ -611,6 +780,12 @@ export const OptionsModule: React.FC<{
     void requestUsVolSurface(selectedUnderlyingKey);
   }, [activeSubView, isUsMarket, selectedUnderlyingKey]);
 
+  // Pieza 46: catalizadores Earnings + calendario macro FOMC / CPI en subyacentes US.
+  useEffect(() => {
+    if (!isUsMarket) return;
+    void requestOptionsCatalysts(selectedUnderlyingKey);
+  }, [isUsMarket, selectedUnderlyingKey]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -632,12 +807,14 @@ export const OptionsModule: React.FC<{
 
   // Estado del Header de Opciones
   const [selectedExpiryId, setSelectedExpiryId] = useState<string>('');
+  const [expiryDropdownOpen, setExpiryDropdownOpen] = useState(false);
   const [tlrShiftPp, setTlrShiftPp] = useState<number>(0);
   const [showOnboardingBanner, setShowOnboardingBanner] = useState(true);
 
   // Estado del Módulo 1: Estrategias
   const [strategyMode, setStrategyMode] = useState<'familia' | 'objetivo'>('familia');
   const [selectedFamily, setSelectedFamily] = useState<StrategyFamilyId>('sugeridas');
+  const [selectedStrategyInspectorId, setSelectedStrategyInspectorId] = useState<string | null>(null);
   const [marketBias, setMarketBias] = useState<'Alcista' | 'Lateral' | 'Bajista' | 'Se mueve'>('Lateral');
   const [objectiveBias, setObjectiveBias] = useState<
     'Muy bajista' | 'Bajista' | 'Lateral' | 'Se mueve' | 'Alcista' | 'Muy alcista'
@@ -647,10 +824,16 @@ export const OptionsModule: React.FC<{
   const [probabilityWeight, setProbabilityWeight] = useState<number>(55);
   const [optimizerDir, setOptimizerDir] = useState<'BULLISH' | 'BEARISH'>('BULLISH');
 
-  // Estado del Módulo 2: Spreads
+  // Estado del Módulo 2: Spreads (Pieza 46: toggle Débito / Crédito conectado al régimen)
   const [spreadFilter, setSpreadFilter] = useState<'donde_estoy' | 'cerca' | 'tenencia' | 'todas'>('cerca');
   const [spreadViewMode, setSpreadViewMode] = useState<'pares' | 'escalera'>('escalera');
   const [selectedSpreadCell, setSelectedSpreadCell] = useState<SpreadCellMetric | null>(null);
+  const [spreadModeOverride, setSpreadModeOverride] = useState<{
+    readonly token: string;
+    readonly mode: SpreadExecutionMode;
+  } | null>(null);
+  const [creditKindFilter, setCreditKindFilter] = useState<'ALL' | CreditStructureKind>('ALL');
+  const [selectedCreditId, setSelectedCreditId] = useState<string | null>(null);
 
   // Estado del Módulo 3: Flujo
   const [flowUnit, setFlowUnit] = useState<'lotes' | '$'>('lotes');
@@ -701,6 +884,9 @@ export const OptionsModule: React.FC<{
 
   useEffect(() => {
     setSelectedExpiryId('');
+    setExpiryDropdownOpen(false);
+    setSelectedCreditId(null);
+    setSelectedStrategyInspectorId(null);
   }, [upperUnderlying]);
 
   const catalogStock =
@@ -987,6 +1173,326 @@ export const OptionsModule: React.FC<{
     };
   }, [detailedSpreadRows, selectedSpreadCell]);
 
+  // Pieza 46: Régimen activo -> preselección Crédito / Débito + ranking de Credit Spreads & Iron Condors
+  const activeDividendYield =
+    liveOptions && activeDays >= 3 && Number.isFinite(liveOptions.dividendYield)
+      ? liveOptions.dividendYield
+      : 0;
+
+  const activeRegimeCode = useMemo(() => {
+    const precomputed = (
+      activeVolSuiteExpiry as
+        | { readonly activeExpiryVrp?: { readonly operativeRegime?: { readonly code?: string } } }
+        | null
+        | undefined
+    )?.activeExpiryVrp?.operativeRegime?.code;
+    if (
+      precomputed === 'VENTA_PRIMA_CUBIERTA' ||
+      precomputed === 'COMPRA_CONVEXIDAD_CALENDAR' ||
+      precomputed === 'NEUTRAL_SELECTIVO' ||
+      precomputed === 'NO_DATA'
+    ) {
+      return precomputed;
+    }
+    const rv23 = activeVolSuite?.historicalConditional?.latestRv23Pct;
+    const rv20 = activeVolSuite?.historicalConditional?.latestRv20Pct ?? liveOptions?.realizedVol20d;
+    const ivPct = Number.isFinite(activeAtmIvDec) && activeAtmIvDec > 0 ? activeAtmIvDec * 100 : null;
+    const rvRef =
+      rv23 !== null && rv23 !== undefined && Number.isFinite(rv23) && rv23 > 0
+        ? rv23
+        : rv20 !== null && rv20 !== undefined && Number.isFinite(rv20) && rv20 > 0
+          ? rv20
+          : null;
+    if (ivPct === null && rvRef === null) return 'NO_DATA' as const;
+    return computeActiveExpiryVrpAndRegime({
+      expiryCode: activeExpiry?.id ?? null,
+      daysToExpiry: activeDays,
+      ivAtmActiveExpiryPct: ivPct,
+      sameExpiryFallbackIvAtmPct: ivPct,
+      rvReferencePct: rvRef,
+      rvReferenceLabel:
+        rv23 !== null && rv23 !== undefined && Number.isFinite(rv23) ? 'RV23d' : 'RV20d',
+      historicalRvSeriesPct: [],
+    }).operativeRegime.code;
+  }, [activeVolSuiteExpiry, activeVolSuite, liveOptions, activeAtmIvDec, activeExpiry?.id, activeDays]);
+
+  const spreadModeToken = `${upperUnderlying}:${activeExpiry?.id ?? ''}`;
+  const autoSpreadMode: SpreadExecutionMode = useMemo(
+    () => resolveDefaultSpreadModeFromRegime(activeRegimeCode),
+    [activeRegimeCode],
+  );
+  const activeSpreadMode: SpreadExecutionMode =
+    spreadModeOverride?.token === spreadModeToken ? spreadModeOverride.mode : autoSpreadMode;
+
+  const activeBlDensityNodes = useMemo(() => {
+    const qRaw = (
+      activeQuantEngines?.qDistribution as
+        | { readonly status?: string; readonly nodes?: readonly { readonly strike: number; readonly densityQ: number }[] }
+        | null
+        | undefined
+    );
+    const fromBackend = (qRaw?.nodes ?? []).filter(
+      (n) => Number.isFinite(n.strike) && n.strike > 0 && Number.isFinite(n.densityQ) && n.densityQ >= 0,
+    );
+    if (fromBackend.length >= 5) {
+      return fromBackend;
+    }
+    if (
+      !activeExpiry ||
+      activeExpiry.rows.length < 5 ||
+      !Number.isFinite(displaySpot) ||
+      displaySpot <= 0 ||
+      activeDays <= 0 ||
+      !Number.isFinite(effectiveRateDec)
+    ) {
+      return [];
+    }
+    const otmNodes: { strike: number; iv: number; bid: number }[] = [];
+    for (const r of activeExpiry.rows) {
+      const ivPct = r.strike >= displaySpot ? r.callIV : r.putIV;
+      const bid = r.strike >= displaySpot ? r.callBid : r.putBid;
+      if (Number.isFinite(r.strike) && r.strike > 0 && Number.isFinite(ivPct) && ivPct > 0) {
+        otmNodes.push({
+          strike: r.strike,
+          iv: ivPct / 100,
+          bid: Number.isFinite(bid) && bid > 0 ? bid : 1,
+        });
+      }
+    }
+    if (otmNodes.length < 5) return [];
+    const extracted = extractRiskNeutralDistributionQ({
+      spot: displaySpot,
+      timeToExpiry: activeDays / 365,
+      rate: effectiveRateDec,
+      dividendYield: activeDividendYield,
+      nodes: otmNodes,
+      smoothTotalVariancePchip: true,
+    });
+    if (extracted.status !== 'OK') return [];
+    return extracted.nodes
+      .filter((n) => Number.isFinite(n.strike) && n.strike > 0 && Number.isFinite(n.densityQ) && n.densityQ >= 0)
+      .map((n) => ({ strike: n.strike, densityQ: n.densityQ }));
+  }, [
+    activeQuantEngines?.qDistribution,
+    activeExpiry,
+    displaySpot,
+    activeDays,
+    effectiveRateDec,
+    activeDividendYield,
+  ]);
+
+  const creditRankingResult = useMemo(() => {
+    const quotes: CreditOptionQuoteInput[] = [];
+    for (const row of activeExpiry?.rows ?? []) {
+      if (!Number.isFinite(row.strike) || row.strike <= 0) continue;
+      if (Number.isFinite(row.callBid) && Number.isFinite(row.callAsk) && row.callBid > 0 && row.callAsk >= row.callBid) {
+        quotes.push({
+          strike: row.strike,
+          contractType: 'call',
+          bid: row.callBid,
+          ask: row.callAsk,
+          ...(Number.isFinite(row.callIV) && row.callIV > 0 ? { iv: row.callIV / 100 } : {}),
+          ...(Number.isFinite(row.callDelta) ? { delta: row.callDelta } : {}),
+          ...(Number.isFinite(row.callGamma) ? { gamma: row.callGamma } : {}),
+          ...(Number.isFinite(row.callTheta) ? { thetaDaily: row.callTheta } : {}),
+          ...(Number.isFinite(row.callVega) ? { vegaPer1Pct: row.callVega } : {}),
+        });
+      }
+      if (Number.isFinite(row.putBid) && Number.isFinite(row.putAsk) && row.putBid > 0 && row.putAsk >= row.putBid) {
+        quotes.push({
+          strike: row.strike,
+          contractType: 'put',
+          bid: row.putBid,
+          ask: row.putAsk,
+          ...(Number.isFinite(row.putIV) && row.putIV > 0 ? { iv: row.putIV / 100 } : {}),
+          ...(Number.isFinite(row.putDelta) ? { delta: row.putDelta } : {}),
+          ...(Number.isFinite(row.putGamma) ? { gamma: row.putGamma } : {}),
+          ...(Number.isFinite(row.putTheta) ? { thetaDaily: row.putTheta } : {}),
+          ...(Number.isFinite(row.putVega) ? { vegaPer1Pct: row.putVega } : {}),
+        });
+      }
+    }
+    return rankCreditStructures({
+      spot: displaySpot,
+      daysToExpiry: activeDays,
+      rate: effectiveRateDec,
+      dividendYield: activeDividendYield,
+      atmIv: activeAtmIvDec,
+      lotSize: Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : LOT,
+      contracts: quotes,
+      densityNodes: activeBlDensityNodes,
+      operativeRegimeCode: activeRegimeCode,
+    });
+  }, [
+    activeExpiry?.rows,
+    displaySpot,
+    activeDays,
+    effectiveRateDec,
+    activeDividendYield,
+    activeAtmIvDec,
+    contractMultiplier,
+    activeBlDensityNodes,
+    activeRegimeCode,
+  ]);
+
+  const focusedCreditCandidate: CreditStructureCandidate | null = useMemo(() => {
+    const list = creditRankingResult.allCandidates;
+    if (selectedCreditId !== null) {
+      const hit = list.find((c) => c.id === selectedCreditId);
+      if (hit) return hit;
+    }
+    return (
+      creditRankingResult.bestIronCondor ??
+      creditRankingResult.bestBullPut ??
+      creditRankingResult.bestBearCall ??
+      list[0] ??
+      null
+    );
+  }, [creditRankingResult, selectedCreditId]);
+
+  const catalystWindow = useMemo(() => {
+    const rawCat = isUsMarket ? liveMarket.optionsCatalystsBySymbol[upperUnderlying] ?? null : null;
+    const activeExpDto = liveOptions?.expiries.find((e) => e.expiryCode === activeExpiry?.id);
+    const activeExpUtcSec =
+      activeExpDto && Number.isFinite(activeExpDto.expiryUtcSec) && activeExpDto.expiryUtcSec > 0
+        ? activeExpDto.expiryUtcSec
+        : liveOptions?.asOfUtcSec && activeDays > 0
+          ? liveOptions.asOfUtcSec + Math.round(activeDays * 86_400)
+          : null;
+    const nowSec = rawCat?.asOfUtcSec ?? liveOptions?.asOfUtcSec ?? Math.floor(Date.now() / 1_000);
+    return evaluateCatalystWindow({
+      asOfUtcSec: nowSec,
+      activeExpiryUtcSec: activeExpUtcSec,
+      nextEarnings: rawCat?.nextEarnings ?? null,
+      lastEarnings: rawCat?.lastEarnings ?? null,
+      macroEvents: rawCat?.macroEvents ?? [],
+    });
+  }, [
+    isUsMarket,
+    liveMarket.optionsCatalystsBySymbol,
+    upperUnderlying,
+    liveOptions,
+    activeExpiry?.id,
+    activeDays,
+  ]);
+
+  const { forwardIvSegments, forwardSegmentByFarCode } = useMemo(() => {
+    const localSegments = computeForwardIvTermStructure(
+      GGAL_OPTION_EXPIRIES.filter((e) => e.daysToExpiry > 0 && Number.isFinite(e.atmIV) && e.atmIV > 0).map(
+        (e) => ({
+          expiryCode: e.id,
+          dte: e.daysToExpiry,
+          timeToExpiry: e.daysToExpiry / 365,
+          atmIv: e.atmIV / 100,
+        }),
+      ),
+    );
+    const map = new Map<string, ForwardIvSegmentResult>();
+    for (const seg of localSegments) {
+      if (seg.farExpiryCode) map.set(seg.farExpiryCode, seg);
+    }
+    for (const srvSeg of liveOptions?.forwardIvSegments ?? []) {
+      if (srvSeg.farExpiryCode && !map.has(srvSeg.farExpiryCode)) {
+        map.set(srvSeg.farExpiryCode, {
+          nearExpiryCode: srvSeg.nearExpiryCode,
+          farExpiryCode: srvSeg.farExpiryCode,
+          nearExpirySec: srvSeg.nearExpirySec,
+          farExpirySec: srvSeg.farExpirySec,
+          nearDte: srvSeg.nearDte,
+          farDte: srvSeg.farDte,
+          nearTimeToExpiry: srvSeg.nearTimeToExpiry,
+          farTimeToExpiry: srvSeg.farTimeToExpiry,
+          nearIv: srvSeg.nearIv ?? Number.NaN,
+          farIv: srvSeg.farIv ?? Number.NaN,
+          forwardVariance: srvSeg.forwardVariance ?? Number.NaN,
+          forwardIv: srvSeg.forwardIv,
+          calendarArbFlag: srvSeg.calendarArbFlag,
+          status: srvSeg.status,
+        });
+      }
+    }
+    return {
+      forwardIvSegments: localSegments,
+      forwardSegmentByFarCode: map,
+    };
+  }, [liveOptions?.forwardIvSegments, liveMarket.version]);
+
+  const dealerGammaReport = useMemo(() => {
+    const expSum = liveOptions?.exposureSummary ?? null;
+    if (!expSum || expSum.netGex === null || !Number.isFinite(expSum.netGex)) {
+      return classifyDealerGammaRegimeFromSummary({
+        spot: displaySpot,
+        netGex: Number.NaN,
+        callWallStrike: Number.NaN,
+        putWallStrike: Number.NaN,
+        gammaFlipSpot: Number.NaN,
+        usableContracts: 0,
+        usableOpenInterest: 0,
+      });
+    }
+    const inferredOiFromStrikes = (expSum.byStrike ?? []).reduce(
+      (acc, s) =>
+        acc +
+        (s.callOi !== null && Number.isFinite(s.callOi) ? s.callOi : 0) +
+        (s.putOi !== null && Number.isFinite(s.putOi) ? s.putOi : 0),
+      0,
+    );
+    const inferredContractsFromStrikes = (expSum.byStrike ?? []).filter(
+      (s) => (s.callOi ?? 0) > 0 || (s.putOi ?? 0) > 0,
+    ).length;
+    const usableContracts = expSum.quality?.usableContracts ?? inferredContractsFromStrikes;
+    const usableOpenInterest = expSum.quality?.usableOpenInterest ?? inferredOiFromStrikes;
+    const flipStatus =
+      expSum.gammaFlipStatus === 'unique' ||
+      expSum.gammaFlipStatus === 'no_crossing' ||
+      expSum.gammaFlipStatus === 'multiple_crossings' ||
+      expSum.gammaFlipStatus === 'indeterminate'
+        ? expSum.gammaFlipStatus
+        : null;
+    return classifyDealerGammaRegimeFromSummary({
+      spot: displaySpot,
+      netGex: expSum.netGex,
+      callWallStrike: expSum.callWallStrike ?? activeQuantEngines?.flowAdjustedGex?.callWallStrike ?? Number.NaN,
+      putWallStrike: expSum.putWallStrike ?? activeQuantEngines?.flowAdjustedGex?.putWallStrike ?? Number.NaN,
+      gammaFlipSpot: expSum.gammaFlipSpot ?? Number.NaN,
+      gammaFlipStatus: flipStatus,
+      usableContracts,
+      usableOpenInterest,
+    });
+  }, [liveOptions?.exposureSummary, displaySpot, activeQuantEngines?.flowAdjustedGex]);
+
+  const exposureByStrikeMap = useMemo(() => {
+    const map = new Map<
+      number,
+      {
+        readonly callGex: number | null;
+        readonly putGex: number | null;
+        readonly netGex: number | null;
+        readonly callOi: number | null;
+        readonly putOi: number | null;
+      }
+    >();
+    for (const s of liveOptions?.exposureSummary?.byStrike ?? []) {
+      map.set(s.strike, {
+        callGex: s.callGex,
+        putGex: s.putGex,
+        netGex: s.netGex,
+        callOi: s.callOi,
+        putOi: s.putOi,
+      });
+    }
+    return map;
+  }, [liveOptions?.exposureSummary?.byStrike]);
+
+  const focusedStrategyCard = useMemo(() => {
+    if (visiblePayoffCards.length === 0) return null;
+    if (selectedStrategyInspectorId !== null) {
+      const hit = visiblePayoffCards.find((c) => c.id === selectedStrategyInspectorId);
+      if (hit) return hit;
+    }
+    return visiblePayoffCards[0] ?? null;
+  }, [visiblePayoffCards, selectedStrategyInspectorId]);
+
   const activeTickAggression = useMemo(() => {
     type AgresionTicksShape = {
       readonly askPct: number | null;
@@ -1218,31 +1724,124 @@ export const OptionsModule: React.FC<{
                   >
                     {usOptionsFeedBadge ?? 'ORIGEN —'}
                   </span>
+                  {(isUsMarket || catalystWindow.status !== 'NO_DATA') && (
+                    <span
+                      title={catalystWindow.detailLabel}
+                      className={`rounded-full border px-2 py-0.5 font-mono-num text-[10px] font-semibold ${
+                        catalystWindow.severity === 'DANGER'
+                          ? 'border-rose-500/50 bg-rose-500/15 text-rose-300'
+                          : catalystWindow.severity === 'WARNING'
+                            ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
+                            : 'border-[#232733] bg-[#0B0E14] text-[#9CA3AF]'
+                      }`}
+                    >
+                      {catalystWindow.badgeLabel}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-6 ml-auto">
-            <div>
+            <div className="relative">
               <div className="text-[10px] font-mono-num uppercase tracking-wider text-[#787B86]">
                 VTO.
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  if (GGAL_OPTION_EXPIRIES.length <= 1) return;
-                  const idx = GGAL_OPTION_EXPIRIES.findIndex((e) => e.id === activeExpiry?.id);
-                  const next = GGAL_OPTION_EXPIRIES[(idx + 1) % GGAL_OPTION_EXPIRIES.length];
-                  if (next) setSelectedExpiryId(next.id);
-                }}
-                className="inline-flex items-center gap-1 font-mono-num text-[14px] font-bold text-[#FFFFFF] hover:text-[#EAB308] cursor-pointer"
+                onClick={() => setExpiryDropdownOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 font-mono-num text-[14px] font-bold text-[#FFFFFF] hover:text-[#EAB308] cursor-pointer"
+                title="Seleccionar vencimiento (con Forward IV consecutiva)"
               >
                 <span>
                   {activeExpiry ? `${activeExpiry.label} · ${activeExpiry.daysToExpiry}d` : 'Sin vtos · —'}
                 </span>
+                {activeExpiry && (() => {
+                  const fwdSeg = forwardSegmentByFarCode.get(activeExpiry.id);
+                  if (!fwdSeg) return null;
+                  if (fwdSeg.calendarArbFlag) {
+                    return (
+                      <span className="rounded border border-rose-500/45 bg-rose-500/15 px-1.5 py-0.2 text-[9.5px] font-semibold text-rose-300">
+                        Arb Cal.
+                      </span>
+                    );
+                  }
+                  if (fwdSeg.forwardIv !== null && Number.isFinite(fwdSeg.forwardIv)) {
+                    return (
+                      <span className="rounded border border-[#38BDF8]/40 bg-[#38BDF8]/10 px-1.5 py-0.2 text-[9.5px] font-semibold text-[#38BDF8]">
+                        Fwd {fmtNum(fwdSeg.forwardIv * 100, 1)}%
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
                 <ChevronDown className="w-3.5 h-3.5 text-[#787B86]" />
               </button>
+
+              {expiryDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-80 rounded-[10px] border border-[#2A2F3D] bg-[#0E1118] shadow-2xl z-40 p-1.5 space-y-1">
+                  <div className="px-2 py-1 text-[10px] font-mono-num uppercase tracking-wider text-[#787B86] flex items-center justify-between border-b border-[#1E222D]">
+                    <span>Vencimiento · DTE</span>
+                    <span>ATM / Forward IV</span>
+                  </div>
+                  {GGAL_OPTION_EXPIRIES.length === 0 ? (
+                    <div className="px-2 py-2 text-[11px] font-mono-num text-[#787B86]">
+                      Sin vencimientos disponibles
+                    </div>
+                  ) : (
+                    GGAL_OPTION_EXPIRIES.map((exp) => {
+                      const isSel = exp.id === activeExpiry?.id;
+                      const fwdSeg = forwardSegmentByFarCode.get(exp.id);
+                      const hasArb = forwardIvSegments.some(
+                        (s) => (s.farExpiryCode === exp.id || s.nearExpiryCode === exp.id) && s.calendarArbFlag,
+                      );
+                      return (
+                        <button
+                          key={exp.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedExpiryId(exp.id);
+                            setExpiryDropdownOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[7px] text-left font-mono-num text-[11.5px] transition-colors cursor-pointer ${
+                            isSel
+                              ? 'bg-[#1D2230] text-[#FFFFFF] border border-[#EAB308]/45'
+                              : 'text-[#D1D4DC] hover:bg-[#161A24]'
+                          }`}
+                        >
+                          <div className="flex flex-col">
+                            <span className="font-bold">{exp.label}</span>
+                            <span className="text-[10px] text-[#787B86]">{exp.daysToExpiry}d al vto</span>
+                          </div>
+                          <div className="text-right flex flex-col items-end">
+                            <span className="text-[#EAB308] font-semibold">
+                              {Number.isFinite(exp.atmIV) && exp.atmIV > 0 ? `IV ${fmtNum(exp.atmIV, 1)}%` : 'IV —'}
+                            </span>
+                            {fwdSeg ? (
+                              fwdSeg.calendarArbFlag ? (
+                                <span className="text-[10px] font-semibold text-rose-300">
+                                  Arb. Cal. (Fwd Var≤0)
+                                </span>
+                              ) : fwdSeg.forwardIv !== null && Number.isFinite(fwdSeg.forwardIv) ? (
+                                <span className="text-[10px] text-[#38BDF8]">
+                                  Fwd {fwdSeg.nearExpiryCode}→: {fmtNum(fwdSeg.forwardIv * 100, 1)}%
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-[#6D7282]">Fwd —</span>
+                              )
+                            ) : hasArb ? (
+                              <span className="text-[10px] text-rose-300">Arb. Cal.</span>
+                            ) : (
+                              <span className="text-[10px] text-[#6D7282]">Front</span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
             </div>
 
             <div>
@@ -1646,16 +2245,67 @@ export const OptionsModule: React.FC<{
               Sin estrategias evaluables todavía para {upperUnderlying} con el filtro actual. Esperando cadena de opciones en vivo...
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {visiblePayoffCards.map((card) => (
-                <PayoffStrategyCard
-                  key={card.id}
-                  card={card}
-                  onExecute={(c) => {
-                    loadIntoBuilder(c.pricedLegs, 1);
-                  }}
-                />
-              ))}
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {visiblePayoffCards.map((card) => (
+                  <PayoffStrategyCard
+                    key={card.id}
+                    card={card}
+                    isSelected={focusedStrategyCard?.id === card.id}
+                    onInspect={(c) => setSelectedStrategyInspectorId(c.id)}
+                    onExecute={(c) => {
+                      loadIntoBuilder(c.pricedLegs, 1);
+                    }}
+                  />
+                ))}
+              </div>
+
+              {focusedStrategyCard && (() => {
+                const { legs: whatIfLegs, horizonDte } = buildWhatIfLegsFromPricedLegs(
+                  focusedStrategyCard.pricedLegs,
+                  activeDays,
+                  activeAtmIvDec,
+                );
+                if (whatIfLegs.length === 0) return null;
+                return (
+                  <div className="rounded-[12px] bg-[#101218] border border-[#38BDF8]/35 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#38BDF8]">
+                          INSPECTOR ACTIVO · ESTRATEGIA SELECCIONADA
+                        </div>
+                        <div className="text-[14px] font-bold text-[#FFFFFF]">
+                          {focusedStrategyCard.title}{' '}
+                          <span className="text-[12px] font-normal text-[#9CA3AF]">
+                            — {focusedStrategyCard.subtitle}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => loadIntoBuilder(focusedStrategyCard.pricedLegs, 1)}
+                        className="px-3 py-1 rounded bg-[#38BDF8]/20 border border-[#38BDF8]/50 text-[#38BDF8] hover:bg-[#38BDF8]/30 text-[11.5px] font-semibold cursor-pointer"
+                      >
+                        Pasar a Armado a mano →
+                      </button>
+                    </div>
+                    <WhatIfPayoffSimulator
+                      key={`strat-whatif-${upperUnderlying}-${focusedStrategyCard.id}-${String(horizonDte)}`}
+                      structureLabel={focusedStrategyCard.title}
+                      spot={displaySpot}
+                      rate={Number.isFinite(effectiveRateDec) ? effectiveRateDec : 0}
+                      dividendYield={activeDividendYield}
+                      horizonDte={horizonDte}
+                      legs={whatIfLegs}
+                      currencyPrefix={isUsMarket ? 'US$' : '$'}
+                      contractMultiplier={Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : LOT}
+                      callWallStrike={Number.isFinite(dealerGammaReport.callWallStrike) ? dealerGammaReport.callWallStrike : null}
+                      putWallStrike={Number.isFinite(dealerGammaReport.putWallStrike) ? dealerGammaReport.putWallStrike : null}
+                      zeroGammaSpot={Number.isFinite(dealerGammaReport.zeroGammaSpot) ? dealerGammaReport.zeroGammaSpot : null}
+                    />
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1870,21 +2520,363 @@ export const OptionsModule: React.FC<{
           ===================================================================== */}
       {activeSubView === 'spreads' && (
         <div className="space-y-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <h2 className="text-[24px] font-extrabold text-[#FFFFFF] tracking-tight">Spreads</h2>
-              <HelpTooltip
-                title="Matriz de Spreads en Escalera"
-                text="Muestra la relación retorno/costo real de armar spreads verticales de 1, 2, 3 o 4 bases de ancho usando puntas Bid/Ask en vivo."
-              />
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-[24px] font-extrabold text-[#FFFFFF] tracking-tight">Spreads</h2>
+                <HelpTooltip
+                  title="Matriz Débito / Ranking Crédito por Régimen"
+                  text="Alterna entre spreads de Débito (Convexidad) y estrategias de Crédito (Bull Put, Bear Call, Iron Condor) filtradas por crédito mínimo >= 0,10 y Bid-Ask % del Mid <= 35%."
+                />
+                {activeRegimeCode !== 'NO_DATA' && (
+                  <span
+                    className={`rounded-full border px-2.5 py-0.5 font-mono-num text-[10.5px] font-semibold ${
+                      activeRegimeCode === 'VENTA_PRIMA_CUBIERTA'
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                        : activeRegimeCode === 'COMPRA_CONVEXIDAD_CALENDAR'
+                          ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                          : 'border-[#232733] bg-[#0B0E14] text-[#9CA3AF]'
+                    }`}
+                  >
+                    Régimen:{' '}
+                    {activeRegimeCode === 'VENTA_PRIMA_CUBIERTA'
+                      ? 'Venta de Prima Cubierta → Crédito'
+                      : activeRegimeCode === 'COMPRA_CONVEXIDAD_CALENDAR'
+                        ? 'Compra de Convexidad → Débito'
+                        : 'Neutral Selectivo'}
+                  </span>
+                )}
+              </div>
+              <p className="text-[13px] text-[#9CA3AF]">
+                {activeSpreadMode === 'CREDIT'
+                  ? `Ranking cuantitativo de Bull Put, Bear Call e Iron Condors para ${upperUnderlying} (${activeExpiry?.label ?? '—'}) usando densidad neutral y griegas netas.`
+                  : `Cada par de bases de ${upperUnderlying} (${activeExpiry?.label ?? '—'}), con Débito Neto, Ratio Max Profit / Débito, Breakeven y Edge implícito.`}
+              </p>
             </div>
-            <p className="text-[13px] text-[#9CA3AF]">
-              Cada par de bases de {upperUnderlying} ({activeExpiry?.label ?? '—'}), con Débito Neto, Ratio Max Profit / Débito, Breakeven y Edge implícito.
-            </p>
+
+            <div className="inline-flex items-center rounded-full border border-[#2A3040] bg-[#0B0E14] p-1 text-[12px] font-bold">
+              {(
+                [
+                  { id: 'CREDIT' as const, label: 'Crédito' },
+                  { id: 'DEBIT' as const, label: 'Débito' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() =>
+                    setSpreadModeOverride({ token: spreadModeToken, mode: opt.id })
+                  }
+                  className={`px-3.5 py-1 rounded-full transition-colors cursor-pointer ${
+                    activeSpreadMode === opt.id
+                      ? opt.id === 'CREDIT'
+                        ? 'bg-emerald-500 text-[#090D14]'
+                        : 'bg-[#38BDF8] text-[#090D14]'
+                      : 'text-[#9CA3AF] hover:text-white'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Panel Resumen de Decisión Spreads (Calls Bull & Puts Bear) */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {activeSpreadMode === 'CREDIT' ? (
+            <div className="space-y-4">
+              {/* Top 3 Tarjetas Adaptadas al Modo Crédito */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {(
+                  [
+                    {
+                      title: 'MEJOR BULL PUT',
+                      accent: 'text-emerald-400 border-emerald-500/35',
+                      item: creditRankingResult.bestBullPut,
+                    },
+                    {
+                      title: 'MEJOR BEAR CALL',
+                      accent: 'text-amber-400 border-amber-500/35',
+                      item: creditRankingResult.bestBearCall,
+                    },
+                    {
+                      title: 'MEJOR IRON CONDOR',
+                      accent: 'text-cyan-300 border-cyan-500/35',
+                      item: creditRankingResult.bestIronCondor,
+                    },
+                  ] as const
+                ).map((slot) => {
+                  const cand = slot.item;
+                  const isSel = cand !== null && focusedCreditCandidate?.id === cand.id;
+                  const ccy = isUsMarket ? 'US$' : '$';
+                  return (
+                    <button
+                      key={slot.title}
+                      type="button"
+                      disabled={cand === null}
+                      onClick={() => {
+                        if (cand) setSelectedCreditId(cand.id);
+                      }}
+                      className={`text-left rounded-[10px] bg-[#101218] border p-3.5 space-y-1.5 transition-all ${
+                        isSel
+                          ? 'border-[#38BDF8] ring-1 ring-[#38BDF8]/40'
+                          : 'border-[#232733] hover:border-[#343B4E]'
+                      } ${cand ? 'cursor-pointer' : 'opacity-75 cursor-default'}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`text-[10.5px] font-mono-num uppercase tracking-wider font-bold ${slot.accent.split(' ')[0]}`}>
+                          {slot.title}
+                        </span>
+                        {cand && Number.isFinite(cand.bidAskPctOfMid) && (
+                          <span
+                            className={`px-2 py-0.5 rounded-full border font-mono-num text-[10px] font-semibold ${getLiquiditySemaphoreBadgeStyle(cand.liquiditySemaphore)}`}
+                          >
+                            ● {fmtNum(cand.bidAskPctOfMid, 1)}% Mid
+                          </span>
+                        )}
+                      </div>
+                      {cand ? (
+                        <>
+                          <div className="font-mono-num text-[14.5px] font-extrabold text-[#FFFFFF]">
+                            {cand.label}
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] font-mono-num text-[#D1D4DC]">
+                            <span>
+                              Créd/Ancho:{' '}
+                              <strong className="text-emerald-400">
+                                {fmtNum(cand.creditPctOfWidth, 1)}%
+                              </strong>{' '}
+                              ({ccy} {fmtNum(cand.netCreditPerShare, 2)})
+                            </span>
+                            <span>
+                              POP ({cand.popSource === 'BL_DENSITY' ? 'BL' : 'LN'}):{' '}
+                              <strong className="text-[#FFFFFF]">
+                                {Number.isFinite(cand.pop) ? `${fmtNum(cand.pop * 100, 1)}%` : '—'}
+                              </strong>
+                            </span>
+                            <span>
+                              EV:{' '}
+                              <strong className={cand.expectedValuePerShare >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                {Number.isFinite(cand.expectedValuePerShare) ? `${ccy} ${fmtNum(cand.expectedValuePerShare, 2)}` : '—'}
+                              </strong>
+                            </span>
+                            <span>
+                              Máx Pérd: <strong className="text-rose-400">{ccy} {fmtNum(cand.maxLossPerShare, 2)}</strong>
+                            </span>
+                            <span className="col-span-2 text-[#9CA3AF]">
+                              |Θ/ν| neta:{' '}
+                              <strong className="text-[#EAB308]">
+                                {Number.isFinite(cand.absThetaToVegaRatio) ? fmtNum(cand.absThetaToVegaRatio, 2) : '—'}
+                              </strong>{' '}
+                              (Θ {Number.isFinite(cand.netThetaDaily) ? fmtNum(cand.netThetaDaily, 3) : '—'} / ν {Number.isFinite(cand.netVegaPer1Pct) ? fmtNum(cand.netVegaPer1Pct, 3) : '—'})
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-[12px] font-mono-num text-[#787B86]">
+                          Sin estructura líquida (Créd ≥ 0,10, Bid &gt; 0, B/A ≤ 35%)
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Inspector Activo Crédito + Simulador What-If */}
+              {focusedCreditCandidate && (() => {
+                const ccy = isUsMarket ? 'US$' : '$';
+                const mult = Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : LOT;
+                const creditWhatIfLegs = buildWhatIfLegsFromCreditCandidate(
+                  focusedCreditCandidate,
+                  activeDays,
+                  activeAtmIvDec,
+                );
+                return (
+                  <div className="rounded-[12px] bg-[#101218] border border-[#38BDF8]/40 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#38BDF8]">
+                          INSPECTOR ACTIVO (CRÉDITO) · {focusedCreditCandidate.label}
+                        </div>
+                        <div className="font-mono-num text-[13px] font-bold text-[#FFFFFF]">
+                          Crédito {ccy} {fmtNum(focusedCreditCandidate.netCreditPerShare, 2)} ({fmtNum(focusedCreditCandidate.creditPctOfWidth, 1)}% ancho) · Máx Pérdida {ccy} {fmtNum(focusedCreditCandidate.maxLossContract, 0)}/cto · BE {focusedCreditCandidate.breakevens.map((b) => (Number.isFinite(b) && b > 0 ? formatStrike(b) : '—')).join(' / ')}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenOrderTicket({
+                            ticker: focusedCreditCandidate.id,
+                            side: 'Venta',
+                            price: focusedCreditCandidate.netCreditPerShare * mult,
+                            qty: 1,
+                            instrumentLabel: `${focusedCreditCandidate.label} (${upperUnderlying})`,
+                          })
+                        }
+                        className="px-3 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-[#090D14] text-[11.5px] font-bold cursor-pointer"
+                      >
+                        Operar Crédito →
+                      </button>
+                    </div>
+                    <WhatIfPayoffSimulator
+                      key={`cred-whatif-${upperUnderlying}-${focusedCreditCandidate.id}`}
+                      structureLabel={focusedCreditCandidate.label}
+                      spot={displaySpot}
+                      rate={Number.isFinite(effectiveRateDec) ? effectiveRateDec : 0}
+                      dividendYield={activeDividendYield}
+                      horizonDte={Math.max(1, Math.round(activeDays || 1))}
+                      legs={creditWhatIfLegs}
+                      currencyPrefix={isUsMarket ? 'US$' : '$'}
+                      contractMultiplier={mult}
+                      callWallStrike={Number.isFinite(dealerGammaReport.callWallStrike) ? dealerGammaReport.callWallStrike : null}
+                      putWallStrike={Number.isFinite(dealerGammaReport.putWallStrike) ? dealerGammaReport.putWallStrike : null}
+                      zeroGammaSpot={Number.isFinite(dealerGammaReport.zeroGammaSpot) ? dealerGammaReport.zeroGammaSpot : null}
+                      breakevens={focusedCreditCandidate.breakevens}
+                    />
+                  </div>
+                );
+              })()}
+
+              {/* Tabla Rankeada de Crédito */}
+              <div className="rounded-[12px] bg-[#101218] border border-[#232733] overflow-hidden">
+                <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-[#232733]">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {(
+                      [
+                        { id: 'ALL' as const, label: `Todos (${String(creditRankingResult.allCandidates.length)})` },
+                        { id: 'BULL_PUT_SPREAD' as const, label: `Bull Put (${String(creditRankingResult.bullPutSpreads.length)})` },
+                        { id: 'BEAR_CALL_SPREAD' as const, label: `Bear Call (${String(creditRankingResult.bearCallSpreads.length)})` },
+                        { id: 'IRON_CONDOR' as const, label: `Iron Condor (${String(creditRankingResult.ironCondors.length)})` },
+                      ] as const
+                    ).map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setCreditKindFilter(f.id)}
+                        className={`px-3 py-1 rounded-full text-[11.5px] font-semibold border cursor-pointer transition-colors ${
+                          creditKindFilter === f.id
+                            ? 'bg-[#1F2433] text-[#FFFFFF] border-[#3E465E]'
+                            : 'bg-transparent text-[#9CA3AF] border-[#262B38] hover:text-white'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-[11px] font-mono-num text-[#787B86]">
+                    Contratos líquidos: {String(creditRankingResult.liquidContractsCount)} · Filtrados: {String(creditRankingResult.skippedContractsCount)}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-right font-mono-num text-[12px]">
+                    <thead>
+                      <tr className="border-b border-[#232733] bg-[#0D1017] text-[11px] font-medium text-[#787B86]">
+                        <th className="py-2.5 px-3 text-left">Estructura</th>
+                        <th className="py-2.5 px-2.5 text-center">Tipo</th>
+                        <th className="py-2.5 px-2.5">Crédito</th>
+                        <th className="py-2.5 px-2.5">Créd/Ancho</th>
+                        <th className="py-2.5 px-2.5">POP</th>
+                        <th className="py-2.5 px-2.5">EV</th>
+                        <th className="py-2.5 px-2.5">Máx Pérd</th>
+                        <th className="py-2.5 px-2.5">|Θ/ν|</th>
+                        <th className="py-2.5 px-3">Liquidez</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1E222D]">
+                      {(() => {
+                        const rowsToShow =
+                          creditKindFilter === 'ALL'
+                            ? creditRankingResult.allCandidates
+                            : creditRankingResult.allCandidates.filter((c) => c.kind === creditKindFilter);
+                        if (rowsToShow.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={9} className="py-6 text-center text-[#787B86]">
+                                Sin estrategias de crédito líquidas con Crédito ≥ 0,10 y Bid-Ask ≤ 35% del Mid.
+                              </td>
+                            </tr>
+                          );
+                        }
+                        const ccy = isUsMarket ? 'US$' : '$';
+                        return rowsToShow.slice(0, 40).map((cand) => {
+                          const isSel = focusedCreditCandidate?.id === cand.id;
+                          return (
+                            <tr
+                              key={cand.id}
+                              onClick={() => setSelectedCreditId(cand.id)}
+                              className={`cursor-pointer transition-colors ${
+                                isSel ? 'bg-[#171E2E]' : 'hover:bg-[#151922]'
+                              }`}
+                            >
+                              <td className="py-2.5 px-3 text-left font-sans font-semibold text-[#FFFFFF]">
+                                {cand.label}
+                              </td>
+                              <td className="py-2.5 px-2.5 text-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    cand.kind === 'BULL_PUT_SPREAD'
+                                      ? 'bg-emerald-500/15 text-emerald-300'
+                                      : cand.kind === 'BEAR_CALL_SPREAD'
+                                        ? 'bg-amber-500/15 text-amber-300'
+                                        : 'bg-cyan-500/15 text-cyan-300'
+                                  }`}
+                                >
+                                  {cand.kind === 'BULL_PUT_SPREAD'
+                                    ? 'BULL PUT'
+                                    : cand.kind === 'BEAR_CALL_SPREAD'
+                                      ? 'BEAR CALL'
+                                      : 'IRON CONDOR'}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-2.5 text-emerald-400 font-bold">
+                                {ccy} {fmtNum(cand.netCreditPerShare, 2)}
+                              </td>
+                              <td className="py-2.5 px-2.5 text-[#FFFFFF] font-semibold">
+                                {fmtNum(cand.creditPctOfWidth, 1)}%
+                              </td>
+                              <td className="py-2.5 px-2.5 text-[#FFFFFF]">
+                                {Number.isFinite(cand.pop) ? `${fmtNum(cand.pop * 100, 1)}%` : '—'}
+                              </td>
+                              <td
+                                className={`py-2.5 px-2.5 font-semibold ${
+                                  Number.isFinite(cand.expectedValuePerShare)
+                                    ? cand.expectedValuePerShare >= 0
+                                      ? 'text-emerald-400'
+                                      : 'text-rose-400'
+                                    : 'text-[#787B86]'
+                                }`}
+                              >
+                                {Number.isFinite(cand.expectedValuePerShare)
+                                  ? `${ccy} ${fmtNum(cand.expectedValuePerShare, 2)}`
+                                  : '—'}
+                              </td>
+                              <td className="py-2.5 px-2.5 text-rose-400">
+                                {ccy} {fmtNum(cand.maxLossPerShare, 2)}
+                              </td>
+                              <td className="py-2.5 px-2.5 text-[#EAB308]">
+                                {Number.isFinite(cand.absThetaToVegaRatio)
+                                  ? fmtNum(cand.absThetaToVegaRatio, 2)
+                                  : '—'}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full border text-[10px] font-semibold ${getLiquiditySemaphoreBadgeStyle(cand.liquiditySemaphore)}`}
+                                >
+                                  ● {fmtNum(cand.bidAskPctOfMid, 1)}%
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Panel Resumen de Decisión Spreads (Calls Bull & Puts Bear) */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="rounded-[10px] bg-[#101218] border border-[#232733] p-3.5 space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[10.5px] font-mono-num uppercase tracking-wider text-[#EAB308]">
@@ -1980,6 +2972,34 @@ export const OptionsModule: React.FC<{
               )}
             </div>
           </div>
+
+          {spreadSummaryStats.focusedCell && (() => {
+            const debCell = spreadSummaryStats.focusedCell;
+            const debitWhatIfLegs = buildWhatIfLegsFromDebitCell(
+              debCell,
+              activeExpiry?.rows ?? [],
+              activeDays,
+              activeAtmIvDec,
+            );
+            if (debitWhatIfLegs.length === 0) return null;
+            return (
+              <WhatIfPayoffSimulator
+                key={`deb-whatif-${upperUnderlying}-${debCell.side}-${String(debCell.longStrike)}-${String(debCell.shortStrike)}`}
+                structureLabel={`${debCell.side === 'CALL' ? 'Bull Call' : 'Bear Put'} ${String(debCell.longStrike)}/${String(debCell.shortStrike)}`}
+                spot={displaySpot}
+                rate={Number.isFinite(effectiveRateDec) ? effectiveRateDec : 0}
+                dividendYield={activeDividendYield}
+                horizonDte={Math.max(1, Math.round(activeDays || 1))}
+                legs={debitWhatIfLegs}
+                currencyPrefix={isUsMarket ? 'US$' : '$'}
+                contractMultiplier={Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : LOT}
+                callWallStrike={Number.isFinite(dealerGammaReport.callWallStrike) ? dealerGammaReport.callWallStrike : null}
+                putWallStrike={Number.isFinite(dealerGammaReport.putWallStrike) ? dealerGammaReport.putWallStrike : null}
+                zeroGammaSpot={Number.isFinite(dealerGammaReport.zeroGammaSpot) ? dealerGammaReport.zeroGammaSpot : null}
+                breakevens={[debCell.breakeven]}
+              />
+            );
+          })()}
 
           <div className="rounded-[12px] bg-[#101218] border border-[#232733] overflow-hidden">
             <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-[#232733]">
@@ -2196,6 +3216,8 @@ export const OptionsModule: React.FC<{
               </table>
             </div>
           </div>
+            </>
+          )}
         </div>
       )}
 
@@ -2208,13 +3230,141 @@ export const OptionsModule: React.FC<{
             <div className="flex items-center gap-2">
               <h2 className="text-[24px] font-extrabold text-[#FFFFFF] tracking-tight">Flujo</h2>
               <HelpTooltip
-                title="Volumen y Delta por Base"
-                text="Analiza el volumen operado en Calls y Puts por base y su exposición neta en acciones equivalentes provista por el feed BYMA."
+                title="Volumen, Gamma Exposure y Régimen de Dealers"
+                text="Analiza el volumen operado por base, Pin/Max Pain y la exposición gamma de los dealers (Call Wall, Put Wall y Zero Gamma)."
               />
             </div>
             <p className="text-[13px] text-[#9CA3AF]">
-              Volumen operado e interés en cada base de {upperUnderlying} ({activeExpiry?.label ?? '—'}).
+              Volumen operado, Pin y niveles GEX en cada base de {upperUnderlying} ({activeExpiry?.label ?? '—'}).
             </p>
+          </div>
+
+          {/* Pieza 46: Régimen de Dealers (Long Gamma / Short Gamma) + Call Wall / Put Wall / Zero Gamma */}
+          <div
+            className={`rounded-[12px] border p-4 space-y-3 ${
+              dealerGammaReport.regime === 'LONG_GAMMA'
+                ? 'bg-emerald-950/25 border-emerald-500/45'
+                : dealerGammaReport.regime === 'SHORT_GAMMA'
+                  ? 'bg-rose-950/25 border-rose-500/45'
+                  : 'bg-[#12141A] border-[#232733]'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full border font-mono-num text-[11px] font-extrabold tracking-wide ${
+                      dealerGammaReport.regime === 'LONG_GAMMA'
+                        ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-300'
+                        : dealerGammaReport.regime === 'SHORT_GAMMA'
+                          ? 'border-rose-400/60 bg-rose-500/20 text-rose-300'
+                          : 'border-[#33394A] bg-[#0B0E14] text-[#9CA3AF]'
+                    }`}
+                  >
+                    {dealerGammaReport.regime === 'LONG_GAMMA'
+                      ? 'LONG GAMMA (Net GEX > 0)'
+                      : dealerGammaReport.regime === 'SHORT_GAMMA'
+                        ? 'SHORT GAMMA (Net GEX < 0)'
+                        : dealerGammaReport.regime === 'NEUTRAL'
+                          ? 'GAMMA NEUTRAL'
+                          : 'RÉGIMEN GEX —'}
+                  </span>
+                  <span className="text-[13px] font-bold text-[#FFFFFF]">
+                    {dealerGammaReport.behaviorLabel}
+                  </span>
+                </div>
+                <p
+                  className={`text-[12px] ${
+                    dealerGammaReport.creditStrategySignal === 'GREEN_LIGHT'
+                      ? 'text-emerald-300'
+                      : dealerGammaReport.creditStrategySignal === 'CAUTION_SHORT_WINGS'
+                        ? 'text-rose-300'
+                        : 'text-[#9CA3AF]'
+                  }`}
+                >
+                  {dealerGammaReport.strategyGuidance}
+                </p>
+              </div>
+              {Number.isFinite(dealerGammaReport.distanceToZeroGammaPct) && (
+                <div className="text-right font-mono-num text-[11.5px] text-[#D1D4DC]">
+                  <div>
+                    Spot vs Zero Gamma:{' '}
+                    <strong className="text-[#FFFFFF]">
+                      {dealerGammaReport.spotVsZeroGamma === 'ABOVE_ZERO_GAMMA'
+                        ? 'Sobre Flip'
+                        : dealerGammaReport.spotVsZeroGamma === 'BELOW_ZERO_GAMMA'
+                          ? 'Debajo Flip'
+                          : 'En Flip'}
+                    </strong>
+                  </div>
+                  <div className="text-[#9CA3AF]">
+                    Distancia: {dealerGammaReport.distanceToZeroGammaPct >= 0 ? '+' : ''}
+                    {fmtNum(dealerGammaReport.distanceToZeroGammaPct, 2)}%
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-[#1E222D]/80 font-mono-num">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">NET GEX (1% SPOT)</div>
+                <div
+                  className={`text-[15px] font-extrabold ${
+                    Number.isFinite(dealerGammaReport.netGex)
+                      ? dealerGammaReport.netGex >= 0
+                        ? 'text-emerald-400'
+                        : 'text-rose-400'
+                      : 'text-[#787B86]'
+                  }`}
+                >
+                  {Number.isFinite(dealerGammaReport.netGex)
+                    ? (() => {
+                        const v = dealerGammaReport.netGex;
+                        const sign = v > 0 ? '+' : v < 0 ? '-' : '';
+                        const ccy = isUsMarket ? 'US$' : '$';
+                        const abs = Math.abs(v);
+                        if (abs >= 1e9) return `${sign}${ccy} ${fmtNum(abs / 1e9, 2)} B`;
+                        if (abs >= 1e6) return `${sign}${ccy} ${fmtNum(abs / 1e6, 2)} M`;
+                        if (abs >= 1e3) return `${sign}${ccy} ${fmtNum(abs / 1e3, 1)} K`;
+                        return `${sign}${ccy} ${fmtNum(abs, 0)}`;
+                      })()
+                    : '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">CALL WALL (CW)</div>
+                <div className="text-[15px] font-extrabold text-[#EAB308]">
+                  {Number.isFinite(dealerGammaReport.callWallStrike)
+                    ? formatStrike(dealerGammaReport.callWallStrike)
+                    : '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">PUT WALL (PW)</div>
+                <div className="text-[15px] font-extrabold text-[#C084FC]">
+                  {Number.isFinite(dealerGammaReport.putWallStrike)
+                    ? formatStrike(dealerGammaReport.putWallStrike)
+                    : '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">ZERO GAMMA (FLIP)</div>
+                <div className="text-[15px] font-extrabold text-[#38BDF8]">
+                  {Number.isFinite(dealerGammaReport.zeroGammaSpot)
+                    ? formatStrike(dealerGammaReport.zeroGammaSpot)
+                    : '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">GEX/CHARM PIN</div>
+                <div className="text-[15px] font-extrabold text-[#D1D4DC]">
+                  {activeQuantEngines?.gexCharmPin?.gexCharmPinStrike != null &&
+                  Number.isFinite(activeQuantEngines.gexCharmPin.gexCharmPinStrike)
+                    ? formatStrike(activeQuantEngines.gexCharmPin.gexCharmPinStrike)
+                    : '—'}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2421,10 +3571,10 @@ export const OptionsModule: React.FC<{
               </div>
             </div>
 
-            <div className="grid grid-cols-11 border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider text-center">
-              <div className="col-span-5 py-2.5 bg-[#2B2819] text-[#EAB308]">CALL</div>
-              <div className="col-span-1 py-2.5 bg-[#161922] text-[#9CA3AF]">BASE</div>
-              <div className="col-span-5 py-2.5 bg-[#261D30] text-[#C084FC]">PUT</div>
+            <div className="grid grid-cols-12 border-b border-[#232733] text-[11px] font-bold uppercase tracking-wider text-center">
+              <div className="col-span-4 py-2.5 bg-[#2B2819] text-[#EAB308]">CALL</div>
+              <div className="col-span-4 py-2.5 bg-[#161922] text-[#9CA3AF]">BASE · WALLS / GEX</div>
+              <div className="col-span-4 py-2.5 bg-[#261D30] text-[#C084FC]">PUT</div>
             </div>
 
             <div className="divide-y divide-[#1A1E29] font-mono-num text-[12px]">
@@ -2433,66 +3583,146 @@ export const OptionsModule: React.FC<{
                   Sin flujo operado reportado para {upperUnderlying}.
                 </div>
               ) : (
-                flowSummary.rows.map((r: BidirectionalFlowRow) => (
-                  <div
-                    key={r.strikeNum}
-                    className={`grid grid-cols-11 items-center h-9 ${
-                      r.isAtm ? 'bg-[#1E222E]' : 'hover:bg-[#151922]'
-                    }`}
-                  >
-                    <div className="col-span-5 flex items-center h-full px-3 gap-3">
-                      <span
-                        className={`w-16 text-right font-bold shrink-0 ${
-                          r.callNetDir === 'pos' ? 'text-[#EAB308]' : 'text-[#6D7282]'
+                flowSummary.rows.map((r: BidirectionalFlowRow, rIdx: number) => {
+                  const gexRow = exposureByStrikeMap.get(r.strikeNum);
+                  const netGexStrike = gexRow?.netGex ?? null;
+                  const isCallWall =
+                    Number.isFinite(dealerGammaReport.callWallStrike) &&
+                    Math.abs(r.strikeNum - dealerGammaReport.callWallStrike) < 1e-6;
+                  const isPutWall =
+                    Number.isFinite(dealerGammaReport.putWallStrike) &&
+                    Math.abs(r.strikeNum - dealerGammaReport.putWallStrike) < 1e-6;
+                  const pinK = activeQuantEngines?.gexCharmPin?.gexCharmPinStrike ?? null;
+                  const isPinStrike =
+                    pinK !== null && Number.isFinite(pinK) && Math.abs(r.strikeNum - pinK) < 1e-6;
+                  const zgSpot = dealerGammaReport.zeroGammaSpot;
+                  const prevRow = rIdx > 0 ? flowSummary.rows[rIdx - 1] : undefined;
+                  const showZeroGammaBefore =
+                    Number.isFinite(zgSpot) &&
+                    prevRow !== undefined &&
+                    Math.min(prevRow.strikeNum, r.strikeNum) < zgSpot &&
+                    Math.max(prevRow.strikeNum, r.strikeNum) >= zgSpot;
+                  const gexLabel =
+                    netGexStrike !== null && Number.isFinite(netGexStrike)
+                      ? `${netGexStrike >= 0 ? '+' : '-'}${
+                          Math.abs(netGexStrike) >= 1e6
+                            ? `${fmtNum(Math.abs(netGexStrike) / 1e6, 1)}M`
+                            : Math.abs(netGexStrike) >= 1e3
+                              ? `${fmtNum(Math.abs(netGexStrike) / 1e3, 0)}K`
+                              : fmtNum(Math.abs(netGexStrike), 0)
+                        }`
+                      : null;
+
+                  return (
+                    <React.Fragment key={r.strikeNum}>
+                      {showZeroGammaBefore && (
+                        <div className="flex items-center justify-center gap-2 py-1 bg-cyan-950/35 border-y border-cyan-500/45 text-[10.5px] font-bold text-[#38BDF8]">
+                          <span>ZERO GAMMA (Gamma Flip)</span>
+                          <span className="px-1.5 py-0.2 rounded bg-[#0B0E14] border border-cyan-500/40 text-[#FFFFFF]">
+                            {formatStrike(zgSpot)}
+                          </span>
+                        </div>
+                      )}
+                      <div
+                        className={`grid grid-cols-12 items-center min-h-9 py-1 ${
+                          r.isAtm ? 'bg-[#1E222E]' : 'hover:bg-[#151922]'
                         }`}
                       >
-                        {r.callNetLabel}
-                      </span>
-                      <div className="flex-1 h-5 flex items-center justify-start relative">
-                        {r.callTotalPct > 0 && (
-                          <div
-                            style={{ width: `${r.callTotalPct}%` }}
-                            className="h-5 rounded-[3px] bg-[#5E5438] relative overflow-hidden flex items-center"
+                        <div className="col-span-4 flex items-center h-full px-3 gap-2">
+                          <span
+                            className={`w-14 text-right font-bold shrink-0 ${
+                              r.callNetDir === 'pos' ? 'text-[#EAB308]' : 'text-[#6D7282]'
+                            }`}
                           >
-                            {r.callNetHighlightPct > 0 && (
-                              <div style={{ width: `${Math.min(100, r.callNetHighlightPct)}%` }} className="h-full bg-[#EAB308]" />
+                            {r.callNetLabel}
+                          </span>
+                          <div className="flex-1 h-5 flex items-center justify-start relative">
+                            {r.callTotalPct > 0 && (
+                              <div
+                                style={{ width: `${r.callTotalPct}%` }}
+                                className="h-5 rounded-[3px] bg-[#5E5438] relative overflow-hidden flex items-center"
+                              >
+                                {r.callNetHighlightPct > 0 && (
+                                  <div
+                                    style={{ width: `${Math.min(100, r.callNetHighlightPct)}%` }}
+                                    className="h-full bg-[#EAB308]"
+                                  />
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        </div>
 
-                    <div
-                      className={`col-span-1 h-full flex items-center justify-center font-bold text-[#FFFFFF] border-x border-[#232733] ${
-                        r.isAtm ? 'bg-[#2B3040]' : 'bg-[#181B24]'
-                      }`}
-                    >
-                      {r.base}
-                    </div>
+                        <div
+                          className={`col-span-4 h-full px-2 flex flex-wrap items-center justify-center gap-1.5 font-bold text-[#FFFFFF] border-x border-[#232733] ${
+                            r.isAtm ? 'bg-[#2B3040]' : 'bg-[#181B24]'
+                          }`}
+                        >
+                          <span>{r.base}</span>
+                          {isCallWall && (
+                            <span
+                              title="Call Wall (Mayor GEX / OI Call)"
+                              className="px-1.5 py-0.2 rounded bg-amber-500/20 border border-amber-400/50 text-[9.5px] font-bold text-[#EAB308]"
+                            >
+                              CW
+                            </span>
+                          )}
+                          {isPutWall && (
+                            <span
+                              title="Put Wall (Mayor GEX / OI Put)"
+                              className="px-1.5 py-0.2 rounded bg-purple-500/20 border border-purple-400/50 text-[9.5px] font-bold text-[#C084FC]"
+                            >
+                              PW
+                            </span>
+                          )}
+                          {isPinStrike && (
+                            <span
+                              title="GEX/Charm Pin"
+                              className="px-1.5 py-0.2 rounded bg-cyan-500/20 border border-cyan-400/50 text-[9.5px] font-bold text-[#38BDF8]"
+                            >
+                              PIN
+                            </span>
+                          )}
+                          {gexLabel !== null && (
+                            <span
+                              title="Net GEX por base (USD por 1% Spot)"
+                              className={`text-[9.5px] font-semibold ${
+                                (netGexStrike ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                              }`}
+                            >
+                              GEX {gexLabel}
+                            </span>
+                          )}
+                        </div>
 
-                    <div className="col-span-5 flex items-center justify-end h-full px-3 gap-3">
-                      <div className="flex-1 h-5 flex items-center justify-end relative">
-                        {r.putTotalPct > 0 && (
-                          <div
-                            style={{ width: `${r.putTotalPct}%` }}
-                            className="h-5 rounded-[3px] bg-[#564D65] relative overflow-hidden flex items-center justify-end"
-                          >
-                            {r.putNetHighlightPct > 0 && (
-                              <div style={{ width: `${Math.min(100, r.putNetHighlightPct)}%` }} className="h-full bg-[#A855F7]" />
+                        <div className="col-span-4 flex items-center justify-end h-full px-3 gap-2">
+                          <div className="flex-1 h-5 flex items-center justify-end relative">
+                            {r.putTotalPct > 0 && (
+                              <div
+                                style={{ width: `${r.putTotalPct}%` }}
+                                className="h-5 rounded-[3px] bg-[#564D65] relative overflow-hidden flex items-center justify-end"
+                              >
+                                {r.putNetHighlightPct > 0 && (
+                                  <div
+                                    style={{ width: `${Math.min(100, r.putNetHighlightPct)}%` }}
+                                    className="h-full bg-[#A855F7]"
+                                  />
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
+                          <span
+                            className={`w-14 text-left font-bold shrink-0 ${
+                              r.putNetDir === 'neg' ? 'text-[#C084FC]' : 'text-[#6D7282]'
+                            }`}
+                          >
+                            {r.putNetLabel}
+                          </span>
+                        </div>
                       </div>
-                      <span
-                        className={`w-16 text-left font-bold shrink-0 ${
-                          r.putNetDir === 'neg' ? 'text-[#C084FC]' : 'text-[#6D7282]'
-                        }`}
-                      >
-                        {r.putNetLabel}
-                      </span>
-                    </div>
-                  </div>
-                ))
+                    </React.Fragment>
+                  );
+                })
               )}
             </div>
           </div>

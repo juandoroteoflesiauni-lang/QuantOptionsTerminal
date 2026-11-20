@@ -17,7 +17,12 @@ import './envBootstrap.js';
 import type { Bar } from '../core/types.js';
 import type { FetchFn, FetchResponse, Timeframe } from '../data/types.js';
 import { etWallTimeToUtc } from '../data/alignment.js';
-import { getMarketParts, isRth } from '../core/sessions.js';
+import { getMarketParts, isRth, MAX_TIME_SECONDS } from '../core/sessions.js';
+import type {
+  EarningsCatalystEvent,
+  MacroCatalystEvent,
+  MacroCatalystKind,
+} from '../core/options/catalysts.js';
 import { redactSecrets } from './runtimeCache.js';
 
 export const FMP_API_KEY_ENV_NAME = 'FMP_API_KEY';
@@ -26,12 +31,14 @@ export const FMP_KEY_QUOTES_ENV_NAME = 'FMP_KEY_QUOTES';
 export const FMP_KEY_MARKET_ENV_NAME = 'FMP_KEY_MARKET';
 export const FMP_KEY_ETF_ENV_NAME = 'FMP_KEY_ETF';
 export const FMP_KEY_MACRO_ENV_NAME = 'FMP_KEY_MACRO';
+export const FMP_KEY_CALENDARS_ENV_NAME = 'FMP_KEY_CALENDARS';
 export const FMP_KEY_ENV_NAMES = [
   FMP_API_KEY_ENV_NAME,
   FMP_KEY_QUOTES_ENV_NAME,
   FMP_KEY_MARKET_ENV_NAME,
   FMP_KEY_ETF_ENV_NAME,
   FMP_KEY_MACRO_ENV_NAME,
+  FMP_KEY_CALENDARS_ENV_NAME,
 ] as const;
 export const FMP_STABLE_BASE_URL = 'https://financialmodelingprep.com';
 export const FMP_LEGACY_BASE_URL = 'https://financialmodelingprep.com';
@@ -42,7 +49,9 @@ export type FmpEndpoint =
   | 'HISTORICAL_CHART'
   | 'HISTORICAL_PRICE_EOD'
   | 'BATCH_QUOTE'
-  | 'EXTENDED_BATCH_QUOTE';
+  | 'EXTENDED_BATCH_QUOTE'
+  | 'EARNINGS_CALENDAR'
+  | 'ECONOMIC_CALENDAR';
 export type FmpBatchMode = 'stable-batch' | 'v3-batch' | 'stable-single-pool';
 export type FmpExtendedQuotesSource =
   | 'FMP_STABLE_AFTERMARKET_BATCH'
@@ -57,11 +66,12 @@ export interface FmpConfig {
   readonly marketApiKey: string | null;
   readonly etfApiKey: string | null;
   readonly macroApiKey: string | null;
+  readonly calendarsApiKey?: string | null;
   readonly configured: boolean;
   readonly baseUrl: string;
 }
 
-export type FmpKeyRole = 'PRIMARY' | 'QUOTES' | 'MARKET' | 'ETF' | 'MACRO';
+export type FmpKeyRole = 'PRIMARY' | 'QUOTES' | 'MARKET' | 'ETF' | 'MACRO' | 'CALENDARS';
 
 export interface FmpKeySelection {
   readonly key: string;
@@ -211,13 +221,21 @@ export function resolveFmpConfig(env: NodeJS.ProcessEnv = process.env): FmpConfi
   const marketApiKey = readKey(FMP_KEY_MARKET_ENV_NAME);
   const etfApiKey = readKey(FMP_KEY_ETF_ENV_NAME);
   const macroApiKey = readKey(FMP_KEY_MACRO_ENV_NAME);
+  const calendarsApiKey = readKey(FMP_KEY_CALENDARS_ENV_NAME);
   return {
     apiKey,
     quotesApiKey,
     marketApiKey,
     etfApiKey,
     macroApiKey,
-    configured: apiKey !== null || quotesApiKey !== null || marketApiKey !== null || etfApiKey !== null || macroApiKey !== null,
+    calendarsApiKey,
+    configured:
+      apiKey !== null
+      || quotesApiKey !== null
+      || marketApiKey !== null
+      || etfApiKey !== null
+      || macroApiKey !== null
+      || calendarsApiKey !== null,
     baseUrl: FMP_STABLE_BASE_URL,
   };
 }
@@ -705,8 +723,24 @@ export class FmpEnterpriseClient {
     return resolveFmpConfig();
   }
 
-  private apiKeyFor(endpoint: 'MARKET' | 'QUOTES' | 'EXTENDED_QUOTES'): FmpKeySelection | null {
+  private apiKeyFor(
+    endpoint: 'MARKET' | 'QUOTES' | 'EXTENDED_QUOTES' | 'CALENDARS' | 'MACRO',
+  ): FmpKeySelection | null {
     const config = this.effectiveConfig();
+    if (endpoint === 'CALENDARS') {
+      const calKey = config.calendarsApiKey ?? null;
+      if (calKey !== null) return { key: calKey, envName: 'CALENDARS' };
+      if (config.macroApiKey !== null) return { key: config.macroApiKey, envName: 'MACRO' };
+      if (config.apiKey !== null) return { key: config.apiKey, envName: 'PRIMARY' };
+      return null;
+    }
+    if (endpoint === 'MACRO') {
+      if (config.macroApiKey !== null) return { key: config.macroApiKey, envName: 'MACRO' };
+      const calKey = config.calendarsApiKey ?? null;
+      if (calKey !== null) return { key: calKey, envName: 'CALENDARS' };
+      if (config.apiKey !== null) return { key: config.apiKey, envName: 'PRIMARY' };
+      return null;
+    }
     if (endpoint === 'QUOTES') {
       if (config.quotesApiKey !== null) return { key: config.quotesApiKey, envName: 'QUOTES' };
       if (config.apiKey !== null) return { key: config.apiKey, envName: 'PRIMARY' };
@@ -727,9 +761,14 @@ export class FmpEnterpriseClient {
     const config = this.effectiveConfig();
     return [
       ...this.baseSecrets,
-      ...[config.apiKey, config.quotesApiKey, config.marketApiKey, config.etfApiKey, config.macroApiKey].filter(
-        (key): key is string => key !== null,
-      ),
+      ...[
+        config.apiKey,
+        config.quotesApiKey,
+        config.marketApiKey,
+        config.etfApiKey,
+        config.macroApiKey,
+        config.calendarsApiKey ?? null,
+      ].filter((key): key is string => key !== null),
     ];
   }
 
@@ -1218,6 +1257,194 @@ export class FmpEnterpriseClient {
     };
   }
 
+  /**
+   * Consulta en FMP Enterprise las fechas de Earnings del subyacente US.
+   * Degrada honestamente a `nextEarnings: null, lastEarnings: null, available: false`
+   * cuando no hay clave configurada o FMP no devuelve datos.
+   */
+  public async fetchSymbolEarnings(
+    symbol: string,
+    nowUtcSec?: number,
+  ): Promise<FmpSymbolEarningsResult> {
+    const cleanSym = cleanSymbol(symbol);
+    const asOfUtcSec =
+      nowUtcSec !== undefined && Number.isFinite(nowUtcSec)
+        ? Math.floor(nowUtcSec)
+        : Math.floor(this.nowMsFn() / 1_000);
+    const keySelection = this.apiKeyFor('CALENDARS');
+    if (cleanSym === '') {
+      return {
+        symbol: '',
+        asOfUtcSec,
+        nextEarnings: null,
+        lastEarnings: null,
+        events: [],
+        source: null,
+        available: false,
+        reason: 'Símbolo requerido para Earnings',
+      };
+    }
+    if (!this.effectiveConfig().configured || keySelection === null) {
+      return {
+        symbol: cleanSym,
+        asOfUtcSec,
+        nextEarnings: null,
+        lastEarnings: null,
+        events: [],
+        source: null,
+        available: false,
+        reason: 'FMP_KEY_CALENDARS / FMP_API_KEY no configurada',
+      };
+    }
+
+    const fromKey = fmpEtDateKey(asOfUtcSec - 15 * 86_400);
+    const toKey = fmpEtDateKey(asOfUtcSec + 120 * 86_400);
+    const endpointsToTry: readonly { readonly path: string; readonly tag: string }[] = [
+      { path: buildFmpEarningsPath(cleanSym, 20), tag: 'FMP_STABLE_EARNINGS' },
+      { path: buildFmpEarningsCalendarWindowPath(fromKey, toKey), tag: 'FMP_STABLE_EARNINGS_CALENDAR' },
+    ];
+
+    let lastFailureReason: string | null = null;
+    for (const candidate of endpointsToTry) {
+      let response: FmpHttpResult;
+      try {
+        response = await this.fetchRedacted(buildAuthUrl(candidate.path, keySelection.key));
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        lastFailureReason = redactSecrets(msg, this.currentSecrets());
+        continue;
+      }
+
+      if (!response.ok) {
+        lastFailureReason = `FMP earnings HTTP ${String(response.status)}`;
+        // Reintenta fallback si el plan restringe /stable/earnings o no existe.
+        if (response.status === 402 || response.status === 403 || response.status === 404) {
+          continue;
+        }
+        return {
+          symbol: cleanSym,
+          asOfUtcSec,
+          nextEarnings: null,
+          lastEarnings: null,
+          events: [],
+          source: null,
+          available: false,
+          reason: redactSecrets(lastFailureReason, this.currentSecrets()),
+        };
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(response.text) as unknown;
+      } catch {
+        lastFailureReason = 'FMP earnings JSON inválido';
+        continue;
+      }
+
+      const parsed = parseFmpEarningsCalendar(raw, cleanSym, asOfUtcSec);
+      this.recordResponse(true, parsed.events.length);
+      if (parsed.events.length === 0 && candidate.tag === 'FMP_STABLE_EARNINGS') {
+        continue;
+      }
+      return {
+        symbol: cleanSym,
+        asOfUtcSec,
+        nextEarnings: parsed.nextEarnings,
+        lastEarnings: parsed.lastEarnings,
+        events: parsed.events,
+        source: candidate.tag,
+        available: true,
+        reason: null,
+      };
+    }
+
+    return {
+      symbol: cleanSym,
+      asOfUtcSec,
+      nextEarnings: null,
+      lastEarnings: null,
+      events: [],
+      source: null,
+      available: lastFailureReason === null,
+      reason:
+        lastFailureReason === null
+          ? null
+          : redactSecrets(lastFailureReason, this.currentSecrets()),
+    };
+  }
+
+  /**
+   * Consulta el calendario económico US en FMP (`/stable/economic-calendar`) filtrando
+   * eventos de alto impacto `FOMC` y `CPI`.
+   */
+  public async fetchUsMacroCalendar(nowUtcSec?: number): Promise<FmpMacroCalendarResult> {
+    const asOfUtcSec =
+      nowUtcSec !== undefined && Number.isFinite(nowUtcSec)
+        ? Math.floor(nowUtcSec)
+        : Math.floor(this.nowMsFn() / 1_000);
+    const keySelection = this.apiKeyFor('MACRO');
+    if (!this.effectiveConfig().configured || keySelection === null) {
+      return {
+        asOfUtcSec,
+        events: [],
+        source: null,
+        available: false,
+        reason: 'FMP_KEY_MACRO / FMP_KEY_CALENDARS no configurada',
+      };
+    }
+
+    const fromKey = fmpEtDateKey(asOfUtcSec - 7 * 86_400);
+    const toKey = fmpEtDateKey(asOfUtcSec + 120 * 86_400);
+    const path = buildFmpEconomicCalendarPath(fromKey, toKey);
+
+    let response: FmpHttpResult;
+    try {
+      response = await this.fetchRedacted(buildAuthUrl(path, keySelection.key));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        asOfUtcSec,
+        events: [],
+        source: null,
+        available: false,
+        reason: redactSecrets(msg, this.currentSecrets()),
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        asOfUtcSec,
+        events: [],
+        source: null,
+        available: false,
+        reason: `FMP economic calendar HTTP ${String(response.status)}`,
+      };
+    }
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(response.text) as unknown;
+    } catch {
+      return {
+        asOfUtcSec,
+        events: [],
+        source: null,
+        available: false,
+        reason: 'FMP economic calendar JSON inválido',
+      };
+    }
+
+    const events = parseFmpEconomicCalendarMacroEvents(raw);
+    this.recordResponse(true, events.length);
+    return {
+      asOfUtcSec,
+      events,
+      source: 'FMP_STABLE_ECONOMIC_CALENDAR',
+      available: true,
+      reason: null,
+    };
+  }
+
   private recordResponse(ok: boolean, rows: number): void {
     if (ok && rows > 0) {
       this.lastSuccessAtMs = this.nowMsFn();
@@ -1226,6 +1453,189 @@ export class FmpEnterpriseClient {
       this.lastError = 'FMP response contained no valid rows';
     }
   }
+}
+
+export interface FmpSymbolEarningsResult {
+  readonly symbol: string;
+  readonly asOfUtcSec: number;
+  readonly nextEarnings: EarningsCatalystEvent | null;
+  readonly lastEarnings: EarningsCatalystEvent | null;
+  readonly events: readonly EarningsCatalystEvent[];
+  readonly source: string | null;
+  readonly available: boolean;
+  readonly reason: string | null;
+}
+
+export interface FmpMacroCalendarResult {
+  readonly asOfUtcSec: number;
+  readonly events: readonly MacroCatalystEvent[];
+  readonly source: string | null;
+  readonly available: boolean;
+  readonly reason: string | null;
+}
+
+export function buildFmpEarningsPath(symbol: string, limit = 20): string {
+  const query = new URLSearchParams({ symbol: cleanSymbol(symbol), limit: String(limit) });
+  return `/stable/earnings?${query.toString()}`;
+}
+
+export function buildFmpEarningsCalendarWindowPath(fromDate: string, toDate: string): string {
+  const query = new URLSearchParams({ from: fromDate, to: toDate });
+  return `/stable/earnings-calendar?${query.toString()}`;
+}
+
+export function buildFmpEconomicCalendarPath(fromDate: string, toDate: string): string {
+  const query = new URLSearchParams({ from: fromDate, to: toDate });
+  return `/stable/economic-calendar?${query.toString()}`;
+}
+
+function normalizeEarningsTimeOfDay(raw: unknown): 'bmo' | 'amc' | 'unknown' {
+  if (typeof raw !== 'string') return 'unknown';
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'bmo' || normalized.includes('before')) return 'bmo';
+  if (normalized === 'amc' || normalized.includes('after')) return 'amc';
+  return 'unknown';
+}
+
+function parseCalendarDateTimeUtcSec(
+  rawDate: unknown,
+  defaultEtClock: string,
+): { readonly dateKey: string; readonly utcSec: number } | null {
+  if (typeof rawDate !== 'string') return null;
+  const trimmed = rawDate.trim();
+  if (trimmed === '') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const utcSec = parseFmpEtDateTimeToUtcSec(`${trimmed} ${defaultEtClock}`);
+    return Number.isFinite(utcSec) ? { dateKey: trimmed, utcSec: Math.floor(utcSec) } : null;
+  }
+  if (/Z$|[+-]\d{2}:?\d{2}$/i.test(trimmed)) {
+    const ms = Date.parse(trimmed);
+    const utcSec = Math.floor(ms / 1_000);
+    if (!Number.isFinite(utcSec) || Math.abs(utcSec) > MAX_TIME_SECONDS) return null;
+    const key = fmpEtDateKey(utcSec);
+    return key === '' ? null : { dateKey: key, utcSec };
+  }
+  const etSec = parseFmpEtDateTimeToUtcSec(trimmed);
+  if (!Number.isFinite(etSec)) return null;
+  const dateMatch = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
+  const dateKey = dateMatch?.[1] ?? fmpEtDateKey(etSec);
+  return dateKey === '' ? null : { dateKey, utcSec: Math.floor(etSec) };
+}
+
+/**
+ * Parser puro de payloads `/stable/earnings` o `/stable/earnings-calendar` de FMP.
+ */
+export function parseFmpEarningsCalendar(
+  raw: unknown,
+  symbol: string,
+  asOfUtcSec: number,
+): {
+  readonly nextEarnings: EarningsCatalystEvent | null;
+  readonly lastEarnings: EarningsCatalystEvent | null;
+  readonly events: readonly EarningsCatalystEvent[];
+} {
+  const rows = Array.isArray(raw) ? raw : [];
+  const targetSymbol = cleanSymbol(symbol);
+  const dedupedByDate = new Map<string, EarningsCatalystEvent>();
+
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const rowSymbolRaw = row['symbol'];
+    if (typeof rowSymbolRaw === 'string' && rowSymbolRaw.trim() !== '') {
+      if (cleanSymbol(rowSymbolRaw) !== targetSymbol) continue;
+    }
+    const timeOfDay = normalizeEarningsTimeOfDay(row['time'] ?? row['when']);
+    const defaultClock = timeOfDay === 'bmo' ? '08:30:00' : timeOfDay === 'amc' ? '16:05:00' : '12:00:00';
+    const dt = parseCalendarDateTimeUtcSec(row['date'], defaultClock);
+    if (dt === null) continue;
+    const epsEstimate = nullable(row['epsEstimated'] ?? row['epsEstimate']);
+    const epsActual = nullable(row['epsActual'] ?? row['eps']);
+    const candidate: EarningsCatalystEvent = {
+      date: dt.dateKey,
+      utcSec: dt.utcSec,
+      timeOfDay,
+      epsEstimate,
+      epsActual,
+    };
+    const prev = dedupedByDate.get(dt.dateKey);
+    if (prev === undefined || (prev.epsEstimate === null && candidate.epsEstimate !== null)) {
+      dedupedByDate.set(dt.dateKey, candidate);
+    }
+  }
+
+  const events = [...dedupedByDate.values()].sort((a, b) => a.utcSec - b.utcSec);
+  const upcoming = events.filter((e) => e.utcSec >= asOfUtcSec);
+  const past = events.filter((e) => e.utcSec < asOfUtcSec);
+
+  return {
+    nextEarnings: upcoming[0] ?? null,
+    lastEarnings: past.length > 0 ? (past[past.length - 1] ?? null) : null,
+    events,
+  };
+}
+
+function classifyMacroEventKind(name: string): MacroCatalystKind | null {
+  const upper = name.toUpperCase();
+  if (/\b(FOMC|FED INTEREST RATE|FEDERAL RESERVE.*RATE|FED FUNDS|FEDERAL OPEN MARKET)\b/.test(upper)) {
+    return 'FOMC';
+  }
+  if (/\b(CPI|CONSUMER PRICE INDEX)\b/.test(upper)) {
+    return 'CPI';
+  }
+  return null;
+}
+
+function parseMacroImpact(raw: unknown): 'HIGH' | 'MEDIUM' | 'LOW' {
+  if (typeof raw !== 'string') return 'HIGH';
+  const upper = raw.trim().toUpperCase();
+  if (upper === 'LOW') return 'LOW';
+  if (upper === 'MEDIUM') return 'MEDIUM';
+  return 'HIGH';
+}
+
+/**
+ * Parser puro de `/stable/economic-calendar` filtrando US + `FOMC` / `CPI`.
+ */
+export function parseFmpEconomicCalendarMacroEvents(raw: unknown): readonly MacroCatalystEvent[] {
+  const rows = Array.isArray(raw) ? raw : [];
+  const byKindAndDate = new Map<string, MacroCatalystEvent>();
+
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const countryRaw = row['country'];
+    if (typeof countryRaw === 'string' && countryRaw.trim() !== '') {
+      const upperCountry = countryRaw.trim().toUpperCase();
+      if (upperCountry !== 'US' && upperCountry !== 'USA' && upperCountry !== 'UNITED STATES') {
+        continue;
+      }
+    }
+    const labelRaw = row['event'] ?? row['name'] ?? row['title'];
+    if (typeof labelRaw !== 'string' || labelRaw.trim() === '') continue;
+    const label = labelRaw.trim();
+    const kind = classifyMacroEventKind(label);
+    if (kind === null) continue;
+
+    const dt = parseCalendarDateTimeUtcSec(row['date'], kind === 'FOMC' ? '14:00:00' : '08:30:00');
+    if (dt === null) continue;
+
+    const impact = parseMacroImpact(row['impact']);
+    const event: MacroCatalystEvent = {
+      kind,
+      label,
+      date: dt.dateKey,
+      utcSec: dt.utcSec,
+      impact,
+    };
+    const key = `${kind}:${dt.dateKey}`;
+    const prev = byKindAndDate.get(key);
+    if (prev === undefined) {
+      byKindAndDate.set(key, event);
+    } else if (prev.impact !== 'HIGH' && event.impact === 'HIGH') {
+      byKindAndDate.set(key, event);
+    }
+  }
+
+  return [...byKindAndDate.values()].sort((a, b) => a.utcSec - b.utcSec);
 }
 
 /** Adaptador FetchFn estándar (sin headers) al transporte FMP. */

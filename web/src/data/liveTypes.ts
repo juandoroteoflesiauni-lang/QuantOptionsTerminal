@@ -818,10 +818,16 @@ export interface ArOptionsResponse {
     readonly expectedMoveExpirySec?: number | null;
     readonly expectedMoveExpiryCode?: string | null;
     readonly expectedMoveDays?: number | null;
+    readonly quality?: {
+      readonly usableContracts: number;
+      readonly usableOpenInterest: number;
+    };
     readonly byStrike?: readonly {
       readonly strike: number;
       readonly callOi: number | null;
       readonly putOi: number | null;
+      readonly callVolume?: number | null;
+      readonly putVolume?: number | null;
       readonly callGex: number | null;
       readonly putGex: number | null;
       readonly netGex: number | null;
@@ -835,8 +841,55 @@ export interface ArOptionsResponse {
     readonly bondsVatExempt: true;
   };
   readonly primaryLiquidExpiryCode?: string | null;
+  readonly forwardIvSegments?: readonly ForwardIvSegmentDto[];
   readonly quantEngines?: ArOptionsQuantEnginesDto | null;
   readonly providerErrors: readonly string[];
+}
+
+export interface ForwardIvSegmentDto {
+  readonly nearExpiryCode: string | null;
+  readonly farExpiryCode: string | null;
+  readonly nearExpirySec: number | null;
+  readonly farExpirySec: number | null;
+  readonly nearDte: number | null;
+  readonly farDte: number | null;
+  readonly nearTimeToExpiry: number;
+  readonly farTimeToExpiry: number;
+  readonly nearIv: number | null;
+  readonly farIv: number | null;
+  readonly forwardVariance: number | null;
+  readonly forwardIv: number | null;
+  readonly calendarArbFlag: boolean;
+  readonly status: 'OK' | 'CALENDAR_ARB' | 'INVALID';
+}
+
+export interface EarningsCatalystDto {
+  readonly date: string;
+  readonly utcSec: number;
+  readonly timeOfDay?: 'bmo' | 'amc' | 'unknown' | null;
+  readonly epsEstimate?: number | null;
+  readonly epsActual?: number | null;
+}
+
+export interface MacroCatalystDto {
+  readonly kind: 'FOMC' | 'CPI';
+  readonly label: string;
+  readonly date: string;
+  readonly utcSec: number;
+  readonly impact?: 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
+export interface SymbolCatalystsResponseDto {
+  readonly symbol: string;
+  readonly asOfUtcSec: number;
+  readonly available: boolean;
+  readonly nextEarnings: EarningsCatalystDto | null;
+  readonly lastEarnings: EarningsCatalystDto | null;
+  readonly macroEvents: readonly MacroCatalystDto[];
+  readonly earningsSource: string | null;
+  readonly macroSource: string | null;
+  readonly reason: string | null;
+  readonly cacheHit?: boolean;
 }
 
 export type RelationOpportunityBadge =
@@ -1039,6 +1092,14 @@ export interface UsSnapshotResponseDto {
       readonly straddleMove: number | null;
       readonly straddleMovePct: number | null;
     };
+    readonly quality?: {
+      readonly totalContracts?: number;
+      readonly activeContracts?: number;
+      readonly usableContracts: number;
+      readonly usableOpenInterest: number;
+      readonly skippedContracts?: number;
+      readonly skippedOiShare?: number | null;
+    };
     readonly byStrike?: readonly UsStrikeExposureDto[];
   } | null;
   readonly volSurfaceSummary?: {
@@ -1048,8 +1109,10 @@ export interface UsSnapshotResponseDto {
     readonly isArbitrageFree?: boolean;
     readonly frontSlice?: UsVolSliceSummaryDto | null;
     readonly slices?: readonly UsVolSliceSummaryDto[];
+    readonly forwardIvSegments?: readonly ForwardIvSegmentDto[];
     readonly contracts?: readonly UsOptionContractRowDto[];
   } | null;
+  readonly catalysts?: SymbolCatalystsResponseDto | null;
   readonly envelope?: {
     readonly snapshot?: {
       readonly metrics?: {

@@ -1485,3 +1485,174 @@ export function evaluateSurfaceIvAtStrike(
 
   return Number.NaN;
 }
+
+export * from './catalysts.js';
+
+export type ForwardIvStatus = 'OK' | 'CALENDAR_ARB' | 'INVALID';
+
+export interface ForwardIvPairInput {
+  readonly nearExpiryCode?: string;
+  readonly farExpiryCode?: string;
+  readonly nearExpirySec?: number;
+  readonly farExpirySec?: number;
+  readonly nearDte?: number;
+  readonly farDte?: number;
+  readonly nearTimeToExpiry: number;
+  readonly farTimeToExpiry: number;
+  readonly nearIv: number;
+  readonly farIv: number;
+}
+
+export interface ForwardIvTermPointInput {
+  readonly expiryCode?: string;
+  readonly expirySec?: number;
+  readonly dte?: number;
+  readonly timeToExpiry: number;
+  readonly atmIv?: number;
+  readonly iv?: number;
+}
+
+export interface ForwardIvSegmentResult {
+  readonly nearExpiryCode: string | null;
+  readonly farExpiryCode: string | null;
+  readonly nearExpirySec: number | null;
+  readonly farExpirySec: number | null;
+  readonly nearDte: number | null;
+  readonly farDte: number | null;
+  readonly nearTimeToExpiry: number;
+  readonly farTimeToExpiry: number;
+  readonly nearIv: number;
+  readonly farIv: number;
+  readonly forwardVariance: number;
+  readonly forwardIv: number | null;
+  readonly calendarArbFlag: boolean;
+  readonly status: ForwardIvStatus;
+}
+
+function normalizeOptionalString(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeOptionalFinite(value: number | undefined): number | null {
+  return value !== undefined && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Calcula la volatilidad forward implicita entre dos vencimientos consecutivos
+ * `(T1, IV1)` y `(T2, IV2)` usando varianza total:
+ *   `forwardVar = (IV2^2 * T2 - IV1^2 * T1) / (T2 - T1)`
+ *
+ * Degradacion honesta:
+ * - Si los inputs no son validos (`T1 <= 0`, `T2 <= T1`, IV no positiva/finita):
+ *   `forwardIv: null, forwardVariance: NaN, calendarArbFlag: false, status: 'INVALID'`.
+ * - Si hay inversion calendario (`forwardVar <= 0`):
+ *   `forwardIv: null, calendarArbFlag: true, status: 'CALENDAR_ARB'` sin fabricar ceros ni NaN en `forwardIv`.
+ */
+export function computeForwardIvPair(input: ForwardIvPairInput): ForwardIvSegmentResult {
+  const nearT = input.nearTimeToExpiry;
+  const farT = input.farTimeToExpiry;
+  const nearIv = input.nearIv;
+  const farIv = input.farIv;
+
+  const base = {
+    nearExpiryCode: normalizeOptionalString(input.nearExpiryCode),
+    farExpiryCode: normalizeOptionalString(input.farExpiryCode),
+    nearExpirySec: normalizeOptionalFinite(input.nearExpirySec),
+    farExpirySec: normalizeOptionalFinite(input.farExpirySec),
+    nearDte: normalizeOptionalFinite(input.nearDte),
+    farDte: normalizeOptionalFinite(input.farDte),
+    nearTimeToExpiry: nearT,
+    farTimeToExpiry: farT,
+    nearIv,
+    farIv,
+  };
+
+  if (
+    !isFinitePositive(nearT)
+    || !isFinitePositive(farT)
+    || farT <= nearT
+    || !isFinitePositive(nearIv)
+    || !isFinitePositive(farIv)
+  ) {
+    return {
+      ...base,
+      forwardVariance: Number.NaN,
+      forwardIv: null,
+      calendarArbFlag: false,
+      status: 'INVALID',
+    };
+  }
+
+  const nearTotalVar = nearIv * nearIv * nearT;
+  const farTotalVar = farIv * farIv * farT;
+  const forwardVariance = (farTotalVar - nearTotalVar) / (farT - nearT);
+
+  if (!Number.isFinite(forwardVariance)) {
+    return {
+      ...base,
+      forwardVariance: Number.NaN,
+      forwardIv: null,
+      calendarArbFlag: false,
+      status: 'INVALID',
+    };
+  }
+
+  if (forwardVariance <= 0) {
+    return {
+      ...base,
+      forwardVariance,
+      forwardIv: null,
+      calendarArbFlag: true,
+      status: 'CALENDAR_ARB',
+    };
+  }
+
+  return {
+    ...base,
+    forwardVariance,
+    forwardIv: Math.sqrt(forwardVariance),
+    calendarArbFlag: false,
+    status: 'OK',
+  };
+}
+
+/**
+ * Construye la secuencia de segmentos de Forward IV entre pares consecutivos
+ * de una estructura temporal ordenada por `timeToExpiry` ascendente.
+ */
+export function computeForwardIvTermStructure(
+  points: readonly ForwardIvTermPointInput[],
+): ForwardIvSegmentResult[] {
+  const valid = points
+    .map((point) => {
+      const iv = point.atmIv !== undefined ? point.atmIv : point.iv !== undefined ? point.iv : Number.NaN;
+      return { point, iv };
+    })
+    .filter(({ point, iv }) => isFinitePositive(point.timeToExpiry) && isFinitePositive(iv))
+    .sort((a, b) => a.point.timeToExpiry - b.point.timeToExpiry);
+
+  const segments: ForwardIvSegmentResult[] = [];
+  for (let i = 0; i < valid.length - 1; i += 1) {
+    const nearEntry = valid[i];
+    const farEntry = valid[i + 1];
+    if (!nearEntry || !farEntry) continue;
+    if (farEntry.point.timeToExpiry <= nearEntry.point.timeToExpiry) continue;
+    segments.push(
+      computeForwardIvPair({
+        ...(nearEntry.point.expiryCode !== undefined ? { nearExpiryCode: nearEntry.point.expiryCode } : {}),
+        ...(farEntry.point.expiryCode !== undefined ? { farExpiryCode: farEntry.point.expiryCode } : {}),
+        ...(nearEntry.point.expirySec !== undefined ? { nearExpirySec: nearEntry.point.expirySec } : {}),
+        ...(farEntry.point.expirySec !== undefined ? { farExpirySec: farEntry.point.expirySec } : {}),
+        ...(nearEntry.point.dte !== undefined ? { nearDte: nearEntry.point.dte } : {}),
+        ...(farEntry.point.dte !== undefined ? { farDte: farEntry.point.dte } : {}),
+        nearTimeToExpiry: nearEntry.point.timeToExpiry,
+        farTimeToExpiry: farEntry.point.timeToExpiry,
+        nearIv: nearEntry.iv,
+        farIv: farEntry.iv,
+      }),
+    );
+  }
+  return segments;
+}

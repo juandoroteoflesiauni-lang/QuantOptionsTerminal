@@ -1,0 +1,826 @@
+{
+  "meta": {
+    "generator": "tools/gen_options_pieza46_reference.py",
+    "tolerance": 1e-09
+  },
+  "creditSpreadsAndIronCondors": {
+    "inputs": {
+      "spot": 100.0,
+      "daysToExpiry": 30.0,
+      "rate": 0.05,
+      "dividendYield": 0.015,
+      "atmIv": 0.25,
+      "lotSize": 100.0,
+      "contracts": [
+        {
+          "strike": 80.0,
+          "contractType": "put",
+          "bid": 0.0,
+          "ask": 0.12,
+          "iv": 0.31
+        },
+        {
+          "strike": 85.0,
+          "contractType": "put",
+          "bid": 0.26,
+          "ask": 0.3,
+          "iv": 0.29
+        },
+        {
+          "strike": 90.0,
+          "contractType": "put",
+          "bid": 0.68,
+          "ask": 0.74,
+          "iv": 0.275
+        },
+        {
+          "strike": 95.0,
+          "contractType": "put",
+          "bid": 1.56,
+          "ask": 1.64,
+          "iv": 0.26
+        },
+        {
+          "strike": 100.0,
+          "contractType": "put",
+          "bid": 3.3,
+          "ask": 3.42,
+          "iv": 0.25
+        },
+        {
+          "strike": 100.0,
+          "contractType": "call",
+          "bid": 3.55,
+          "ask": 3.67,
+          "iv": 0.25
+        },
+        {
+          "strike": 105.0,
+          "contractType": "call",
+          "bid": 1.62,
+          "ask": 1.7,
+          "iv": 0.238
+        },
+        {
+          "strike": 110.0,
+          "contractType": "call",
+          "bid": 0.6,
+          "ask": 0.66,
+          "iv": 0.228
+        },
+        {
+          "strike": 115.0,
+          "contractType": "call",
+          "bid": 0.2,
+          "ask": 0.24,
+          "iv": 0.22
+        },
+        {
+          "strike": 120.0,
+          "contractType": "call",
+          "bid": 0.12,
+          "ask": 0.26,
+          "iv": 0.22
+        },
+        {
+          "strike": 86.0,
+          "contractType": "put",
+          "bid": 0.31,
+          "ask": 0.35,
+          "iv": 0.285
+        }
+      ],
+      "densityNodes": [
+        {
+          "strike": 65.0,
+          "densityQ": 1.1938696861851102e-09
+        },
+        {
+          "strike": 67.5,
+          "densityQ": 2.3758917027522113e-08
+        },
+        {
+          "strike": 70.0,
+          "densityQ": 3.262325521524035e-07
+        },
+        {
+          "strike": 72.5,
+          "densityQ": 3.2011140443514342e-06
+        },
+        {
+          "strike": 75.0,
+          "densityQ": 2.315142975714017e-05
+        },
+        {
+          "strike": 77.5,
+          "densityQ": 0.00012683452096394398
+        },
+        {
+          "strike": 80.0,
+          "densityQ": 0.0005392983162208078
+        },
+        {
+          "strike": 82.5,
+          "densityQ": 0.0018186635500479361
+        },
+        {
+          "strike": 85.0,
+          "densityQ": 0.004959189314388962
+        },
+        {
+          "strike": 87.5,
+          "densityQ": 0.01112601702568849
+        },
+        {
+          "strike": 90.0,
+          "densityQ": 0.020860114831083538
+        },
+        {
+          "strike": 92.5,
+          "densityQ": 0.03314769956946932
+        },
+        {
+          "strike": 95.0,
+          "densityQ": 0.04521428865506869
+        },
+        {
+          "strike": 97.5,
+          "densityQ": 0.05355400425432985
+        },
+        {
+          "strike": 100.0,
+          "densityQ": 0.05566110787859422
+        },
+        {
+          "strike": 102.5,
+          "densityQ": 0.051250430933895814
+        },
+        {
+          "strike": 105.0,
+          "densityQ": 0.04217041213929866
+        },
+        {
+          "strike": 107.5,
+          "densityQ": 0.03125626504476832
+        },
+        {
+          "strike": 110.0,
+          "densityQ": 0.021020772906875027
+        },
+        {
+          "strike": 112.5,
+          "densityQ": 0.012913528815891688
+        },
+        {
+          "strike": 115.0,
+          "densityQ": 0.007291100165078265
+        },
+        {
+          "strike": 117.5,
+          "densityQ": 0.003804943591835452
+        },
+        {
+          "strike": 120.0,
+          "densityQ": 0.001844904392909812
+        },
+        {
+          "strike": 122.5,
+          "densityQ": 0.0008351409888135718
+        },
+        {
+          "strike": 125.0,
+          "densityQ": 0.00035451795862320284
+        },
+        {
+          "strike": 127.5,
+          "densityQ": 0.00014170922068362443
+        },
+        {
+          "strike": 130.0,
+          "densityQ": 5.354239784330932e-05
+        },
+        {
+          "strike": 132.5,
+          "densityQ": 1.9190075689706565e-05
+        },
+        {
+          "strike": 135.0,
+          "densityQ": 6.545837546060903e-06
+        }
+      ]
+    },
+    "blExpected": [
+      {
+        "id": "BULL_PUT_90_95",
+        "kind": "BULL_PUT_SPREAD",
+        "widthPerShare": 5.0,
+        "netCreditPerShare": 0.8200000000000001,
+        "creditPctOfWidth": 16.400000000000002,
+        "maxProfitContract": 82.0,
+        "maxLossPerShare": 4.18,
+        "maxLossContract": 418.0,
+        "breakevens": [
+          94.18
+        ],
+        "pop": 0.7974206256966306,
+        "expectedValuePerShare": 0.09423617120661802,
+        "expectedValueContract": 9.423617120661802,
+        "netThetaDaily": 0.016187902354383207,
+        "netVegaPer1Pct": -0.04318020407788415,
+        "absThetaToVegaRatio": 0.3748917519052268,
+        "bidAskPctOfMid": 6.725352112676047,
+        "compositeScore": 0.32100690994579467
+      },
+      {
+        "id": "BEAR_CALL_105_110",
+        "kind": "BEAR_CALL_SPREAD",
+        "widthPerShare": 5.0,
+        "netCreditPerShare": 0.9600000000000001,
+        "creditPctOfWidth": 19.2,
+        "maxProfitContract": 96.00000000000001,
+        "maxLossPerShare": 4.04,
+        "maxLossContract": 404.0,
+        "breakevens": [
+          105.96
+        ],
+        "pop": 0.7869082822462425,
+        "expectedValuePerShare": 0.13907164945354894,
+        "expectedValueContract": 13.907164945354895,
+        "netThetaDaily": 0.021825795630816866,
+        "netVegaPer1Pct": -0.04915516724107431,
+        "absThetaToVegaRatio": 0.4440183373555714,
+        "bidAskPctOfMid": 7.171543316121628,
+        "compositeScore": 0.3340793204434799
+      },
+      {
+        "id": "IRON_CONDOR_90_95_105_110",
+        "kind": "IRON_CONDOR",
+        "widthPerShare": 5.0,
+        "netCreditPerShare": 1.7800000000000002,
+        "creditPctOfWidth": 35.6,
+        "maxProfitContract": 178.00000000000003,
+        "maxLossPerShare": 3.2199999999999998,
+        "maxLossContract": 322.0,
+        "breakevens": [
+          93.22,
+          106.78
+        ],
+        "pop": 0.651387404713952,
+        "expectedValuePerShare": 0.23330782066016686,
+        "expectedValueContract": 23.33078206601669,
+        "netThetaDaily": 0.03801369798520007,
+        "netVegaPer1Pct": -0.09233537131895847,
+        "absThetaToVegaRatio": 0.41169161332429743,
+        "bidAskPctOfMid": 6.948447714398838,
+        "compositeScore": 0.35871476331177987
+      }
+    ],
+    "lognormalExpected": [
+      {
+        "id": "BULL_PUT_90_95",
+        "kind": "BULL_PUT_SPREAD",
+        "widthPerShare": 5.0,
+        "netCreditPerShare": 0.8200000000000001,
+        "creditPctOfWidth": 16.400000000000002,
+        "maxProfitContract": 82.0,
+        "maxLossPerShare": 4.18,
+        "maxLossContract": 418.0,
+        "breakevens": [
+          94.18
+        ],
+        "pop": 0.7998016402259349,
+        "expectedValuePerShare": 0.10675872016348165,
+        "expectedValueContract": 10.675872016348166,
+        "netThetaDaily": 0.016187902354383207,
+        "netVegaPer1Pct": -0.04318020407788415,
+        "absThetaToVegaRatio": 0.3748917519052268,
+        "bidAskPctOfMid": 6.725352112676047,
+        "compositeScore": 0.3224701705819103
+      },
+      {
+        "id": "BEAR_CALL_105_110",
+        "kind": "BEAR_CALL_SPREAD",
+        "widthPerShare": 5.0,
+        "netCreditPerShare": 0.9600000000000001,
+        "creditPctOfWidth": 19.2,
+        "maxProfitContract": 96.00000000000001,
+        "maxLossPerShare": 4.04,
+        "maxLossContract": 404.0,
+        "breakevens": [
+          105.96
+        ],
+        "pop": 0.7891336698376648,
+        "expectedValuePerShare": 0.1499152583064759,
+        "expectedValueContract": 14.99152583064759,
+        "netThetaDaily": 0.021825795630816866,
+        "netVegaPer1Pct": -0.04915516724107431,
+        "absThetaToVegaRatio": 0.4440183373555714,
+        "bidAskPctOfMid": 7.171543316121628,
+        "compositeScore": 0.3354179521202213
+      },
+      {
+        "id": "IRON_CONDOR_90_95_105_110",
+        "kind": "IRON_CONDOR",
+        "widthPerShare": 5.0,
+        "netCreditPerShare": 1.7800000000000002,
+        "creditPctOfWidth": 35.6,
+        "maxProfitContract": 178.00000000000003,
+        "maxLossPerShare": 3.2199999999999998,
+        "maxLossContract": 322.0,
+        "breakevens": [
+          93.22,
+          106.78
+        ],
+        "pop": 0.6562545246424161,
+        "expectedValuePerShare": 0.25667397846995765,
+        "expectedValueContract": 25.667397846995765,
+        "netThetaDaily": 0.03801369798520007,
+        "netVegaPer1Pct": -0.09233537131895847,
+        "absThetaToVegaRatio": 0.41169161332429743,
+        "bidAskPctOfMid": 6.948447714398838,
+        "compositeScore": 0.3619890419774147
+      }
+    ],
+    "excludedIds": [
+      "BULL_PUT_80_85",
+      "BEAR_CALL_115_120",
+      "BULL_PUT_85_86"
+    ]
+  },
+  "forwardVolatility": [
+    {
+      "name": "contango_normal",
+      "nearTimeToExpiry": 0.0821917808219178,
+      "nearIv": 0.22,
+      "farTimeToExpiry": 0.1643835616438356,
+      "farIv": 0.25,
+      "forwardVariance": 0.0766,
+      "forwardIv": 0.27676705006196095,
+      "calendarArbFlag": false,
+      "status": "OK"
+    },
+    {
+      "name": "backwardation_no_arb",
+      "nearTimeToExpiry": 0.0821917808219178,
+      "nearIv": 0.28,
+      "farTimeToExpiry": 0.2465753424657534,
+      "farIv": 0.24,
+      "forwardVariance": 0.04719999999999999,
+      "forwardIv": 0.2172556098240043,
+      "calendarArbFlag": false,
+      "status": "OK"
+    },
+    {
+      "name": "calendar_arb_negative",
+      "nearTimeToExpiry": 0.0821917808219178,
+      "nearIv": 0.35,
+      "farTimeToExpiry": 0.1643835616438356,
+      "farIv": 0.22,
+      "forwardVariance": -0.02569999999999999,
+      "forwardIv": null,
+      "calendarArbFlag": true,
+      "status": "CALENDAR_ARB"
+    },
+    {
+      "name": "calendar_arb_zero_boundary",
+      "nearTimeToExpiry": 0.0684931506849315,
+      "nearIv": 0.3,
+      "farTimeToExpiry": 0.273972602739726,
+      "farIv": 0.15,
+      "forwardVariance": 0.0,
+      "forwardIv": null,
+      "calendarArbFlag": true,
+      "status": "CALENDAR_ARB"
+    }
+  ],
+  "catalysts": {
+    "asOfUtcSec": 1770000000,
+    "expiryInside7dUtcSec": 1770604800,
+    "earningsInside3dUtcSec": 1770259200,
+    "fomcInside2dUtcSec": 1770172800,
+    "lastEarnings3dAgoUtcSec": 1769740800,
+    "earningsOutside45dUtcSec": 1773888000
+  },
+  "whatIfPayoff": [
+    {
+      "name": "bull_call_iv_crush_spot_103",
+      "input": {
+        "spot": 100.0,
+        "evalSpot": 103.0,
+        "rate": 0.05,
+        "dividendYield": 0.01,
+        "legs": [
+          {
+            "contractType": "call",
+            "strike": 95.0,
+            "quantity": 1,
+            "iv": 0.28,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 6.460460699950332
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": -1,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.1667399780989243
+          }
+        ],
+        "ivShiftPts": -15.0,
+        "elapsedDays": 10.0,
+        "horizonDte": 30.0,
+        "contracts": 1.0,
+        "contractMultiplier": 100.0
+      },
+      "expected": {
+        "pnlT0": 140.08128779556728,
+        "pnlTn": 258.1568691585648,
+        "pnlExpiry": 270.6279278148593,
+        "pnlTnZeroIvShift": 158.455625890209,
+        "ivShockPnlAttribution": 99.7012432683558,
+        "timeDecayPnlAttribution": 18.37433809464173,
+        "valuePerUnitT0": 6.69453359980708,
+        "valuePerUnitTn": 7.875289413437056,
+        "valuePerUnitExpiry": 8.0,
+        "greeksTn": {
+          "deltaPerUnit": 0.7596248484025512,
+          "gammaPerUnit": -0.12501338023411582,
+          "thetaDailyPerUnit": 0.0103769855186571,
+          "vegaPer1PctPerUnit": -0.07215830756369636,
+          "deltaShares": 75.96248484025512,
+          "gammaShares": -12.501338023411583,
+          "thetaDailyUsd": 1.03769855186571,
+          "vegaPer1PctUsd": -7.215830756369636
+        }
+      }
+    },
+    {
+      "name": "bull_put_iv_crush_spot_100",
+      "input": {
+        "spot": 100.0,
+        "evalSpot": 100.0,
+        "rate": 0.05,
+        "dividendYield": 0.01,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": 1,
+            "iv": 0.3,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.40022845667924223
+          },
+          {
+            "contractType": "put",
+            "strike": 95.0,
+            "quantity": -1,
+            "iv": 0.27,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0655760258052211
+          }
+        ],
+        "ivShiftPts": -15.0,
+        "elapsedDays": 12.0,
+        "horizonDte": 30.0,
+        "contracts": 1.0,
+        "contractMultiplier": 100.0
+      },
+      "expected": {
+        "pnlT0": 0.0,
+        "pnlTn": 64.37979109133039,
+        "pnlExpiry": 66.53475691259789,
+        "pnlTnZeroIvShift": 20.968265981763246,
+        "ivShockPnlAttribution": 43.411525109567144,
+        "timeDecayPnlAttribution": 20.968265981763246,
+        "valuePerUnitT0": -0.6653475691259789,
+        "valuePerUnitTn": -0.02154965821267512,
+        "valuePerUnitExpiry": 0.0,
+        "greeksTn": {
+          "deltaPerUnit": 0.021490629404055547,
+          "gammaPerUnit": -0.019131052283062076,
+          "thetaDailyPerUnit": 0.0034652884972510463,
+          "vegaPer1PctPerUnit": -0.01122800002739388,
+          "deltaShares": 2.1490629404055546,
+          "gammaShares": -1.9131052283062076,
+          "thetaDailyUsd": 0.3465288497251046,
+          "vegaPer1PctUsd": -1.122800002739388
+        }
+      }
+    },
+    {
+      "name": "iron_condor_iv_crush_spot_100",
+      "input": {
+        "spot": 100.0,
+        "evalSpot": 100.0,
+        "rate": 0.05,
+        "dividendYield": 0.01,
+        "legs": [
+          {
+            "contractType": "put",
+            "strike": 85.0,
+            "quantity": 1,
+            "iv": 0.32,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.11814760500476895
+          },
+          {
+            "contractType": "put",
+            "strike": 90.0,
+            "quantity": -1,
+            "iv": 0.29,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.3528507718402931
+          },
+          {
+            "contractType": "call",
+            "strike": 110.0,
+            "quantity": -1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.30238753844734134
+          },
+          {
+            "contractType": "call",
+            "strike": 115.0,
+            "quantity": 1,
+            "iv": 0.23,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 0.04956722139949665
+          }
+        ],
+        "ivShiftPts": -15.0,
+        "elapsedDays": 10.0,
+        "horizonDte": 30.0,
+        "contracts": 1.0,
+        "contractMultiplier": 100.0
+      },
+      "expected": {
+        "pnlT0": 0.0,
+        "pnlTn": 48.71121693075506,
+        "pnlExpiry": 48.752348388336884,
+        "pnlTnZeroIvShift": 25.68643344906578,
+        "ivShockPnlAttribution": 23.024783481689276,
+        "timeDecayPnlAttribution": 25.68643344906578,
+        "valuePerUnitT0": -0.48752348388336886,
+        "valuePerUnitTn": -0.00041131457581827747,
+        "valuePerUnitExpiry": 0.0,
+        "greeksTn": {
+          "deltaPerUnit": 0.00046499588386612623,
+          "gammaPerUnit": -0.0005221272977510639,
+          "thetaDailyPerUnit": 0.00013100895962022405,
+          "vegaPer1PctPerUnit": -0.0003945382138529205,
+          "deltaShares": 0.046499588386612625,
+          "gammaShares": -0.05221272977510639,
+          "thetaDailyUsd": 0.013100895962022406,
+          "vegaPer1PctUsd": -0.03945382138529205
+        }
+      }
+    },
+    {
+      "name": "butterfly_iv_crush_spot_100",
+      "input": {
+        "spot": 100.0,
+        "evalSpot": 100.0,
+        "rate": 0.05,
+        "dividendYield": 0.01,
+        "legs": [
+          {
+            "contractType": "call",
+            "strike": 95.0,
+            "quantity": 1,
+            "iv": 0.26,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 6.287187458971701
+          },
+          {
+            "contractType": "call",
+            "strike": 100.0,
+            "quantity": -2,
+            "iv": 0.25,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 3.0186587896531023
+          },
+          {
+            "contractType": "call",
+            "strike": 105.0,
+            "quantity": 1,
+            "iv": 0.24,
+            "timeToExpiry": 0.0821917808219178,
+            "entryPrice": 1.0720253811282205
+          }
+        ],
+        "ivShiftPts": -15.0,
+        "elapsedDays": 15.0,
+        "horizonDte": 30.0,
+        "contracts": 1.0,
+        "contractMultiplier": 100.0
+      },
+      "expected": {
+        "pnlT0": 0.0,
+        "pnlTn": 205.6333126383682,
+        "pnlExpiry": 367.8104739206283,
+        "pnlTnZeroIvShift": 49.11099325983059,
+        "ivShockPnlAttribution": 156.52231937853762,
+        "timeDecayPnlAttribution": 49.11099325983059,
+        "valuePerUnitT0": 1.3218952607937169,
+        "valuePerUnitTn": 3.378228387177399,
+        "valuePerUnitExpiry": 5.0,
+        "greeksTn": {
+          "deltaPerUnit": -0.07617955004670514,
+          "gammaPerUnit": -0.3734485788413641,
+          "thetaDailyPerUnit": 0.05236233618119447,
+          "vegaPer1PctPerUnit": -0.15337078201105625,
+          "deltaShares": -7.617955004670514,
+          "gammaShares": -37.34485788413641,
+          "thetaDailyUsd": 5.2362336181194475,
+          "vegaPer1PctUsd": -15.337078201105625
+        }
+      }
+    },
+    {
+      "name": "calendar_spread_20d_50d_iv_crush",
+      "input": {
+        "spot": 100.0,
+        "evalSpot": 100.0,
+        "rate": 0.05,
+        "dividendYield": 0.01,
+        "legs": [
+          {
+            "contractType": "call",
+            "strike": 100.0,
+            "quantity": -1,
+            "iv": 0.3,
+            "timeToExpiry": 0.0547945205479452,
+            "entryPrice": 2.907155685177969
+          },
+          {
+            "contractType": "call",
+            "strike": 100.0,
+            "quantity": 1,
+            "iv": 0.27,
+            "timeToExpiry": 0.136986301369863,
+            "entryPrice": 4.247511753833905
+          }
+        ],
+        "ivShiftPts": -15.0,
+        "elapsedDays": 10.0,
+        "horizonDte": 20.0,
+        "contracts": 1.0,
+        "contractMultiplier": 100.0
+      },
+      "expected": {
+        "pnlT0": 0.0,
+        "pnlTn": -57.81673624256953,
+        "pnlExpiry": 19.890132689686624,
+        "pnlTnZeroIvShift": 40.089450653407965,
+        "ivShockPnlAttribution": -97.9061868959775,
+        "timeDecayPnlAttribution": 40.089450653407965,
+        "valuePerUnitT0": 1.340356068655936,
+        "valuePerUnitTn": 0.7621887062302406,
+        "valuePerUnitExpiry": 1.5392573955528022,
+        "greeksTn": {
+          "deltaPerUnit": 0.028789229479739054,
+          "gammaPerUnit": -0.060911594128617075,
+          "thetaDailyPerUnit": 0.029600001469470963,
+          "vegaPer1PctPerUnit": 0.06489869642496046,
+          "deltaShares": 2.8789229479739054,
+          "gammaShares": -6.091159412861708,
+          "thetaDailyUsd": 2.9600001469470962,
+          "vegaPer1PctUsd": 6.489869642496046
+        }
+      }
+    }
+  ],
+  "dealerExposure": [
+    {
+      "name": "long_gamma_with_zero_gamma_flip",
+      "spot": 100.0,
+      "nowUtcSec": 1770000000,
+      "rate": 0.05,
+      "dividendYield": 0.01,
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 105.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 7000,
+          "sharesPerContract": 100,
+          "iv": 0.22
+        },
+        {
+          "contractType": "call",
+          "strike": 110.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 9000,
+          "sharesPerContract": 100,
+          "iv": 0.21
+        },
+        {
+          "contractType": "put",
+          "strike": 90.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 4500,
+          "sharesPerContract": 100,
+          "iv": 0.27
+        },
+        {
+          "contractType": "put",
+          "strike": 85.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 2500,
+          "sharesPerContract": 100,
+          "iv": 0.29
+        }
+      ],
+      "expected": {
+        "regime": "LONG_GAMMA",
+        "hasSufficientOi": true,
+        "callGex": 5426323.349625658,
+        "putGex": -969858.1978768532,
+        "netGex": 4456465.151748805,
+        "callWallStrike": 105.0,
+        "putWallStrike": 90.0,
+        "zeroGammaSpot": 95.43071419748594
+      }
+    },
+    {
+      "name": "short_gamma_with_zero_gamma_flip",
+      "spot": 100.0,
+      "nowUtcSec": 1770000000,
+      "rate": 0.05,
+      "dividendYield": 0.01,
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 112.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 4000,
+          "sharesPerContract": 100,
+          "iv": 0.22
+        },
+        {
+          "contractType": "put",
+          "strike": 98.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 9500,
+          "sharesPerContract": 100,
+          "iv": 0.25
+        },
+        {
+          "contractType": "put",
+          "strike": 92.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 3000,
+          "sharesPerContract": 100,
+          "iv": 0.27
+        }
+      ],
+      "expected": {
+        "regime": "SHORT_GAMMA",
+        "hasSufficientOi": true,
+        "callGex": 582737.8424927058,
+        "putGex": -5735399.031798303,
+        "netGex": -5152661.189305597,
+        "callWallStrike": 112.0,
+        "putWallStrike": 98.0,
+        "zeroGammaSpot": 107.63575958259753
+      }
+    },
+    {
+      "name": "insufficient_oi_honest_no_data",
+      "spot": 100.0,
+      "nowUtcSec": 1770000000,
+      "rate": 0.05,
+      "dividendYield": 0.01,
+      "contracts": [
+        {
+          "contractType": "call",
+          "strike": 105.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 3,
+          "sharesPerContract": 100,
+          "iv": 0.24
+        },
+        {
+          "contractType": "put",
+          "strike": 95.0,
+          "expiryUtcSec": 1772592000,
+          "openInterest": 2,
+          "sharesPerContract": 100,
+          "iv": 0.25
+        }
+      ],
+      "expected": {
+        "regime": "NO_DATA",
+        "hasSufficientOi": false,
+        "callGex": 1427.9250792922996,
+        "putGex": -809.4092769301941,
+        "netGex": 618.5158023621055,
+        "callWallStrike": null,
+        "putWallStrike": null,
+        "zeroGammaSpot": null
+      }
+    }
+  ]
+}

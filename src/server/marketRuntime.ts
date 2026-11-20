@@ -132,9 +132,15 @@ import {
 import {
   buildVolSlice,
   buildVolSurface,
+  computeForwardIvTermStructure,
+  type ForwardIvStatus,
   type VolQuoteInput,
   type VolSlice,
 } from '../core/options/volSurface.js';
+import type {
+  EarningsCatalystEvent,
+  MacroCatalystEvent,
+} from '../core/options/catalysts.js';
 import {
   buildExpectedConeAndLognormalSummary,
   buildNormalizedMoneynessMatrix,
@@ -299,6 +305,8 @@ import {
   type FmpBatchQuote,
   type FmpConfig,
   type FmpExtendedQuote,
+  type FmpMacroCalendarResult,
+  type FmpSymbolEarningsResult,
 } from './fmpClient.js';
 import { TradierHistoricalClient, TradierStocksStream, TRADIER_CORE_US_SYMBOLS } from './tradierStream.js';
 import { resolveMassiveStocksMode } from './massiveStocksStream.js';
@@ -324,6 +332,7 @@ const EXTRA_SECRET_ENV_NAMES = [
   ...KEY_ENV_NAMES,
   'MASSIVE_KEY_FUTURES',
   'BINGX_API_KEY',
+  'FMP_KEY_CALENDARS',
 ] as const;
 
 const TIMEFRAME_SECONDS: Readonly<Record<Timeframe, number>> = {
@@ -513,10 +522,41 @@ export interface SerializedExposureSummary {
     readonly totalContracts: number;
     readonly activeContracts: number;
     readonly usableContracts: number;
+    readonly usableOpenInterest: number;
     readonly skippedContracts: number;
     readonly skippedOiShare: number | null;
   };
   readonly byStrike: readonly SerializedStrikeExposure[];
+}
+
+export interface SerializedForwardIvSegment {
+  readonly nearExpiryCode: string | null;
+  readonly farExpiryCode: string | null;
+  readonly nearExpirySec: number | null;
+  readonly farExpirySec: number | null;
+  readonly nearDte: number | null;
+  readonly farDte: number | null;
+  readonly nearTimeToExpiry: number;
+  readonly farTimeToExpiry: number;
+  readonly nearIv: number | null;
+  readonly farIv: number | null;
+  readonly forwardVariance: number | null;
+  readonly forwardIv: number | null;
+  readonly calendarArbFlag: boolean;
+  readonly status: ForwardIvStatus;
+}
+
+export interface SerializedSymbolCatalystsDto {
+  readonly symbol: string;
+  readonly asOfUtcSec: number;
+  readonly available: boolean;
+  readonly nextEarnings: EarningsCatalystEvent | null;
+  readonly lastEarnings: EarningsCatalystEvent | null;
+  readonly macroEvents: readonly MacroCatalystEvent[];
+  readonly earningsSource: string | null;
+  readonly macroSource: string | null;
+  readonly reason: string | null;
+  readonly cacheHit?: boolean;
 }
 
 export interface SerializedVolSliceNode {
@@ -577,6 +617,7 @@ export interface SerializedVolSurfaceSummary {
   readonly isArbitrageFree: boolean;
   readonly frontSlice: SerializedVolSliceSummary | null;
   readonly slices: readonly SerializedVolSliceSummary[];
+  readonly forwardIvSegments?: readonly SerializedForwardIvSegment[];
   readonly contracts: readonly SerializedOptionContractRow[];
 }
 
@@ -891,6 +932,7 @@ export interface TerminalSnapshotResponse {
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
   readonly usOptionsFeed?: UsOptionsFeedProvenance | undefined;
   readonly optionsChain?: UsOptionsChainMeta | null;
+  readonly catalysts?: SerializedSymbolCatalystsDto | null;
   readonly dataQuality: SnapshotDataQuality;
 }
 
@@ -2265,6 +2307,7 @@ function serializeExposure(exposure: DealerExposureResult): SerializedExposureSu
       totalContracts: exposure.quality.inputContracts,
       activeContracts: exposure.quality.activeContracts,
       usableContracts: exposure.quality.usableContracts,
+      usableOpenInterest: exposure.quality.usableOpenInterest,
       skippedContracts: exposure.quality.skippedContracts,
       skippedOiShare: sanitizeFinite(exposure.quality.skippedOiShare),
     },
@@ -3795,6 +3838,8 @@ export class MarketRuntime {
   }>;
   private readonly daily1dCache: SingleFlightRuntimeCache<readonly Bar[]>;
   private readonly usPanelCache: SingleFlightRuntimeCache<EquityPanelAnalyticsDto>;
+  private readonly earningsCatalystCache: SingleFlightRuntimeCache<FmpSymbolEarningsResult>;
+  private readonly macroCalendarCache: SingleFlightRuntimeCache<FmpMacroCalendarResult>;
 
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
@@ -4319,6 +4364,7 @@ export class MarketRuntime {
       this.fmpConfig.marketApiKey,
       this.fmpConfig.etfApiKey,
       this.fmpConfig.macroApiKey,
+      this.fmpConfig.calendarsApiKey ?? null,
     ]) {
       if (fmpKey !== null) secretSet.add(fmpKey);
     }
@@ -4474,6 +4520,15 @@ export class MarketRuntime {
     this.usPanelCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
       ttlResolver: deps.ttlResolver ?? ((nowMs) => computeUsHistoricalPanelTtlMs(nowMs)),
+    });
+    const DAILY_CATALYST_TTL_MS = 24 * 60 * 60 * 1_000;
+    this.earningsCatalystCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: () => DAILY_CATALYST_TTL_MS,
+    });
+    this.macroCalendarCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: () => DAILY_CATALYST_TTL_MS,
     });
 
     if (
@@ -7230,6 +7285,31 @@ export class MarketRuntime {
         });
       });
 
+      const forwardIvSegments = computeForwardIvTermStructure(
+        serializedSlices.map((s) => ({
+          expiryCode: s.expirationDate,
+          expirySec: s.expirySec,
+          dte: Math.max(0, Math.round(s.timeToExpiryDays)),
+          timeToExpiry: s.timeToExpiryYears,
+          ...(s.ivAtm !== null ? { atmIv: s.ivAtm } : {}),
+        })),
+      ).map((seg): SerializedForwardIvSegment => ({
+        nearExpiryCode: seg.nearExpiryCode,
+        farExpiryCode: seg.farExpiryCode,
+        nearExpirySec: seg.nearExpirySec,
+        farExpirySec: seg.farExpirySec,
+        nearDte: seg.nearDte,
+        farDte: seg.farDte,
+        nearTimeToExpiry: seg.nearTimeToExpiry,
+        farTimeToExpiry: seg.farTimeToExpiry,
+        nearIv: sanitizeFinite(seg.nearIv),
+        farIv: sanitizeFinite(seg.farIv),
+        forwardVariance: sanitizeFinite(seg.forwardVariance),
+        forwardIv: sanitizeFinite(seg.forwardIv),
+        calendarArbFlag: seg.calendarArbFlag,
+        status: seg.status,
+      }));
+
       volSurfaceSummary = {
         iv30d: sanitizeFinite(iv30d),
         butterflyArbitrageFree: surface?.butterflyArbitrageFree ?? true,
@@ -7237,6 +7317,7 @@ export class MarketRuntime {
         isArbitrageFree: surface?.isArbitrageFree ?? true,
         frontSlice: serializedSlices[0] ?? null,
         slices: serializedSlices,
+        forwardIvSegments,
         contracts: serializedContracts,
       };
 
@@ -8204,6 +8285,23 @@ export class MarketRuntime {
     const rateDecToPct = (dec: number | undefined): number | null =>
       dec !== undefined && Number.isFinite(dec) ? dec * 100 : null;
 
+    const cachedEarnings = this.earningsCatalystCache.peek(`fmp:earnings:${canonicalSymbol}`)?.value;
+    const cachedMacro = this.macroCalendarCache.peek('fmp:macro-calendar:us')?.value;
+    const cachedCatalysts: SerializedSymbolCatalystsDto | null =
+      cachedEarnings !== undefined || cachedMacro !== undefined
+        ? {
+            symbol: canonicalSymbol,
+            asOfUtcSec: nowSec,
+            available: Boolean(cachedEarnings?.available || cachedMacro?.available),
+            nextEarnings: cachedEarnings?.nextEarnings ?? null,
+            lastEarnings: cachedEarnings?.lastEarnings ?? null,
+            macroEvents: cachedMacro?.events ?? [],
+            earningsSource: cachedEarnings?.source ?? null,
+            macroSource: cachedMacro?.source ?? null,
+            reason: cachedEarnings?.reason ?? cachedMacro?.reason ?? null,
+          }
+        : null;
+
     const response: TerminalSnapshotResponse = {
       status: envelope.envelopeStatus === 'OK' && warnings.length === 0 ? 'OK' : 'PARTIAL',
       feedMode,
@@ -8247,6 +8345,7 @@ export class MarketRuntime {
         .slice(-120)
         .map(serializeBar),
       usEquityPanel: this.usPanelCache.peek('us:equity:panel')?.value ?? null,
+      ...(cachedCatalysts !== null ? { catalysts: cachedCatalysts } : {}),
       ...(tradierOverlay.summary !== null
         ? {
             usOptionsFeed: {
@@ -9072,6 +9171,90 @@ export class MarketRuntime {
     );
     this.lastUsPanelBase = cached.value;
     return this.overlayLiveUsPanel(cached.value);
+  }
+
+  /**
+   * Pieza 46: consulta Earnings (FMP Enterprise) + calendario macro US (`FOMC` / `CPI`)
+   * con caché diario de 24 horas y degradación honesta ante ausencia de clave o datos.
+   */
+  public async getSymbolCatalysts(
+    rawSymbol: string,
+    options: { readonly forceRefresh?: boolean; readonly nowUtcSec?: number } = {},
+  ): Promise<SerializedSymbolCatalystsDto> {
+    const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
+    const canonicalSymbol = parsed.canonicalSymbol;
+    const nowSec =
+      options.nowUtcSec !== undefined && Number.isFinite(options.nowUtcSec)
+        ? Math.floor(options.nowUtcSec)
+        : Math.floor(this.nowMsFn() / 1_000);
+    const forceRefresh = options.forceRefresh === true;
+
+    if (!this.fmpHistoricalProviderEnabled) {
+      const payload: SerializedSymbolCatalystsDto = {
+        symbol: canonicalSymbol,
+        asOfUtcSec: nowSec,
+        available: false,
+        nextEarnings: null,
+        lastEarnings: null,
+        macroEvents: [],
+        earningsSource: null,
+        macroSource: null,
+        reason: 'FMP Enterprise no configurado o deshabilitado',
+        cacheHit: false,
+      };
+      assertJsonSafeSerialized(payload);
+      return payload;
+    }
+
+    const strippedRoot = canonicalSymbol.startsWith('I:')
+      ? canonicalSymbol.slice(2)
+      : canonicalSymbol;
+    const isIndexSymbol =
+      canonicalSymbol.startsWith('I:') || KNOWN_INDEX_ROOTS.has(strippedRoot);
+
+    const macroPromise = this.macroCalendarCache.getOrCompute(
+      'fmp:macro-calendar:us',
+      () => this.fmpClient.fetchUsMacroCalendar(nowSec),
+      { forceRefresh },
+    );
+
+    const earningsPromise = isIndexSymbol
+      ? Promise.resolve<{
+          readonly value: FmpSymbolEarningsResult;
+          readonly cacheHit: boolean;
+        } | null>(null)
+      : this.earningsCatalystCache.getOrCompute(
+          `fmp:earnings:${canonicalSymbol}`,
+          () => this.fmpClient.fetchSymbolEarnings(canonicalSymbol, nowSec),
+          { forceRefresh },
+        );
+
+    const [macroCached, earningsCached] = await Promise.all([macroPromise, earningsPromise]);
+    const macroRes = macroCached.value;
+    const earningsRes = earningsCached?.value ?? null;
+
+    const available = macroRes.available || (earningsRes !== null && earningsRes.available);
+    const reason =
+      earningsRes !== null && !earningsRes.available && earningsRes.reason !== null
+        ? earningsRes.reason
+        : !macroRes.available && macroRes.reason !== null
+          ? macroRes.reason
+          : null;
+
+    const payload: SerializedSymbolCatalystsDto = {
+      symbol: canonicalSymbol,
+      asOfUtcSec: nowSec,
+      available,
+      nextEarnings: earningsRes?.nextEarnings ?? null,
+      lastEarnings: earningsRes?.lastEarnings ?? null,
+      macroEvents: macroRes.events,
+      earningsSource: earningsRes?.source ?? null,
+      macroSource: macroRes.source ?? null,
+      reason: reason === null ? null : redactSecrets(reason, this.secrets),
+      cacheHit: macroCached.cacheHit && (earningsCached === null || earningsCached.cacheHit),
+    };
+    assertJsonSafeSerialized(payload);
+    return payload;
   }
 }
 

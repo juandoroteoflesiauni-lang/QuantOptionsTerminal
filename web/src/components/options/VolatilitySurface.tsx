@@ -12,6 +12,7 @@ import {
   fk,
 } from './engine';
 import { fmtNum, type OptionChainRow, type OptionExpiryGroup } from '../../data/marketData';
+import { computeForwardIvTermStructure } from '../../../../src/core/options/volSurface';
 
 const EXP_COLORS = ['#38BDF8', '#A855F7', '#F59E0B', '#10B981'] as const;
 const SW = 760;
@@ -696,27 +697,63 @@ export const VolatilitySurface: React.FC<{
           </svg>
 
           <div className="space-y-2 text-[12.5px]">
-            {[
-              t0 && t1 ? { label: `${t1.label}/${t0.label}`, v: spread1 } : null,
-              t1 && t2 ? { label: `${t2.label}/${t1.label}`, v: spread2 } : null,
-            ]
-              .filter((row): row is { label: string; v: number } => row !== null)
-              .map((s) => (
-                <div key={s.label} className="flex items-center justify-between rounded-[8px] bg-[var(--fx-base-2)] border border-[var(--fx-line)] px-3 py-2">
-                  <span className="text-[#9CA3AF]">Spread {s.label}</span>
-                  <span
-                    className={`font-mono-num font-bold ${
-                      !Number.isFinite(s.v)
-                        ? 'text-[#9CA3AF]'
-                        : s.v >= 0
-                          ? 'text-[var(--fx-target)]'
-                          : 'text-[var(--fx-be)]'
-                    }`}
-                  >
-                    {Number.isFinite(s.v) ? `${s.v >= 0 ? '+' : ''}${fmtNum(s.v, 1)} pts` : '—'}
-                  </span>
+            {computeForwardIvTermStructure(
+              term
+                .filter((t) => Number.isFinite(t.days) && t.days > 0 && Number.isFinite(t.atm) && t.atm > 0)
+                .map((t) => ({
+                  expiryCode: t.label,
+                  dte: Math.round(t.days),
+                  timeToExpiry: t.days / 365,
+                  atmIv: t.atm,
+                })),
+            ).map((seg) => {
+              const spreadPts = Number.isFinite(seg.farIv) && Number.isFinite(seg.nearIv)
+                ? (seg.farIv - seg.nearIv) * 100
+                : Number.NaN;
+              const fwdPct = seg.forwardIv !== null && Number.isFinite(seg.forwardIv)
+                ? seg.forwardIv * 100
+                : null;
+              return (
+                <div
+                  key={`${seg.nearExpiryCode ?? 'N'}-${seg.farExpiryCode ?? 'F'}`}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] bg-[var(--fx-base-2)] border border-[var(--fx-line)] px-3 py-2"
+                >
+                  <div className="flex flex-col">
+                    <span className="text-[#D1D5DB] font-medium">
+                      {seg.nearExpiryCode ?? 'T1'} → {seg.farExpiryCode ?? 'T2'}
+                    </span>
+                    <span className="text-[11px] font-mono-num text-[#9CA3AF]">
+                      Spread:{' '}
+                      <strong
+                        className={
+                          !Number.isFinite(spreadPts)
+                            ? 'text-[#9CA3AF]'
+                            : spreadPts >= 0
+                              ? 'text-[var(--fx-target)]'
+                              : 'text-[var(--fx-be)]'
+                        }
+                      >
+                        {Number.isFinite(spreadPts) ? `${spreadPts >= 0 ? '+' : ''}${fmtNum(spreadPts, 1)} pts` : '—'}
+                      </strong>
+                    </span>
+                  </div>
+                  <div className="text-right font-mono-num">
+                    {seg.calendarArbFlag ? (
+                      <span className="inline-block px-2 py-0.5 rounded border border-rose-500/40 bg-rose-500/15 text-[10.5px] font-bold text-rose-300">
+                        Arb. Calendario (σ²T↓)
+                      </span>
+                    ) : fwdPct !== null ? (
+                      <div className="flex flex-col items-end">
+                        <span className="text-[10px] uppercase tracking-wider text-[#6B7280]">Fwd IV</span>
+                        <span className="text-[13px] font-bold text-[#38BDF8]">{fmtNum(fwdPct, 1)}%</span>
+                      </div>
+                    ) : (
+                      <span className="text-[#9CA3AF]">—</span>
+                    )}
+                  </div>
                 </div>
-              ))}
+              );
+            })}
           </div>
           <p className="text-[12px] leading-relaxed text-[#9CA3AF]">
             {!Number.isFinite(spread1)

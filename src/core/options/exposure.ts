@@ -1942,3 +1942,196 @@ export function computeDealerExposure(
     quality,
   };
 }
+
+export type DealerGammaRegime = 'LONG_GAMMA' | 'SHORT_GAMMA' | 'NEUTRAL' | 'NO_DATA';
+export type DealerCreditStrategySignal =
+  | 'GREEN_LIGHT'
+  | 'CAUTION_SHORT_WINGS'
+  | 'NEUTRAL'
+  | 'NO_DATA';
+export type SpotVsZeroGammaPosition =
+  | 'ABOVE_ZERO_GAMMA'
+  | 'BELOW_ZERO_GAMMA'
+  | 'AT_ZERO_GAMMA'
+  | 'UNKNOWN';
+
+export interface DealerGammaRegimeOptions {
+  /** Umbral de banda neutral sobre |netGex| en USD por movimiento del 1 %. */
+  readonly neutralEpsilon?: number;
+  /** Contratos usables mínimos con OI > 0 para considerar válido el régimen / Zero Gamma. */
+  readonly minUsableContracts?: number;
+  /** Open interest usable total mínimo para considerar válido el cálculo de GEX / Zero Gamma. */
+  readonly minUsableOpenInterest?: number;
+}
+
+export interface DealerGammaSummaryInput {
+  readonly spot: number;
+  readonly netGex: number;
+  readonly callGex?: number;
+  readonly putGex?: number;
+  readonly callWallStrike: number;
+  readonly putWallStrike: number;
+  readonly gammaFlipSpot: number;
+  readonly gammaFlipStatus?: GammaFlipStatus | null;
+  readonly usableContracts?: number;
+  readonly usableOpenInterest?: number;
+}
+
+export interface DealerGammaRegimeReport {
+  readonly regime: DealerGammaRegime;
+  readonly creditStrategySignal: DealerCreditStrategySignal;
+  readonly headline: string;
+  readonly behaviorLabel: string;
+  readonly strategyGuidance: string;
+  readonly hasSufficientOi: boolean;
+  readonly netGex: number;
+  readonly callWallStrike: number;
+  readonly putWallStrike: number;
+  readonly zeroGammaSpot: number;
+  readonly spotVsZeroGamma: SpotVsZeroGammaPosition;
+  readonly distanceToZeroGammaPct: number;
+}
+
+function isFinitePositiveStrike(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Clasifica el régimen de gamma de los dealers (`LONG_GAMMA` vs `SHORT_GAMMA`) y valida
+ * de forma honesta si existen suficientes contratos y Open Interest válidos para exponer
+ * `Call Wall`, `Put Wall` y `Zero Gamma` (`Gamma Flip`).
+ *
+ * - `Net GEX > 0` (`LONG_GAMMA`): dealers largos gamma compran caídas y venden subas ->
+ *   mercado amortiguado / reversión a la media (luz verde para estrategias de crédito / Iron Condors).
+ * - `Net GEX < 0` (`SHORT_GAMMA`): dealers cortos gamma cubren en la dirección del movimiento ->
+ *   mercado acelerado / expansión de rango (alerta de riesgo para venta de alas cortas).
+ * - Si `usableContracts < minUsableContracts` o `usableOpenInterest < minUsableOpenInterest`
+ *   o `Net GEX` no es finito, degrada honestamente a `NO_DATA` y `zeroGammaSpot: NaN`.
+ */
+export function classifyDealerGammaRegimeFromSummary(
+  input: DealerGammaSummaryInput,
+  options: DealerGammaRegimeOptions = {},
+): DealerGammaRegimeReport {
+  const neutralEpsilon =
+    options.neutralEpsilon !== undefined && Number.isFinite(options.neutralEpsilon) && options.neutralEpsilon >= 0
+      ? options.neutralEpsilon
+      : 1e-9;
+  const minUsableContracts =
+    options.minUsableContracts !== undefined && Number.isFinite(options.minUsableContracts) && options.minUsableContracts >= 1
+      ? Math.floor(options.minUsableContracts)
+      : 2;
+  const minUsableOpenInterest =
+    options.minUsableOpenInterest !== undefined && Number.isFinite(options.minUsableOpenInterest) && options.minUsableOpenInterest >= 1
+      ? options.minUsableOpenInterest
+      : 10;
+
+  const usableContractsValid =
+    input.usableContracts === undefined
+    || (Number.isFinite(input.usableContracts) && input.usableContracts >= minUsableContracts);
+  const usableOiValid =
+    input.usableOpenInterest === undefined
+    || (Number.isFinite(input.usableOpenInterest) && input.usableOpenInterest >= minUsableOpenInterest);
+  const hasSufficientOi = usableContractsValid && usableOiValid;
+
+  if (!hasSufficientOi || !Number.isFinite(input.netGex) || !isFinitePositiveStrike(input.spot)) {
+    return {
+      regime: 'NO_DATA',
+      creditStrategySignal: 'NO_DATA',
+      headline: 'GEX INSUFICIENTE',
+      behaviorLabel: 'Open Interest insuficiente para determinar régimen de dealers',
+      strategyGuidance: 'Sin datos suficientes de OI para evaluar exposición gamma.',
+      hasSufficientOi: false,
+      netGex: Number.NaN,
+      callWallStrike: Number.NaN,
+      putWallStrike: Number.NaN,
+      zeroGammaSpot: Number.NaN,
+      spotVsZeroGamma: 'UNKNOWN',
+      distanceToZeroGammaPct: Number.NaN,
+    };
+  }
+
+  let regime: DealerGammaRegime = 'NEUTRAL';
+  let creditStrategySignal: DealerCreditStrategySignal = 'NEUTRAL';
+  let headline = 'GAMMA NEUTRAL';
+  let behaviorLabel = 'Exposición gamma equilibrada alrededor del spot';
+  let strategyGuidance = 'Flujo neutral; monitorear cercanía al Call/Put Wall.';
+
+  if (input.netGex > neutralEpsilon) {
+    regime = 'LONG_GAMMA';
+    creditStrategySignal = 'GREEN_LIGHT';
+    headline = 'LONG GAMMA';
+    behaviorLabel = 'Mercado amortiguado / reversión a la media';
+    strategyGuidance = 'Luz verde para estrategias de crédito / Iron Condors.';
+  } else if (input.netGex < -neutralEpsilon) {
+    regime = 'SHORT_GAMMA';
+    creditStrategySignal = 'CAUTION_SHORT_WINGS';
+    headline = 'SHORT GAMMA';
+    behaviorLabel = 'Mercado acelerado / expansión de rango';
+    strategyGuidance = 'Alerta de riesgo para venta de alas cortas.';
+  }
+
+  const callWallStrike = isFinitePositiveStrike(input.callWallStrike) ? input.callWallStrike : Number.NaN;
+  const putWallStrike = isFinitePositiveStrike(input.putWallStrike) ? input.putWallStrike : Number.NaN;
+
+  const flipAllowedByStatus =
+    input.gammaFlipStatus === undefined
+    || input.gammaFlipStatus === null
+    || input.gammaFlipStatus === 'unique';
+  const zeroGammaSpot =
+    flipAllowedByStatus && isFinitePositiveStrike(input.gammaFlipSpot)
+      ? input.gammaFlipSpot
+      : Number.NaN;
+
+  let spotVsZeroGamma: SpotVsZeroGammaPosition = 'UNKNOWN';
+  let distanceToZeroGammaPct = Number.NaN;
+  if (isFinitePositiveStrike(zeroGammaSpot)) {
+    const diff = input.spot - zeroGammaSpot;
+    distanceToZeroGammaPct = (diff / input.spot) * 100;
+    if (Math.abs(diff) <= 1e-6 * input.spot) {
+      spotVsZeroGamma = 'AT_ZERO_GAMMA';
+    } else if (diff > 0) {
+      spotVsZeroGamma = 'ABOVE_ZERO_GAMMA';
+    } else {
+      spotVsZeroGamma = 'BELOW_ZERO_GAMMA';
+    }
+  }
+
+  return {
+    regime,
+    creditStrategySignal,
+    headline,
+    behaviorLabel,
+    strategyGuidance,
+    hasSufficientOi: true,
+    netGex: input.netGex,
+    callWallStrike,
+    putWallStrike,
+    zeroGammaSpot,
+    spotVsZeroGamma,
+    distanceToZeroGammaPct,
+  };
+}
+
+/**
+ * Clasifica el régimen de gamma de dealers directamente desde un `DealerExposureResult`.
+ */
+export function classifyDealerGammaRegime(
+  result: DealerExposureResult,
+  options: DealerGammaRegimeOptions = {},
+): DealerGammaRegimeReport {
+  return classifyDealerGammaRegimeFromSummary(
+    {
+      spot: result.spot,
+      netGex: result.netGex,
+      callGex: result.callGex,
+      putGex: result.putGex,
+      callWallStrike: result.callWallStrike,
+      putWallStrike: result.putWallStrike,
+      gammaFlipSpot: result.gammaFlipSpot,
+      gammaFlipStatus: result.gammaFlipStatus,
+      usableContracts: result.quality.usableContracts,
+      usableOpenInterest: result.quality.usableOpenInterest,
+    },
+    options,
+  );
+}

@@ -3,6 +3,7 @@ import { type OptionExpiryGroup, fmtNum } from '../../data/marketData';
 import type { ArOptionsQuantEnginesDto, ArOptionsResponse, UsSnapshotResponseDto, UsVolSurfaceResponseDto } from '../../data/liveTypes';
 import type { StratLeg } from './engine';
 import { computeActiveExpiryVrpAndRegime } from '../../../../src/core/options/volAnalyticsSuite';
+import { computeForwardIvTermStructure } from '../../../../src/core/options/volSurface';
 import {
   type UnifiedQuantEnginesDto,
   type VolAnalyticsExpirySuiteDto,
@@ -237,6 +238,32 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
     ? `${suite.benchmarkLabel}: ${fmtNullableNumber(suite.rateTeaPct, 2, '%')}`
     : `Tasa ref.: ${fmtNullableNumber(effectiveTlrPct, 2, '%')}`;
 
+  const forwardSegments = useMemo(() => {
+    const validPoints = expiries
+      .map((exp) => {
+        const rowMatch = suite?.moneynessMatrixOtm.rows.find((r) => r.expiryCode === exp.id);
+        const ivPct = rowMatch?.atmIvPct ?? (Number.isFinite(exp.atmIV) ? exp.atmIV : null);
+        return {
+          expiryCode: exp.id,
+          dte: exp.daysToExpiry,
+          timeToExpiry: exp.daysToExpiry > 0 ? exp.daysToExpiry / 365 : Number.NaN,
+          atmIv: ivPct !== null && Number.isFinite(ivPct) && ivPct > 0 ? ivPct / 100 : Number.NaN,
+        };
+      })
+      .filter((p) => Number.isFinite(p.timeToExpiry) && p.timeToExpiry > 0 && Number.isFinite(p.atmIv) && p.atmIv > 0);
+    return computeForwardIvTermStructure(validPoints);
+  }, [expiries, suite?.moneynessMatrixOtm.rows]);
+
+  const forwardSegmentByFarCode = useMemo(() => {
+    const map = new Map<string, (typeof forwardSegments)[number]>();
+    for (const seg of forwardSegments) {
+      if (seg.farExpiryCode) {
+        map.set(seg.farExpiryCode, seg);
+      }
+    }
+    return map;
+  }, [forwardSegments]);
+
   return (
     <div className="space-y-4">
       {/* Cabecera neutra superior "El Teórico" + selector de vencimiento */}
@@ -281,11 +308,21 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
                 const isSelected = exp.id === activeExpiry?.id;
                 const rowMatch = suite?.moneynessMatrixOtm.rows.find((r) => r.expiryCode === exp.id);
                 const atmLabel = fmtNullableNumber(rowMatch?.atmIvPct ?? (Number.isFinite(exp.atmIV) ? exp.atmIV : null), 1, '%');
+                const fwdSeg = forwardSegmentByFarCode.get(exp.id);
                 return (
                   <button
                     key={exp.id}
                     type="button"
                     onClick={() => onSelectExpiry(exp.id)}
+                    title={
+                      fwdSeg
+                        ? fwdSeg.calendarArbFlag
+                          ? `Inversión de varianza total respecto a ${fwdSeg.nearExpiryCode ?? 'vto previo'}`
+                          : fwdSeg.forwardIv !== null
+                            ? `Forward IV ${fwdSeg.nearExpiryCode ?? ''} → ${exp.id}: ${fmtNum(fwdSeg.forwardIv * 100, 1)}%`
+                            : undefined
+                        : undefined
+                    }
                     className={`px-2.5 py-1.5 rounded-[8px] border text-left transition-colors ${
                       isSelected
                         ? 'bg-[#1D1E28] border-[#E5C76B]/60 text-[#F9FAFB]'
@@ -295,6 +332,16 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
                     <div className="text-[11px] font-bold leading-tight">{exp.label}</div>
                     <div className="text-[10px] font-mono-num text-[#6B7280]">
                       {exp.daysToExpiry}d · <span className="text-[#E5C76B]">{atmLabel}</span>
+                      {fwdSeg && (
+                        <>
+                          {' '}·{' '}
+                          {fwdSeg.calendarArbFlag ? (
+                            <span className="text-rose-300 font-semibold">Arb Cal.</span>
+                          ) : fwdSeg.forwardIv !== null ? (
+                            <span className="text-[#38BDF8]">Fwd {fmtNum(fwdSeg.forwardIv * 100, 1)}%</span>
+                          ) : null}
+                        </>
+                      )}
                     </div>
                   </button>
                 );
@@ -1365,6 +1412,54 @@ const Tab2SonrisaMatriz: React.FC<{
               })}
             </svg>
           )}
+
+          {(() => {
+            const localForwardSegments = computeForwardIvTermStructure(
+              matrix.rows
+                .filter(
+                  (r) =>
+                    r.daysToExpiry > 0 &&
+                    r.atmIvPct !== null &&
+                    Number.isFinite(r.atmIvPct) &&
+                    r.atmIvPct > 0,
+                )
+                .map((r) => ({
+                  expiryCode: r.expiryCode,
+                  dte: r.daysToExpiry,
+                  timeToExpiry: r.daysToExpiry / 365,
+                  atmIv: (r.atmIvPct as number) / 100,
+                })),
+            );
+            if (localForwardSegments.length === 0) return null;
+            return (
+              <div className="pt-2 border-t border-[#1C1C24] space-y-1.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#6B7280] font-semibold">
+                  Forward IV entre vencimientos
+                </div>
+                <div className="grid grid-cols-1 gap-1.5">
+                  {localForwardSegments.slice(0, 5).map((seg) => (
+                    <div
+                      key={`${seg.nearExpiryCode ?? 'N'}_${seg.farExpiryCode ?? 'F'}`}
+                      className="flex items-center justify-between rounded-[7px] bg-[#111118] border border-[#1C1C26] px-2.5 py-1 text-[11px] font-mono-num"
+                    >
+                      <span className="text-[#9CA3AF]">
+                        {seg.nearExpiryCode ?? 'T1'} → {seg.farExpiryCode ?? 'T2'}
+                      </span>
+                      {seg.calendarArbFlag ? (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[10px] font-semibold">
+                          Arb. Cal. (Var≤0)
+                        </span>
+                      ) : seg.forwardIv !== null && Number.isFinite(seg.forwardIv) ? (
+                        <span className="font-bold text-[#38BDF8]">{fmtNum(seg.forwardIv * 100, 1)}%</span>
+                      ) : (
+                        <span className="text-[#6B7280]">—</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="xl:col-span-8 rounded-[14px] bg-[#0A0A0D] border border-[#1C1C24] p-4 space-y-2 overflow-x-auto">

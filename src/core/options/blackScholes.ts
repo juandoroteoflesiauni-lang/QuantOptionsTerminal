@@ -488,3 +488,5 @@ export function greeksBlack76(input: Black76Input): OptionGreeksResult {
     'black76',
   );
 }
+
+export * from './whatIfPayoff.js';
