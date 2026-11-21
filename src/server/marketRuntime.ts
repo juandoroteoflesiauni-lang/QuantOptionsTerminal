@@ -350,6 +350,8 @@ export const DEFAULT_TERMINAL_SYMBOLS = ['SPY', 'QQQ', 'I:SPX'] as const;
 export const FMP_BATCH_QUOTE_INTERVAL_MS = 1_500;
 /** Pieza 42: cadencia del poll extendido Pre-Market / After-Hours (04:00–20:00 ET). */
 export const FMP_EXTENDED_QUOTE_INTERVAL_MS = 2_000;
+/** Pieza 50.5.1: backoff corto de reintento cuando FMP falla al resolver eventos Auto-AVWAP. */
+export const FMP_EVENT_FAILURE_BACKOFF_MS = 5 * 60 * 1_000;
 
 const KEY_ENV_NAMES = [
   'MASSIVE_API_KEY',
@@ -10797,12 +10799,31 @@ export class MarketRuntime {
     return payload;
   }
 
+  /** Pieza 50.5.1: backoff corto anti-tormenta cuando FMP falla al resolver eventos. */
+  private readonly fmpEventBackoffUntilMs = new Map<string, number>();
+  private isFmpEventBackoffActive(key: string): boolean {
+    const until = this.fmpEventBackoffUntilMs.get(key);
+    return until !== undefined && this.nowMsFn() < until;
+  }
+
+  private markFmpEventBackoff(key: string): void {
+    this.fmpEventBackoffUntilMs.set(key, this.nowMsFn() + FMP_EVENT_FAILURE_BACKOFF_MS);
+  }
+
+  private clearFmpEventBackoff(key: string): void {
+    this.fmpEventBackoffUntilMs.delete(key);
+  }
+
   /**
-   * Pieza 50.5: resuelve las anclas institucionales Auto-AVWAP US con caché diario
-   * (`US:${symbol}:${fmpEtDateKey}`, TTL 24 h) y single-flight. Reutiliza el dataset
-   * `1D` ya cargado (`dailyBarsHint`) sin red; en otro caso consulta `barsCache` o
-   * carga `1D` con 400 velas, con guard de re-entrada para que el `computeBars`
-   * anidado de `1D` calcule directo desde su hint sin reingresar a la caché.
+   * Pieza 50.5.1: resuelve las anclas Auto-AVWAP US con caché diario
+   * (`US:${symbol}:${fmpEtDateKey}`, TTL 24 h). Reutiliza el dataset `1D` ya cargado
+   * (`dailyBarsHint`) sin red; en otro caso consulta `barsCache` o carga `1D` con 400
+   * velas, con guard de re-entrada para que el `computeBars` anidado de `1D` calcule
+   * directo desde su hint sin reingresar a la caché.
+   *
+   * Si FMP está habilitado pero la consulta de eventos falló, devuelve las anclas
+   * degradadas (`PIVOT + RVOL`) **sin** sellar la caché diaria, permitiendo recuperar
+   * `EVENT` automáticamente al siguiente refresh tras el backoff corto.
    */
   private async resolveAutoAvwapAnchorsForUs(
     canonicalSymbol: string,
@@ -10815,94 +10836,156 @@ export class MarketRuntime {
 
     // Re-entrada (computeBars anidado de 1D): calcular directo desde el hint, sin caché.
     if (this.autoAvwapResolveInFlight.has(cacheKey)) {
-      return this.computeAutoAvwapAnchors(canonicalSymbol, dailyBarsHint ?? [], nowSec);
+      const reentrant = await this.computeAutoAvwapAnchorsOutcome(
+        canonicalSymbol,
+        dailyBarsHint ?? [],
+        nowSec,
+      );
+      return reentrant.anchors;
     }
 
     this.autoAvwapResolveInFlight.add(cacheKey);
     try {
-      const result = await this.autoAvwapCache.getOrCompute(cacheKey, async () => {
-        let dailyBars: readonly Bar[] = dailyBarsHint ?? [];
-        if (dailyBars.length === 0) {
-          const peeked = this.barsCache.peek(`bars:${canonicalSymbol}:1D:ext:400`)?.value;
-          dailyBars = (peeked?.bars ?? []).map((bar) => ({
-            time: bar.time,
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close,
-            volume: bar.volume,
-          }));
-        }
-        if (dailyBars.length === 0) {
-          const fetched = await this.getBars(canonicalSymbol, '1D', { visibleBars: 400 });
-          dailyBars = fetched.bars.map((bar) => ({
-            time: bar.time,
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close,
-            volume: bar.volume,
-          }));
-        }
-        const anchors = await this.computeAutoAvwapAnchors(canonicalSymbol, dailyBars, nowSec);
-        assertJsonSafeSerialized(anchors);
-        return anchors;
-      });
-      return result.value;
+      let dailyBars: readonly Bar[] = dailyBarsHint ?? [];
+      if (dailyBars.length === 0) {
+        const peeked = this.barsCache.peek(`bars:${canonicalSymbol}:1D:ext:400`)?.value;
+        dailyBars = (peeked?.bars ?? []).map((bar) => ({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        }));
+      }
+      if (dailyBars.length === 0) {
+        const fetched = await this.getBars(canonicalSymbol, '1D', { visibleBars: 400 });
+        dailyBars = fetched.bars.map((bar) => ({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        }));
+      }
+      const outcome = await this.computeAutoAvwapAnchorsOutcome(canonicalSymbol, dailyBars, nowSec);
+      assertJsonSafeSerialized(outcome.anchors);
+      if (outcome.fmpFailed) {
+        return outcome.anchors;
+      }
+      const sealed = await this.autoAvwapCache.getOrCompute(
+        cacheKey,
+        () => Promise.resolve(outcome.anchors),
+      );
+      return sealed.value;
     } finally {
       this.autoAvwapResolveInFlight.delete(cacheKey);
     }
   }
 
   /**
-   * Pieza 50.5: consulta eventos FMP **solo** con `fmpHistoricalProviderEnabled === true`
-   * dentro de `try/catch` (degradación limpia a `PIVOT + RVOL`): índices/ETFs usan el
-   * calendario macro plurianual compartido; acciones individuales usan Earnings.
+   * Pieza 50.5.1: calcula anclas y reporta si FMP falló al consultar los eventos.
+   * Cualquier excepción del proveedor se captura aquí: la degradación es limpia a
+   * `PIVOT + RVOL`, y jamás bloquea `/api/bars`.
    */
-  private async computeAutoAvwapAnchors(
+  private async computeAutoAvwapAnchorsOutcome(
     canonicalSymbol: string,
     dailyBars: readonly Bar[],
     nowSec: number,
-  ): Promise<readonly AutoAvwapAnchor[]> {
-    if (dailyBars.length === 0) return [];
+  ): Promise<{ readonly anchors: readonly AutoAvwapAnchor[]; readonly fmpFailed: boolean }> {
+    if (dailyBars.length === 0) {
+      return { anchors: [], fmpFailed: false };
+    }
     let events: readonly AutoAvwapEventInput[] = [];
+    let fmpFailed = false;
     if (this.fmpHistoricalProviderEnabled) {
       try {
-        events = await this.loadAutoAvwapEventsForUs(canonicalSymbol, nowSec);
+        const loaded = await this.loadAutoAvwapEventsForUs(canonicalSymbol, nowSec);
+        events = loaded.events;
+        fmpFailed = loaded.fmpFailed;
       } catch {
-        events = [];
+        fmpFailed = true;
       }
     }
-    return detectAutoAvwapAnchors(dailyBars, events);
+    return { anchors: detectAutoAvwapAnchors(dailyBars, events), fmpFailed };
   }
 
+  /**
+   * Pieza 50.5.1: consulta eventos FMP **solo** con `fmpHistoricalProviderEnabled === true`.
+   * Índices/ETFs usan el calendario macro plurianual (560 días, tramos ≤ 85 d, 1 sola
+   * consulta diaria compartida); acciones individuales usan Earnings. Los eventos
+   * futuros se filtran (`utcSec <= nowSec`) y un fallo (`available === false`) lanza un
+   * error interno para no sellar la caché 24 h; un backoff corto de 5 min evita
+   * tormentas de requests mientras la API está caída.
+   */
   private async loadAutoAvwapEventsForUs(
     canonicalSymbol: string,
     nowSec: number,
-  ): Promise<readonly AutoAvwapEventInput[]> {
+  ): Promise<{ readonly events: readonly AutoAvwapEventInput[]; readonly fmpFailed: boolean }> {
     if (isIndexOrEtfSymbol(canonicalSymbol)) {
-      // 1 sola llamada FMP por día compartida por todos los índices y ETFs.
-      const result = await this.macroCalendarHistoryCache.getOrCompute(
-        `fmp:macro-calendar-history:us:${fmpEtDateKey(nowSec)}`,
-        () => this.fmpClient.fetchUsMacroCalendar(nowSec, 560),
-      );
-      return result.value.events.map((event) => ({
-        utcSec: event.utcSec,
-        label: event.kind,
-        date: event.date,
-        timeOfDay: 'bmo',
-      }));
+      const cacheKey = `fmp:macro-calendar-history:us:${fmpEtDateKey(nowSec)}`;
+      if (this.isFmpEventBackoffActive(cacheKey)) {
+        return { events: [], fmpFailed: true };
+      }
+      try {
+        const result = await this.macroCalendarHistoryCache.getOrCompute(cacheKey, async () => {
+          const res = await this.fmpClient.fetchUsMacroCalendar(nowSec, 560);
+          if (!res.available) {
+            throw new Error('AUTO_AVWAP_FMP_MACRO_UNAVAILABLE');
+          }
+          return res;
+        });
+        if (!result.value.available) {
+          this.markFmpEventBackoff(cacheKey);
+          return { events: [], fmpFailed: true };
+        }
+        const events = result.value.events
+          .filter((event) => event.utcSec <= nowSec)
+          .map((event) => ({
+            utcSec: event.utcSec,
+            label: event.kind,
+            date: event.date,
+            timeOfDay: 'bmo' as const,
+          }));
+        this.clearFmpEventBackoff(cacheKey);
+        return { events, fmpFailed: false };
+      } catch {
+        this.markFmpEventBackoff(cacheKey);
+        return { events: [], fmpFailed: true };
+      }
     }
-    const result = await this.earningsCatalystCache.getOrCompute(
-      `fmp:earnings:${canonicalSymbol}`,
-      () => this.fmpClient.fetchSymbolEarnings(canonicalSymbol, nowSec),
-    );
-    return result.value.events.map((event) => ({
-      utcSec: event.utcSec,
-      label: 'Earnings',
-      date: event.date,
-      timeOfDay: event.timeOfDay ?? 'unknown',
-    }));
+
+    const cacheKey = `fmp:earnings:${canonicalSymbol}`;
+    if (this.isFmpEventBackoffActive(cacheKey)) {
+      return { events: [], fmpFailed: true };
+    }
+    try {
+      const result = await this.earningsCatalystCache.getOrCompute(cacheKey, async () => {
+        const res = await this.fmpClient.fetchSymbolEarnings(canonicalSymbol, nowSec);
+        if (!res.available) {
+          throw new Error('AUTO_AVWAP_FMP_EARNINGS_UNAVAILABLE');
+        }
+        return res;
+      });
+      if (!result.value.available) {
+        this.markFmpEventBackoff(cacheKey);
+        return { events: [], fmpFailed: true };
+      }
+      const events = result.value.events
+        .filter((event) => event.utcSec <= nowSec)
+        .map((event) => ({
+          utcSec: event.utcSec,
+          label: 'Earnings',
+          date: event.date,
+          timeOfDay: event.timeOfDay ?? ('unknown' as const),
+        }));
+      this.clearFmpEventBackoff(cacheKey);
+      return { events, fmpFailed: false };
+    } catch {
+      this.markFmpEventBackoff(cacheKey);
+      return { events: [], fmpFailed: true };
+    }
   }
 
   public async getUnusualTrades(options: {

@@ -761,6 +761,41 @@ export class FmpEnterpriseClient {
     return null;
   }
 
+  /**
+   * Pieza 50.5.1: orden determinista de claves para Earnings/Calendario Macro con
+   * fallback ante HTTP 402/403 (p. ej. `FMP_KEY_CALENDARS` en un tier limitado):
+   * `CALENDARS -> [calendarsApiKey, apiKey, marketApiKey, macroApiKey]`,
+   * `MACRO -> [macroApiKey, apiKey, calendarsApiKey, marketApiKey]`,
+   * deduplicado por valor de clave y filtrando `null`/vacíos.
+   */
+  private apiKeyCandidatesFor(endpoint: 'CALENDARS' | 'MACRO'): readonly FmpKeySelection[] {
+    const config = this.effectiveConfig();
+    const ordered: readonly (readonly [string | null | undefined, FmpKeyRole])[] =
+      endpoint === 'CALENDARS'
+        ? [
+            [config.calendarsApiKey ?? null, 'CALENDARS'],
+            [config.apiKey, 'PRIMARY'],
+            [config.marketApiKey, 'MARKET'],
+            [config.macroApiKey, 'MACRO'],
+          ]
+        : [
+            [config.macroApiKey, 'MACRO'],
+            [config.apiKey, 'PRIMARY'],
+            [config.calendarsApiKey ?? null, 'CALENDARS'],
+            [config.marketApiKey, 'MARKET'],
+          ];
+    const seen = new Set<string>();
+    const candidates: FmpKeySelection[] = [];
+    for (const [key, envName] of ordered) {
+      if (key === null || key === undefined) continue;
+      const trimmed = key.trim();
+      if (trimmed === '' || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      candidates.push({ key: trimmed, envName });
+    }
+    return candidates;
+  }
+
   private currentSecrets(): readonly string[] {
     const config = this.effectiveConfig();
     return [
@@ -1352,6 +1387,13 @@ export class FmpEnterpriseClient {
    * Consulta en FMP Enterprise las fechas de Earnings del subyacente US.
    * Degrada honestamente a `nextEarnings: null, lastEarnings: null, available: false`
    * cuando no hay clave configurada o FMP no devuelve datos.
+   *
+   * Pieza 50.5.1: candidatos explícitos con fallback histórico real:
+   *  1. `/stable/earnings?symbol=SYM&limit=40` (~8–10 años con trimestres futuros).
+   *  2. `/stable/income-statement?symbol=SYM&period=quarter&limit=8` (fechas reales
+   *     de reporte `filingDate`/`acceptedDate` para planes donde #1 da 402/403/vacío).
+   *  3. `/stable/earnings-calendar?from=asOf-45d&to=asOf+40d` (ventana 85 días <= 90).
+   * En HTTP 402/403 se reintenta con la siguiente clave distinta (`apiKeyCandidatesFor`).
    */
   public async fetchSymbolEarnings(
     symbol: string,
@@ -1362,7 +1404,7 @@ export class FmpEnterpriseClient {
       nowUtcSec !== undefined && Number.isFinite(nowUtcSec)
         ? Math.floor(nowUtcSec)
         : Math.floor(this.nowMsFn() / 1_000);
-    const keySelection = this.apiKeyFor('CALENDARS');
+    const keyCandidates = this.apiKeyCandidatesFor('CALENDARS');
     if (cleanSym === '') {
       return {
         symbol: '',
@@ -1375,7 +1417,7 @@ export class FmpEnterpriseClient {
         reason: 'Símbolo requerido para Earnings',
       };
     }
-    if (!this.effectiveConfig().configured || keySelection === null) {
+    if (!this.effectiveConfig().configured || keyCandidates.length === 0) {
       return {
         symbol: cleanSym,
         asOfUtcSec,
@@ -1388,27 +1430,37 @@ export class FmpEnterpriseClient {
       };
     }
 
-    const fromKey = fmpEtDateKey(asOfUtcSec - 15 * 86_400);
-    const toKey = fmpEtDateKey(asOfUtcSec + 120 * 86_400);
+    const fromKey = fmpEtDateKey(asOfUtcSec - 45 * 86_400);
+    const toKey = fmpEtDateKey(asOfUtcSec + 40 * 86_400);
     const endpointsToTry: readonly { readonly path: string; readonly tag: string }[] = [
-      { path: buildFmpEarningsPath(cleanSym, 20), tag: 'FMP_STABLE_EARNINGS' },
+      { path: buildFmpEarningsPath(cleanSym, 40), tag: 'FMP_STABLE_EARNINGS' },
+      { path: buildFmpIncomeStatementPath(cleanSym, 8), tag: 'FMP_STABLE_INCOME_STATEMENT' },
       { path: buildFmpEarningsCalendarWindowPath(fromKey, toKey), tag: 'FMP_STABLE_EARNINGS_CALENDAR' },
     ];
 
     let lastFailureReason: string | null = null;
     for (const candidate of endpointsToTry) {
-      let response: FmpHttpResult;
-      try {
-        response = await this.fetchRedacted(buildAuthUrl(candidate.path, keySelection.key));
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        lastFailureReason = redactSecrets(msg, this.currentSecrets());
-        continue;
+      let response: FmpHttpResult | null = null;
+      for (const keySelection of keyCandidates) {
+        try {
+          response = await this.fetchRedacted(buildAuthUrl(candidate.path, keySelection.key));
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          lastFailureReason = redactSecrets(msg, this.currentSecrets());
+          response = null;
+          continue;
+        }
+        if (response.ok) break;
+        lastFailureReason = `FMP earnings HTTP ${String(response.status)}`;
+        if (response.status === 402 || response.status === 403) {
+          continue; // siguiente clave distinta
+        }
+        break; // error no-auth: no reintentar más claves en este endpoint
       }
 
+      if (response === null) continue; // endpoint siguiente
       if (!response.ok) {
-        lastFailureReason = `FMP earnings HTTP ${String(response.status)}`;
-        // Reintenta fallback si el plan restringe /stable/earnings o no existe.
+        // Reintenta el endpoint siguiente si el plan restringe este path.
         if (response.status === 402 || response.status === 403 || response.status === 404) {
           continue;
         }
@@ -1420,7 +1472,7 @@ export class FmpEnterpriseClient {
           events: [],
           source: null,
           available: false,
-          reason: redactSecrets(lastFailureReason, this.currentSecrets()),
+          reason: redactSecrets(lastFailureReason ?? '', this.currentSecrets()),
         };
       }
 
@@ -1432,9 +1484,15 @@ export class FmpEnterpriseClient {
         continue;
       }
 
-      const parsed = parseFmpEarningsCalendar(raw, cleanSym, asOfUtcSec);
+      const parsed =
+        candidate.tag === 'FMP_STABLE_INCOME_STATEMENT'
+          ? parseFmpQuarterlyFilingEarnings(raw, cleanSym, asOfUtcSec)
+          : parseFmpEarningsCalendar(raw, cleanSym, asOfUtcSec);
       this.recordResponse(true, parsed.events.length);
-      if (parsed.events.length === 0 && candidate.tag === 'FMP_STABLE_EARNINGS') {
+      if (
+        parsed.events.length === 0 &&
+        candidate.tag !== 'FMP_STABLE_EARNINGS_CALENDAR'
+      ) {
         continue;
       }
       return {
@@ -1470,6 +1528,16 @@ export class FmpEnterpriseClient {
    *
    * Pieza 50.5: `lookbackDays` opcional (default `7`, 100 % retrocompatible) permite
    * anclas Auto-AVWAP que necesitan historia macro plurianual (560 días ≈ 18 meses).
+   *
+   * Pieza 50.5.1: FMP rechaza ventanas `> 90 días`, así que siempre se pagina en
+   * tramos de `85 días`:
+   *  - `lookbackDays <= 15` (catalizadores de Opciones): 1 sola llamada
+   *    `[asOf - lookbackDays, asOf + (85 - lookbackDays)]` (retrocompatible).
+   *  - `lookbackDays > 15` (histórico Auto-AVWAP, p. ej. `560`): tramos consecutivos
+   *    ascendentes de ≤ 85 días cubriendo `[asOf - lookbackDays, asOf]`, ejecutados
+   *    secuencialmente, concatenados y deduplicados por `${kind}:${date}` (prioriza
+   *    `impact === 'HIGH'`), ordenados ascendentemente por `utcSec`.
+   * `available: true` si al menos 1 tramo respondió HTTP 200 válido.
    */
   public async fetchUsMacroCalendar(
     nowUtcSec?: number,
@@ -1479,8 +1547,8 @@ export class FmpEnterpriseClient {
       nowUtcSec !== undefined && Number.isFinite(nowUtcSec)
         ? Math.floor(nowUtcSec)
         : Math.floor(this.nowMsFn() / 1_000);
-    const keySelection = this.apiKeyFor('MACRO');
-    if (!this.effectiveConfig().configured || keySelection === null) {
+    const keyCandidates = this.apiKeyCandidatesFor('MACRO');
+    if (!this.effectiveConfig().configured || keyCandidates.length === 0) {
       return {
         asOfUtcSec,
         events: [],
@@ -1490,48 +1558,92 @@ export class FmpEnterpriseClient {
       };
     }
 
-    const fromKey = fmpEtDateKey(asOfUtcSec - Math.max(1, Math.trunc(lookbackDays)) * 86_400);
-    const toKey = fmpEtDateKey(asOfUtcSec + 120 * 86_400);
-    const path = buildFmpEconomicCalendarPath(fromKey, toKey);
+    const daySec = 86_400;
+    const maxWindowDays = 85;
+    const effectiveLookbackDays = Number.isFinite(lookbackDays)
+      ? Math.max(1, Math.trunc(lookbackDays))
+      : 7;
+    const chunks: { readonly fromSec: number; readonly toSec: number }[] = [];
+    if (effectiveLookbackDays <= 15) {
+      chunks.push({
+        fromSec: asOfUtcSec - effectiveLookbackDays * daySec,
+        toSec: asOfUtcSec + (maxWindowDays - effectiveLookbackDays) * daySec,
+      });
+    } else {
+      let cursor = asOfUtcSec;
+      let remaining = effectiveLookbackDays;
+      while (remaining > 0) {
+        const windowDays = Math.min(maxWindowDays, remaining);
+        const fromSec = cursor - windowDays * daySec;
+        chunks.push({ fromSec, toSec: cursor });
+        cursor = fromSec;
+        remaining -= windowDays;
+      }
+      chunks.reverse();
+    }
 
-    let response: FmpHttpResult;
-    try {
-      response = await this.fetchRedacted(buildAuthUrl(path, keySelection.key));
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+    const byKindAndDate = new Map<string, MacroCatalystEvent>();
+    let anyChunkOk = false;
+    let lastFailureReason: string | null = null;
+
+    for (const chunk of chunks) {
+      const path = buildFmpEconomicCalendarPath(
+        fmpEtDateKey(chunk.fromSec),
+        fmpEtDateKey(chunk.toSec),
+      );
+      let response: FmpHttpResult | null = null;
+      for (const keySelection of keyCandidates) {
+        try {
+          response = await this.fetchRedacted(buildAuthUrl(path, keySelection.key));
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          lastFailureReason = redactSecrets(msg, this.currentSecrets());
+          response = null;
+          continue;
+        }
+        if (response.ok) break;
+        lastFailureReason = `FMP economic calendar HTTP ${String(response.status)}`;
+        if (response.status === 402 || response.status === 403) {
+          continue; // siguiente clave distinta
+        }
+        break;
+      }
+      if (response === null || !response.ok) continue;
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(response.text) as unknown;
+      } catch {
+        lastFailureReason = 'FMP economic calendar JSON inválido';
+        continue;
+      }
+
+      anyChunkOk = true;
+      for (const event of parseFmpEconomicCalendarMacroEvents(raw)) {
+        const key = `${event.kind}:${event.date}`;
+        const previous = byKindAndDate.get(key);
+        if (previous === undefined) {
+          byKindAndDate.set(key, event);
+        } else if (previous.impact !== 'HIGH' && event.impact === 'HIGH') {
+          byKindAndDate.set(key, event);
+        }
+      }
+    }
+
+    if (!anyChunkOk) {
       return {
         asOfUtcSec,
         events: [],
         source: null,
         available: false,
-        reason: redactSecrets(msg, this.currentSecrets()),
+        reason:
+          lastFailureReason === null
+            ? 'FMP economic calendar sin tramos válidos'
+            : redactSecrets(lastFailureReason, this.currentSecrets()),
       };
     }
 
-    if (!response.ok) {
-      return {
-        asOfUtcSec,
-        events: [],
-        source: null,
-        available: false,
-        reason: `FMP economic calendar HTTP ${String(response.status)}`,
-      };
-    }
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(response.text) as unknown;
-    } catch {
-      return {
-        asOfUtcSec,
-        events: [],
-        source: null,
-        available: false,
-        reason: 'FMP economic calendar JSON inválido',
-      };
-    }
-
-    const events = parseFmpEconomicCalendarMacroEvents(raw);
+    const events = [...byKindAndDate.values()].sort((a, b) => a.utcSec - b.utcSec);
     this.recordResponse(true, events.length);
     return {
       asOfUtcSec,
@@ -1579,6 +1691,19 @@ export function buildFmpEarningsPath(symbol: string, limit = 20): string {
 export function buildFmpEarningsCalendarWindowPath(fromDate: string, toDate: string): string {
   const query = new URLSearchParams({ from: fromDate, to: toDate });
   return `/stable/earnings-calendar?${query.toString()}`;
+}
+
+/**
+ * Pieza 50.5.1: fallback histórico de reportes trimestrales vía `income-statement`
+ * (fechas reales de reporte `filingDate` / `acceptedDate`).
+ */
+export function buildFmpIncomeStatementPath(symbol: string, limit = 8): string {
+  const query = new URLSearchParams({
+    symbol: cleanSymbol(symbol),
+    period: 'quarter',
+    limit: String(limit),
+  });
+  return `/stable/income-statement?${query.toString()}`;
 }
 
 export function buildFmpEconomicCalendarPath(fromDate: string, toDate: string): string {
@@ -1641,9 +1766,15 @@ export function parseFmpEarningsCalendar(
     if (typeof rowSymbolRaw === 'string' && rowSymbolRaw.trim() !== '') {
       if (cleanSymbol(rowSymbolRaw) !== targetSymbol) continue;
     }
-    const timeOfDay = normalizeEarningsTimeOfDay(row['time'] ?? row['when']);
+    // Pieza 50.5.1: tolerancia de campos (`reportedDate` / `filingDate` / `timeOfDay`).
+    const timeOfDay = normalizeEarningsTimeOfDay(
+      row['time'] ?? row['when'] ?? row['timeOfDay'],
+    );
     const defaultClock = timeOfDay === 'bmo' ? '08:30:00' : timeOfDay === 'amc' ? '16:05:00' : '12:00:00';
-    const dt = parseCalendarDateTimeUtcSec(row['date'], defaultClock);
+    const dt = parseCalendarDateTimeUtcSec(
+      row['date'] ?? row['reportedDate'] ?? row['filingDate'],
+      defaultClock,
+    );
     if (dt === null) continue;
     const epsEstimate = nullable(row['epsEstimated'] ?? row['epsEstimate']);
     const epsActual = nullable(row['epsActual'] ?? row['eps']);
@@ -1671,12 +1802,71 @@ export function parseFmpEarningsCalendar(
   };
 }
 
+/**
+ * Pieza 50.5.1: parser puro de `/stable/income-statement?period=quarter`.
+ * Extrae las fechas reales de presentación trimestral (`filingDate` → `acceptedDate`
+ * → `date`) de los últimos trimestres como eventos de Earnings independientes de la
+ * existencia de `/stable/earnings` o `/stable/earnings-calendar` en el plan de la clave.
+ */
+export function parseFmpQuarterlyFilingEarnings(
+  raw: unknown,
+  symbol: string,
+  asOfUtcSec: number,
+): {
+  readonly nextEarnings: EarningsCatalystEvent | null;
+  readonly lastEarnings: EarningsCatalystEvent | null;
+  readonly events: readonly EarningsCatalystEvent[];
+} {
+  const rows = Array.isArray(raw) ? raw : [];
+  const targetSymbol = cleanSymbol(symbol);
+  const dedupedByDate = new Map<string, EarningsCatalystEvent>();
+
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const rowSymbolRaw = row['symbol'];
+    if (typeof rowSymbolRaw === 'string' && rowSymbolRaw.trim() !== '') {
+      if (cleanSymbol(rowSymbolRaw) !== targetSymbol) continue;
+    }
+    const rawDate = row['filingDate'] ?? row['acceptedDate'] ?? row['date'];
+    const dt = parseCalendarDateTimeUtcSec(rawDate, '12:00:00');
+    if (dt === null) continue;
+    const candidate: EarningsCatalystEvent = {
+      date: dt.dateKey,
+      utcSec: dt.utcSec,
+      timeOfDay: 'unknown',
+      epsEstimate: null,
+      epsActual: nullable(row['epsActual'] ?? row['eps'] ?? row['epsDiluted']),
+    };
+    if (!dedupedByDate.has(dt.dateKey)) {
+      dedupedByDate.set(dt.dateKey, candidate);
+    }
+  }
+
+  const events = [...dedupedByDate.values()].sort((a, b) => a.utcSec - b.utcSec);
+  const upcoming = events.filter((e) => e.utcSec >= asOfUtcSec);
+  const past = events.filter((e) => e.utcSec < asOfUtcSec);
+
+  return {
+    nextEarnings: upcoming[0] ?? null,
+    lastEarnings: past.length > 0 ? (past[past.length - 1] ?? null) : null,
+    events,
+  };
+}
+
 function classifyMacroEventKind(name: string): MacroCatalystKind | null {
   const upper = name.toUpperCase();
-  if (/\b(FOMC|FED INTEREST RATE|FEDERAL RESERVE.*RATE|FED FUNDS|FEDERAL OPEN MARKET)\b/.test(upper)) {
+  // Pieza 50.5.1: ignorar ruido menor (minutas, discursos, miembros) que no son decisión.
+  if (/\b(MINUTES|SPEECH|SPEAKS|MEMBER)\b/.test(upper)) {
+    return null;
+  }
+  if (
+    /\b(FOMC|FED INTEREST RATE DECISION|FOMC RATE DECISION|FOMC STATEMENT|FOMC PRESS CONFERENCE|FOMC ECONOMIC PROJECTIONS|FEDERAL FUNDS RATE|FEDERAL OPEN MARKET|INTEREST RATE DECISION)\b/.test(
+      upper,
+    )
+  ) {
     return 'FOMC';
   }
-  if (/\b(CPI|CONSUMER PRICE INDEX)\b/.test(upper)) {
+  if (/\b(CPI|CORE CPI|CONSUMER PRICE INDEX|INFLATION RATE)\b/.test(upper)) {
     return 'CPI';
   }
   return null;

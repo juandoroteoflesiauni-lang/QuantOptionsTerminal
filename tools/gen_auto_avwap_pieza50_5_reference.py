@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime, timedelta, timezone
+from functools import cmp_to_key
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,14 @@ SOURCE_PRIORITY = {
     "PIVOT_INTERMEDIATE": 2,
     "RVOL": 3,
 }
+
+# Pieza 50.5.1: escala calibrada de puntajes.
+MAJOR_SCORE_BASE = 40.0
+MAJOR_SCORE_BONUS_MAX = 20.0
+MAJOR_SCORE_BONUS_SPAN = WINDOW_BARS - MAJOR_LOOKBACK_BARS  # 380 - 126 = 254
+RVOL_SCORE_PER_Z = 5.0
+RVOL_SCORE_CAP = 15.0
+TOP_DOMINANT_MIN_SPAN = 180
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +273,81 @@ def event_candidates(window: list[dict], events: list[dict]) -> list[dict]:
             "score": 35.0,
             "pivotKind": None,
             "eventLabel": joined,
+            "dominanceSpan": 0,
         })
     return candidates
+
+
+def find_global_extremes(window: list[dict]) -> tuple[int, int]:
+    global_low_idx = -1
+    global_high_idx = -1
+    min_low = math.inf
+    max_high = -math.inf
+    for i in range(len(window)):
+        if window[i]["low"] < min_low:
+            min_low = window[i]["low"]
+            global_low_idx = i
+        if window[i]["high"] > max_high:
+            max_high = window[i]["high"]
+            global_high_idx = i
+    return global_low_idx, global_high_idx
+
+
+def dominance_span_for_low(window: list[dict], index: int, low: float) -> int:
+    left_span = 0
+    k = index - 1
+    while k >= 0 and window[k]["low"] >= low:
+        left_span += 1
+        k -= 1
+    right_span = 0
+    k = index + 1
+    while k < len(window) and window[k]["low"] >= low:
+        right_span += 1
+        k += 1
+    return left_span + 1 + right_span
+
+
+def dominance_span_for_high(window: list[dict], index: int, high: float) -> int:
+    left_span = 0
+    k = index - 1
+    while k >= 0 and window[k]["high"] <= high:
+        left_span += 1
+        k -= 1
+    right_span = 0
+    k = index + 1
+    while k < len(window) and window[k]["high"] <= high:
+        right_span += 1
+        k += 1
+    return left_span + 1 + right_span
+
+
+def pivot_major_score(dominance_span: int) -> float:
+    bonus = min(
+        MAJOR_SCORE_BONUS_MAX,
+        ((dominance_span - MAJOR_LOOKBACK_BARS) / MAJOR_SCORE_BONUS_SPAN) * MAJOR_SCORE_BONUS_MAX,
+    )
+    return MAJOR_SCORE_BASE + max(0.0, bonus)
+
+
+def emit_pivot_candidate(candidates: list[dict], index: int, kind: str, dominance_span: int) -> None:
+    if dominance_span >= MAJOR_LOOKBACK_BARS:
+        candidates.append({
+            "index": index,
+            "source": "PIVOT_MAJOR",
+            "score": pivot_major_score(dominance_span),
+            "pivotKind": kind,
+            "eventLabel": None,
+            "dominanceSpan": dominance_span,
+        })
+    elif dominance_span >= INTERMEDIATE_MIN_BARS:
+        candidates.append({
+            "index": index,
+            "source": "PIVOT_INTERMEDIATE",
+            "score": 15.0,
+            "pivotKind": kind,
+            "eventLabel": None,
+            "dominanceSpan": dominance_span,
+        })
 
 
 def pivot_candidates(window: list[dict], atr: list[float | None]) -> list[dict]:
@@ -273,6 +355,8 @@ def pivot_candidates(window: list[dict], atr: list[float | None]) -> list[dict]:
     candidates: list[dict] = []
     if n < 2 * PIVOT_WINDOW + 1:
         return candidates
+
+    global_low_idx, global_high_idx = find_global_extremes(window)
 
     for i in range(PIVOT_WINDOW, n - PIVOT_WINDOW):
         atr_i = atr[i]
@@ -297,27 +381,9 @@ def pivot_candidates(window: list[dict], atr: list[float | None]) -> list[dict]:
         if is_pivot_low:
             max_high_after = max(window[k]["high"] for k in range(i + 1, n))
             if max_high_after - low_i >= PIVOT_REVERSAL_ATR_MULT * atr_i:
-                left_span = 0
-                k = i - 1
-                while k >= 0 and window[k]["low"] >= low_i:
-                    left_span += 1
-                    k -= 1
-                right_span = 0
-                k = i + 1
-                while k < n and window[k]["low"] >= low_i:
-                    right_span += 1
-                    k += 1
-                dominance = left_span + 1 + right_span
-                if dominance >= MAJOR_LOOKBACK_BARS:
-                    candidates.append({
-                        "index": i, "source": "PIVOT_MAJOR", "score": 30.0,
-                        "pivotKind": "LOW", "eventLabel": None,
-                    })
-                elif dominance >= INTERMEDIATE_MIN_BARS:
-                    candidates.append({
-                        "index": i, "source": "PIVOT_INTERMEDIATE", "score": 15.0,
-                        "pivotKind": "LOW", "eventLabel": None,
-                    })
+                emit_pivot_candidate(
+                    candidates, i, "LOW", dominance_span_for_low(window, i, low_i)
+                )
 
         is_pivot_high = True
         for k in range(i - PIVOT_WINDOW, i + PIVOT_WINDOW + 1):
@@ -335,27 +401,69 @@ def pivot_candidates(window: list[dict], atr: list[float | None]) -> list[dict]:
         if is_pivot_high:
             min_low_after = min(window[k]["low"] for k in range(i + 1, n))
             if high_i - min_low_after >= PIVOT_REVERSAL_ATR_MULT * atr_i:
-                left_span = 0
-                k = i - 1
-                while k >= 0 and window[k]["high"] <= high_i:
-                    left_span += 1
-                    k -= 1
-                right_span = 0
-                k = i + 1
-                while k < n and window[k]["high"] <= high_i:
-                    right_span += 1
-                    k += 1
-                dominance = left_span + 1 + right_span
-                if dominance >= MAJOR_LOOKBACK_BARS:
+                emit_pivot_candidate(
+                    candidates, i, "HIGH", dominance_span_for_high(window, i, high_i)
+                )
+
+    # Pieza 50.5.1: extremos estructurales recientes en el borde derecho
+    # (i ∈ [n - pivot_window, n - 3], mínimo 2 velas de confirmación a la derecha).
+    # Solo PIVOT_MAJOR si `dominanceSpan >= 126` o extremo global del período.
+    right_edge_start = max(PIVOT_WINDOW, n - PIVOT_WINDOW)
+    for i in range(right_edge_start, n - 2):
+        atr_i = atr[i]
+        if atr_i is None or not math.isfinite(atr_i) or atr_i <= 0:
+            continue
+        low_i = window[i]["low"]
+        high_i = window[i]["high"]
+
+        is_pivot_low = True
+        for k in range(i - PIVOT_WINDOW, i):
+            if not (low_i < window[k]["low"]):
+                is_pivot_low = False
+                break
+        if is_pivot_low:
+            for k in range(i + 1, n):
+                if not (low_i <= window[k]["low"]):
+                    is_pivot_low = False
+                    break
+        if is_pivot_low:
+            max_high_after = max(window[k]["high"] for k in range(i + 1, n))
+            if max_high_after - low_i >= PIVOT_REVERSAL_ATR_MULT * atr_i:
+                dominance_span = dominance_span_for_low(window, i, low_i)
+                if dominance_span >= MAJOR_LOOKBACK_BARS or i in (global_low_idx, global_high_idx):
                     candidates.append({
-                        "index": i, "source": "PIVOT_MAJOR", "score": 30.0,
-                        "pivotKind": "HIGH", "eventLabel": None,
+                        "index": i,
+                        "source": "PIVOT_MAJOR",
+                        "score": pivot_major_score(dominance_span),
+                        "pivotKind": "LOW",
+                        "eventLabel": None,
+                        "dominanceSpan": dominance_span,
                     })
-                elif dominance >= INTERMEDIATE_MIN_BARS:
+
+        is_pivot_high = True
+        for k in range(i - PIVOT_WINDOW, i):
+            if not (high_i > window[k]["high"]):
+                is_pivot_high = False
+                break
+        if is_pivot_high:
+            for k in range(i + 1, n):
+                if not (high_i >= window[k]["high"]):
+                    is_pivot_high = False
+                    break
+        if is_pivot_high:
+            min_low_after = min(window[k]["low"] for k in range(i + 1, n))
+            if high_i - min_low_after >= PIVOT_REVERSAL_ATR_MULT * atr_i:
+                dominance_span = dominance_span_for_high(window, i, high_i)
+                if dominance_span >= MAJOR_LOOKBACK_BARS or i in (global_low_idx, global_high_idx):
                     candidates.append({
-                        "index": i, "source": "PIVOT_INTERMEDIATE", "score": 15.0,
-                        "pivotKind": "HIGH", "eventLabel": None,
+                        "index": i,
+                        "source": "PIVOT_MAJOR",
+                        "score": pivot_major_score(dominance_span),
+                        "pivotKind": "HIGH",
+                        "eventLabel": None,
+                        "dominanceSpan": dominance_span,
                     })
+
     return candidates
 
 
@@ -379,12 +487,12 @@ def rvol_candidates(window: list[dict], atr: list[float | None], stats: dict) ->
             continue
         z_vol_i = stats["zVol"][i]
         if z_vol_i is not None and math.isfinite(z_vol_i):
-            score = min(30.0, max(0.0, 10.0 * z_vol_i))
+            score = min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * z_vol_i))
         else:
             score = 0.0
         candidates.append({
             "index": i, "source": "RVOL", "score": score,
-            "pivotKind": None, "eventLabel": None,
+            "pivotKind": None, "eventLabel": None, "dominanceSpan": 0,
         })
     return candidates
 
@@ -393,33 +501,67 @@ def rvol_candidates(window: list[dict], atr: list[float | None], stats: dict) ->
 # Fusión y selección
 # ---------------------------------------------------------------------------
 
+def sorted_candidates(candidates: list[dict]) -> list[dict]:
+    return sorted(candidates, key=lambda c: (c["index"], SOURCE_PRIORITY[c["source"]]))
+
+
+def nearest_pivot_index(index: int, pivots: list[dict]) -> int:
+    best_index = -1
+    best_distance = math.inf
+    for pivot in pivots:
+        distance = abs(pivot["index"] - index)
+        if distance < best_distance or (distance == best_distance and pivot["index"] < best_index):
+            best_distance = distance
+            best_index = pivot["index"]
+    return best_index
+
+
+def split_cluster_by_polarity(cluster: list[dict]) -> list[list[dict]]:
+    low_pivots = [c for c in cluster if c["pivotKind"] == "LOW"]
+    high_pivots = [c for c in cluster if c["pivotKind"] == "HIGH"]
+    if not low_pivots or not high_pivots:
+        return [sorted_candidates(cluster)]
+    low_group = list(low_pivots)
+    high_group = list(high_pivots)
+    for candidate in cluster:
+        if candidate["pivotKind"] is not None:
+            continue
+        nearest_low = nearest_pivot_index(candidate["index"], low_pivots)
+        nearest_high = nearest_pivot_index(candidate["index"], high_pivots)
+        distance_low = abs(candidate["index"] - nearest_low)
+        distance_high = abs(candidate["index"] - nearest_high)
+        if distance_low < distance_high:
+            low_group.append(candidate)
+        elif distance_high < distance_low:
+            high_group.append(candidate)
+        elif nearest_low <= nearest_high:
+            low_group.append(candidate)
+        else:
+            high_group.append(candidate)
+    return [sorted_candidates(low_group), sorted_candidates(high_group)]
+
+
 def merge_clusters(window: list[dict], candidates: list[dict]) -> list[dict]:
     n = len(window)
     if n == 0:
         return []
 
-    global_low_idx = -1
-    global_high_idx = -1
-    min_low = math.inf
-    max_high = -math.inf
-    for i in range(n):
-        if window[i]["low"] < min_low:
-            min_low = window[i]["low"]
-            global_low_idx = i
-        if window[i]["high"] > max_high:
-            max_high = window[i]["high"]
-            global_high_idx = i
+    global_low_idx, global_high_idx = find_global_extremes(window)
 
-    ordered = sorted(candidates, key=lambda c: (c["index"], SOURCE_PRIORITY[c["source"]]))
-    clusters: list[list[dict]] = []
+    ordered = sorted_candidates(candidates)
+    contiguous: list[list[dict]] = []
     current: list[dict] = []
     for candidate in ordered:
         if current and candidate["index"] - current[-1]["index"] > CLUSTER_MAX_DISTANCE_BARS:
-            clusters.append(current)
+            contiguous.append(current)
             current = []
         current.append(candidate)
     if current:
-        clusters.append(current)
+        contiguous.append(current)
+
+    clusters: list[list[dict]] = []
+    for cluster in contiguous:
+        clusters.extend(split_cluster_by_polarity(cluster))
 
     merged: list[dict] = []
     for cluster in clusters:
@@ -430,8 +572,10 @@ def merge_clusters(window: list[dict], candidates: list[dict]) -> list[dict]:
         has_pivot_major = False
         has_pivot_intermediate = False
         has_rvol = False
+        max_dominance_span = 0
         event_labels: list[str] = []
         for candidate in cluster:
+            max_dominance_span = max(max_dominance_span, candidate["dominanceSpan"])
             if candidate["source"] == "EVENT":
                 has_event = True
                 event_score = max(event_score, candidate["score"])
@@ -497,12 +641,103 @@ def merge_clusters(window: list[dict], candidates: list[dict]) -> list[dict]:
             "sources": sources,
             "eventLabel": event_label,
             "score": score,
-            "isGlobalExtreme": winner["index"] == global_low_idx or winner["index"] == global_high_idx,
+            "hasPivotMajor": has_pivot_major,
+            "maxDominanceSpan": max_dominance_span,
+            "isBullishBar": bar["close"] > bar["open"],
+            "isGlobalExtreme": winner["index"] in (global_low_idx, global_high_idx),
             "currentAvwap": None,
             "distancePct": None,
             "finalScore": None,
         })
     return merged
+
+
+def compare_structural_candidates(a: dict, b: dict) -> int:
+    if a["hasPivotMajor"] != b["hasPivotMajor"]:
+        return -1 if a["hasPivotMajor"] else 1
+    if a["finalScore"] != b["finalScore"]:
+        return -1 if a["finalScore"] > b["finalScore"] else 1
+    if a["maxDominanceSpan"] != b["maxDominanceSpan"]:
+        return -1 if a["maxDominanceSpan"] > b["maxDominanceSpan"] else 1
+    distance_a = abs(a["distancePct"])
+    distance_b = abs(b["distancePct"])
+    if distance_a != distance_b:
+        return -1 if distance_a < distance_b else 1
+    if a["anchorIndex"] != b["anchorIndex"]:
+        return -1 if a["anchorIndex"] > b["anchorIndex"] else 1
+    return 0
+
+
+def resolve_role_selection(
+    scored: list[dict], last_close: float
+) -> tuple[dict | None, dict | None, dict | None]:
+    def pick_top_dominant(kind: str) -> dict | None:
+        top: dict | None = None
+        for cluster in scored:
+            if cluster["pivotKind"] != kind or not cluster["hasPivotMajor"]:
+                continue
+            if top is None or cluster["maxDominanceSpan"] > top["maxDominanceSpan"]:
+                top = cluster
+        return top
+
+    top_dominant_low = pick_top_dominant("LOW")
+    top_dominant_high = pick_top_dominant("HIGH")
+    for cluster in scored:
+        exempt = cluster["isGlobalExtreme"] or (
+            top_dominant_low is not None
+            and cluster is top_dominant_low
+            and top_dominant_low["maxDominanceSpan"] >= TOP_DOMINANT_MIN_SPAN
+        ) or (
+            top_dominant_high is not None
+            and cluster is top_dominant_high
+            and top_dominant_high["maxDominanceSpan"] >= TOP_DOMINANT_MIN_SPAN
+        )
+        if abs(cluster["distancePct"]) > MAX_DISTANCE_PCT and not exempt:
+            cluster["finalScore"] = cluster["score"] - FAR_PENALTY
+        else:
+            cluster["finalScore"] = cluster["score"]
+
+    def first_of_tier(tiers: list) -> dict | None:
+        for tier in tiers:
+            members = [cluster for cluster in scored if tier(cluster)]
+            if not members:
+                continue
+            return sorted(members, key=cmp_to_key(compare_structural_candidates))[0]
+        return None
+
+    support = first_of_tier([
+        lambda c: c["pivotKind"] == "LOW" and c["currentAvwap"] <= last_close,
+        lambda c: c["pivotKind"] == "LOW" and c["anchorPrice"] <= last_close,
+        lambda c: (
+            c["pivotKind"] is None
+            and "EVENT" in c["sources"]
+            and c["isBullishBar"]
+            and c["currentAvwap"] <= last_close
+        ),
+        lambda c: (
+            c["pivotKind"] is None
+            and "RVOL" in c["sources"]
+            and c["isBullishBar"]
+            and c["currentAvwap"] <= last_close
+        ),
+    ])
+
+    resistance = first_of_tier([
+        lambda c: c["pivotKind"] == "HIGH" and c["currentAvwap"] > last_close,
+        lambda c: c["pivotKind"] == "HIGH" and c["anchorPrice"] >= last_close,
+    ])
+
+    event_candidates = [
+        cluster for cluster in scored
+        if "EVENT" in cluster["sources"]
+        and (support is None or cluster["anchorIndex"] != support["anchorIndex"])
+        and (resistance is None or cluster["anchorIndex"] != resistance["anchorIndex"])
+    ]
+    event_candidates.sort(key=lambda c: (
+        -c["finalScore"], -c["anchorIndex"], abs(c["distancePct"]),
+    ))
+    event = event_candidates[0] if event_candidates else None
+    return support, resistance, event
 
 
 def select_anchors(window: list[dict], events: list[dict]) -> list[dict]:
@@ -529,38 +764,9 @@ def select_anchors(window: list[dict], events: list[dict]) -> list[dict]:
             continue
         cluster["currentAvwap"] = current
         cluster["distancePct"] = (current - last_close) / last_close
-        if abs(cluster["distancePct"]) > MAX_DISTANCE_PCT and not cluster["isGlobalExtreme"]:
-            cluster["finalScore"] = cluster["score"] - FAR_PENALTY
-        else:
-            cluster["finalScore"] = cluster["score"]
         scored.append(cluster)
 
-    scored.sort(key=lambda c: (
-        -c["finalScore"],
-        abs(c["distancePct"]),
-        -c["anchorIndex"],
-    ))
-
-    support = None
-    for cluster in scored:
-        if cluster["currentAvwap"] <= last_close:
-            support = cluster
-            break
-    resistance = None
-    for cluster in scored:
-        if cluster["currentAvwap"] > last_close:
-            resistance = cluster
-            break
-    event = None
-    for cluster in scored:
-        if "EVENT" not in cluster["sources"]:
-            continue
-        if support is not None and cluster["anchorIndex"] == support["anchorIndex"]:
-            continue
-        if resistance is not None and cluster["anchorIndex"] == resistance["anchorIndex"]:
-            continue
-        event = cluster
-        break
+    support, resistance, event = resolve_role_selection(scored, last_close)
 
     anchors: list[dict] = []
     for role, cluster in (("SUPPORT", support), ("RESISTANCE", resistance), ("EVENT", event)):
@@ -681,46 +887,34 @@ def build_scenario_2() -> dict:
     for i in range(200):
         volume = 900 + (i * 11) % 200
         if i <= 40:
-            close = 100.0 + (153.0 - 100.0) * i / 40.0
+            close = 100.0 + (169.0 - 100.0) * i / 40.0
             bar = mk_bar(moments[i], close - 0.3, close + 0.6, close - 0.5, close, volume)
         elif i == 41:
-            bar = mk_bar(moments[i], 152.0, 152.0, 146.0, 147.0, 6000)
+            bar = mk_bar(moments[i], 170.0, 170.5, 163.0, 164.0, 6000)
         elif i == 42:
-            bar = mk_bar(moments[i], 147.0, 148.0, 145.5, 146.0, volume)
+            bar = mk_bar(moments[i], 164.0, 165.0, 162.5, 163.2, volume)
         elif i == 43:
-            bar = mk_bar(moments[i], 146.0, 147.0, 142.0, 142.5, 6000)
-        elif i <= 80:
-            close = 142.5 - (142.5 - 118.0) * (i - 44) / 36.0
-            bar = mk_bar(moments[i], close + 0.2, close + 0.6, close - 0.5, close, volume)
-        elif i <= 120:
-            close = 118.0 + (152.0 - 118.0) * (i - 81) / 39.0
-            bar = mk_bar(moments[i], close - 0.2, close + 0.6, close - 0.5, close, volume)
-        elif i <= 186:
-            close = 152.0 - (152.0 - 118.0) * (i - 121) / 65.0
-            bar = mk_bar(moments[i], close + 0.2, close + 0.6, close - 0.6, close, volume)
-        elif i <= 193:
-            bar = mk_bar(moments[i], 118.6, 119.0, 118.0, 118.6, volume)
+            bar = mk_bar(moments[i], 163.0, 164.0, 158.0, 159.0, 6000)
+        elif i <= 189:
+            close = 159.0 - (159.0 - 121.0) * (i - 44) / 145.0
+            bar = mk_bar(moments[i], close + 0.2, close + 0.5, close - 0.6, close, volume)
+        elif i == 190:
+            bar = mk_bar(moments[i], 120.0, 121.3, 117.9, 120.9, 2500)
+        elif i == 191:
+            bar = mk_bar(moments[i], 120.4, 120.8, 119.4, 120.0, volume)
+        elif i == 192:
+            bar = mk_bar(moments[i], 118.2, 119.3, 115.3, 119.0, 2500)
+        elif i == 199:
+            bar = mk_bar(moments[i], 113.6, 121.0, 113.4, 119.8, volume)
         else:
-            close = 118.6 + (126.0 - 118.6) * (i - 194) / 5.0
-            bar = mk_bar(moments[i], close - 0.2, close + 0.5, close - 0.4, close, volume)
+            close = 119.0 - (119.0 - 113.9) * (i - 192) / 6.0
+            bar = mk_bar(moments[i], close + 0.2, close + 0.5, close - 0.6, close, volume)
         bars.append(bar)
 
-    bars[40]["high"] = 153.0
-    bars[40]["close"] = 152.4
-    bars[40]["open"] = 152.0
-    bars[40]["low"] = 151.4
-    bars[120]["high"] = 152.0
-    bars[120]["close"] = 151.4
-
-    bars[186]["low"] = 118.0
-    bars[186]["close"] = 118.8
-    bars[187]["low"] = 118.0
-    bars[188]["low"] = 118.0
-    bars[189]["low"] = 118.0
-    bars[190] = mk_bar(moments[190], 120.0, 120.5, 118.0, 118.6, 6000)
-    bars[191]["low"] = 118.2
-    bars[192] = mk_bar(moments[192], 119.8, 120.2, 118.0, 118.8, 6000)
-    bars[193]["low"] = 118.4
+    bars[40]["high"] = 171.0
+    bars[40]["close"] = 169.4
+    bars[40]["open"] = 168.6
+    bars[40]["low"] = 168.2
 
     events = [
         {
@@ -799,6 +993,10 @@ def build_scenario_5() -> dict:
     for i in range(10):
         close = 50.0 + i * 0.8
         bars.append(mk_bar(moments[i], close - 0.2, close + 0.4, close - 0.3, close, 1000 + i * 10))
+    # Pieza 50.5.1: la vela del evento es bajista => no secuestra SUPPORT; siempre EVENT.
+    bars[4]["open"] = bars[4]["close"] + 0.3
+    bars[4]["high"] = bars[4]["close"] + 0.5
+    bars[4]["low"] = bars[4]["close"] - 0.4
     events = [
         {
             "utcSec": int((moments[4].replace(hour=12, minute=0)).timestamp()),
@@ -808,6 +1006,105 @@ def build_scenario_5() -> dict:
         },
     ]
     return {"name": "edge_short_and_empty", "dailyBars": bars, "events": events, "emptyBars": []}
+
+
+def build_scenario_6() -> dict:
+    """Swing Low cuyo precio posterior cae debajo de su propio AVWAP: jamás RESISTANCE."""
+    moments = weekday_series(datetime(2025, 6, 2, 13, 30, tzinfo=UTC), 120)
+    bars: list[dict] = []
+    for i in range(120):
+        volume = 900 + (i * 7) % 200
+        if i <= 60:
+            close = 200.0 - 100.0 * i / 60.0
+            bar = mk_bar(moments[i], close + 0.3, close + 0.8, close - 0.6, close, volume)
+        elif i <= 75:
+            close = 100.0 + (110.0 - 100.0) * (i - 60) / 15.0
+            bar = mk_bar(moments[i], close - 0.2, close + 0.5, close - 0.4, close, volume)
+        else:
+            close = 110.0 - (110.0 - 104.5) * (i - 75) / 44.0
+            bar = mk_bar(moments[i], close + 0.2, close + 0.5, close - 0.6, close, volume)
+        bars.append(bar)
+    bars[60]["low"] = 100.0
+    bars[60]["close"] = 100.5
+    bars[75]["high"] = 110.4
+    return {"name": "polarity_low_below_avwap_never_resistance", "dailyBars": bars, "events": []}
+
+
+def build_scenario_7() -> dict:
+    """Swing High recuperado por encima de su AVWAP: jamás SUPPORT (único pivote)."""
+    moments = weekday_series(datetime(2025, 8, 4, 13, 30, tzinfo=UTC), 140)
+    bars: list[dict] = []
+    for i in range(140):
+        volume = 900 + (i * 5) % 200
+        if i <= 40:
+            close = 100.0 + (149.0 - 100.0) * i / 40.0
+            bar = mk_bar(moments[i], close - 0.3, close + 0.6, close - 0.5, close, volume)
+        elif i <= 138:
+            close = 149.0 - (149.0 - 100.0) * (i - 40) / 98.0
+            bar = mk_bar(moments[i], close + 0.2, close + 0.5, close - 0.6, close, volume)
+        else:
+            bar = mk_bar(moments[i], 100.0, 146.0, 99.8, 145.0, volume)
+        bars.append(bar)
+    bars[40]["high"] = 150.0
+    bars[40]["close"] = 149.4
+    return {"name": "polarity_high_reclaimed_never_support", "dailyBars": bars, "events": []}
+
+
+def build_scenario_8() -> dict:
+    """Techo dominante 6M–1Y en el borde derecho (n-5) vs pico intermedio + RVOL."""
+    moments = weekday_series(datetime(2025, 10, 6, 13, 30, tzinfo=UTC), 380)
+    bars: list[dict] = []
+    for i in range(380):
+        volume = 900 + (i * 7) % 200
+        if i <= 60:
+            close = 260.0 - 160.0 * i / 60.0
+            bar = mk_bar(moments[i], close + 0.5, close + 1.2, close - 1.0, close, volume)
+        elif i <= 119:
+            close = 100.5 + (198.0 - 100.5) * (i - 60) / 59.0
+            bar = mk_bar(moments[i], close - 0.4, close + 0.8, close - 0.8, close, volume)
+        elif i == 120:
+            bar = mk_bar(moments[i], 198.0, 255.0, 197.0, 245.0, volume)
+        elif i <= 160:
+            close = 245.0 - (245.0 - 170.0) * (i - 120) / 40.0
+            bar = mk_bar(moments[i], close + 0.5, close + 0.9, close - 0.9, close, volume)
+        elif i == 199:
+            bar = mk_bar(moments[i], 212.0, 214.0, 207.0, 213.0, 6000)
+        elif i <= 199:
+            close = 170.0 + (214.0 - 170.0) * (i - 160) / 39.0
+            bar = mk_bar(moments[i], close - 0.4, close + 0.8, close - 0.8, close, volume)
+        elif i == 200:
+            bar = mk_bar(moments[i], 214.0, 225.0, 213.0, 221.0, volume)
+        elif i == 201:
+            bar = mk_bar(moments[i], 222.0, 223.0, 215.0, 216.0, 6000)
+        elif i <= 240:
+            if i <= 224:
+                close = 216.0 - (216.0 - 205.0) * (i - 201) / 23.0
+            else:
+                close = 205.0 + (232.0 - 205.0) * (i - 224) / 16.0
+            bar = mk_bar(moments[i], close - 0.3, close + 0.7, close - 0.7, close, volume)
+        elif i <= 260:
+            close = 232.0 - (232.0 - 208.0) * (i - 240) / 20.0
+            bar = mk_bar(moments[i], close + 0.3, close + 0.7, close - 0.7, close, volume)
+        elif i <= 290:
+            close = 208.0 + (240.0 - 208.0) * (i - 260) / 30.0
+            bar = mk_bar(moments[i], close - 0.3, close + 0.7, close - 0.7, close, volume)
+        elif i <= 330:
+            close = 240.0 - (240.0 - 215.0) * (i - 290) / 40.0
+            bar = mk_bar(moments[i], close + 0.3, close + 0.8, close - 0.8, close, volume)
+        elif i <= 374:
+            close = 215.0 + (318.0 - 215.0) * (i - 330) / 44.0
+            bar = mk_bar(moments[i], close - 0.3, close + 0.7, close - 0.6, close, volume)
+        else:
+            close = 317.0 - (317.0 - 310.0) * (i - 375) / 4.0
+            bar = mk_bar(moments[i], close + 0.2, close + 0.6, close - 0.8, close, volume)
+        bars.append(bar)
+    bars[60]["low"] = 100.0
+    bars[60]["close"] = 100.5
+    bars[375]["open"] = 316.5
+    bars[375]["high"] = 320.0
+    bars[375]["low"] = 315.0
+    bars[375]["close"] = 317.5
+    return {"name": "dominant_6m_1y_beats_minor_peak_and_rvol", "dailyBars": bars, "events": []}
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +1126,7 @@ def serialize_scenario(scenario: dict) -> dict:
         "dailyBars": scenario["dailyBars"],
         "events": scenario["events"],
         "windowBars": len(window),
+        "lastClose": window[len(window) - 1]["close"] if window else None,
         "atr14": nan_to_null(atr),
         "smaVol20": nan_to_null(stats["smaVol"]),
         "stdVol20": nan_to_null(stats["stdVol"]),
@@ -854,16 +1152,21 @@ def validate_scenario_1(payload: dict, scenario: dict) -> None:
     support, resistance, event = anchors
     assert support["windowIndex"] == 30, support
     assert support["sources"] == ["PIVOT_MAJOR", "RVOL"], support
-    assert_close(support["score"], 60.0, "s1.support.score")
+    expected_support = pivot_major_score(
+        dominance_span_for_low(bars, 30, bars[30]["low"])
+    ) + min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * payload["zVol20"][31]))
+    assert_close(support["score"], expected_support, "s1.support.score")
     assert_close(support["anchorPrice"], bars[30]["low"], "s1.support.anchorPrice")
     assert resistance["windowIndex"] == 150, resistance
     assert resistance["sources"] == ["PIVOT_MAJOR", "RVOL"], resistance
-    assert_close(resistance["score"], 60.0, "s1.resistance.score")
+    expected_resistance = pivot_major_score(
+        dominance_span_for_high(bars, 150, bars[150]["high"])
+    ) + min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * payload["zVol20"][151]))
+    assert_close(resistance["score"], expected_resistance, "s1.resistance.score")
     assert_close(resistance["anchorPrice"], bars[150]["high"], "s1.resistance.anchorPrice")
     assert event["sources"] == ["EVENT"], event
     assert event["eventLabel"] == "Earnings", event
     assert_close(event["score"], 35.0, "s1.event.score")
-    assert_close(payload["zVol20"][31], (5000 - payload["smaVol20"][31]) / payload["stdVol20"][31], "s1.z31")
 
 
 def validate_scenario_2(payload: dict, scenario: dict) -> None:
@@ -873,25 +1176,64 @@ def validate_scenario_2(payload: dict, scenario: dict) -> None:
     support, resistance, event = anchors
     assert resistance["windowIndex"] == 40, resistance
     assert resistance["sources"] == ["EVENT", "PIVOT_MAJOR", "RVOL"], resistance
-    assert_close(resistance["score"], 95.0, "s2.resistance.score")
+    expected_resistance = 35.0 + pivot_major_score(
+        dominance_span_for_high(bars, 40, bars[40]["high"])
+    ) + max(
+        min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * payload["zVol20"][41])),
+        min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * payload["zVol20"][43])),
+    )
+    assert_close(resistance["score"], expected_resistance, "s2.resistance.score")
     assert_close(resistance["anchorPrice"], bars[40]["high"], "s2.resistance.anchorPrice")
+    # Clúster sin PIVOT: fallback RVOL alcista (solo sin Swing Low), empate por volumen
+    # => menor índice y máximo por familia (no la suma).
     assert support["windowIndex"] == 190, support
     assert support["sources"] == ["RVOL"], support
     z190 = payload["zVol20"][190]
     z192 = payload["zVol20"][192]
     assert z190 is not None and z192 is not None
-    max_rvol_score = max(min(30.0, max(0.0, 10.0 * z190)), min(30.0, max(0.0, 10.0 * z192)))
-    assert_close(support["score"], max_rvol_score, "s2.support.max-not-sum")
+    assert_close(
+        support["score"],
+        max(
+            min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * z190)),
+            min(RVOL_SCORE_CAP, max(0.0, RVOL_SCORE_PER_Z * z192)),
+        ),
+        "s2.support.max-not-sum",
+    )
+    assert event["windowIndex"] == 50, event
     assert event["sources"] == ["EVENT"], event
     assert_close(event["score"], 35.0, "s2.event.score")
 
 
-def validate_scenario_3(payload: dict) -> None:
+def validate_scenario_3(payload: dict, scenario: dict) -> None:
+    bars = sanitize_bars(scenario["dailyBars"])
+    global_low_idx, global_high_idx = find_global_extremes(bars)
     anchors = payload["expectedAnchors"]
-    assert [a["role"] for a in anchors] == ["SUPPORT", "EVENT"], anchors
-    support, event = anchors
-    assert_close(support["score"], 30.0, "s3.support.exempt-score")
+    assert [a["role"] for a in anchors] == ["SUPPORT", "RESISTANCE", "EVENT"], anchors
+    support, resistance, event = anchors
+    assert support["windowIndex"] == global_low_idx, support
+    assert support["sources"] == ["PIVOT_MAJOR"], support
     assert abs(support["distancePct"]) > MAX_DISTANCE_PCT, support
+    assert_close(
+        support["score"],
+        pivot_major_score(
+            dominance_span_for_low(bars, global_low_idx, bars[global_low_idx]["low"])
+        ),
+        "s3.support.exempt-score",
+    )
+    assert support["score"] > MAJOR_SCORE_BASE, support  # exento de la penalización -20
+    assert resistance["windowIndex"] == global_high_idx, resistance
+    assert resistance["sources"] == ["PIVOT_MAJOR"], resistance
+    assert abs(resistance["distancePct"]) > MAX_DISTANCE_PCT, resistance
+    assert_close(
+        resistance["score"],
+        pivot_major_score(
+            dominance_span_for_high(bars, global_high_idx, bars[global_high_idx]["high"])
+        ),
+        "s3.resistance.exempt-score",
+    )
+    assert resistance["score"] > MAJOR_SCORE_BASE, resistance
+    assert event["windowIndex"] == 120, event
+    assert event["sources"] == ["EVENT"], event
     assert_close(event["score"], 35.0 - FAR_PENALTY, "s3.event.penalized-score")
     assert abs(event["distancePct"]) > MAX_DISTANCE_PCT, event
 
@@ -918,7 +1260,7 @@ def validate_scenario_4(payload: dict, scenario: dict) -> None:
 
 def validate_scenario_5(payload: dict) -> None:
     anchors = payload["expectedAnchors"]
-    assert [a["role"] for a in anchors] == ["SUPPORT"], anchors
+    assert [a["role"] for a in anchors] == ["EVENT"], anchors
     event = anchors[0]
     assert event["sources"] == ["EVENT"], event
     assert event["windowIndex"] == 4, event
@@ -926,6 +1268,47 @@ def validate_scenario_5(payload: dict) -> None:
     for key in ("anchorTimeSec", "anchorPrice", "currentAvwap", "distancePct", "score"):
         assert math.isfinite(event[key]), (key, event)
     assert payload["emptyAnchors"] == [], payload["emptyAnchors"]
+
+
+def validate_scenario_6(payload: dict) -> None:
+    anchors = payload["expectedAnchors"]
+    assert [a["role"] for a in anchors] == ["SUPPORT", "RESISTANCE"], anchors
+    support, resistance = anchors
+    assert support["windowIndex"] == 60, support
+    assert support["sources"] == ["PIVOT_INTERMEDIATE"], support
+    # Piso cuyo precio posterior cayó debajo de su AVWAP: nunca RESISTANCE.
+    assert support["currentAvwap"] > payload["lastClose"], support
+    assert support["anchorPrice"] <= payload["lastClose"], support
+    assert resistance["windowIndex"] == 75, resistance
+    assert resistance["sources"] == ["PIVOT_INTERMEDIATE"], resistance
+    assert resistance["windowIndex"] != support["windowIndex"]
+
+
+def validate_scenario_7(payload: dict) -> None:
+    anchors = payload["expectedAnchors"]
+    assert [a["role"] for a in anchors] == ["RESISTANCE"], anchors
+    resistance = anchors[0]
+    assert resistance["windowIndex"] == 40, resistance
+    assert resistance["sources"] == ["PIVOT_MAJOR"], resistance
+    # Techo recuperado por encima de su AVWAP: nunca SUPPORT (único pivote de la serie).
+    assert resistance["currentAvwap"] <= payload["lastClose"], resistance
+    assert resistance["anchorPrice"] >= payload["lastClose"], resistance
+
+
+def validate_scenario_8(payload: dict) -> None:
+    n = payload["windowBars"]
+    anchors = payload["expectedAnchors"]
+    assert [a["role"] for a in anchors] == ["SUPPORT", "RESISTANCE"], anchors
+    support, resistance = anchors
+    assert support["windowIndex"] == 60, support
+    assert support["sources"] == ["PIVOT_MAJOR"], support
+    assert abs(support["distancePct"]) > MAX_DISTANCE_PCT, support
+    # Exención top-dominante (>= 180 ruedas): 60 pts exactos pese a caer > 25% del cierre.
+    assert_close(support["score"], MAJOR_SCORE_BASE + MAJOR_SCORE_BONUS_MAX, "s8.support.exempt-score")
+    assert resistance["windowIndex"] == n - 5, resistance
+    assert resistance["sources"] == ["PIVOT_MAJOR"], resistance
+    assert "RVOL" not in resistance["sources"], resistance
+    assert abs(resistance["distancePct"]) < MAX_DISTANCE_PCT, resistance
 
 
 # ---------------------------------------------------------------------------
@@ -1038,15 +1421,26 @@ def build_projection_cases() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    scenarios = [build_scenario_1(), build_scenario_2(), build_scenario_3(),
-                 build_scenario_4(), build_scenario_5()]
+    scenarios = [
+        build_scenario_1(),
+        build_scenario_2(),
+        build_scenario_3(),
+        build_scenario_4(),
+        build_scenario_5(),
+        build_scenario_6(),
+        build_scenario_7(),
+        build_scenario_8(),
+    ]
     payloads = [serialize_scenario(scenario) for scenario in scenarios]
 
     validate_scenario_1(payloads[0], scenarios[0])
     validate_scenario_2(payloads[1], scenarios[1])
-    validate_scenario_3(payloads[2])
+    validate_scenario_3(payloads[2], scenarios[2])
     validate_scenario_4(payloads[3], scenarios[3])
     validate_scenario_5(payloads[4])
+    validate_scenario_6(payloads[5])
+    validate_scenario_7(payloads[6])
+    validate_scenario_8(payloads[7])
 
     projection_cases = build_projection_cases()
     scenario_by_name = {scenario["name"]: scenario for scenario in scenarios}

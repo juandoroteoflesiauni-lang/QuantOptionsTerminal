@@ -268,6 +268,19 @@ interface RawCandidate {
   readonly score: number;
   readonly pivotKind: RawPivotKind | null;
   readonly eventLabel: string | null;
+  /** Pieza 50.5.1: `dominanceSpan` del pivote (0 para EVENT/RVOL). */
+  readonly dominanceSpan: number;
+}
+
+/**
+ * Pieza 50.5.1: puntaje calibrado del `PIVOT_MAJOR` — base `40` con bonus lineal
+ * por dominancia `40 + min(20, (span - 126) / 254 * 20) ∈ [40, 60]` (6M = 40,
+ * ~1Y = 50, 18M–380R = 60). Un `PIVOT_MAJOR` siempre supera a `PIVOT_INTERMEDIATE + RVOL`.
+ */
+function pivotMajorScore(dominanceSpan: number, options: ResolvedAutoAvwapOptions): number {
+  const spanRange = Math.max(1, options.windowBars - options.majorLookbackBars);
+  const bonus = Math.min(20, ((dominanceSpan - options.majorLookbackBars) / spanRange) * 20);
+  return 40 + Math.max(0, bonus);
 }
 
 function sourcePriority(source: AutoAnchorSource): number {
@@ -343,9 +356,93 @@ function buildEventCandidates(
       score: 35,
       pivotKind: null,
       eventLabel: uniqueSorted.join('/'),
+      dominanceSpan: 0,
     });
   }
   return candidates;
+}
+
+function findGlobalExtremeIndices(windowBars: readonly Bar[]): {
+  readonly globalLowIdx: number;
+  readonly globalHighIdx: number;
+} {
+  let globalLowIdx = -1;
+  let globalHighIdx = -1;
+  let minLow = Number.POSITIVE_INFINITY;
+  let maxHigh = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < windowBars.length; i += 1) {
+    const bar = windowBars[i];
+    if (bar === undefined) continue;
+    if (bar.low < minLow) {
+      minLow = bar.low;
+      globalLowIdx = i;
+    }
+    if (bar.high > maxHigh) {
+      maxHigh = bar.high;
+      globalHighIdx = i;
+    }
+  }
+  return { globalLowIdx, globalHighIdx };
+}
+
+function dominanceSpanForLow(windowBars: readonly Bar[], index: number, low: number): number {
+  let leftSpan = 0;
+  for (let k = index - 1; k >= 0; k -= 1) {
+    const other = windowBars[k];
+    if (other === undefined || other.low < low) break;
+    leftSpan += 1;
+  }
+  let rightSpan = 0;
+  for (let k = index + 1; k < windowBars.length; k += 1) {
+    const other = windowBars[k];
+    if (other === undefined || other.low < low) break;
+    rightSpan += 1;
+  }
+  return leftSpan + 1 + rightSpan;
+}
+
+function dominanceSpanForHigh(windowBars: readonly Bar[], index: number, high: number): number {
+  let leftSpan = 0;
+  for (let k = index - 1; k >= 0; k -= 1) {
+    const other = windowBars[k];
+    if (other === undefined || other.high > high) break;
+    leftSpan += 1;
+  }
+  let rightSpan = 0;
+  for (let k = index + 1; k < windowBars.length; k += 1) {
+    const other = windowBars[k];
+    if (other === undefined || other.high > high) break;
+    rightSpan += 1;
+  }
+  return leftSpan + 1 + rightSpan;
+}
+
+function emitPivotCandidate(
+  candidates: RawCandidate[],
+  index: number,
+  kind: RawPivotKind,
+  dominanceSpan: number,
+  options: ResolvedAutoAvwapOptions,
+): void {
+  if (dominanceSpan >= options.majorLookbackBars) {
+    candidates.push({
+      index,
+      source: 'PIVOT_MAJOR',
+      score: pivotMajorScore(dominanceSpan, options),
+      pivotKind: kind,
+      eventLabel: null,
+      dominanceSpan,
+    });
+  } else if (dominanceSpan >= options.intermediateMinBars) {
+    candidates.push({
+      index,
+      source: 'PIVOT_INTERMEDIATE',
+      score: 15,
+      pivotKind: kind,
+      eventLabel: null,
+      dominanceSpan,
+    });
+  }
 }
 
 function buildPivotCandidates(
@@ -355,8 +452,10 @@ function buildPivotCandidates(
 ): RawCandidate[] {
   const n = windowBars.length;
   const candidates: RawCandidate[] = [];
-  const { pivotWindow, pivotReversalAtrMult, majorLookbackBars, intermediateMinBars } = options;
+  const { pivotWindow, pivotReversalAtrMult, majorLookbackBars } = options;
   if (n < 2 * pivotWindow + 1) return candidates;
+
+  const { globalLowIdx, globalHighIdx } = findGlobalExtremeIndices(windowBars);
 
   for (let i = pivotWindow; i <= n - pivotWindow - 1; i += 1) {
     const atrI = atr[i];
@@ -382,36 +481,7 @@ function buildPivotCandidates(
         if (other.high > maxHighAfter) maxHighAfter = other.high;
       }
       if (maxHighAfter - bar.low >= pivotReversalAtrMult * atrI) {
-        let leftSpan = 0;
-        for (let k = i - 1; k >= 0; k -= 1) {
-          const other = windowBars[k];
-          if (other === undefined || other.low < bar.low) break;
-          leftSpan += 1;
-        }
-        let rightSpan = 0;
-        for (let k = i + 1; k < n; k += 1) {
-          const other = windowBars[k];
-          if (other === undefined || other.low < bar.low) break;
-          rightSpan += 1;
-        }
-        const dominanceSpan = leftSpan + 1 + rightSpan;
-        if (dominanceSpan >= majorLookbackBars) {
-          candidates.push({
-            index: i,
-            source: 'PIVOT_MAJOR',
-            score: 30,
-            pivotKind: 'LOW',
-            eventLabel: null,
-          });
-        } else if (dominanceSpan >= intermediateMinBars) {
-          candidates.push({
-            index: i,
-            source: 'PIVOT_INTERMEDIATE',
-            score: 15,
-            pivotKind: 'LOW',
-            eventLabel: null,
-          });
-        }
+        emitPivotCandidate(candidates, i, 'LOW', dominanceSpanForLow(windowBars, i, bar.low), options);
       }
     }
 
@@ -433,39 +503,89 @@ function buildPivotCandidates(
         if (other.low < minLowAfter) minLowAfter = other.low;
       }
       if (bar.high - minLowAfter >= pivotReversalAtrMult * atrI) {
-        let leftSpan = 0;
-        for (let k = i - 1; k >= 0; k -= 1) {
-          const other = windowBars[k];
-          if (other === undefined || other.high > bar.high) break;
-          leftSpan += 1;
-        }
-        let rightSpan = 0;
-        for (let k = i + 1; k < n; k += 1) {
-          const other = windowBars[k];
-          if (other === undefined || other.high > bar.high) break;
-          rightSpan += 1;
-        }
-        const dominanceSpan = leftSpan + 1 + rightSpan;
-        if (dominanceSpan >= majorLookbackBars) {
+        emitPivotCandidate(candidates, i, 'HIGH', dominanceSpanForHigh(windowBars, i, bar.high), options);
+      }
+    }
+  }
+
+  // Pieza 50.5.1: extremos estructurales recientes en el borde derecho
+  // (i ∈ [n - pivotWindow, n - 3], mínimo 2 velas de confirmación a la derecha).
+  // Solo se emiten como PIVOT_MAJOR si son estructurales (`dominanceSpan >= 126`)
+  // o coinciden con el extremo global del período.
+  const rightEdgeStart = Math.max(pivotWindow, n - pivotWindow);
+  for (let i = rightEdgeStart; i <= n - 3; i += 1) {
+    const atrI = atr[i];
+    if (atrI === undefined || !Number.isFinite(atrI) || atrI <= 0) continue;
+    const bar = windowBars[i];
+    if (bar === undefined) continue;
+
+    let isPivotLow = true;
+    for (let k = i - pivotWindow; k <= i - 1 && isPivotLow; k += 1) {
+      const other = windowBars[k];
+      if (other === undefined) continue;
+      if (!(bar.low < other.low)) isPivotLow = false;
+    }
+    for (let k = i + 1; k <= n - 1 && isPivotLow; k += 1) {
+      const other = windowBars[k];
+      if (other === undefined) continue;
+      if (!(bar.low <= other.low)) isPivotLow = false;
+    }
+    if (isPivotLow) {
+      let maxHighAfter = Number.NEGATIVE_INFINITY;
+      for (let k = i + 1; k < n; k += 1) {
+        const other = windowBars[k];
+        if (other === undefined) continue;
+        if (other.high > maxHighAfter) maxHighAfter = other.high;
+      }
+      if (maxHighAfter - bar.low >= pivotReversalAtrMult * atrI) {
+        const dominanceSpan = dominanceSpanForLow(windowBars, i, bar.low);
+        if (dominanceSpan >= majorLookbackBars || i === globalLowIdx || i === globalHighIdx) {
           candidates.push({
             index: i,
             source: 'PIVOT_MAJOR',
-            score: 30,
-            pivotKind: 'HIGH',
+            score: pivotMajorScore(dominanceSpan, options),
+            pivotKind: 'LOW',
             eventLabel: null,
+            dominanceSpan,
           });
-        } else if (dominanceSpan >= intermediateMinBars) {
+        }
+      }
+    }
+
+    let isPivotHigh = true;
+    for (let k = i - pivotWindow; k <= i - 1 && isPivotHigh; k += 1) {
+      const other = windowBars[k];
+      if (other === undefined) continue;
+      if (!(bar.high > other.high)) isPivotHigh = false;
+    }
+    for (let k = i + 1; k <= n - 1 && isPivotHigh; k += 1) {
+      const other = windowBars[k];
+      if (other === undefined) continue;
+      if (!(bar.high >= other.high)) isPivotHigh = false;
+    }
+    if (isPivotHigh) {
+      let minLowAfter = Number.POSITIVE_INFINITY;
+      for (let k = i + 1; k < n; k += 1) {
+        const other = windowBars[k];
+        if (other === undefined) continue;
+        if (other.low < minLowAfter) minLowAfter = other.low;
+      }
+      if (bar.high - minLowAfter >= pivotReversalAtrMult * atrI) {
+        const dominanceSpan = dominanceSpanForHigh(windowBars, i, bar.high);
+        if (dominanceSpan >= majorLookbackBars || i === globalLowIdx || i === globalHighIdx) {
           candidates.push({
             index: i,
-            source: 'PIVOT_INTERMEDIATE',
-            score: 15,
+            source: 'PIVOT_MAJOR',
+            score: pivotMajorScore(dominanceSpan, options),
             pivotKind: 'HIGH',
             eventLabel: null,
+            dominanceSpan,
           });
         }
       }
     }
   }
+
   return candidates;
 }
 
@@ -493,9 +613,10 @@ function buildRvolCandidates(
     if (!gapTriggered && !rangeTriggered) continue;
 
     const zVolI = stats.zVol[i];
+    // Pieza 50.5.1: RVOL acotado a 15 pts (`min(15, max(0, 5 * zVol))`), 0 si sigma = 0.
     const score =
       zVolI !== undefined && Number.isFinite(zVolI)
-        ? Math.min(30, Math.max(0, 10 * zVolI))
+        ? Math.min(15, Math.max(0, 5 * zVolI))
         : 0;
     candidates.push({
       index: i,
@@ -503,6 +624,7 @@ function buildRvolCandidates(
       score,
       pivotKind: null,
       eventLabel: null,
+      dominanceSpan: 0,
     });
   }
   return candidates;
@@ -515,10 +637,69 @@ interface MergedCluster {
   readonly sources: readonly AutoAnchorSource[];
   readonly eventLabel: string | null;
   readonly score: number;
+  /** Pieza 50.5.1: el clúster contiene al menos un `PIVOT_MAJOR`. */
+  readonly hasPivotMajor: boolean;
+  /** Pieza 50.5.1: máximo `dominanceSpan` de los pívots del clúster (0 sin pivote). */
+  readonly maxDominanceSpan: number;
+  /** Pieza 50.5.1: vela ganadora alcista (`close > open`). */
+  readonly isBullishBar: boolean;
   readonly isGlobalExtreme: boolean;
   currentAvwap: number;
   distancePct: number;
   finalScore: number;
+}
+
+function sortedCandidates(candidates: readonly RawCandidate[]): RawCandidate[] {
+  return [...candidates].sort((a, b) => {
+    if (a.index !== b.index) return a.index - b.index;
+    return sourcePriority(a.source) - sourcePriority(b.source);
+  });
+}
+
+function nearestPivotIndex(index: number, pivots: readonly RawCandidate[]): number {
+  let bestIndex = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const pivot of pivots) {
+    const distance = Math.abs(pivot.index - index);
+    if (distance < bestDistance || (distance === bestDistance && pivot.index < bestIndex)) {
+      bestDistance = distance;
+      bestIndex = pivot.index;
+    }
+  }
+  return bestIndex;
+}
+
+/**
+ * Pieza 50.5.1: separa un clúster contiguo en sub-clústeres por polaridad cuando
+ * coexisten `PIVOT_LOW` y `PIVOT_HIGH` a <= 3 velas. Cada candidato `EVENT`/`RVOL`
+ * se asigna al sub-clúster cuyo pivote esté a menor distancia en barras
+ * (empate → menor índice de pivote).
+ */
+function splitClusterByPolarity(cluster: readonly RawCandidate[]): RawCandidate[][] {
+  const lowPivots = cluster.filter((candidate) => candidate.pivotKind === 'LOW');
+  const highPivots = cluster.filter((candidate) => candidate.pivotKind === 'HIGH');
+  if (lowPivots.length === 0 || highPivots.length === 0) {
+    return [sortedCandidates(cluster)];
+  }
+  const lowGroup: RawCandidate[] = [...lowPivots];
+  const highGroup: RawCandidate[] = [...highPivots];
+  for (const candidate of cluster) {
+    if (candidate.pivotKind !== null) continue;
+    const nearestLow = nearestPivotIndex(candidate.index, lowPivots);
+    const nearestHigh = nearestPivotIndex(candidate.index, highPivots);
+    const distanceLow = Math.abs(candidate.index - nearestLow);
+    const distanceHigh = Math.abs(candidate.index - nearestHigh);
+    if (distanceLow < distanceHigh) {
+      lowGroup.push(candidate);
+    } else if (distanceHigh < distanceLow) {
+      highGroup.push(candidate);
+    } else if (nearestLow <= nearestHigh) {
+      lowGroup.push(candidate);
+    } else {
+      highGroup.push(candidate);
+    }
+  }
+  return [sortedCandidates(lowGroup), sortedCandidates(highGroup)];
 }
 
 function mergeClusters(
@@ -529,29 +710,11 @@ function mergeClusters(
   const n = windowBars.length;
   if (n === 0) return [];
 
-  let globalLowIdx = -1;
-  let globalHighIdx = -1;
-  let minLow = Number.POSITIVE_INFINITY;
-  let maxHigh = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < n; i += 1) {
-    const bar = windowBars[i];
-    if (bar === undefined) continue;
-    if (bar.low < minLow) {
-      minLow = bar.low;
-      globalLowIdx = i;
-    }
-    if (bar.high > maxHigh) {
-      maxHigh = bar.high;
-      globalHighIdx = i;
-    }
-  }
+  const { globalLowIdx, globalHighIdx } = findGlobalExtremeIndices(windowBars);
 
-  const sorted = [...candidates].sort((a, b) => {
-    if (a.index !== b.index) return a.index - b.index;
-    return sourcePriority(a.source) - sourcePriority(b.source);
-  });
+  const sorted = sortedCandidates(candidates);
 
-  const clusters: RawCandidate[][] = [];
+  const contiguousClusters: RawCandidate[][] = [];
   let current: RawCandidate[] = [];
   for (const candidate of sorted) {
     const previous = current[current.length - 1];
@@ -559,12 +722,19 @@ function mergeClusters(
       previous !== undefined &&
       candidate.index - previous.index > options.clusterMaxDistanceBars
     ) {
-      clusters.push(current);
+      contiguousClusters.push(current);
       current = [];
     }
     current.push(candidate);
   }
-  if (current.length > 0) clusters.push(current);
+  if (current.length > 0) contiguousClusters.push(current);
+
+  const clusters: RawCandidate[][] = [];
+  for (const cluster of contiguousClusters) {
+    for (const sub of splitClusterByPolarity(cluster)) {
+      clusters.push(sub);
+    }
+  }
 
   const merged: MergedCluster[] = [];
   for (const cluster of clusters) {
@@ -576,9 +746,11 @@ function mergeClusters(
     let hasPivotIntermediate = false;
     let hasPivot = false;
     let hasRvol = false;
+    let maxDominanceSpan = 0;
     const eventLabels: string[] = [];
 
     for (const candidate of cluster) {
+      maxDominanceSpan = Math.max(maxDominanceSpan, candidate.dominanceSpan);
       switch (candidate.source) {
         case 'EVENT':
           hasEvent = true;
@@ -667,6 +839,9 @@ function mergeClusters(
       sources,
       eventLabel: uniqueEventLabels,
       score,
+      hasPivotMajor,
+      maxDominanceSpan,
+      isBullishBar: winnerBar.close > winnerBar.open,
       isGlobalExtreme: winner.index === globalLowIdx || winner.index === globalHighIdx,
       currentAvwap: Number.NaN,
       distancePct: Number.NaN,
@@ -708,6 +883,21 @@ export function detectAutoAvwapAnchors(
   const merged = mergeClusters(windowBars, candidates, resolved);
   const lastClose = lastBar.close;
 
+  // Pieza 50.5.1: exención de la penalización ±25% — extremo global del período o
+  // `PIVOT_MAJOR` top-dominante de su polaridad con `maxDominanceSpan >= 180`.
+  const pickTopDominant = (kind: RawPivotKind): MergedCluster | undefined => {
+    let top: MergedCluster | undefined;
+    for (const cluster of merged) {
+      if (cluster.pivotKind !== kind || !cluster.hasPivotMajor) continue;
+      if (top === undefined || cluster.maxDominanceSpan > top.maxDominanceSpan) {
+        top = cluster;
+      }
+    }
+    return top;
+  };
+  const topDominantLow = pickTopDominant('LOW');
+  const topDominantHigh = pickTopDominant('HIGH');
+
   const scored: MergedCluster[] = [];
   for (const cluster of merged) {
     const points = calculateAnchoredVwap(windowBars, cluster.anchorIndex);
@@ -716,42 +906,80 @@ export function detectAutoAvwapAnchors(
     if (lastPoint === undefined || !Number.isFinite(lastPoint.vwap)) continue;
     cluster.currentAvwap = lastPoint.vwap;
     cluster.distancePct = (lastPoint.vwap - lastClose) / lastClose;
+    const topDominantExempt =
+      (topDominantLow !== undefined &&
+        cluster === topDominantLow &&
+        topDominantLow.maxDominanceSpan >= 180) ||
+      (topDominantHigh !== undefined &&
+        cluster === topDominantHigh &&
+        topDominantHigh.maxDominanceSpan >= 180);
+    const exempt = cluster.isGlobalExtreme || topDominantExempt;
     cluster.finalScore =
-      Math.abs(cluster.distancePct) > resolved.maxDistancePct && !cluster.isGlobalExtreme
+      Math.abs(cluster.distancePct) > resolved.maxDistancePct && !exempt
         ? cluster.score - resolved.farPenalty
         : cluster.score;
     scored.push(cluster);
   }
 
-  scored.sort((a, b) => {
+  const compareStructuralCandidates = (a: MergedCluster, b: MergedCluster): number => {
+    if (a.hasPivotMajor !== b.hasPivotMajor) {
+      return Number(b.hasPivotMajor) - Number(a.hasPivotMajor);
+    }
     if (b.finalScore !== a.finalScore) return b.finalScore - a.finalScore;
+    if (b.maxDominanceSpan !== a.maxDominanceSpan) {
+      return b.maxDominanceSpan - a.maxDominanceSpan;
+    }
     const distanceDiff = Math.abs(a.distancePct) - Math.abs(b.distancePct);
     if (distanceDiff !== 0) return distanceDiff;
     return b.anchorIndex - a.anchorIndex;
-  });
+  };
 
-  let support: MergedCluster | undefined;
-  for (const cluster of scored) {
-    if (cluster.currentAvwap <= lastClose) {
-      support = cluster;
-      break;
+  const firstOfTier = (
+    tiers: readonly ((cluster: MergedCluster) => boolean)[],
+  ): MergedCluster | undefined => {
+    for (const tier of tiers) {
+      const members = scored.filter(tier);
+      if (members.length === 0) continue;
+      return [...members].sort(compareStructuralCandidates)[0];
     }
-  }
-  let resistance: MergedCluster | undefined;
-  for (const cluster of scored) {
-    if (cluster.currentAvwap > lastClose) {
-      resistance = cluster;
-      break;
-    }
-  }
-  let event: MergedCluster | undefined;
-  for (const cluster of scored) {
-    if (!cluster.sources.includes('EVENT')) continue;
-    if (support !== undefined && cluster.anchorIndex === support.anchorIndex) continue;
-    if (resistance !== undefined && cluster.anchorIndex === resistance.anchorIndex) continue;
-    event = cluster;
-    break;
-  }
+    return undefined;
+  };
+
+  // SUPPORT (prohibido `pivotKind === 'HIGH'` y vela bajista sin pivote).
+  const support = firstOfTier([
+    (cluster) => cluster.pivotKind === 'LOW' && cluster.currentAvwap <= lastClose,
+    (cluster) => cluster.pivotKind === 'LOW' && cluster.anchorPrice <= lastClose,
+    (cluster) =>
+      cluster.pivotKind === null &&
+      cluster.sources.includes('EVENT') &&
+      cluster.isBullishBar &&
+      cluster.currentAvwap <= lastClose,
+    (cluster) =>
+      cluster.pivotKind === null &&
+      cluster.sources.includes('RVOL') &&
+      cluster.isBullishBar &&
+      cluster.currentAvwap <= lastClose,
+  ]);
+
+  // RESISTANCE (estricto: únicamente `pivotKind === 'HIGH'`; jamás LOW/EVENT/RVOL sueltos).
+  const resistance = firstOfTier([
+    (cluster) => cluster.pivotKind === 'HIGH' && cluster.currentAvwap > lastClose,
+    (cluster) => cluster.pivotKind === 'HIGH' && cluster.anchorPrice >= lastClose,
+  ]);
+
+  // EVENT (catalizador independiente de SUPPORT/RESISTANCE).
+  const eventCandidates = scored.filter(
+    (cluster) =>
+      cluster.sources.includes('EVENT') &&
+      (support === undefined || cluster.anchorIndex !== support.anchorIndex) &&
+      (resistance === undefined || cluster.anchorIndex !== resistance.anchorIndex),
+  );
+  const event =
+    [...eventCandidates].sort((a, b) => {
+      if (b.finalScore !== a.finalScore) return b.finalScore - a.finalScore;
+      if (b.anchorIndex !== a.anchorIndex) return b.anchorIndex - a.anchorIndex;
+      return Math.abs(a.distancePct) - Math.abs(b.distancePct);
+    })[0];
 
   const selection: (readonly [AutoAnchorRole, MergedCluster])[] = [];
   const ordered: (readonly [AutoAnchorRole, MergedCluster | undefined])[] = [

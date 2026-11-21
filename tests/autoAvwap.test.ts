@@ -51,6 +51,7 @@ interface ScenarioFixture {
     readonly date?: string;
   }[];
   readonly windowBars: number;
+  readonly lastClose?: number | null;
   readonly atr14: readonly (number | null)[];
   readonly smaVol20: readonly (number | null)[];
   readonly stdVol20: readonly (number | null)[];
@@ -167,6 +168,9 @@ describe('Pieza 50.5 — referencia Python independiente (tolerancia <= 1e-9)', 
       'far_penalty_25pct_and_global_exemption',
       'degradation_no_events_and_zero_std',
       'edge_short_and_empty',
+      'polarity_low_below_avwap_never_resistance',
+      'polarity_high_reclaimed_never_support',
+      'dominant_6m_1y_beats_minor_peak_and_rvol',
     ]);
   });
 
@@ -195,14 +199,18 @@ describe('Pieza 50.5 — referencia Python independiente (tolerancia <= 1e-9)', 
     });
   }
 
-  it('pivot_rvol_balanced_pincer: pinza balanceada de 3 anclas con scores exactos', () => {
+  it('pivot_rvol_balanced_pincer: pinza balanceada de 3 anclas con escala calibrada', () => {
     const scenario = scenarioByName('pivot_rvol_balanced_pincer');
     const anchors = detectAutoAvwapAnchors(toBars(scenario.dailyBars), toEvents(scenario));
     expect(anchors.map((anchor) => anchor.role)).toEqual(['SUPPORT', 'RESISTANCE', 'EVENT']);
     const [support, resistance, event] = anchors;
-    expect(support?.score).toBe(60);
+    // Pieza 50.5.1: PIVOT_MAJOR = 40 + bonus(dominanceSpan) ∈ [40, 60]; RVOL ≤ 15.
     expect([...(support?.sources ?? [])]).toEqual(['PIVOT_MAJOR', 'RVOL']);
-    expect(resistance?.score).toBe(60);
+    expect(support?.score).toBeGreaterThanOrEqual(55);
+    expect(support?.score).toBeLessThanOrEqual(75);
+    expect([...(resistance?.sources ?? [])]).toEqual(['PIVOT_MAJOR', 'RVOL']);
+    expect(resistance?.score).toBeGreaterThanOrEqual(55);
+    expect(resistance?.score).toBeLessThanOrEqual(75);
     expect(event?.score).toBe(35);
     expect(event?.eventLabel).toBe('Earnings');
   });
@@ -213,15 +221,16 @@ describe('Pieza 50.5 — referencia Python independiente (tolerancia <= 1e-9)', 
     const anchors = detectAutoAvwapAnchors(bars, toEvents(scenario));
     const resistance = anchors.find((anchor) => anchor.role === 'RESISTANCE');
     expect(resistance).toBeDefined();
-    // EVENT 35 + PIVOT_MAJOR 30 + max(RVOL, RVOL) 30 => 95 (sin doble conteo por familia).
-    expect(resistance?.score).toBe(95);
+    // Pieza 50.5.1: EVENT 35 + PIVOT_MAJOR (40 + bonus) + max(RVOL, RVOL) ≤ 15.
+    expect(resistance?.score).toBeGreaterThanOrEqual(90);
+    expect(resistance?.score).toBeLessThan(96);
     expect([...(resistance?.sources ?? [])]).toEqual(['EVENT', 'PIVOT_MAJOR', 'RVOL']);
     const pivotBar = bars[40];
     expect(resistance?.anchorTimeSec).toBe(pivotBar?.time);
     expect(resistance?.anchorPrice).toBe(pivotBar?.high);
 
-    // Clúster sin PIVOT con volúmenes empatados: gana el índice más antiguo y el
-    // puntaje es el MÁXIMO de la familia RVOL (no la suma).
+    // Clúster sin PIVOT con volúmenes empatados: gana el índice más antiguo, la vela
+    // ganadora es alcista y el puntaje es el MÁXIMO de la familia RVOL (no la suma).
     const support = anchors.find((anchor) => anchor.role === 'SUPPORT');
     expect(support?.windowIndex).toBe(190);
     expect([...(support?.sources ?? [])]).toEqual(['RVOL']);
@@ -230,20 +239,27 @@ describe('Pieza 50.5 — referencia Python independiente (tolerancia <= 1e-9)', 
     expect(z190).not.toBeNull();
     expect(z192).not.toBeNull();
     const expectedMax = Math.max(
-      Math.min(30, Math.max(0, 10 * (z190 ?? 0))),
-      Math.min(30, Math.max(0, 10 * (z192 ?? 0))),
+      Math.min(15, Math.max(0, 5 * (z190 ?? 0))),
+      Math.min(15, Math.max(0, 5 * (z192 ?? 0))),
     );
     expect(support?.score).toBeCloseTo(expectedMax, 12);
-    expect(support?.score).toBeLessThan(60);
+    expect(support?.score).toBeLessThan(30);
+    const event = anchors.find((anchor) => anchor.role === 'EVENT');
+    expect(event?.windowIndex).toBe(50);
+    expect(event?.score).toBe(35);
   });
 
   it('far_penalty_25pct_and_global_exemption: -20 pts lejos del cierre y exención de extremos', () => {
     const scenario = scenarioByName('far_penalty_25pct_and_global_exemption');
     const anchors = detectAutoAvwapAnchors(toBars(scenario.dailyBars), toEvents(scenario));
-    expect(anchors.map((anchor) => anchor.role)).toEqual(['SUPPORT', 'EVENT']);
-    const [support, event] = anchors;
+    expect(anchors.map((anchor) => anchor.role)).toEqual(['SUPPORT', 'RESISTANCE', 'EVENT']);
+    const [support, resistance, event] = anchors;
     expect(Math.abs(support?.distancePct ?? 0)).toBeGreaterThan(0.25);
-    expect(support?.score).toBe(30); // extremo global: sin penalización
+    // Extremo global: exento => 40 + bonus(dominance) > 40 (penalizado sería ≤ 40).
+    expect([...(support?.sources ?? [])]).toEqual(['PIVOT_MAJOR']);
+    expect(support?.score).toBeGreaterThan(40);
+    expect(Math.abs(resistance?.distancePct ?? 0)).toBeGreaterThan(0.25);
+    expect(resistance?.score).toBeGreaterThan(40); // extremo global (máximo absoluto) exento
     expect(Math.abs(event?.distancePct ?? 0)).toBeGreaterThan(0.25);
     expect(event?.score).toBe(15); // 35 - 20
   });
@@ -276,10 +292,58 @@ describe('Pieza 50.5 — referencia Python independiente (tolerancia <= 1e-9)', 
     const scenario = scenarioByName('edge_short_and_empty');
     const anchors = detectAutoAvwapAnchors(toBars(scenario.dailyBars), toEvents(scenario));
     expect(anchors).toHaveLength(1);
+    // Vela bajista: no secuestra SUPPORT; siempre emitida en su rol correcto.
+    expect(anchors[0]?.role).toBe('EVENT');
     expect(anchors[0]?.sources).toEqual(['EVENT']);
     expect(anchors[0]?.windowIndex).toBe(4);
+    expect(anchors[0]?.score).toBe(35);
     expect(Number.isFinite(anchors[0]?.score ?? Number.NaN)).toBe(true);
     expect(detectAutoAvwapAnchors([], toEvents(scenario))).toEqual([]);
+  });
+
+  it('polarity_low_below_avwap_never_resistance: un Swing Low bajo su AVWAP jamás es RESISTANCE', () => {
+    const scenario = scenarioByName('polarity_low_below_avwap_never_resistance');
+    const lastClose = scenario.lastClose ?? Number.NaN;
+    const anchors = detectAutoAvwapAnchors(toBars(scenario.dailyBars), []);
+    expect(anchors.map((anchor) => anchor.role)).toEqual(['SUPPORT', 'RESISTANCE']);
+    const support = anchors.find((anchor) => anchor.role === 'SUPPORT');
+    const resistance = anchors.find((anchor) => anchor.role === 'RESISTANCE');
+    expect(support?.windowIndex).toBe(60);
+    // El precio posterior cayó debajo de su AVWAP (currentAvwap > cierre) …
+    expect(support?.currentAvwap).toBeGreaterThan(lastClose);
+    // … pero el piso sigue vigente debajo del spot => SUPPORT (jamás RESISTANCE).
+    expect(support?.anchorPrice).toBeLessThanOrEqual(lastClose);
+    expect(resistance?.windowIndex).toBe(75);
+    expect(resistance?.windowIndex).not.toBe(support?.windowIndex);
+  });
+
+  it('polarity_high_reclaimed_never_support: un Swing High recuperado por encima de su AVWAP jamás es SUPPORT', () => {
+    const scenario = scenarioByName('polarity_high_reclaimed_never_support');
+    const lastClose = scenario.lastClose ?? Number.NaN;
+    const anchors = detectAutoAvwapAnchors(toBars(scenario.dailyBars), []);
+    // Ni siquiera siendo el único pivote de la serie recibe SUPPORT.
+    expect(anchors.some((anchor) => anchor.role === 'SUPPORT')).toBe(false);
+    expect(anchors.map((anchor) => anchor.role)).toEqual(['RESISTANCE']);
+    const resistance = anchors[0];
+    expect(resistance?.windowIndex).toBe(40);
+    expect(resistance?.currentAvwap).toBeLessThanOrEqual(lastClose);
+    expect(resistance?.anchorPrice).toBeGreaterThanOrEqual(lastClose);
+  });
+
+  it('dominant_6m_1y_beats_minor_peak_and_rvol: domina el extremo 6M–1Y y detecta el borde derecho', () => {
+    const scenario = scenarioByName('dominant_6m_1y_beats_minor_peak_and_rvol');
+    const anchors = detectAutoAvwapAnchors(toBars(scenario.dailyBars), []);
+    expect(anchors.map((anchor) => anchor.role)).toEqual(['SUPPORT', 'RESISTANCE']);
+    const support = anchors.find((anchor) => anchor.role === 'SUPPORT');
+    const resistance = anchors.find((anchor) => anchor.role === 'RESISTANCE');
+    // Piso en V dominante (380 ruedas): exento de -20 pese a caer > 25% del cierre.
+    expect(support?.windowIndex).toBe(60);
+    expect(Math.abs(support?.distancePct ?? 0)).toBeGreaterThan(0.25);
+    expect(support?.score).toBe(60);
+    // Techo estructural reciente en el borde derecho (n - 5): invisible para el rango ±10.
+    expect(resistance?.windowIndex).toBe(scenario.windowBars - 5);
+    expect([...(resistance?.sources ?? [])]).toEqual(['PIVOT_MAJOR']);
+    expect(resistance?.score).toBe(60);
   });
 
   it('no muta barras ni eventos congelados (Object.freeze) y es determinístico', () => {
@@ -518,6 +582,213 @@ describe('Pieza 50.5 — backend: /api/bars adjunta autoAvwapAnchors cacheados p
       expect(anchor.sources).not.toContain('EVENT');
       expect(anchor.eventLabel).toBeNull();
     }
+  });
+
+  it('ETFs (QQQ): pagina /stable/economic-calendar en tramos <= 85 días y produce ancla EVENT FOMC/CPI', async () => {
+    const calendarUrls: string[] = [];
+    const bars = makeBackendDailyBars(220);
+    const eodRows = bars.map((bar) => ({
+      symbol: 'QQQ',
+      date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+    const fomcDate = new Date((bars[120]?.time ?? 0) * 1_000).toISOString().slice(0, 10);
+    const cpiDate = new Date((bars[40]?.time ?? 0) * 1_000).toISOString().slice(0, 10);
+    const fmpConfig: NonNullable<MrDeps['fmpConfig']> = {
+      apiKey: 'market-505',
+      quotesApiKey: null,
+      marketApiKey: null,
+      etfApiKey: null,
+      macroApiKey: 'macro-505',
+      calendarsApiKey: null,
+      configured: true,
+      baseUrl: 'https://financialmodelingprep.com',
+    };
+    const runtime = new MarketRuntime({
+      apiKey: 'qqq-harness-key',
+      enableWs: false,
+      nowMsFn: () => FIXED_NOW_MS,
+      fmpConfig,
+      fetchFn: ((url: string) => {
+        if (url.includes('historical-price-eod/full')) {
+          return Promise.resolve({ ok: true, status: 200, headers: {}, text: JSON.stringify(eodRows) });
+        }
+        if (url.includes('/stable/economic-calendar?')) {
+          calendarUrls.push(url);
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: {},
+            text: JSON.stringify([
+              { country: 'US', event: 'FOMC Rate Decision', date: fomcDate, impact: 'High' },
+              { country: 'US', event: 'CPI y/y', date: cpiDate, impact: 'High' },
+            ]),
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, headers: {}, text: '{}' });
+      }) as unknown as FetchFn,
+    });
+
+    const res = await runtime.getBars('QQQ', '1D', { visibleBars: 220 });
+    // 560 días de historia => tramos consecutivos de <= 85 días (6×85 + 50): 7 requests.
+    expect(calendarUrls).toHaveLength(7);
+    for (const url of calendarUrls) {
+      expect(url).toContain('from=');
+      expect(url).toContain('to=');
+    }
+    const anchors = res.autoAvwapAnchors ?? [];
+    const eventAnchors = anchors.filter((anchor) => anchor.sources.includes('EVENT'));
+    expect(eventAnchors.length).toBeGreaterThanOrEqual(1);
+    expect(
+      eventAnchors.some(
+        (anchor) => anchor.eventLabel === 'FOMC' || anchor.eventLabel === 'CPI' || anchor.eventLabel === 'FOMC/CPI',
+      ),
+    ).toBe(true);
+    expect(eventAnchors.some((anchor) => anchor.role === 'EVENT')).toBe(true);
+  });
+
+  it('Acciones (AAPL): 403 en /stable/earnings reintenta otra clave y cae a income-statement', async () => {
+    const bars = makeBackendDailyBars(160);
+    const eodRows = bars.map((bar) => ({
+      symbol: 'AAPL',
+      date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+    const filings = [70, 110, 150].map((index, offset) => ({
+      symbol: 'AAPL',
+      filingDate: new Date((bars[index]?.time ?? 0) * 1_000).toISOString().slice(0, 10),
+      epsActual: 1.1 + offset * 0.1,
+    }));
+    let earningsAttempts = 0;
+    let incomeAttempts = 0;
+    const fmpConfig: NonNullable<MrDeps['fmpConfig']> = {
+      apiKey: 'primary-505',
+      quotesApiKey: null,
+      marketApiKey: null,
+      etfApiKey: null,
+      macroApiKey: null,
+      calendarsApiKey: 'cal-505',
+      configured: true,
+      baseUrl: 'https://financialmodelingprep.com',
+    };
+    const runtime = new MarketRuntime({
+      apiKey: 'aapl-harness-key',
+      enableWs: false,
+      nowMsFn: () => FIXED_NOW_MS,
+      fmpConfig,
+      fetchFn: ((url: string) => {
+        if (url.includes('historical-price-eod/full')) {
+          return Promise.resolve({ ok: true, status: 200, headers: {}, text: JSON.stringify(eodRows) });
+        }
+        if (url.includes('/stable/earnings?')) {
+          earningsAttempts += 1;
+          return Promise.resolve({ ok: false, status: 403, headers: {}, text: '{}' });
+        }
+        if (url.includes('/stable/income-statement?')) {
+          incomeAttempts += 1;
+          return Promise.resolve({ ok: true, status: 200, headers: {}, text: JSON.stringify(filings) });
+        }
+        return Promise.resolve({ ok: false, status: 404, headers: {}, text: '{}' });
+      }) as unknown as FetchFn,
+    });
+
+    const res = await runtime.getBars('AAPL', '1D', { visibleBars: 160 });
+    // Fallback de clave en 402/403: `calendarsApiKey` y luego `apiKey`.
+    expect(earningsAttempts).toBe(2);
+    expect(incomeAttempts).toBe(1);
+    const anchors = res.autoAvwapAnchors ?? [];
+    const eventAnchors = anchors.filter((anchor) => anchor.sources.includes('EVENT'));
+    expect(eventAnchors.length).toBeGreaterThanOrEqual(1);
+    expect(eventAnchors.some((anchor) => anchor.role === 'EVENT' && anchor.eventLabel === 'Earnings')).toBe(true);
+    // El catalizador nunca roba los slots de pivote: SUPPORT/RESISTANCE llevan PIVOT.
+    for (const anchor of anchors) {
+      if (anchor.role === 'SUPPORT' || anchor.role === 'RESISTANCE') {
+        expect(
+          anchor.sources.some((source) => source === 'PIVOT_MAJOR' || source === 'PIVOT_INTERMEDIATE'),
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('no envenena la caché 24 h: tras fallo FMP degrada, aplica backoff corto y recupera EVENT', async () => {
+    const bars = makeBackendDailyBars(200);
+    const eodRows = bars.map((bar) => ({
+      symbol: 'QQQ',
+      date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+    const cpiDate = new Date((bars[80]?.time ?? 0) * 1_000).toISOString().slice(0, 10);
+    let healthy = false;
+    let calendarCalls = 0;
+    let nowMs = FIXED_NOW_MS;
+    const fmpConfig: NonNullable<MrDeps['fmpConfig']> = {
+      apiKey: 'market-505',
+      quotesApiKey: null,
+      marketApiKey: null,
+      etfApiKey: null,
+      macroApiKey: 'macro-505',
+      calendarsApiKey: null,
+      configured: true,
+      baseUrl: 'https://financialmodelingprep.com',
+    };
+    const runtime = new MarketRuntime({
+      apiKey: 'poison-harness-key',
+      enableWs: false,
+      nowMsFn: () => nowMs,
+      fmpConfig,
+      fetchFn: ((url: string) => {
+        if (url.includes('historical-price-eod/full')) {
+          return Promise.resolve({ ok: true, status: 200, headers: {}, text: JSON.stringify(eodRows) });
+        }
+        if (url.includes('/stable/economic-calendar?')) {
+          calendarCalls += 1;
+          if (!healthy) {
+            return Promise.resolve({ ok: false, status: 500, headers: {}, text: 'boom' });
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: {},
+            text: JSON.stringify([{ country: 'US', event: 'CPI y/y', date: cpiDate, impact: 'High' }]),
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, headers: {}, text: '{}' });
+      }) as unknown as FetchFn,
+    });
+
+    const first = await runtime.getBars('QQQ', '1D', { visibleBars: 200 });
+    const firstAnchors = first.autoAvwapAnchors ?? [];
+    expect(firstAnchors.length).toBeGreaterThanOrEqual(1);
+    expect(firstAnchors.every((anchor) => !anchor.sources.includes('EVENT'))).toBe(true);
+    expect(calendarCalls).toBe(7); // 560d en tramos ≤ 85d, todos fallan con HTTP 500
+
+    // Dentro del backoff de 5 min: degradado inmediato sin reintentar FMP.
+    const withinBackoff = await runtime.getBars('QQQ', '1D', { visibleBars: 210 });
+    expect(calendarCalls).toBe(7);
+    expect(withinBackoff.autoAvwapAnchors).toEqual(firstAnchors);
+
+    // Tras expirar el backoff con FMP sano: recupera EVENT (sin quedar bloqueado 24 h).
+    nowMs += 6 * 60 * 1_000;
+    healthy = true;
+    const recovered = await runtime.getBars('QQQ', '1D', { visibleBars: 220 });
+    expect(calendarCalls).toBe(14); // 7 tramos del refresh saludable
+    const eventAnchors = (recovered.autoAvwapAnchors ?? []).filter(
+      (anchor) => anchor.sources.includes('EVENT'),
+    );
+    expect(eventAnchors.length).toBeGreaterThanOrEqual(1);
+    expect(eventAnchors.some((anchor) => anchor.eventLabel === 'CPI')).toBe(true);
   });
 });
 
