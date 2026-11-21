@@ -32,6 +32,7 @@ import {
   requestOptionsCatalysts,
   requestOptionsChain,
   requestOptionsUniverse,
+  requestUsOptionExpiry,
   requestUsVolSurface,
   useLiveMarketState,
 } from '../data/liveRuntimeBridge';
@@ -88,6 +89,8 @@ import {
   readOptionHoldingsFromStorage,
   resolveActiveVolAnalyticsSuite,
   resolveExpiryVolSuite,
+  evaluateActiveExpiryHeaderTir,
+  evaluateActiveExpiryRegimeAndBreaker,
 } from './options/optionsDerived';
 import {
   type CreditOptionQuoteInput,
@@ -102,13 +105,11 @@ import {
   computeForwardIvTermStructure,
   type ForwardIvSegmentResult,
 } from '../../../src/core/options/volSurface';
-import { computeActiveExpiryVrpAndRegime } from '../../../src/core/options/volAnalyticsSuite';
 import { classifyDealerGammaRegimeFromSummary } from '../../../src/core/options/exposure';
 import { extractRiskNeutralDistributionQ } from '../../../src/core/options/probabilisticDivergence';
 import {
   SHORT_PREMIUM_RISK_MESSAGE,
   buildHardenedBlDensity,
-  evaluateShortPremiumBreaker,
   formatDteLabel,
   hoursToCloseEt,
 } from '../../../src/core/options/zeroDteFixes';
@@ -824,6 +825,8 @@ export const OptionsModule: React.FC<{
   // Estado del Header de Opciones
   const [selectedExpiryId, setSelectedExpiryId] = useState<string>('');
   const [expiryDropdownOpen, setExpiryDropdownOpen] = useState(false);
+  // Pieza 50.2: cierre del selector de vencimientos al hacer click fuera y con Escape.
+  const expiryDropdownRef = useRef<HTMLDivElement | null>(null);
   const [tlrShiftPp, setTlrShiftPp] = useState<number>(0);
   const [showOnboardingBanner, setShowOnboardingBanner] = useState(true);
 
@@ -906,6 +909,25 @@ export const OptionsModule: React.FC<{
     setSelectedStrategyInspectorId(null);
   }, [upperUnderlying]);
 
+  // Pieza 50.2: cierre del popover de vencimientos con `mousedown` fuera o tecla Escape.
+  useEffect(() => {
+    if (!expiryDropdownOpen || typeof window === 'undefined') return undefined;
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target !== null && expiryDropdownRef.current?.contains(target) === true) return;
+      setExpiryDropdownOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setExpiryDropdownOpen(false);
+    };
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [expiryDropdownOpen]);
+
   const catalogStock =
     underlyingMeta.market === 'AR' ? AR_STOCKS.find((s) => s.ticker === upperUnderlying) ?? AR_STOCKS[0] : undefined;
   const overviewStock =
@@ -963,18 +985,17 @@ export const OptionsModule: React.FC<{
   // Pieza 50.1: escalera de spreads con mids de cierre en mercado cerrado / EOD_CIERRE.
   const spreadPricingMode: VerticalSpreadPricingMode = opraSessionClosed ? 'EOD_MID' : 'LIVE_CROSS';
 
-  // Pieza 50.1: seleccionar un vencimiento sin filas hidratadas dispara la carga puntual
-  // (`?expiration=`) conservando el virtualizador y el estado local intactos.
+  // Pieza 50.2: seleccionar un vencimiento pendiente dispara la carga puntual
+  // `GET /api/options/expiry` (`requestUsOptionExpiry`) sin re-pedir el snapshot completo;
+  // un vencimiento ya cargado cambia instantáneamente en memoria sin llamada de red.
   const handleSelectExpiry = (nextId: string): void => {
     setSelectedExpiryId(nextId);
     if (!usUnderlying) return;
     const target = GGAL_OPTION_EXPIRIES.find((e) => e.id === nextId);
-    const needsHydration =
-      target === undefined ||
-      target.rows.length === 0 ||
-      target.rows.every((r) => !(r.callIV > 0) && !(r.putIV > 0));
-    if (needsHydration) {
-      void requestOptionsChain(selectedUnderlyingKey, false, nextId);
+    const isLoaded =
+      target !== undefined && target.rows.length > 0 && target.loaded !== false;
+    if (!isLoaded) {
+      void requestUsOptionExpiry(selectedUnderlyingKey, nextId);
     }
   };
 
@@ -987,6 +1008,13 @@ export const OptionsModule: React.FC<{
       null
     );
   }, [selectedExpiryId, primaryLiquidCode, liveMarket.version]);
+
+  // Pieza 50.2: estado de carga on-demand del vencimiento activo (sin animaciones).
+  const isActiveExpiryLoading = Boolean(
+    activeExpiry?.id !== undefined
+      ? liveMarket.loadingOptionExpiries[`${selectedUnderlyingKey}:${activeExpiry.id}`]
+      : false,
+  );
 
   const activeQuantEngines = useMemo(() => {
     if (!liveOptionsExt) return null;
@@ -1118,7 +1146,8 @@ export const OptionsModule: React.FC<{
     [liveOptions, activeQuantEngines, liveMarket.usSnapshotsBySymbol, upperUnderlying],
   );
   const activeVolSuiteExpiry = useMemo(
-    () => resolveExpiryVolSuite(activeVolSuite, activeExpiry?.id ?? null),
+    // Pieza 50.2: estricto — jamás cae silenciosamente al front 0DTE de la suite.
+    () => resolveExpiryVolSuite(activeVolSuite, activeExpiry?.id ?? null, { strict: true }),
     [activeVolSuite, activeExpiry?.id],
   );
   const activeAtmIvDec = useMemo(() => {
@@ -1155,28 +1184,53 @@ export const OptionsModule: React.FC<{
   }, [activeExpiry, activeVolSuiteExpiry, displaySpot, activeDays]);
 
   const activeParity = activeVolSuiteExpiry?.parity ?? null;
-  const isHeaderTirBlockedShortDte =
-    (activeDays > 0 && activeDays < 3) ||
-    activeParity?.impliedRateStatus === 'BLOCKED_SHORT_DTE' ||
-    (activeQuantEngines?.syntheticRates as { readonly impliedRateStatus?: string } | null | undefined)
-      ?.impliedRateStatus === 'BLOCKED_SHORT_DTE';
-  const headerImpliedTirPct = useMemo(() => {
-    if (isHeaderTirBlockedShortDte) {
-      return Number.NaN;
+  // Pieza 50.2: `syntheticRates` del vencimiento activo SOLO si viene de
+  // `quantEnginesByExpiry[activeExpiry.id]` o si el activo ES el front del snapshot;
+  // jamás se hereda la tasa del front para otro vencimiento.
+  const activeExpirySyntheticRates = useMemo(() => {
+    const byExpiry = liveOptions?.quantEnginesByExpiry;
+    if (byExpiry !== undefined && activeExpiry?.id !== undefined) {
+      const engines = byExpiry[activeExpiry.id];
+      if (engines?.syntheticRates !== undefined) {
+        return engines.syntheticRates;
+      }
     }
+    const snapshotFrontExpiry =
+      liveMarket.usSnapshotsBySymbol[upperUnderlying]?.volSurfaceSummary?.frontSlice?.expirationDate ?? null;
     if (
-      activeParity?.medianMidTeaPct !== null &&
-      activeParity?.medianMidTeaPct !== undefined &&
-      Number.isFinite(activeParity.medianMidTeaPct)
+      activeExpiry?.id !== undefined &&
+      snapshotFrontExpiry !== null &&
+      activeExpiry.id === snapshotFrontExpiry
     ) {
-      return activeParity.medianMidTeaPct;
+      return liveOptions?.quantEngines?.syntheticRates ?? null;
     }
-    const synthTna = activeQuantEngines?.syntheticRates?.medianImpliedTna;
-    if (synthTna !== null && synthTna !== undefined && Number.isFinite(synthTna)) {
-      return synthTna * 100;
-    }
-    return Number.NaN;
-  }, [isHeaderTirBlockedShortDte, activeParity, activeQuantEngines]);
+    return null;
+  }, [
+    liveOptions?.quantEnginesByExpiry,
+    liveOptions?.quantEngines,
+    activeExpiry?.id,
+    liveMarket.usSnapshotsBySymbol,
+    upperUnderlying,
+  ]);
+  const activeExpiryHeaderTir = useMemo(
+    () =>
+      evaluateActiveExpiryHeaderTir({
+        activeDte,
+        activeExpiryId: activeExpiry?.id ?? null,
+        activeParity:
+          activeVolSuiteExpiry !== null
+            ? {
+                expiryCode: activeVolSuiteExpiry.expiryCode,
+                medianMidTeaPct: activeParity?.medianMidTeaPct ?? null,
+                impliedRateStatus: activeParity?.impliedRateStatus ?? null,
+              }
+            : null,
+        activeExpirySyntheticRates,
+      }),
+    [activeDte, activeExpiry?.id, activeVolSuiteExpiry, activeParity, activeExpirySyntheticRates],
+  );
+  const isHeaderTirBlockedShortDte = activeExpiryHeaderTir.blockedShortDte;
+  const headerImpliedTirPct = activeExpiryHeaderTir.tirPct;
   const headerOneSigmaAbs =
     Number.isFinite(displaySpot) &&
     displaySpot > 0 &&
@@ -1326,76 +1380,67 @@ export const OptionsModule: React.FC<{
       ? liveOptions.dividendYield
       : 0;
 
-  // Pieza 46.1: circuit breaker de venta de prima (dte <= 1 o Short Gamma bajo el Put Wall).
-  const shortPremiumBreaker = useMemo(
+  // Pieza 50.2: exposición del vencimiento ACTIVO (`exposureSummaryByExpiry`) priorizada
+  // sobre la del snapshot global para no mezclar niveles del front con otro vencimiento.
+  const activeExposureSummary = useMemo(
     () =>
-      evaluateShortPremiumBreaker({
-        dte: activeDte,
-        spot: displaySpot,
-        putWall: liveOptions?.exposureSummary?.putWallStrike ?? activeQuantEngines?.flowAdjustedGex?.putWallStrike ?? null,
-        netGex: liveOptions?.exposureSummary?.netGex ?? Number.NaN,
-      }),
-    [activeDte, displaySpot, liveOptions?.exposureSummary, activeQuantEngines?.flowAdjustedGex],
+      (activeExpiry?.id !== undefined
+        ? liveOptions?.exposureSummaryByExpiry?.[activeExpiry.id]
+        : undefined) ?? liveOptions?.exposureSummary ?? null,
+    [liveOptions?.exposureSummaryByExpiry, liveOptions?.exposureSummary, activeExpiry?.id],
   );
 
-  const baseRegimeCode = useMemo(() => {
-    const precomputed = (
-      activeVolSuiteExpiry as
-        | { readonly activeExpiryVrp?: { readonly operativeRegime?: { readonly code?: string } } }
-        | null
-        | undefined
-    )?.activeExpiryVrp?.operativeRegime?.code;
-    if (
-      precomputed === 'VENTA_PRIMA_CUBIERTA' ||
-      precomputed === 'COMPRA_CONVEXIDAD_CALENDAR' ||
-      precomputed === 'NEUTRAL_SELECTIVO' ||
-      precomputed === 'NO_SHORT_PREMIUM_RISK' ||
-      precomputed === 'NO_DATA'
-    ) {
-      return precomputed;
-    }
+  // Pieza 50.2: circuit breaker y régimen evaluados estrictamente sobre el DTE y la
+  // exposición del vencimiento activo; el régimen precomputado solo se usa si pertenece
+  // a esa fecha (expiryCode + daysToExpiry), jamás heredado del front 0DTE.
+  const activeRegimeEvaluation = useMemo(() => {
+    const suiteMatchesActive =
+      activeVolSuiteExpiry !== null &&
+      activeExpiry?.id !== undefined &&
+      activeVolSuiteExpiry.expiryCode === activeExpiry.id &&
+      Number.isFinite(activeDte) &&
+      activeVolSuiteExpiry.daysToExpiry === activeDte;
+    const precomputed = suiteMatchesActive
+      ? (activeVolSuiteExpiry?.activeExpiryVrp?.operativeRegime?.code ?? null)
+      : null;
     const rv23 = activeVolSuite?.historicalConditional?.latestRv23Pct;
     const rv20 = activeVolSuite?.historicalConditional?.latestRv20Pct ?? liveOptions?.realizedVol20d;
-    const ivPct = Number.isFinite(activeAtmIvDec) && activeAtmIvDec > 0 ? activeAtmIvDec * 100 : null;
+    const ivPct =
+      Number.isFinite(activeAtmIvDec) && activeAtmIvDec > 0 ? activeAtmIvDec * 100 : null;
     const rvRef =
       rv23 !== null && rv23 !== undefined && Number.isFinite(rv23) && rv23 > 0
         ? rv23
         : rv20 !== null && rv20 !== undefined && Number.isFinite(rv20) && rv20 > 0
           ? rv20
           : null;
-    if (ivPct === null && rvRef === null) return 'NO_DATA' as const;
-    return computeActiveExpiryVrpAndRegime({
-      expiryCode: activeExpiry?.id ?? null,
-      daysToExpiry: Number.isFinite(activeDte) ? activeDte : activeDays,
-      ivAtmActiveExpiryPct: ivPct,
-      sameExpiryFallbackIvAtmPct: ivPct,
-      rvReferencePct: rvRef,
-      rvReferenceLabel:
-        rv23 !== null && rv23 !== undefined && Number.isFinite(rv23) ? 'RV23d' : 'RV20d',
-      historicalRvSeriesPct: [],
+    return evaluateActiveExpiryRegimeAndBreaker({
+      activeDte: Number.isFinite(activeDte) ? activeDte : activeDays,
+      activeExpiryId: activeExpiry?.id ?? null,
       spot: displaySpot,
-      putWallStrike:
-        liveOptions?.exposureSummary?.putWallStrike ??
-        activeQuantEngines?.flowAdjustedGex?.putWallStrike ??
-        null,
-      netGex: liveOptions?.exposureSummary?.netGex ?? null,
-    }).operativeRegime.code;
+      activeExposureSummary,
+      precomputedRegimeForActiveExpiry: precomputed,
+      fallbackRegimeInput: {
+        ivAtmActiveExpiryPct: ivPct,
+        rvReferencePct: rvRef,
+        rvReferenceLabel:
+          rv23 !== null && rv23 !== undefined && Number.isFinite(rv23) ? 'RV23d' : 'RV20d',
+      },
+    });
   }, [
     activeVolSuiteExpiry,
     activeVolSuite,
-    liveOptions,
+    liveOptions?.realizedVol20d,
     activeAtmIvDec,
     activeExpiry?.id,
     activeDte,
     activeDays,
     displaySpot,
-    activeQuantEngines?.flowAdjustedGex?.putWallStrike,
+    activeExposureSummary,
   ]);
 
-  const activeRegimeCode =
-    shortPremiumBreaker.blocked && baseRegimeCode === 'VENTA_PRIMA_CUBIERTA'
-      ? ('NO_SHORT_PREMIUM_RISK' as const)
-      : baseRegimeCode;
+  const shortPremiumBreaker = activeRegimeEvaluation;
+  const baseRegimeCode = activeRegimeEvaluation.baseRegimeCode;
+  const activeRegimeCode = activeRegimeEvaluation.activeRegimeCode;
 
   const spreadModeToken = `${upperUnderlying}:${activeExpiry?.id ?? ''}`;
   const autoSpreadMode: SpreadExecutionMode = useMemo(
@@ -1954,20 +1999,23 @@ export const OptionsModule: React.FC<{
           </div>
 
           <div className="flex items-center gap-6 ml-auto">
-            <div className="relative">
+            <div className="relative" ref={expiryDropdownRef}>
               <div className="text-[10px] font-mono-num uppercase tracking-wider text-[#787B86]">
                 VTO.
               </div>
               <button
                 type="button"
                 onClick={() => setExpiryDropdownOpen((v) => !v)}
-                className="inline-flex items-center gap-1.5 font-mono-num text-[14px] font-bold text-[#FFFFFF] hover:text-[#EAB308] cursor-pointer"
+                className="inline-flex items-center gap-1.5 font-mono-num tabular-nums text-[14px] font-bold text-[#FFFFFF] hover:text-[#EAB308] cursor-pointer"
                 title="Seleccionar vencimiento (con Forward IV consecutiva)"
               >
                 <span>
                   {activeExpiry ? `${activeExpiry.label} · ${formatDteLabel(activeExpiry.daysToExpiry)}` : 'Sin vtos · —'}
                 </span>
-                {activeExpiry && (() => {
+                {isActiveExpiryLoading && (
+                  <span className="text-[10px] font-semibold text-[#9CA3AF]">(cargando...)</span>
+                )}
+                {activeExpiry && !isActiveExpiryLoading && (() => {
                   const fwdSeg = forwardSegmentByFarCode.get(activeExpiry.id);
                   if (!fwdSeg) return null;
                   if (fwdSeg.calendarArbFlag) {
@@ -1990,65 +2038,95 @@ export const OptionsModule: React.FC<{
               </button>
 
               {expiryDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-80 rounded-[10px] border border-[#2A2F3D] bg-[#0E1118] shadow-2xl z-40 p-1.5 space-y-1">
-                  <div className="px-2 py-1 text-[10px] font-mono-num uppercase tracking-wider text-[#787B86] flex items-center justify-between border-b border-[#1E222D]">
-                    <span>Vencimiento · DTE</span>
-                    <span>ATM / Forward IV</span>
+                <div className="absolute right-0 mt-2 w-84 rounded-[10px] border border-[#2A2F3D] bg-[#0E1118] shadow-2xl z-40 overflow-hidden">
+                  <div className="px-3 py-1.5 text-[10px] font-mono-num tabular-nums uppercase tracking-wider text-[#787B86] flex items-center justify-between border-b border-[#1E222D] bg-[#0B0E14]">
+                    <span>{`Vencimiento · DTE (${String(GGAL_OPTION_EXPIRIES.length)})`}</span>
+                    <span>IV ATM / Fwd IV</span>
                   </div>
                   {GGAL_OPTION_EXPIRIES.length === 0 ? (
-                    <div className="px-2 py-2 text-[11px] font-mono-num text-[#787B86]">
+                    <div className="px-3 py-2 text-[11px] font-mono-num text-[#787B86]">
                       Sin vencimientos disponibles
                     </div>
                   ) : (
-                    GGAL_OPTION_EXPIRIES.map((exp) => {
-                      const isSel = exp.id === activeExpiry?.id;
-                      const fwdSeg = forwardSegmentByFarCode.get(exp.id);
-                      const hasArb = forwardIvSegments.some(
-                        (s) => (s.farExpiryCode === exp.id || s.nearExpiryCode === exp.id) && s.calendarArbFlag,
-                      );
-                      return (
-                        <button
-                          key={exp.id}
-                          type="button"
-                          onClick={() => {
-                            handleSelectExpiry(exp.id);
-                            setExpiryDropdownOpen(false);
-                          }}
-                          className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[7px] text-left font-mono-num text-[11.5px] transition-colors cursor-pointer ${
-                            isSel
-                              ? 'bg-[#1D2230] text-[#FFFFFF] border border-[#EAB308]/45'
-                              : 'text-[#D1D4DC] hover:bg-[#161A24]'
-                          }`}
-                        >
-                          <div className="flex flex-col">
-                            <span className="font-bold">{exp.label}</span>
-                            <span className="text-[10px] text-[#787B86]">{exp.daysToExpiry === 0 ? `${formatDteLabel(0)} (vence hoy)` : `${String(exp.daysToExpiry)}d al vto`}</span>
-                          </div>
-                          <div className="text-right flex flex-col items-end">
-                            <span className="text-[#EAB308] font-semibold">
-                              {Number.isFinite(exp.atmIV) && exp.atmIV > 0 ? `IV ${fmtNum(exp.atmIV, 1)}%` : 'IV —'}
-                            </span>
-                            {fwdSeg ? (
-                              fwdSeg.calendarArbFlag ? (
-                                <span className="text-[10px] font-semibold text-rose-300">
-                                  Arb. Cal. (Fwd Var≤0)
-                                </span>
-                              ) : fwdSeg.forwardIv !== null && Number.isFinite(fwdSeg.forwardIv) ? (
-                                <span className="text-[10px] text-[#38BDF8]">
-                                  Fwd {fwdSeg.nearExpiryCode}→: {fmtNum(fwdSeg.forwardIv * 100, 1)}%
+                    <div className="max-h-[320px] overflow-y-auto overscroll-contain p-1.5 space-y-1">
+                      {GGAL_OPTION_EXPIRIES.map((exp) => {
+                        const isSel = exp.id === activeExpiry?.id;
+                        const isLoaded = exp.rows.length > 0;
+                        const isLoading = Boolean(
+                          liveMarket.loadingOptionExpiries[`${selectedUnderlyingKey}:${exp.id}`],
+                        );
+                        const fwdSeg = forwardSegmentByFarCode.get(exp.id);
+                        const hasArb = forwardIvSegments.some(
+                          (s) => (s.farExpiryCode === exp.id || s.nearExpiryCode === exp.id) && s.calendarArbFlag,
+                        );
+                        return (
+                          <button
+                            key={exp.id}
+                            type="button"
+                            onClick={() => {
+                              handleSelectExpiry(exp.id);
+                              setExpiryDropdownOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[7px] text-left font-mono-num tabular-nums text-[11.5px] transition-colors cursor-pointer ${
+                              isSel
+                                ? 'bg-[#1D2230] text-[#FFFFFF] border border-[#EAB308]/45'
+                                : 'text-[#D1D4DC] hover:bg-[#161A24]'
+                            }`}
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-bold">{exp.expiryDate}</span>
+                              {isLoaded ? (
+                                <span className="text-[10px] text-[#787B86]">
+                                  {exp.daysToExpiry === 0
+                                    ? '0DTE (vence hoy)'
+                                    : `${String(exp.daysToExpiry)}d al vto`}
                                 </span>
                               ) : (
-                                <span className="text-[10px] text-[#6D7282]">Fwd —</span>
-                              )
-                            ) : hasArb ? (
-                              <span className="text-[10px] text-rose-300">Arb. Cal.</span>
-                            ) : (
-                              <span className="text-[10px] text-[#6D7282]">Front</span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })
+                                <span className="text-[10px] text-[#787B86]">
+                                  {formatDteLabel(exp.daysToExpiry)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-right flex flex-col items-end">
+                              {isLoaded ? (
+                                <>
+                                  <span className="text-[#EAB308] font-semibold">
+                                    {Number.isFinite(exp.atmIV) && exp.atmIV > 0 ? `IV ${fmtNum(exp.atmIV, 1)}%` : 'IV —'}
+                                  </span>
+                                  {fwdSeg ? (
+                                    fwdSeg.calendarArbFlag ? (
+                                      <span className="text-[10px] font-semibold text-rose-300">
+                                        Arb. Cal.
+                                      </span>
+                                    ) : fwdSeg.forwardIv !== null && Number.isFinite(fwdSeg.forwardIv) ? (
+                                      <span className="text-[10px] text-[#38BDF8]">
+                                        Fwd {fmtNum(fwdSeg.forwardIv * 100, 1)}%
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-[#6D7282]">Fwd —</span>
+                                    )
+                                  ) : hasArb ? (
+                                    <span className="text-[10px] text-rose-300">Arb. Cal.</span>
+                                  ) : (
+                                    <span className="text-[10px] text-[#6D7282]">Front</span>
+                                  )}
+                                </>
+                              ) : (
+                                <span
+                                  className={`text-[10px] font-semibold ${
+                                    isLoading ? 'text-[#9CA3AF]' : 'text-[#38BDF8]'
+                                  }`}
+                                >
+                                  {isLoading
+                                    ? 'Cargando...'
+                                    : `${formatDteLabel(exp.daysToExpiry)} · Cargar`}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               )}
@@ -4170,7 +4248,9 @@ export const OptionsModule: React.FC<{
             </div>
           ) : (
             GGAL_OPTION_EXPIRIES.map((exp) => {
-              const isOpen = expandedExpiries[exp.id] ?? true;
+              // Pieza 50.2: los vencimientos pendientes (stub sin filas) arrancan
+              // colapsados para no renderizar decenas de tablas vacías.
+              const isOpen = expandedExpiries[exp.id] ?? exp.rows.length > 0;
               const rawExpiry = liveOptions?.expiries.find((e) => e.expiryCode === exp.id);
               const { summary, rows: enrichedRows } = buildEnrichedChainForExpiry({
                 exp,
@@ -4248,7 +4328,15 @@ export const OptionsModule: React.FC<{
                 <div key={exp.id} className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] overflow-hidden">
                   {/* Encabezado de Vencimiento — 3 Líneas Compactas */}
                   <div
-                    onClick={() => setExpandedExpiries((prev) => ({ ...prev, [exp.id]: !isOpen }))}
+                    onClick={() => {
+                      // Pieza 50.2: los stubs pendientes disparan la carga on-demand en
+                      // lugar de expandir una tabla vacía.
+                      if (exp.rows.length === 0) {
+                        handleSelectExpiry(exp.id);
+                        return;
+                      }
+                      setExpandedExpiries((prev) => ({ ...prev, [exp.id]: !isOpen }));
+                    }}
                     className="px-4 py-3 bg-[#111116] border-b border-[#1C1C24] cursor-pointer hover:bg-[#15151D] space-y-2"
                   >
                     {/* Línea 1: Fecha + días + estado */}

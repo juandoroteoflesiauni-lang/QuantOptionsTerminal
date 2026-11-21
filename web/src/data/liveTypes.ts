@@ -735,6 +735,17 @@ export interface SerializedTerminalEnginesDto {
   readonly structureOptimizerBullish: OptimizeOptionStructuresDto | null;
   readonly structureOptimizerBearish: OptimizeOptionStructuresDto | null;
   readonly structureCostPercentile: StructureCostPercentileDto | null;
+  /**
+   * Pieza 50.2: referencia estructural mínima de la suite de volatilidad por
+   * vencimiento (`expiriesByCode`); el tipado completo vive en `optionsDerived`.
+   */
+  readonly volAnalyticsSuite?: UsVolAnalyticsSuiteRef | null;
+}
+
+/** Referencia estructural mínima de la suite de volatilidad por vencimiento. */
+export interface UsVolAnalyticsSuiteRef {
+  readonly status: 'OK' | 'NO_DATA';
+  readonly expiriesByCode: Readonly<Record<string, unknown>>;
 }
 
 export interface ArOptionContractDto {
@@ -784,6 +795,8 @@ export interface ArOptionExpiryDto {
   readonly strikes: readonly number[];
   readonly calls: readonly ArOptionContractDto[];
   readonly puts: readonly ArOptionContractDto[];
+  /** Pieza 50.2: `true` si la cadena del vencimiento está cargada en profundidad. */
+  readonly loaded?: boolean;
 }
 
 export interface ArOptionsResponse {
@@ -855,6 +868,12 @@ export interface ArOptionsResponse {
   readonly primaryLiquidExpiryCode?: string | null;
   readonly forwardIvSegments?: readonly ForwardIvSegmentDto[];
   readonly quantEngines?: ArOptionsQuantEnginesDto | null;
+  /** Pieza 50.2: motores cuantitativos por vencimiento cargado on-demand. */
+  readonly quantEnginesByExpiry?: Readonly<Record<string, ArOptionsQuantEnginesDto>>;
+  /** Pieza 50.2: exposición de dealers por vencimiento cargado on-demand. */
+  readonly exposureSummaryByExpiry?: Readonly<
+    Record<string, NonNullable<ArOptionsResponse['exposureSummary']>>
+  >;
   readonly providerErrors: readonly string[];
 }
 
@@ -1170,6 +1189,7 @@ export interface UsSnapshotResponseDto {
     readonly availableExpirations?: readonly {
       readonly expirationDate: string;
       readonly daysToExpiry: number;
+      readonly loaded?: boolean;
       readonly validCallCount: number;
       readonly validPutCount: number;
       readonly nearAtmLiquidity: number;
@@ -1265,6 +1285,50 @@ export interface OptionsUnderlyingMetaDto {
   readonly name: string;
   readonly sector: string;
   readonly color: string;
+}
+
+/**
+ * Pieza 50.2: respuesta de `GET /api/options/expiry?symbol=...&expiration=YYYY-MM-DD`
+ * con el cuantitativo completo de ESA fecha (slice/Skew, exposición de dealers con
+ * GEX/VEX/CEX, tasas sintéticas y suite de volatilidad evaluada con su DTE exacto).
+ */
+export interface UsOptionExpiryChainResponseDto {
+  readonly status: 'OK' | 'PARTIAL';
+  readonly feedMode: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA';
+  readonly quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF';
+  readonly symbol: string;
+  readonly expirationDate: string;
+  readonly asOfUtcSec: number;
+  readonly spot: number | null;
+  readonly daysToExpiry: number;
+  readonly expiryMeta: {
+    readonly expirationDate: string;
+    readonly daysToExpiry: number;
+    readonly loaded: boolean;
+    readonly validCallCount: number;
+    readonly validPutCount: number;
+    readonly nearAtmLiquidity: number;
+    readonly inDefaultWindow: boolean;
+    readonly hasCompleteAtmChain: boolean;
+  };
+  readonly slice: UsVolSliceSummaryDto | null;
+  readonly contracts: readonly UsOptionContractRowDto[];
+  readonly exposureSummary: NonNullable<UsSnapshotResponseDto['exposureSummary']> | null;
+  readonly syntheticRates: ArOptionsQuantEnginesDto['syntheticRates'] | null;
+  readonly volAnalyticsExpiry: unknown | null;
+  readonly usOptionsFeed?: {
+    readonly provider: 'TRADIER' | 'MASSIVE';
+    readonly badge: string;
+    readonly tradierOverlay?: unknown;
+  };
+  readonly dataQuality: {
+    readonly ownSolvedIvContracts: number;
+    readonly providerFallbackIvContracts: number;
+    readonly parityExpiries: number;
+    readonly chainContractsReceived: number;
+    readonly chainContractsUsable: number;
+    readonly warnings: readonly string[];
+  };
 }
 
 export interface OptionsUnderlyingsResponseDto {

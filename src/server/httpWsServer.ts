@@ -863,6 +863,35 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         return;
       }
 
+      // Pieza 50.2: carga on-demand del cuantitativo completo de un vencimiento OPRA
+      // exacto (`?expiration=YYYY-MM-DD`) sin re-consultar barras/MTF/macro completos.
+      if (pathname === '/api/options/expiry') {
+        const symbol = params.get('symbol')?.trim() ?? '';
+        if (symbol === '') {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            'Parameter "symbol" is required',
+            secrets,
+            400,
+          );
+        }
+        const expiration = params.get('expiration')?.trim() ?? '';
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(expiration)) {
+          throw new RuntimeNoDataError(
+            'INVALID_PARAMETER',
+            `Parameter "expiration" must be a valid YYYY-MM-DD date (got "${expiration}")`,
+            secrets,
+            400,
+          );
+        }
+        const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const expiryChain = await runtime.getUsOptionExpiryChain(symbol, expiration, {
+          forceRefresh,
+        });
+        sendJson(res, 200, expiryChain);
+        return;
+      }
+
       if (pathname === '/api/us/vol-surface') {
         const symbol = params.get('symbol')?.trim() || 'SPY';
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));

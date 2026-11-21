@@ -12,10 +12,17 @@ import type {
   OptionsUnderlyingMetaDto,
   SymbolCatalystsResponseDto,
   TerminalTimeframe,
+  UsOptionExpiryChainResponseDto,
   UsSnapshotResponseDto,
   UsTerminalBarsResponseDto,
   UsVolSurfaceResponseDto,
 } from './liveTypes';
+import {
+  applyUsExpiryChainToSnapshot,
+  mapSerializedContractRowToArContract,
+  mapUsExposureToArExposureSummary,
+  mergeUsExpiryChainIntoOptions,
+} from './expiryChainMerge';
 import {
   AR_STOCKS,
   GLOBAL_INDICATORS,
@@ -63,6 +70,8 @@ export interface LiveMarketState {
   readonly optionsCatalystsStatusBySymbol: Readonly<
     Record<string, 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA'>
   >;
+  /** Pieza 50.2: carga on-demand en curso por `${underlyingKey}:${expirationDate}`. */
+  readonly loadingOptionExpiries: Readonly<Record<string, boolean>>;
   readonly tickFlashes: Readonly<Record<string, 'up' | 'down' | null>>;
   readonly isBackendConnected: boolean;
   readonly warmupStatus: 'IDLE' | 'WARMING_UP' | 'READY';
@@ -91,6 +100,7 @@ let state: LiveMarketState = {
   usVolSurfaceStatusBySymbol: {},
   optionsCatalystsBySymbol: {},
   optionsCatalystsStatusBySymbol: {},
+  loadingOptionExpiries: {},
   tickFlashes: {},
   isBackendConnected: false,
   warmupStatus: 'IDLE',
@@ -469,45 +479,10 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       const strikeSet = new Set<number>();
       const calls: ArOptionsResponse['expiries'][number]['calls'][number][] = [];
       const puts: ArOptionsResponse['expiries'][number]['puts'][number][] = [];
+      const rowDaysToExpiry = Number.isFinite(dteEt) ? dteEt : Math.max(1, Math.round(days));
       for (const r of rows) {
         strikeSet.add(r.strike);
-        const iv = r.ownIv ?? r.providerIv ?? null;
-        const intrinsic =
-          spot !== null && spot > 0
-            ? r.contractType === 'call'
-              ? Math.max(0, spot - r.strike)
-              : Math.max(0, r.strike - spot)
-            : 0;
-        const mark = r.mid ?? r.lastPrice ?? null;
-        const mapped = {
-          symbol: r.ticker,
-          underlying: clean,
-          contractType: r.contractType,
-          strike: r.strike,
-          expiryCode: expDate,
-          expirationDate: expDate,
-          expiryUtcSec: r.expiryUtcSec,
-          daysToExpiry: Number.isFinite(dteEt) ? dteEt : Math.max(1, Math.round(days)),
-          bid: r.bid,
-          ask: r.ask,
-          last: r.lastPrice,
-          mark,
-          volume: r.volume,
-          openInterest: r.openInterest,
-          iv,
-          delta: r.delta,
-          gamma: r.gamma,
-          thetaDaily: r.thetaDaily,
-          vegaPer1Pct: r.vegaPer1Pct,
-          rho: null,
-          vanna: r.vanna,
-          charm: r.charm,
-          intrinsic,
-          extrinsic: mark !== null ? Math.max(0, mark - intrinsic) : null,
-          previousClose: r.previousClose ?? null,
-          changePct: r.changePct ?? null,
-          source: 'DATA912' as const,
-        };
+        const mapped = mapSerializedContractRowToArContract(clean, spot, r, rowDaysToExpiry);
         if (r.contractType === 'call') calls.push(mapped);
         else puts.push(mapped);
       }
@@ -551,6 +526,7 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
         strikes,
         calls,
         puts,
+        loaded: true,
       };
     })
     .sort((a, b) => a.days - b.days);
@@ -576,6 +552,7 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       strikes: [],
       calls: [],
       puts: [],
+      loaded: false,
     });
     hydratedExpiryCodes.add(candidate.expirationDate);
   }
@@ -666,50 +643,7 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
     termStructure,
     expiries,
     exposureSummary: snap.exposureSummary
-      ? {
-          netGex: snap.exposureSummary.netGex,
-          netDex: snap.exposureSummary.netDex,
-          netVex: snap.exposureSummary.netVex ?? null,
-          netCex: snap.exposureSummary.netCex ?? null,
-          vannaRegime: snap.exposureSummary.vannaRegime ?? 'NEUTRAL',
-          charmPinStrike: snap.exposureSummary.charmPinStrike ?? null,
-          callWallStrike: snap.exposureSummary.callWallStrike,
-          putWallStrike: snap.exposureSummary.putWallStrike,
-          gammaFlipSpot: snap.exposureSummary.gammaFlipSpot,
-          gammaFlipStatus: snap.exposureSummary.gammaFlipStatus,
-          expectedMoveAbs:
-            snap.exposureSummary.expectedMove?.straddleMove ??
-            snap.exposureSummary.expectedMove?.formulaMove ??
-            null,
-          expectedMovePct:
-            snap.exposureSummary.expectedMove?.straddleMovePct ??
-            snap.exposureSummary.expectedMove?.formulaMovePct ??
-            null,
-          ...(snap.exposureSummary.quality
-            ? {
-                quality: {
-                  usableContracts: snap.exposureSummary.quality.usableContracts,
-                  usableOpenInterest: snap.exposureSummary.quality.usableOpenInterest,
-                },
-              }
-            : {}),
-          ...(snap.exposureSummary.byStrike
-            ? {
-                byStrike: snap.exposureSummary.byStrike.map((s) => ({
-                  strike: s.strike,
-                  callOi: s.callOi,
-                  putOi: s.putOi,
-                  callVolume: s.callVolume ?? null,
-                  putVolume: s.putVolume ?? null,
-                  callGex: s.callGex,
-                  putGex: s.putGex,
-                  netGex: s.netGex,
-                  vex: s.vex ?? s.netVannaExposure ?? null,
-                  cex: s.cex ?? s.netCharmExposure ?? null,
-                })),
-              }
-            : {}),
-        }
+      ? mapUsExposureToArExposureSummary(snap.exposureSummary)
       : null,
     costSchedule: {
       rvMarketFeeRate: 0.002,
@@ -831,6 +765,65 @@ export async function requestOptionsChain(
     lastSyncUtcSec: res.asOfUtcSec,
   };
   notify();
+}
+
+/**
+ * Pieza 50.2: carga on-demand la cadena de UN vencimiento US (`GET /api/options/expiry`)
+ * sin abortar ni re-fetchear `/api/snapshot`, `/api/bars`, `/api/ar/overview` ni
+ * catalizadores; fusiona el resultado sin reiniciar el resto de la terminal y limpia
+ * `loadingOptionExpiries` en `finally`.
+ */
+export async function requestUsOptionExpiry(
+  underlying: string,
+  expirationDate: string,
+  force = false,
+): Promise<void> {
+  const selection = parseOptionsUnderlyingKey(underlying);
+  if (selection.market !== 'US') return;
+  const clean = selection.symbol;
+  const expiration = expirationDate.trim();
+  if (!clean || !/^\d{4}-\d{2}-\d{2}$/.test(expiration)) return;
+  const loadKey = `${selection.key}:${expiration}`;
+  state = {
+    ...state,
+    loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: true },
+  };
+  notify();
+  try {
+    const resp = await fetchJsonGuarded<UsOptionExpiryChainResponseDto>(
+      `us:opt-expiry:${loadKey}${force ? ':force' : ''}`,
+      `/api/options/expiry?symbol=${encodeURIComponent(clean)}&expiration=${encodeURIComponent(expiration)}${force ? '&refresh=1' : ''}`,
+      { force },
+    );
+    if (!resp) return;
+    const previous = state.optionsByUnderlying[selection.key];
+    const merged = mergeUsExpiryChainIntoOptions(previous, resp);
+    hydrateFromArOptions(merged);
+    syncOptionEngineMarket(merged);
+    const previousSnap = state.usSnapshotsBySymbol[clean];
+    state = {
+      ...state,
+      isBackendConnected: true,
+      optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: merged },
+      ...(previousSnap !== undefined
+        ? {
+            usSnapshotsBySymbol: {
+              ...state.usSnapshotsBySymbol,
+              [clean]: applyUsExpiryChainToSnapshot(previousSnap, resp),
+            },
+          }
+        : {}),
+      feedStatus: combineFeedStatus(state.feedStatus, resp.feedMode),
+      lastSyncUtcSec: resp.asOfUtcSec,
+    };
+    notify();
+  } finally {
+    state = {
+      ...state,
+      loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: false },
+    };
+    notify();
+  }
 }
 
 export async function requestOptionsUniverse(force = false): Promise<void> {

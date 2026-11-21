@@ -303,6 +303,8 @@ export interface OptionExpiryGroup {
   oneSigmaLow: number;
   oneSigmaHigh: number;
   rows: OptionChainRow[];
+  /** Pieza 50.2: `true` si la cadena del vencimiento ya llegó hidratada en profundidad. */
+  loaded?: boolean;
 }
 
 export const GGAL_OPTION_EXPIRIES: OptionExpiryGroup[] = [];
@@ -1205,6 +1207,8 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
       oneSigmaLow,
       oneSigmaHigh,
       rows,
+      // Pieza 50.2: un vencimiento está cargado si tiene filas reales o si el DTO lo declara.
+      loaded: rows.length > 0 || exp.loaded === true,
     };
   });
 

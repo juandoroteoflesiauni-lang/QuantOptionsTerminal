@@ -1921,12 +1921,22 @@ export function resolveActiveVolAnalyticsSuite(params: {
   return fromUs ?? null;
 }
 
-/** Resuelve el slice de vencimiento activo dentro de `expiriesByCode` sin silenciosos falsos. */
+/**
+ * Resuelve el slice de vencimiento activo dentro de `expiriesByCode` sin silenciosos
+ * falsos. Con `options.strict === true` y un `selectedExpiryCode` no vacío jamás cae al
+ * front (`activeExpiryCode` / primera clave): devuelve `null` si el vencimiento pedido no
+ * está en la suite. Sin `strict` conserva el comportamiento previo (retrocompatible).
+ */
 export function resolveExpiryVolSuite(
   suite: VolAnalyticsSuiteDto | null,
   selectedExpiryCode: string | null,
+  options?: { readonly strict?: boolean },
 ): VolAnalyticsExpirySuiteDto | null {
   if (!suite) return null;
+  if (options?.strict === true) {
+    if (selectedExpiryCode === null || selectedExpiryCode === '') return null;
+    return suite.expiriesByCode[selectedExpiryCode] ?? null;
+  }
   if (selectedExpiryCode && suite.expiriesByCode[selectedExpiryCode]) {
     return suite.expiriesByCode[selectedExpiryCode] ?? null;
   }
@@ -1936,6 +1946,20 @@ export function resolveExpiryVolSuite(
   const firstKey = Object.keys(suite.expiriesByCode)[0];
   return firstKey ? (suite.expiriesByCode[firstKey] ?? null) : null;
 }
+
+/**
+ * Pieza 50.2: binding estricto de TIR/régimen sobre el vencimiento activo (funciones
+ * puras en `activeExpiryBinding`).
+ */
+export {
+  evaluateActiveExpiryHeaderTir,
+  evaluateActiveExpiryRegimeAndBreaker,
+  type ActiveExpiryHeaderTirInput,
+  type ActiveExpiryHeaderTirResult,
+  type ActiveExpiryRegimeBreakerInput,
+  type ActiveExpiryRegimeBreakerResult,
+} from './activeExpiryBinding';
+
 
 /** Unifica motores cuantitativos AR (`activeQuantEngines`) y US (`terminalEngines`) para Tab 1 y Tab 4. */
 export function resolveUnifiedQuantEngines(

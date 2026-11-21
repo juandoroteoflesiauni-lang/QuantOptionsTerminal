@@ -1,0 +1,4442 @@
+{
+  "meta": {
+    "generator": "tools/generate_pieza50_2_reference.py",
+    "tolerance": 1e-09,
+    "nowSec": 1767645000,
+    "todayEt": "2026-01-05"
+  },
+  "expiryCatalogCases": [
+    {
+      "name": "catalogo_completo_0dte_a_leaps_746d",
+      "spot": 600.0,
+      "nowSec": 1767645000,
+      "contracts": [
+        {
+          "ticker": "O:SPY260105C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260105C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260105C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260105C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260105C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260105C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260105C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260105C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260105C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260106C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260106C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260106C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260106C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260106C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260106C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260106C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260107C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260107C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260107C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260107C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260107C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260107C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260107C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260108C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260108C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260108C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260108C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260108C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260108C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260108C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260108C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260109C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260109C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260109C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260109C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260109C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260109C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260109C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260109C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260112C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260112C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260112C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260112C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260112C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260112C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260112C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260112C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260112C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260112C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260113C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260113C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260113C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260113C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260113C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260113C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260113C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260113C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260113C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-13",
+          "expiryUtcSec": 1768338000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260114C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260114C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260114C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260114C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260114C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260114C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260114C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260114C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260114C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-14",
+          "expiryUtcSec": 1768424400,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260115C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260115C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260115C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260115C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260115C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260115C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260115C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-15",
+          "expiryUtcSec": 1768510800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260116C00595000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 595.0
+        },
+        {
+          "ticker": "O:SPY260116C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260116C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260116C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260116C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260116C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260116C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260116C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260116C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260116C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260116C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-16",
+          "expiryUtcSec": 1768597200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260120C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260120C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260120C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260120C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260120C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260120C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260120C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260120C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-20",
+          "expiryUtcSec": 1768942800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260123C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260123C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260123C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260123C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260123C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260123C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260123C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260123C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260123C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-23",
+          "expiryUtcSec": 1769202000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260130C00595000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 595.0
+        },
+        {
+          "ticker": "O:SPY260130C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260130C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260130C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260130C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260130C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260130C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260130C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260130C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260130C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260130C00605000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 605.0
+        },
+        {
+          "ticker": "O:SPY260130C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-30",
+          "expiryUtcSec": 1769806800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260131C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260131C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260131C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260131C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260131C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260131C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260131C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260131C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260131C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260131C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-31",
+          "expiryUtcSec": 1769893200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260204C00594000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 594.0
+        },
+        {
+          "ticker": "O:SPY260204C00595000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 595.0
+        },
+        {
+          "ticker": "O:SPY260204C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260204C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260204C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260204C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260204C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260204C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260204C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260204C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260204C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260204C00605000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 605.0
+        },
+        {
+          "ticker": "O:SPY260204C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-02-04",
+          "expiryUtcSec": 1770238800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260206C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260206C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260206C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260206C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260206C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260206C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260206C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260206C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260206C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-02-06",
+          "expiryUtcSec": 1770411600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260213C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260213C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260213C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260213C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260213C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260213C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260213C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-02-13",
+          "expiryUtcSec": 1771016400,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260220C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260220C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260220C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260220C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260220C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260220C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260220C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260220C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260220C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260220C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-02-20",
+          "expiryUtcSec": 1771621200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260227C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260227C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260227C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260227C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260227C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260227C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260227C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260227C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-02-27",
+          "expiryUtcSec": 1772226000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260306C00594000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 594.0
+        },
+        {
+          "ticker": "O:SPY260306C00595000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 595.0
+        },
+        {
+          "ticker": "O:SPY260306C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260306C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260306C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260306C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260306C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260306C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260306C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260306C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260306C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260306C00605000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 605.0
+        },
+        {
+          "ticker": "O:SPY260306C00606000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 606.0
+        },
+        {
+          "ticker": "O:SPY260306C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-03-06",
+          "expiryUtcSec": 1772830800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260313C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260313C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260313C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260313C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260313C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260313C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260313C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260313C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260313C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-03-13",
+          "expiryUtcSec": 1773435600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260320C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260320C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260320C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260320C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260320C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260320C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260320C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260320C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260320C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260320C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-03-20",
+          "expiryUtcSec": 1774040400,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260327C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260327C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260327C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260327C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260327C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260327C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260327C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260327C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-03-27",
+          "expiryUtcSec": 1774645200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260406C00594000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 594.0
+        },
+        {
+          "ticker": "O:SPY260406C00595000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 595.0
+        },
+        {
+          "ticker": "O:SPY260406C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260406C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260406C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260406C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260406C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260406C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260406C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260406C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260406C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260406C00605000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 605.0
+        },
+        {
+          "ticker": "O:SPY260406C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-04-06",
+          "expiryUtcSec": 1775509200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260417C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260417C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260417C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260417C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260417C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260417C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260417C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260417C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260417C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-04-17",
+          "expiryUtcSec": 1776459600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260515C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260515C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260515C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260515C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260515C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260515C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260515C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260515C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260515C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260515C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-05-15",
+          "expiryUtcSec": 1778878800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260618C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260618C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260618C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260618C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260618C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260618C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260618C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260618C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-06-18",
+          "expiryUtcSec": 1781816400,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260619C00595000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 595.0
+        },
+        {
+          "ticker": "O:SPY260619C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260619C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260619C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260619C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260619C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260619C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260619C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260619C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260619C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260619C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-06-19",
+          "expiryUtcSec": 1781902800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260717C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260717C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260717C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260717C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260717C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260717C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260717C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260717C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260717C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-07-17",
+          "expiryUtcSec": 1784322000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260821C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260821C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260821C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260821C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260821C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260821C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260821C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260821C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-08-21",
+          "expiryUtcSec": 1787346000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260918C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260918C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260918C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260918C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260918C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260918C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260918C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260918C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260918C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-09-18",
+          "expiryUtcSec": 1789765200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY261218C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY261218C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY261218C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY261218C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY261218C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY261218C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY261218C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY261218C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY261218C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY261218C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-12-18",
+          "expiryUtcSec": 1797627600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY270115C00597000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY270115C00598000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY270115C00599000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY270115C00600000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY270115C00601000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY270115C00602000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY270115C00603000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY270115C00810000",
+          "contractType": "call",
+          "expirationDate": "2027-01-15",
+          "expiryUtcSec": 1800046800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY270617C00596000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY270617C00597000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY270617C00598000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY270617C00599000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY270617C00600000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY270617C00601000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY270617C00602000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY270617C00603000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY270617C00810000",
+          "contractType": "call",
+          "expirationDate": "2027-06-17",
+          "expiryUtcSec": 1813266000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY271217C00597000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY271217C00598000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY271217C00599000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY271217C00600000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY271217C00601000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY271217C00602000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY271217C00810000",
+          "contractType": "call",
+          "expirationDate": "2027-12-17",
+          "expiryUtcSec": 1829077200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY280121C00596000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY280121C00597000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY280121C00598000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY280121C00599000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY280121C00600000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY280121C00601000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY280121C00602000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY280121C00603000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY280121C00604000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY280121C00810000",
+          "contractType": "call",
+          "expirationDate": "2028-01-21",
+          "expiryUtcSec": 1832101200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260112C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260112C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY251219C00600000",
+          "contractType": "call",
+          "expirationDate": "2025-12-19",
+          "expiryUtcSec": 1766178000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY-BAD",
+          "contractType": "call",
+          "expirationDate": "2026-1-9",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 600.0
+        }
+      ],
+      "expected": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1.0,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2.0,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7.0,
+          "nearAtmContracts": 11
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10.0,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11.0,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-30",
+          "daysToExpiry": 25.0,
+          "nearAtmContracts": 11
+        },
+        {
+          "expirationDate": "2026-01-31",
+          "daysToExpiry": 26.0,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30.0,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-02-06",
+          "daysToExpiry": 32.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-02-13",
+          "daysToExpiry": 39.0,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-02-20",
+          "daysToExpiry": 46.0,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-27",
+          "daysToExpiry": 53.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-03-06",
+          "daysToExpiry": 60.0,
+          "nearAtmContracts": 13
+        },
+        {
+          "expirationDate": "2026-03-13",
+          "daysToExpiry": 67.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-03-20",
+          "daysToExpiry": 74.0,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-03-27",
+          "daysToExpiry": 81.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-04-06",
+          "daysToExpiry": 91.0,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-04-17",
+          "daysToExpiry": 102.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-05-15",
+          "daysToExpiry": 130.0,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-06-18",
+          "daysToExpiry": 164.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-06-19",
+          "daysToExpiry": 165.0,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-07-17",
+          "daysToExpiry": 193.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-08-21",
+          "daysToExpiry": 228.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-09-18",
+          "daysToExpiry": 256.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-12-18",
+          "daysToExpiry": 347.0,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2027-01-15",
+          "daysToExpiry": 375.0,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2027-06-17",
+          "daysToExpiry": 528.0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2027-12-17",
+          "daysToExpiry": 711.0,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746.0,
+          "nearAtmContracts": 9
+        }
+      ]
+    },
+    {
+      "name": "spot_no_finito_sin_conteo_atm",
+      "spot": "NaN",
+      "nowSec": 1767645000,
+      "contracts": [
+        {
+          "ticker": "O:SPY260105C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260105C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260105C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260105C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260105C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260105C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260105C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260105C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260105C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-05",
+          "expiryUtcSec": 1767646800,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260106C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260106C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260106C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260106C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260106C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260106C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260106C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-06",
+          "expiryUtcSec": 1767733200,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260107C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260107C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260107C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260107C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260107C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260107C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260107C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-07",
+          "expiryUtcSec": 1767819600,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260108C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260108C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260108C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260108C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260108C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260108C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260108C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260108C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-08",
+          "expiryUtcSec": 1767906000,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260109C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260109C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260109C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260109C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260109C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260109C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260109C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260109C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-09",
+          "expiryUtcSec": 1767992400,
+          "strikePrice": 810.0
+        },
+        {
+          "ticker": "O:SPY260112C00596000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 596.0
+        },
+        {
+          "ticker": "O:SPY260112C00597000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 597.0
+        },
+        {
+          "ticker": "O:SPY260112C00598000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 598.0
+        },
+        {
+          "ticker": "O:SPY260112C00599000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 599.0
+        },
+        {
+          "ticker": "O:SPY260112C00600000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 600.0
+        },
+        {
+          "ticker": "O:SPY260112C00601000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 601.0
+        },
+        {
+          "ticker": "O:SPY260112C00602000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 602.0
+        },
+        {
+          "ticker": "O:SPY260112C00603000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 603.0
+        },
+        {
+          "ticker": "O:SPY260112C00604000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 604.0
+        },
+        {
+          "ticker": "O:SPY260112C00810000",
+          "contractType": "call",
+          "expirationDate": "2026-01-12",
+          "expiryUtcSec": 1768251600,
+          "strikePrice": 810.0
+        }
+      ],
+      "expected": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0.0,
+          "nearAtmContracts": 0
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1.0,
+          "nearAtmContracts": 0
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2.0,
+          "nearAtmContracts": 0
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3.0,
+          "nearAtmContracts": 0
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4.0,
+          "nearAtmContracts": 0
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7.0,
+          "nearAtmContracts": 0
+        }
+      ]
+    }
+  ],
+  "anchorSelectionCases": [
+    {
+      "name": "anclas_completas_6_sin_requested",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-30",
+          "daysToExpiry": 25,
+          "nearAtmContracts": 11
+        },
+        {
+          "expirationDate": "2026-01-31",
+          "daysToExpiry": 26,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-02-06",
+          "daysToExpiry": 32,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-02-13",
+          "daysToExpiry": 39,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-02-20",
+          "daysToExpiry": 46,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-27",
+          "daysToExpiry": 53,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-03-06",
+          "daysToExpiry": 60,
+          "nearAtmContracts": 13
+        },
+        {
+          "expirationDate": "2026-03-13",
+          "daysToExpiry": 67,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-03-20",
+          "daysToExpiry": 74,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-03-27",
+          "daysToExpiry": 81,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-04-06",
+          "daysToExpiry": 91,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-04-17",
+          "daysToExpiry": 102,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-05-15",
+          "daysToExpiry": 130,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-06-18",
+          "daysToExpiry": 164,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-06-19",
+          "daysToExpiry": 165,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-07-17",
+          "daysToExpiry": 193,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-08-21",
+          "daysToExpiry": 228,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-09-18",
+          "daysToExpiry": 256,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-12-18",
+          "daysToExpiry": 347,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2027-01-15",
+          "daysToExpiry": 375,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2027-06-17",
+          "daysToExpiry": 528,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2027-12-17",
+          "daysToExpiry": 711,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "nearAtmContracts": 9
+        }
+      ],
+      "requested": null,
+      "expected": [
+        "2026-01-05",
+        "2026-01-12",
+        "2026-02-04",
+        "2026-03-06",
+        "2026-04-06",
+        "2026-07-17"
+      ]
+    },
+    {
+      "name": "requested_leaps_2028_fuera_de_buckets_desplaza_al_ancla_180d",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-30",
+          "daysToExpiry": 25,
+          "nearAtmContracts": 11
+        },
+        {
+          "expirationDate": "2026-01-31",
+          "daysToExpiry": 26,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-02-06",
+          "daysToExpiry": 32,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-02-13",
+          "daysToExpiry": 39,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-02-20",
+          "daysToExpiry": 46,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-27",
+          "daysToExpiry": 53,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-03-06",
+          "daysToExpiry": 60,
+          "nearAtmContracts": 13
+        },
+        {
+          "expirationDate": "2026-03-13",
+          "daysToExpiry": 67,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-03-20",
+          "daysToExpiry": 74,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-03-27",
+          "daysToExpiry": 81,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-04-06",
+          "daysToExpiry": 91,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-04-17",
+          "daysToExpiry": 102,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-05-15",
+          "daysToExpiry": 130,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-06-18",
+          "daysToExpiry": 164,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-06-19",
+          "daysToExpiry": 165,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-07-17",
+          "daysToExpiry": 193,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-08-21",
+          "daysToExpiry": 228,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-09-18",
+          "daysToExpiry": 256,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-12-18",
+          "daysToExpiry": 347,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2027-01-15",
+          "daysToExpiry": 375,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2027-06-17",
+          "daysToExpiry": 528,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2027-12-17",
+          "daysToExpiry": 711,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "nearAtmContracts": 9
+        }
+      ],
+      "requested": "2028-01-21",
+      "expected": [
+        "2026-01-05",
+        "2026-01-12",
+        "2026-02-04",
+        "2026-03-06",
+        "2026-04-06",
+        "2028-01-21"
+      ]
+    },
+    {
+      "name": "requested_dentro_de_bucket_no_duplica",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-30",
+          "daysToExpiry": 25,
+          "nearAtmContracts": 11
+        },
+        {
+          "expirationDate": "2026-01-31",
+          "daysToExpiry": 26,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-02-06",
+          "daysToExpiry": 32,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-02-13",
+          "daysToExpiry": 39,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-02-20",
+          "daysToExpiry": 46,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-27",
+          "daysToExpiry": 53,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-03-06",
+          "daysToExpiry": 60,
+          "nearAtmContracts": 13
+        },
+        {
+          "expirationDate": "2026-03-13",
+          "daysToExpiry": 67,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-03-20",
+          "daysToExpiry": 74,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-03-27",
+          "daysToExpiry": 81,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-04-06",
+          "daysToExpiry": 91,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-04-17",
+          "daysToExpiry": 102,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-05-15",
+          "daysToExpiry": 130,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-06-18",
+          "daysToExpiry": 164,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-06-19",
+          "daysToExpiry": 165,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-07-17",
+          "daysToExpiry": 193,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-08-21",
+          "daysToExpiry": 228,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-09-18",
+          "daysToExpiry": 256,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-12-18",
+          "daysToExpiry": 347,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2027-01-15",
+          "daysToExpiry": 375,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2027-06-17",
+          "daysToExpiry": 528,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2027-12-17",
+          "daysToExpiry": 711,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "nearAtmContracts": 9
+        }
+      ],
+      "requested": "2026-03-06",
+      "expected": [
+        "2026-01-05",
+        "2026-01-12",
+        "2026-02-04",
+        "2026-03-06",
+        "2026-04-06",
+        "2026-07-17"
+      ]
+    },
+    {
+      "name": "desempates_por_nearAtm_y_fecha",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-10",
+          "daysToExpiry": 5,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-31",
+          "daysToExpiry": 26,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30,
+          "nearAtmContracts": 12
+        },
+        {
+          "expirationDate": "2026-02-25",
+          "daysToExpiry": 51,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-03-25",
+          "daysToExpiry": 79,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-04-06",
+          "daysToExpiry": 91,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-06-19",
+          "daysToExpiry": 165,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-07-17",
+          "daysToExpiry": 193,
+          "nearAtmContracts": 10
+        }
+      ],
+      "requested": null,
+      "expected": [
+        "2026-01-05",
+        "2026-01-10",
+        "2026-02-04",
+        "2026-02-25",
+        "2026-04-06",
+        "2026-07-17"
+      ]
+    },
+    {
+      "name": "catalogo_vacio",
+      "catalog": [],
+      "requested": null,
+      "expected": []
+    },
+    {
+      "name": "catalogo_solo_front",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 1
+        }
+      ],
+      "requested": null,
+      "expected": [
+        "2026-01-05"
+      ]
+    }
+  ],
+  "expiryCatalogMergeCases": [
+    {
+      "name": "fusion_catalogo_completo_con_4_cargadas",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "nearAtmContracts": 9
+        }
+      ],
+      "loaded": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "validCallCount": 40,
+          "validPutCount": 38,
+          "nearAtmLiquidity": 120000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "validCallCount": 62,
+          "validPutCount": 60,
+          "nearAtmLiquidity": 210000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30,
+          "validCallCount": 88,
+          "validPutCount": 86,
+          "nearAtmLiquidity": 350000,
+          "inDefaultWindow": true,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2029-06-15",
+          "daysToExpiry": 1257,
+          "validCallCount": 12,
+          "validPutCount": 10,
+          "nearAtmLiquidity": 4000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        }
+      ],
+      "expected": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "loaded": true,
+          "validCallCount": 40,
+          "validPutCount": 38,
+          "nearAtmLiquidity": 120000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "loaded": true,
+          "validCallCount": 62,
+          "validPutCount": 60,
+          "nearAtmLiquidity": 210000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": true,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": true,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-02-04",
+          "daysToExpiry": 30,
+          "loaded": true,
+          "validCallCount": 88,
+          "validPutCount": 86,
+          "nearAtmLiquidity": 350000,
+          "inDefaultWindow": true,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2029-06-15",
+          "daysToExpiry": 1257,
+          "loaded": true,
+          "validCallCount": 12,
+          "validPutCount": 10,
+          "nearAtmLiquidity": 4000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        }
+      ]
+    },
+    {
+      "name": "fusion_sin_cargadas",
+      "catalog": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "nearAtmContracts": 9
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "nearAtmContracts": 6
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "nearAtmContracts": 10
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "nearAtmContracts": 7
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "nearAtmContracts": 8
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "nearAtmContracts": 9
+        }
+      ],
+      "loaded": [],
+      "expected": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-06",
+          "daysToExpiry": 1,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-07",
+          "daysToExpiry": 2,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-08",
+          "daysToExpiry": 3,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-09",
+          "daysToExpiry": 4,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-13",
+          "daysToExpiry": 8,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-14",
+          "daysToExpiry": 9,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-15",
+          "daysToExpiry": 10,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-16",
+          "daysToExpiry": 11,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-20",
+          "daysToExpiry": 15,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": true,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2026-01-23",
+          "daysToExpiry": 18,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": true,
+          "hasCompleteAtmChain": false
+        },
+        {
+          "expirationDate": "2028-01-21",
+          "daysToExpiry": 746,
+          "loaded": false,
+          "validCallCount": 0,
+          "validPutCount": 0,
+          "nearAtmLiquidity": 0,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": false
+        }
+      ]
+    },
+    {
+      "name": "fusion_sin_catalogo_solo_cargadas",
+      "catalog": [],
+      "loaded": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "validCallCount": 40,
+          "validPutCount": 38,
+          "nearAtmLiquidity": 120000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "validCallCount": 62,
+          "validPutCount": 60,
+          "nearAtmLiquidity": 210000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        }
+      ],
+      "expected": [
+        {
+          "expirationDate": "2026-01-05",
+          "daysToExpiry": 0,
+          "loaded": true,
+          "validCallCount": 40,
+          "validPutCount": 38,
+          "nearAtmLiquidity": 120000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        },
+        {
+          "expirationDate": "2026-01-12",
+          "daysToExpiry": 7,
+          "loaded": true,
+          "validCallCount": 62,
+          "validPutCount": 60,
+          "nearAtmLiquidity": 210000,
+          "inDefaultWindow": false,
+          "hasCompleteAtmChain": true
+        }
+      ]
+    }
+  ],
+  "activeExpiryTirCases": [
+    {
+      "name": "front_0dte_activo_30dte_paridad_propia_visible",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "activeParity": {
+          "expiryCode": "2026-02-04",
+          "medianMidTeaPct": 4.35,
+          "impliedRateStatus": "OK"
+        },
+        "activeExpirySyntheticRates": {
+          "medianImpliedTna": 0.0425,
+          "impliedRateStatus": "OK"
+        }
+      },
+      "expected": {
+        "blockedShortDte": false,
+        "tirPct": 4.35
+      }
+    },
+    {
+      "name": "activo_2dte_bloqueada_por_dte",
+      "input": {
+        "activeDte": 2,
+        "activeExpiryId": "2026-01-07",
+        "activeParity": {
+          "expiryCode": "2026-01-07",
+          "medianMidTeaPct": 4.4,
+          "impliedRateStatus": "OK"
+        },
+        "activeExpirySyntheticRates": {
+          "medianImpliedTna": 0.044,
+          "impliedRateStatus": "OK"
+        }
+      },
+      "expected": {
+        "blockedShortDte": true,
+        "tirPct": "NaN"
+      }
+    },
+    {
+      "name": "activo_1dte_bloqueada_por_dte",
+      "input": {
+        "activeDte": 1,
+        "activeExpiryId": "2026-01-06",
+        "activeParity": {
+          "expiryCode": "2026-01-06",
+          "medianMidTeaPct": 4.4,
+          "impliedRateStatus": "OK"
+        },
+        "activeExpirySyntheticRates": null
+      },
+      "expected": {
+        "blockedShortDte": true,
+        "tirPct": "NaN"
+      }
+    },
+    {
+      "name": "activo_0dte_bloqueada_por_dte",
+      "input": {
+        "activeDte": 0,
+        "activeExpiryId": "2026-01-05",
+        "activeParity": {
+          "expiryCode": "2026-01-05",
+          "medianMidTeaPct": 4.4,
+          "impliedRateStatus": "BLOCKED_SHORT_DTE"
+        },
+        "activeExpirySyntheticRates": {
+          "medianImpliedTna": 0.044,
+          "impliedRateStatus": "BLOCKED_SHORT_DTE"
+        }
+      },
+      "expected": {
+        "blockedShortDte": true,
+        "tirPct": "NaN"
+      }
+    },
+    {
+      "name": "paridad_de_otro_vencimiento_ignorada_y_sin_synthetic",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "activeParity": {
+          "expiryCode": "2026-01-05",
+          "medianMidTeaPct": 3.9,
+          "impliedRateStatus": "BLOCKED_SHORT_DTE"
+        },
+        "activeExpirySyntheticRates": null
+      },
+      "expected": {
+        "blockedShortDte": false,
+        "tirPct": "NaN"
+      }
+    },
+    {
+      "name": "paridad_ausente_usa_synthetic_del_activo",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "activeParity": null,
+        "activeExpirySyntheticRates": {
+          "medianImpliedTna": 0.041,
+          "impliedRateStatus": "OK"
+        }
+      },
+      "expected": {
+        "blockedShortDte": false,
+        "tirPct": 4.1000000000000005
+      }
+    },
+    {
+      "name": "dte_no_finito_no_bloquea",
+      "input": {
+        "activeDte": "NaN",
+        "activeExpiryId": "2026-02-04",
+        "activeParity": {
+          "expiryCode": "2026-02-04",
+          "medianMidTeaPct": 4.5,
+          "impliedRateStatus": "OK"
+        },
+        "activeExpirySyntheticRates": null
+      },
+      "expected": {
+        "blockedShortDte": false,
+        "tirPct": 4.5
+      }
+    }
+  ],
+  "activeExpiryRegimeCases": [
+    {
+      "name": "front_0dte_activo_30dte_sobre_put_wall_precomputed_coherente",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 1200.0
+        },
+        "precomputedRegimeForActiveExpiry": "VENTA_PRIMA_CUBIERTA",
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 25.0,
+          "rvReferencePct": 18.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": false,
+        "autoSelectCreditMode": true,
+        "baseRegimeCode": "VENTA_PRIMA_CUBIERTA",
+        "activeRegimeCode": "VENTA_PRIMA_CUBIERTA"
+      }
+    },
+    {
+      "name": "activo_2dte_sin_bloqueo_de_venta_de_prima",
+      "input": {
+        "activeDte": 2,
+        "activeExpiryId": "2026-01-07",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 900.0
+        },
+        "precomputedRegimeForActiveExpiry": null,
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 22.0,
+          "rvReferencePct": 20.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": false,
+        "autoSelectCreditMode": true,
+        "baseRegimeCode": "NEUTRAL_SELECTIVO",
+        "activeRegimeCode": "NEUTRAL_SELECTIVO"
+      }
+    },
+    {
+      "name": "activo_0dte_bloqueado_por_dte",
+      "input": {
+        "activeDte": 0,
+        "activeExpiryId": "2026-01-05",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 900.0
+        },
+        "precomputedRegimeForActiveExpiry": null,
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 30.0,
+          "rvReferencePct": 18.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": true,
+        "autoSelectCreditMode": false,
+        "baseRegimeCode": "NO_SHORT_PREMIUM_RISK",
+        "activeRegimeCode": "NO_SHORT_PREMIUM_RISK"
+      }
+    },
+    {
+      "name": "activo_1dte_bloqueado_por_dte",
+      "input": {
+        "activeDte": 1,
+        "activeExpiryId": "2026-01-06",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 900.0
+        },
+        "precomputedRegimeForActiveExpiry": null,
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 30.0,
+          "rvReferencePct": 18.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": true,
+        "autoSelectCreditMode": false,
+        "baseRegimeCode": "NO_SHORT_PREMIUM_RISK",
+        "activeRegimeCode": "NO_SHORT_PREMIUM_RISK"
+      }
+    },
+    {
+      "name": "activo_30dte_short_gamma_bajo_put_wall_bloquea_sin_ser_0dte",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "spot": 555.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": -900.0
+        },
+        "precomputedRegimeForActiveExpiry": null,
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 25.0,
+          "rvReferencePct": 18.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": true,
+        "autoSelectCreditMode": false,
+        "baseRegimeCode": "NO_SHORT_PREMIUM_RISK",
+        "activeRegimeCode": "NO_SHORT_PREMIUM_RISK"
+      }
+    },
+    {
+      "name": "precomputed_no_short_incoherente_se_recalcula_sobre_el_activo",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 500.0
+        },
+        "precomputedRegimeForActiveExpiry": "NO_SHORT_PREMIUM_RISK",
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 25.0,
+          "rvReferencePct": 18.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": false,
+        "autoSelectCreditMode": true,
+        "baseRegimeCode": "VENTA_PRIMA_CUBIERTA",
+        "activeRegimeCode": "VENTA_PRIMA_CUBIERTA"
+      }
+    },
+    {
+      "name": "precomputed_compra_convexidad_coherente_se_conserva",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 500.0
+        },
+        "precomputedRegimeForActiveExpiry": "COMPRA_CONVEXIDAD_CALENDAR",
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": 15.0,
+          "rvReferencePct": 22.0,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": false,
+        "autoSelectCreditMode": true,
+        "baseRegimeCode": "COMPRA_CONVEXIDAD_CALENDAR",
+        "activeRegimeCode": "COMPRA_CONVEXIDAD_CALENDAR"
+      }
+    },
+    {
+      "name": "sin_iv_ni_rv_regime_no_data",
+      "input": {
+        "activeDte": 30,
+        "activeExpiryId": "2026-02-04",
+        "spot": 600.0,
+        "activeExposureSummary": {
+          "putWallStrike": 570.0,
+          "netGex": 500.0
+        },
+        "precomputedRegimeForActiveExpiry": null,
+        "fallbackRegimeInput": {
+          "ivAtmActiveExpiryPct": null,
+          "rvReferencePct": null,
+          "rvReferenceLabel": "RV23d"
+        }
+      },
+      "expected": {
+        "blocked": false,
+        "autoSelectCreditMode": true,
+        "baseRegimeCode": "NO_DATA",
+        "activeRegimeCode": "NO_DATA"
+      }
+    }
+  ]
+}
