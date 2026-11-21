@@ -93,6 +93,12 @@ export interface CacheLookupResult<T> {
 export interface SingleFlightRuntimeCacheOptions {
   readonly nowFn?: () => number;
   readonly ttlResolver?: (nowMs: number) => number;
+  /**
+   * Máximo de entradas residentes (LRU de inserción). Por defecto `Infinity`
+   * (comportamiento histórico sin límite). Al superarlo se desalojan las
+   * entradas más antiguas en orden de inserción.
+   */
+  readonly maxEntries?: number;
 }
 
 export interface CacheLookupOptions {
@@ -120,6 +126,7 @@ interface InternalFlight<T> {
 export class SingleFlightRuntimeCache<T> {
   private readonly nowFn: () => number;
   private readonly ttlResolver: (nowMs: number) => number;
+  private readonly maxEntries: number;
   private readonly entries = new Map<string, CacheEntry<T>>();
   private readonly inFlight = new Map<string, InternalFlight<T>>();
   private hitsCount = 0;
@@ -129,6 +136,23 @@ export class SingleFlightRuntimeCache<T> {
   public constructor(options: SingleFlightRuntimeCacheOptions = {}) {
     this.nowFn = options.nowFn ?? ((): number => Date.now());
     this.ttlResolver = options.ttlResolver ?? computeDynamicTtlMs;
+    this.maxEntries =
+      options.maxEntries !== undefined &&
+      Number.isFinite(options.maxEntries) &&
+      options.maxEntries >= 1
+        ? Math.trunc(options.maxEntries)
+        : Number.POSITIVE_INFINITY;
+  }
+
+  private storeEntry(key: string, entry: CacheEntry<T>): void {
+    this.entries.set(key, entry);
+    if (Number.isFinite(this.maxEntries)) {
+      while (this.entries.size > this.maxEntries) {
+        const oldestKey = this.entries.keys().next().value;
+        if (oldestKey === undefined) break;
+        this.entries.delete(oldestKey);
+      }
+    }
   }
 
   public async getOrCompute(
@@ -181,7 +205,7 @@ export class SingleFlightRuntimeCache<T> {
         expiresAtMs: completedAtMs + ttlMs,
         ttlMs,
       };
-      this.entries.set(key, entry);
+      this.storeEntry(key, entry);
       return entry;
     })();
 

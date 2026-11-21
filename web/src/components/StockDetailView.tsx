@@ -31,6 +31,9 @@ import {
 } from '../data/liveRuntimeBridge';
 import type {
   ArStockDetailResponse,
+  AutoAnchorRole,
+  AutoAnchorSource,
+  AutoAvwapAnchorDto,
   OrderBook5LevelsDto,
   TerminalTimeframe,
   UsTerminalBarsResponseDto,
@@ -55,6 +58,7 @@ import {
 } from '../../../src/core/stockDetailStability';
 import {
   findNearestBarIndex,
+  resolveAutoAvwapBarIndex,
   resolveAvwapClickAnchor,
   resolveChartFitKey,
   resolveChartViewportTransition,
@@ -126,6 +130,7 @@ const CHART_TIMEFRAMES: readonly { readonly id: TerminalTimeframe; readonly labe
 ];
 
 type PanoramicAvwapAnchorMode =
+  | 'AUTO_INSTITUTIONAL'
   | 'SESSION_START'
   | 'MONTH_START'
   | 'YEAR_START'
@@ -137,6 +142,7 @@ const PANORAMIC_AVWAP_MODES: readonly {
   readonly id: PanoramicAvwapAnchorMode;
   readonly label: string;
 }[] = [
+  { id: 'AUTO_INSTITUTIONAL', label: 'Auto (Institucional)' },
   { id: 'SESSION_START', label: 'Inicio Sesión' },
   { id: 'MONTH_START', label: 'Inicio Mes' },
   { id: 'YEAR_START', label: 'Inicio Año' },
@@ -176,6 +182,53 @@ interface PanoramicChartBundle extends StockChartSeriesBundle {
   readonly avwapAnchorModeLabel: string;
   /** Pieza 50.4: timestamp UTC del ancla efectiva (misma vela donde nace la curva y el marcador). */
   readonly avwapEffectiveAnchorTimeSec: number | null;
+  /** Pieza 50.5: líneas Auto-AVWAP (máx 1 por rol) proyectadas al timeframe activo. */
+  readonly autoAvwapLines: readonly ComputedAutoAvwapLine[];
+  /** Pieza 50.5: `true` cuando el modo activo es `AUTO_INSTITUTIONAL`. */
+  readonly isAutoAvwapMode: boolean;
+}
+
+/** Pieza 50.5: ancla Auto-AVWAP proyectada sobre las barras del timeframe activo. */
+interface ComputedAutoAvwapLine {
+  readonly role: AutoAnchorRole;
+  readonly anchorTimeSec: number;
+  readonly effectiveAnchorTimeSec: number | null;
+  readonly series: readonly (number | null)[];
+  readonly score: number;
+  readonly sources: readonly AutoAnchorSource[];
+  readonly eventLabel: string | null;
+  /** `true` si el ancla diaria cae dentro de la ventana cargada del timeframe activo. */
+  readonly inRange: boolean;
+}
+
+/** Pieza 50.5: slots fijos de series AVWAP (ancla única + Auto-AVWAP por rol). */
+type AvwapSlotKey =
+  | 'single_main'
+  | 'single_u1'
+  | 'single_l1'
+  | 'single_u2'
+  | 'single_l2'
+  | 'auto_SUPPORT'
+  | 'auto_RESISTANCE'
+  | 'auto_EVENT';
+
+const AUTO_ANCHOR_ROLES: readonly AutoAnchorRole[] = ['SUPPORT', 'RESISTANCE', 'EVENT'];
+
+const AUTO_ANCHOR_SLOT_BY_ROLE: Readonly<Record<AutoAnchorRole, AvwapSlotKey>> = {
+  SUPPORT: 'auto_SUPPORT',
+  RESISTANCE: 'auto_RESISTANCE',
+  EVENT: 'auto_EVENT',
+};
+
+/** Pieza 50.5: color determinista por rol (punto 6px de pill + serie + marcador). */
+const AUTO_ANCHOR_COLORS: Readonly<Record<AutoAnchorRole, string>> = {
+  SUPPORT: '#2DD4BF',
+  RESISTANCE: '#FB7185',
+  EVENT: '#F59E0B',
+};
+
+function autoAnchorShortLabel(role: AutoAnchorRole): string {
+  return role === 'SUPPORT' ? 'SUP' : role === 'RESISTANCE' ? 'RES' : 'EVT';
 }
 
 function normalizeFiniteOrNull(value: number | null | undefined): number | null {
@@ -463,6 +516,12 @@ export const StockDetailView: React.FC<{
   avwapModeRef.current = avwapMode;
   const [clickedAnchorTimeSec, setClickedAnchorTimeSec] = useState<number | null>(null);
   const [showAvwapBands, setShowAvwapBands] = useState(true);
+  /** Pieza 50.5: visibilidad individual de cada rol Auto-AVWAP (sin `setData`). */
+  const [autoAnchorEnabled, setAutoAnchorEnabled] = useState<Readonly<Record<AutoAnchorRole, boolean>>>({
+    SUPPORT: true,
+    RESISTANCE: true,
+    EVENT: true,
+  });
   const [lowerMode, setLowerMode] = useState<LowerPaneMode>('CVD');
   const [highlightedLevel, setHighlightedLevel] = useState<HighlightLevelId>(null);
   const [overlays, setOverlays] = useState<OverlayVisibilityState>({
@@ -649,6 +708,11 @@ export const StockDetailView: React.FC<{
     void load();
     return () => controller.abort();
   }, [cleanTicker, currentStockKey, timeframe, isArMarket]);
+
+  // Pieza 50.5: al cambiar de ticker, todos los roles Auto-AVWAP vuelven a visibles.
+  useEffect(() => {
+    setAutoAnchorEnabled({ SUPPORT: true, RESISTANCE: true, EVENT: true });
+  }, [currentStockKey]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1154,6 +1218,31 @@ export const StockDetailView: React.FC<{
     const vrpPct = ivAtmPct !== null && rv30Pct !== null ? ivAtmPct - rv30Pct : null;
     const modeLabel = PANORAMIC_AVWAP_MODES.find((mode) => mode.id === avwapMode)?.label ?? '—';
 
+    // Pieza 50.5: anclas institucionales del backend (misma respuesta que alimenta
+    // el gráfico; en 1W se toma el dataset 1D del resample). Solo se proyectan en
+    // modo Auto; en modos de ancla única el cálculo existente queda intacto.
+    const rawAutoAnchors: readonly AutoAvwapAnchorDto[] = isArMarket
+      ? (arBarsResp?.autoAvwapAnchors ?? arBars1dResp?.autoAvwapAnchors ?? [])
+      : (usBarsResp?.autoAvwapAnchors ?? usBars1dResp?.autoAvwapAnchors ?? []);
+    const isAutoAvwapMode = avwapMode === 'AUTO_INSTITUTIONAL';
+    const autoAvwapLines: ComputedAutoAvwapLine[] = [];
+    if (isAutoAvwapMode) {
+      for (const anchor of rawAutoAnchors) {
+        const projectedIndex = resolveAutoAvwapBarIndex(bars, anchor.anchorTimeSec, effectiveChartTimeframe);
+        const lineCalc = computeAnchoredVwapWithAnchor(bars, projectedIndex);
+        autoAvwapLines.push({
+          role: anchor.role,
+          anchorTimeSec: anchor.anchorTimeSec,
+          effectiveAnchorTimeSec: lineCalc.effectiveAnchorTime,
+          series: lineCalc.series.map(normalizeFiniteOrNull),
+          score: anchor.score,
+          sources: anchor.sources,
+          eventLabel: anchor.eventLabel,
+          inRange: lineCalc.effectiveAnchorIndex >= 0,
+        });
+      }
+    }
+
     return {
       bars,
       ema9,
@@ -1171,6 +1260,8 @@ export const StockDetailView: React.FC<{
       avwapAnchorAvailable: avwapCalc.effectiveAnchorIndex >= 0,
       avwapAnchorModeLabel: modeLabel,
       avwapEffectiveAnchorTimeSec: avwapCalc.effectiveAnchorTime,
+      autoAvwapLines,
+      isAutoAvwapMode,
       benchmarkBars1d: benchBars1d,
       ivAtmPct,
       rv30Pct,
@@ -1244,6 +1335,9 @@ export const StockDetailView: React.FC<{
           avwapAnchorIncludeTime,
         )
       : null;
+  // Pieza 50.5: modo Auto-Institucional (bandas ±σ deshabilitadas; pills por rol).
+  const isAutoAvwapMode = avwapMode === 'AUTO_INSTITUTIONAL';
+  const autoAnchorTimeZone = isArMarket ? AR_MARKET_TIMEZONE : US_MARKET_TIMEZONE;
 
   const { gexProfileStrikes, expectedMoveInfo } = useMemo(() => {
     const spot = contextInfo.spot;
@@ -1783,7 +1877,47 @@ export const StockDetailView: React.FC<{
               className="min-w-[132px] font-mono-num tabular-nums text-center"
               onClick={() => handleToggleOverlay('avwap')}
             />
-            <ToolbarChip active={showAvwapBands} label="AVWAP ±1σ/±2σ" onClick={() => setShowAvwapBands((visible) => !visible)} />
+            <ToolbarChip
+              active={!isAutoAvwapMode && showAvwapBands}
+              disabled={isAutoAvwapMode}
+              label="AVWAP ±1σ/±2σ"
+              title="Bandas ±1σ/±2σ disponibles solo en modos de ancla única"
+              onClick={() => setShowAvwapBands((visible) => !visible)}
+            />
+            {isAutoAvwapMode && chartBundle.autoAvwapLines.length > 0 && (
+              <div className="flex items-center gap-1">
+                {chartBundle.autoAvwapLines.map((line) => {
+                  const enabled = autoAnchorEnabled[line.role];
+                  const dateLabel = formatAvwapAnchorLabel(line.anchorTimeSec, autoAnchorTimeZone, false);
+                  const roleLabel = autoAnchorShortLabel(line.role);
+                  const detail = line.eventLabel !== null ? `${line.eventLabel} · ` : '';
+                  const tooltip = line.inRange
+                    ? `Auto-AVWAP ${line.role} · ${detail}${line.sources.join('/')} · score ${fmtNum(line.score, 0)}`
+                    : `Auto-AVWAP ${line.role}: ancla diaria fuera del rango intradiario cargado`;
+                  return (
+                    <button
+                      key={line.role}
+                      type="button"
+                      onClick={() =>
+                        setAutoAnchorEnabled((prev) => ({ ...prev, [line.role]: !prev[line.role] }))
+                      }
+                      title={tooltip}
+                      className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 font-mono-num tabular-nums text-[10px] transition-colors cursor-pointer ${
+                        enabled
+                          ? 'border-[#2E3446] bg-[#14141F] text-white'
+                          : 'border-[#1D1D29] bg-[#111118] text-[#525870]'
+                      } ${line.inRange ? '' : 'opacity-60'}`}
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: enabled ? AUTO_ANCHOR_COLORS[line.role] : '#3A3A4A' }}
+                      />
+                      {`${roleLabel} ${dateLabel ?? '—'}`}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <ToolbarChip
               active={overlays.volumeProfile}
               label={`POC/VAH/VAL · ${vpWindowTag}`}
@@ -1803,6 +1937,7 @@ export const StockDetailView: React.FC<{
           timeframe={effectiveChartTimeframe}
           overlays={overlays}
           showAvwapBands={showAvwapBands}
+          autoAnchorEnabled={autoAnchorEnabled}
           currencySymbol={contextInfo.currencySymbol}
           keyLevels={keyLevels}
           highlightedLevel={highlightedLevel}
@@ -1922,6 +2057,7 @@ const PanoramicPriceChart: React.FC<{
   readonly timeframe: TerminalTimeframe;
   readonly overlays: OverlayVisibilityState;
   readonly showAvwapBands: boolean;
+  readonly autoAnchorEnabled: Readonly<Record<AutoAnchorRole, boolean>>;
   readonly currencySymbol: 'ARS' | 'USD';
   readonly keyLevels: ChartKeyLevels;
   readonly highlightedLevel: HighlightLevelId;
@@ -1939,6 +2075,7 @@ const PanoramicPriceChart: React.FC<{
   timeframe,
   overlays,
   showAvwapBands,
+  autoAnchorEnabled,
   currencySymbol,
   keyLevels,
   highlightedLevel,
@@ -1956,7 +2093,8 @@ const PanoramicPriceChart: React.FC<{
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const emaRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
   const vwapRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const avwapRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
+  /** Pieza 50.5: slots fijos de AVWAP (ancla única + Auto por rol), sin re-crear series. */
+  const avwapRefs = useRef<Partial<Record<AvwapSlotKey, ISeriesApi<'Line'>>>>({});
   const priceLineSlotsRef = useRef<{
     readonly poc: IPriceLine;
     readonly vah: IPriceLine;
@@ -2058,13 +2196,17 @@ const PanoramicPriceChart: React.FC<{
       chart.addSeries(LineSeries, { color: '#FF5468', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
     ];
     const vwap = chart.addSeries(LineSeries, { color: '#FACC15', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-    const avwapSeries = [
-      chart.addSeries(LineSeries, { color: '#C084FC', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-    ];
+    // Pieza 50.5: 8 slots fijos — 5 de ancla única (estilos originales) + 3 Auto-AVWAP por rol.
+    const avwapSeriesSlots: Record<AvwapSlotKey, ISeriesApi<'Line'>> = {
+      single_main: chart.addSeries(LineSeries, { color: '#C084FC', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
+      single_u1: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      single_l1: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      single_u2: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      single_l2: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      auto_SUPPORT: chart.addSeries(LineSeries, { color: '#2DD4BF', lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false }),
+      auto_RESISTANCE: chart.addSeries(LineSeries, { color: '#FB7185', lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false }),
+      auto_EVENT: chart.addSeries(LineSeries, { color: '#F59E0B', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
+    };
 
     priceLineSlotsRef.current = {
       poc: candles.createPriceLine({
@@ -2128,7 +2270,7 @@ const PanoramicPriceChart: React.FC<{
     candleMarkersRef.current = createSeriesMarkers(candles, []);
     emaRefs.current = emaSeries;
     vwapRef.current = vwap;
-    avwapRefs.current = avwapSeries;
+    avwapRefs.current = avwapSeriesSlots;
 
     const handleRangeChange = (range: LogicalRangeAlias | null): void => {
       if (
@@ -2240,7 +2382,7 @@ const PanoramicPriceChart: React.FC<{
       candleRef.current = null;
       emaRefs.current = [];
       vwapRef.current = null;
-      avwapRefs.current = [];
+      avwapRefs.current = {};
       priceLineSlotsRef.current = null;
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
@@ -2287,7 +2429,7 @@ const PanoramicPriceChart: React.FC<{
       candles.setData([]);
       emaRefs.current.forEach((series) => series.setData([]));
       vwapRef.current?.setData([]);
-      avwapRefs.current.forEach((series) => series.setData([]));
+      Object.values(avwapRefs.current).forEach((series) => series?.setData([]));
       lastRenderedBarsRef.current = [];
       formingBarRef.current = null;
       emaBaseBeforeFormingRef.current = { 9: null, 21: null, 50: null, 200: null };
@@ -2318,11 +2460,29 @@ const PanoramicPriceChart: React.FC<{
     emaRefs.current[2]?.setData(toLineData(bundle.ema50));
     emaRefs.current[3]?.setData(toLineData(bundle.ema200));
     vwapRef.current?.setData(toLineData(bundle.sessionVwap));
-    avwapRefs.current[0]?.setData(toLineData(bundle.avwapSeries));
-    avwapRefs.current[1]?.setData(toLineData(bundle.avwapUpper1));
-    avwapRefs.current[2]?.setData(toLineData(bundle.avwapLower1));
-    avwapRefs.current[3]?.setData(toLineData(bundle.avwapUpper2));
-    avwapRefs.current[4]?.setData(toLineData(bundle.avwapLower2));
+
+    // Pieza 50.5: limpiar TODOS los slots AVWAP y poblar solo la familia activa
+    // (ancla única o Auto por rol). La visibilidad por toggle se resuelve con
+    // `applyOptions({ visible })`, sin volver a llamar a `setData()`.
+    const avwapSlots = avwapRefs.current;
+    Object.values(avwapSlots).forEach((series) => series?.setData([]));
+    if (bundle.isAutoAvwapMode) {
+      const lineByRole = new Map<AutoAnchorRole, ComputedAutoAvwapLine>();
+      for (const line of bundle.autoAvwapLines) {
+        if (line.inRange && !lineByRole.has(line.role)) lineByRole.set(line.role, line);
+      }
+      for (const role of AUTO_ANCHOR_ROLES) {
+        const series = avwapSlots[AUTO_ANCHOR_SLOT_BY_ROLE[role]];
+        const line = lineByRole.get(role);
+        if (series !== undefined && line !== undefined) series.setData(toLineData(line.series));
+      }
+    } else {
+      avwapSlots['single_main']?.setData(toLineData(bundle.avwapSeries));
+      avwapSlots['single_u1']?.setData(toLineData(bundle.avwapUpper1));
+      avwapSlots['single_l1']?.setData(toLineData(bundle.avwapLower1));
+      avwapSlots['single_u2']?.setData(toLineData(bundle.avwapUpper2));
+      avwapSlots['single_l2']?.setData(toLineData(bundle.avwapLower2));
+    }
 
     lastRenderedBarsRef.current = bundle.bars;
     formingBarRef.current = lastBar
@@ -2358,19 +2518,59 @@ const PanoramicPriceChart: React.FC<{
   useEffect(() => {
     emaRefs.current.forEach((series) => series.applyOptions({ visible: overlays.emas }));
     vwapRef.current?.applyOptions({ visible: overlays.sessionVwap });
-    avwapRefs.current[0]?.applyOptions({ visible: overlays.avwap });
-    avwapRefs.current[1]?.applyOptions({ visible: overlays.avwap && showAvwapBands });
-    avwapRefs.current[2]?.applyOptions({ visible: overlays.avwap && showAvwapBands });
-    avwapRefs.current[3]?.applyOptions({ visible: overlays.avwap && showAvwapBands });
-    avwapRefs.current[4]?.applyOptions({ visible: overlays.avwap && showAvwapBands });
-  }, [overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands]);
+    const slots = avwapRefs.current;
+    const isAutoMode = bundle.isAutoAvwapMode;
+    slots['single_main']?.applyOptions({ visible: overlays.avwap && !isAutoMode });
+    slots['single_u1']?.applyOptions({ visible: overlays.avwap && !isAutoMode && showAvwapBands });
+    slots['single_l1']?.applyOptions({ visible: overlays.avwap && !isAutoMode && showAvwapBands });
+    slots['single_u2']?.applyOptions({ visible: overlays.avwap && !isAutoMode && showAvwapBands });
+    slots['single_l2']?.applyOptions({ visible: overlays.avwap && !isAutoMode && showAvwapBands });
+    slots['auto_SUPPORT']?.applyOptions({
+      visible: overlays.avwap && isAutoMode && autoAnchorEnabled.SUPPORT,
+    });
+    slots['auto_RESISTANCE']?.applyOptions({
+      visible: overlays.avwap && isAutoMode && autoAnchorEnabled.RESISTANCE,
+    });
+    slots['auto_EVENT']?.applyOptions({
+      visible: overlays.avwap && isAutoMode && autoAnchorEnabled.EVENT,
+    });
+  }, [overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands, bundle.isAutoAvwapMode, autoAnchorEnabled]);
 
-  // Pieza 50.4: marcador discreto en la vela del ancla AVWAP efectiva (plugin v5, sin setData).
+  // Pieza 50.4/50.5: marcadores `t0` vía plugin v5 (sin setData) — ancla única o Auto por rol.
   useEffect(() => {
     const markersPlugin = candleMarkersRef.current;
     if (!markersPlugin) return;
+    if (!overlays.avwap || !bundle.barsAvailable) {
+      markersPlugin.setMarkers([]);
+      return;
+    }
+    if (bundle.isAutoAvwapMode) {
+      const markers: SeriesMarker<Time>[] = [];
+      for (const line of bundle.autoAvwapLines) {
+        if (
+          !line.inRange ||
+          line.effectiveAnchorTimeSec === null ||
+          !Number.isFinite(line.effectiveAnchorTimeSec) ||
+          !autoAnchorEnabled[line.role]
+        ) {
+          continue;
+        }
+        markers.push({
+          time: line.effectiveAnchorTimeSec as UTCTimestamp,
+          position: line.role === 'RESISTANCE' ? 'aboveBar' : 'belowBar',
+          shape: line.role === 'RESISTANCE' ? 'arrowDown' : 'arrowUp',
+          color: AUTO_ANCHOR_COLORS[line.role],
+          text: autoAnchorShortLabel(line.role),
+          size: 1,
+        });
+      }
+      // `createSeriesMarkers` exige orden estrictamente ascendente por `time`.
+      markers.sort((a, b) => (a.time as number) - (b.time as number));
+      markersPlugin.setMarkers(markers);
+      return;
+    }
     const anchorSec = bundle.avwapEffectiveAnchorTimeSec;
-    if (!overlays.avwap || !bundle.barsAvailable || anchorSec === null || !Number.isFinite(anchorSec)) {
+    if (anchorSec === null || !Number.isFinite(anchorSec)) {
       markersPlugin.setMarkers([]);
       return;
     }
@@ -2383,7 +2583,14 @@ const PanoramicPriceChart: React.FC<{
       size: 1,
     };
     markersPlugin.setMarkers([marker]);
-  }, [bundle.avwapEffectiveAnchorTimeSec, bundle.barsAvailable, overlays.avwap]);
+  }, [
+    bundle.autoAvwapLines,
+    bundle.avwapEffectiveAnchorTimeSec,
+    bundle.barsAvailable,
+    bundle.isAutoAvwapMode,
+    overlays.avwap,
+    autoAnchorEnabled,
+  ]);
 
   // IPriceLine persistentes actualizadas in-place con applyOptions.
   useEffect(() => {

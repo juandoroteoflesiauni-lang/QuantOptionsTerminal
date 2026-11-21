@@ -1052,6 +1052,30 @@ export interface UsTerminalBarsResponseDto {
     readonly sessionCvd: readonly (number | null)[];
     readonly deltaMode: string | null;
   };
+  /**
+   * Pieza 50.5: anclas institucionales diarias Auto-AVWAP (backend `/api/bars`,
+   * cacheadas por día). Espejo JSON-safe de `AutoAvwapAnchor`.
+   */
+  readonly autoAvwapAnchors?: readonly AutoAvwapAnchorDto[];
+}
+
+/** Pieza 50.5: rol del ancla institucional Auto-AVWAP. */
+export type AutoAnchorRole = 'SUPPORT' | 'RESISTANCE' | 'EVENT';
+
+/** Pieza 50.5: familia de detección que originó el ancla. */
+export type AutoAnchorSource = 'EVENT' | 'PIVOT_MAJOR' | 'PIVOT_INTERMEDIATE' | 'RVOL';
+
+/** Pieza 50.5: ancla institucional Auto-AVWAP tal como la serializa el backend. */
+export interface AutoAvwapAnchorDto {
+  readonly role: AutoAnchorRole;
+  readonly anchorTimeSec: number;
+  readonly windowIndex: number;
+  readonly anchorPrice: number;
+  readonly currentAvwap: number;
+  readonly distancePct: number;
+  readonly score: number;
+  readonly sources: readonly AutoAnchorSource[];
+  readonly eventLabel: string | null;
 }
 
 export interface UsOptionContractRowDto {

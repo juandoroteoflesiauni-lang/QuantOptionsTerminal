@@ -1467,8 +1467,14 @@ export class FmpEnterpriseClient {
   /**
    * Consulta el calendario económico US en FMP (`/stable/economic-calendar`) filtrando
    * eventos de alto impacto `FOMC` y `CPI`.
+   *
+   * Pieza 50.5: `lookbackDays` opcional (default `7`, 100 % retrocompatible) permite
+   * anclas Auto-AVWAP que necesitan historia macro plurianual (560 días ≈ 18 meses).
    */
-  public async fetchUsMacroCalendar(nowUtcSec?: number): Promise<FmpMacroCalendarResult> {
+  public async fetchUsMacroCalendar(
+    nowUtcSec?: number,
+    lookbackDays = 7,
+  ): Promise<FmpMacroCalendarResult> {
     const asOfUtcSec =
       nowUtcSec !== undefined && Number.isFinite(nowUtcSec)
         ? Math.floor(nowUtcSec)
@@ -1484,7 +1490,7 @@ export class FmpEnterpriseClient {
       };
     }
 
-    const fromKey = fmpEtDateKey(asOfUtcSec - 7 * 86_400);
+    const fromKey = fmpEtDateKey(asOfUtcSec - Math.max(1, Math.trunc(lookbackDays)) * 86_400);
     const toKey = fmpEtDateKey(asOfUtcSec + 120 * 86_400);
     const path = buildFmpEconomicCalendarPath(fromKey, toKey);
 

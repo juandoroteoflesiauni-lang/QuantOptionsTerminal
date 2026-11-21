@@ -34,6 +34,10 @@
 
 import { calculateEma, computeEmaSuite } from '../core/ema.js';
 import {
+  detectAutoAvwapAnchors,
+  type AutoAvwapAnchor,
+} from '../core/autoAvwap.js';
+import {
   computeHmaSeries,
   computeSmaSeries,
   evaluateMtfStructure,
@@ -504,6 +508,12 @@ export type ArTerminalBarsResponse = TerminalBarsResponse & {
   readonly requestedTimeframe?: Timeframe;
   readonly effectiveTimeframe?: Timeframe;
   readonly fallbackReason?: string;
+  /**
+   * Pieza 50.5: anclas institucionales Auto-AVWAP en ARS (Data912 1D), cacheadas
+   * por día `AR:${symbol}:${artDateKey}`. Degradación limpia a `PIVOT + RVOL`
+   * (sin FMP para BYMA/CEDEARs).
+   */
+  readonly autoAvwapAnchors?: readonly AutoAvwapAnchor[];
 };
 
 export type JsonSafe<T> = T extends number
@@ -3548,6 +3558,8 @@ export class ArgentinaMarketRuntime {
     string,
     { readonly atMs: number; readonly response: ArStockDetailResponse }
   >();
+  /** Pieza 50.5: anclas Auto-AVWAP ARS por día (`AR:${symbol}:${artDateKey}`), acotado a 300. */
+  private readonly arAutoAvwapAnchorsCache = new Map<string, readonly AutoAvwapAnchor[]>();
 
   private data912Queue: Promise<void> = Promise.resolve();
   private lastData912ReqMs = 0;
@@ -7152,6 +7164,27 @@ export class ArgentinaMarketRuntime {
   }
 
   /**
+   * Pieza 50.5: anclas Auto-AVWAP en ARS con caché diario acotado a 300 entradas.
+   * Data912 es diario y no expone earnings/macro: degradación limpia a `PIVOT + RVOL`.
+   */
+  private resolveArAutoAvwapAnchors(
+    symbol: string,
+    bars: readonly Bar[],
+    nowSec: number,
+  ): readonly AutoAvwapAnchor[] {
+    const cacheKey = `AR:${symbol}:${getSessionDateKey(nowSec, BYMA_MARKET_TZ)}`;
+    const cached = this.arAutoAvwapAnchorsCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const anchors = detectAutoAvwapAnchors(bars, []);
+    if (this.arAutoAvwapAnchorsCache.size >= 300) {
+      const oldestKey = this.arAutoAvwapAnchorsCache.keys().next().value;
+      if (oldestKey !== undefined) this.arAutoAvwapAnchorsCache.delete(oldestKey);
+    }
+    this.arAutoAvwapAnchorsCache.set(cacheKey, anchors);
+    return anchors;
+  }
+
+  /**
    * Pieza 38: velas reales en ARS para `GET /api/bars` con símbolo del
    * universo argentino (Panel Líder, Panel General, CEDEARs, soberanos).
    *
@@ -7201,6 +7234,12 @@ export class ArgentinaMarketRuntime {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const visibleBars = Math.min(Math.max(options.visibleBars ?? 1_250, 20), 1_250);
     const full = computeArTerminalBarsPayload(symbol, timeframe, bars, nowSec);
+    // Pieza 50.5: anclas institucionales Auto-AVWAP en ARS (Data912 diario, sin
+    // earnings/macro FMP): degradación limpia a PIVOT + RVOL, cacheada por día.
+    const anchoredFull: ArTerminalBarsResponse = {
+      ...full,
+      autoAvwapAnchors: this.resolveArAutoAvwapAnchors(symbol, bars, nowSec),
+    };
     const fallbackFields =
       fallback.fallbackReason === null
         ? {}
@@ -7209,12 +7248,12 @@ export class ArgentinaMarketRuntime {
             effectiveTimeframe: fallback.effectiveTimeframe,
             fallbackReason: fallback.fallbackReason,
           };
-    assertJsonSafeSerialized(full);
+    assertJsonSafeSerialized(anchoredFull);
     const startSlice = Math.max(0, bars.length - visibleBars);
-    if (startSlice === 0) return { ...full, ...fallbackFields };
-    const fullOverlays = full.overlays;
+    if (startSlice === 0) return { ...anchoredFull, ...fallbackFields };
+    const fullOverlays = anchoredFull.overlays;
     const sliced: ArTerminalBarsResponse = {
-      ...full,
+      ...anchoredFull,
       visibleStartIndex: 0,
       bars: full.bars.slice(startSlice),
       overlays: {

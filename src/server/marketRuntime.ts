@@ -19,6 +19,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { computeAnchoredVwap } from '../core/avwap.js';
+import {
+  detectAutoAvwapAnchors,
+  type AutoAvwapAnchor,
+  type AutoAvwapEventInput,
+} from '../core/autoAvwap.js';
 import { calculateEma } from '../core/ema.js';
 import {
   evaluateMacroVolatilityRegime,
@@ -323,6 +328,7 @@ import {
 import {
   fetchAsFmpHttpFn,
   FmpEnterpriseClient,
+  fmpEtDateKey,
   loadFmpConfigFromEnv,
   resolveFmpConfig,
   type FmpBatchMode,
@@ -1087,6 +1093,11 @@ export interface TerminalBarsResponse {
   /** Pieza 41: provenance explícita del proveedor de velas. */
   readonly barsProvider: 'FMP_ENTERPRISE_REST' | 'TRADIER_REST' | 'MASSIVE_REST';
   readonly barsProviderFallbackUsed: readonly string[];
+  /**
+   * Pieza 50.5: anclas institucionales diarias Auto-AVWAP (cacheadas por día
+   * `US:${symbol}:${fmpEtDateKey}`). Aditivo y opcional: `[]` cuando no hay datos.
+   */
+  readonly autoAvwapAnchors?: readonly AutoAvwapAnchor[];
 }
 
 export interface SerializedUnusualTradeRow {
@@ -1486,6 +1497,23 @@ export const US_EQUITY_UNIVERSE: readonly UsEquityUniverseMeta[] = [
   makeGeneralUsEquityMeta('AI', 'C3.ai Inc.', 'Mega Caps / Tech', '#38BDF8'),
   makeGeneralUsEquityMeta('PLTR', 'Palantir Technologies Inc.', 'Mega Caps / Tech', '#101010'),
 ] as const;
+
+/**
+ * Pieza 50.5: ETFs líquidos US (sector 'Índices / ETF' del universo + TLT/HYG)
+ * usados para elegir el calendario macro FOMC/CPI como fuente de eventos del
+ * Motor Auto-AVWAP. Los índices puros se resuelven vía `KNOWN_INDEX_ROOTS`.
+ */
+const US_INDEX_ETF_SYMBOLS: ReadonlySet<string> = new Set<string>([
+  ...US_EQUITY_UNIVERSE.filter((meta) => meta.sector === 'Índices / ETF').map((meta) => meta.symbol),
+  'TLT',
+  'HYG',
+]);
+
+/** Pieza 50.5: `true` si el símbolo canónico es índice puro (`I:SPX`) o ETF US. */
+function isIndexOrEtfSymbol(canonicalSymbol: string): boolean {
+  const stripped = canonicalSymbol.startsWith('I:') ? canonicalSymbol.slice(2) : canonicalSymbol;
+  return KNOWN_INDEX_ROOTS.has(stripped) || US_INDEX_ETF_SYMBOLS.has(stripped);
+}
 
 export const US_EQUITY_META_MAP: ReadonlyMap<string, UsEquityUniverseMeta> = new Map(
   US_EQUITY_UNIVERSE.map((m) => [m.symbol, m]),
@@ -4445,6 +4473,12 @@ export class MarketRuntime {
   private readonly usPanelCache: SingleFlightRuntimeCache<EquityPanelAnalyticsDto>;
   private readonly earningsCatalystCache: SingleFlightRuntimeCache<FmpSymbolEarningsResult>;
   private readonly macroCalendarCache: SingleFlightRuntimeCache<FmpMacroCalendarResult>;
+  /** Pieza 50.5: anclas Auto-AVWAP por símbolo/día (`US:SYM:YYYY-MM-DD`, máx 500). */
+  private readonly autoAvwapCache: SingleFlightRuntimeCache<readonly AutoAvwapAnchor[]>;
+  /** Pieza 50.5: calendario macro plurianual FOMC/CPI compartido por índices/ETFs (1 por día, máx 4). */
+  private readonly macroCalendarHistoryCache: SingleFlightRuntimeCache<FmpMacroCalendarResult>;
+  /** Pieza 50.5: guard de re-entrada para no reingresar a la caché durante el fetch 1D anidado. */
+  private readonly autoAvwapResolveInFlight = new Set<string>();
   /** Pieza 50.2: catálogo 100 % de vencimientos OPRA por subyacente (TTL 12 min). */
   private readonly usExpiryCatalogCache: SingleFlightRuntimeCache<UsExpiryCatalogResult>;
   /** Pieza 50.2: cadena on-demand por vencimiento exacto (TTL dinámico RTH/fuera de RTH). */
@@ -5173,6 +5207,17 @@ export class MarketRuntime {
     this.macroCalendarCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
       ttlResolver: () => DAILY_CATALYST_TTL_MS,
+    });
+    // Pieza 50.5: anclas Auto-AVWAP y calendario macro plurianual cacheados por día.
+    this.autoAvwapCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: () => DAILY_CATALYST_TTL_MS,
+      maxEntries: 500,
+    });
+    this.macroCalendarHistoryCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: () => DAILY_CATALYST_TTL_MS,
+      maxEntries: 4,
     });
     this.usExpiryCatalogCache = new SingleFlightRuntimeCache({
       nowFn: this.nowMsFn,
@@ -10688,6 +10733,19 @@ export class MarketRuntime {
       });
     const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
 
+    // Pieza 50.5: anclas Auto-AVWAP adjuntas al payload, cacheadas por día. Ante
+    // cualquier error se degrada a `[]` y jamás bloquea `/api/bars`.
+    let autoAvwapAnchors: readonly AutoAvwapAnchor[] = [];
+    try {
+      autoAvwapAnchors = await this.resolveAutoAvwapAnchorsForUs(
+        parsed.canonicalSymbol,
+        timeframe === '1D' ? bars : null,
+        nowSec,
+      );
+    } catch {
+      autoAvwapAnchors = [];
+    }
+
     const payload: TerminalBarsResponse = {
       status: barsStatusOk ? 'OK' : 'PARTIAL',
       symbol: parsed.canonicalSymbol,
@@ -10732,10 +10790,119 @@ export class MarketRuntime {
       markers,
       barsProvider,
       barsProviderFallbackUsed: [...providerFallbackUsed],
+      autoAvwapAnchors,
     };
 
     assertJsonSafeSerialized(payload);
     return payload;
+  }
+
+  /**
+   * Pieza 50.5: resuelve las anclas institucionales Auto-AVWAP US con caché diario
+   * (`US:${symbol}:${fmpEtDateKey}`, TTL 24 h) y single-flight. Reutiliza el dataset
+   * `1D` ya cargado (`dailyBarsHint`) sin red; en otro caso consulta `barsCache` o
+   * carga `1D` con 400 velas, con guard de re-entrada para que el `computeBars`
+   * anidado de `1D` calcule directo desde su hint sin reingresar a la caché.
+   */
+  private async resolveAutoAvwapAnchorsForUs(
+    canonicalSymbol: string,
+    dailyBarsHint: readonly Bar[] | null,
+    nowSec: number,
+  ): Promise<readonly AutoAvwapAnchor[]> {
+    const cacheKey = `US:${canonicalSymbol}:${fmpEtDateKey(nowSec)}`;
+    const cached = this.autoAvwapCache.peek(cacheKey);
+    if (cached !== undefined) return cached.value;
+
+    // Re-entrada (computeBars anidado de 1D): calcular directo desde el hint, sin caché.
+    if (this.autoAvwapResolveInFlight.has(cacheKey)) {
+      return this.computeAutoAvwapAnchors(canonicalSymbol, dailyBarsHint ?? [], nowSec);
+    }
+
+    this.autoAvwapResolveInFlight.add(cacheKey);
+    try {
+      const result = await this.autoAvwapCache.getOrCompute(cacheKey, async () => {
+        let dailyBars: readonly Bar[] = dailyBarsHint ?? [];
+        if (dailyBars.length === 0) {
+          const peeked = this.barsCache.peek(`bars:${canonicalSymbol}:1D:ext:400`)?.value;
+          dailyBars = (peeked?.bars ?? []).map((bar) => ({
+            time: bar.time,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+          }));
+        }
+        if (dailyBars.length === 0) {
+          const fetched = await this.getBars(canonicalSymbol, '1D', { visibleBars: 400 });
+          dailyBars = fetched.bars.map((bar) => ({
+            time: bar.time,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+          }));
+        }
+        const anchors = await this.computeAutoAvwapAnchors(canonicalSymbol, dailyBars, nowSec);
+        assertJsonSafeSerialized(anchors);
+        return anchors;
+      });
+      return result.value;
+    } finally {
+      this.autoAvwapResolveInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Pieza 50.5: consulta eventos FMP **solo** con `fmpHistoricalProviderEnabled === true`
+   * dentro de `try/catch` (degradación limpia a `PIVOT + RVOL`): índices/ETFs usan el
+   * calendario macro plurianual compartido; acciones individuales usan Earnings.
+   */
+  private async computeAutoAvwapAnchors(
+    canonicalSymbol: string,
+    dailyBars: readonly Bar[],
+    nowSec: number,
+  ): Promise<readonly AutoAvwapAnchor[]> {
+    if (dailyBars.length === 0) return [];
+    let events: readonly AutoAvwapEventInput[] = [];
+    if (this.fmpHistoricalProviderEnabled) {
+      try {
+        events = await this.loadAutoAvwapEventsForUs(canonicalSymbol, nowSec);
+      } catch {
+        events = [];
+      }
+    }
+    return detectAutoAvwapAnchors(dailyBars, events);
+  }
+
+  private async loadAutoAvwapEventsForUs(
+    canonicalSymbol: string,
+    nowSec: number,
+  ): Promise<readonly AutoAvwapEventInput[]> {
+    if (isIndexOrEtfSymbol(canonicalSymbol)) {
+      // 1 sola llamada FMP por día compartida por todos los índices y ETFs.
+      const result = await this.macroCalendarHistoryCache.getOrCompute(
+        `fmp:macro-calendar-history:us:${fmpEtDateKey(nowSec)}`,
+        () => this.fmpClient.fetchUsMacroCalendar(nowSec, 560),
+      );
+      return result.value.events.map((event) => ({
+        utcSec: event.utcSec,
+        label: event.kind,
+        date: event.date,
+        timeOfDay: 'bmo',
+      }));
+    }
+    const result = await this.earningsCatalystCache.getOrCompute(
+      `fmp:earnings:${canonicalSymbol}`,
+      () => this.fmpClient.fetchSymbolEarnings(canonicalSymbol, nowSec),
+    );
+    return result.value.events.map((event) => ({
+      utcSec: event.utcSec,
+      label: 'Earnings',
+      date: event.date,
+      timeOfDay: event.timeOfDay ?? 'unknown',
+    }));
   }
 
   public async getUnusualTrades(options: {

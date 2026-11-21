@@ -280,3 +280,88 @@ export function resolveEffectiveAvwapAnchorIndex(
   }
   return -1;
 }
+
+const AUTO_AVWAP_SECONDS_PER_DAY = 86_400;
+
+/**
+ * Pieza 50.5: proyecta el timestamp diario `anchorTimeSec` de un ancla Auto-AVWAP
+ * sobre el array de barras del timeframe activo (`1D`, `1W` o intradiario `1m..4h`).
+ * Devuelve `-1` si el ancla cae fuera de la ventana cargada (omisión limpia).
+ *
+ * Reglas deterministas:
+ *  - `1D`: barra más cercana (`findNearestBarIndex`), válida solo si `|Δ| <= 4 días`.
+ *  - `1W`: semana contenedora `bars[i].time <= anchor < bars[i+1].time`; última semana
+ *    si el ancla cae hasta 6 días después del último bar; fallback por cercanía <= 7 días.
+ *  - Intradiario: fuera de `[first - 1d, last + 1d]` => `-1`; en rango, primer índice con
+ *    `bars[i].time >= anchorTimeSec` (un ancla a las 00:00 UTC cae en la primera vela RTH
+ *    de esa misma fecha UTC, 13:30/14:30 UTC).
+ */
+export function resolveAutoAvwapBarIndex(
+  bars: readonly { readonly time: number }[],
+  anchorTimeSec: number,
+  timeframe: string,
+): number {
+  if (bars.length === 0 || !Number.isFinite(anchorTimeSec)) {
+    return -1;
+  }
+
+  if (timeframe === '1D') {
+    const idx = findNearestBarIndex(bars, anchorTimeSec);
+    if (idx < 0) {
+      return -1;
+    }
+    const bar = bars[idx];
+    if (bar === undefined || !Number.isFinite(bar.time)) {
+      return -1;
+    }
+    return Math.abs(bar.time - anchorTimeSec) <= 4 * AUTO_AVWAP_SECONDS_PER_DAY ? idx : -1;
+  }
+
+  if (timeframe === '1W') {
+    for (let i = 0; i < bars.length - 1; i += 1) {
+      const current = bars[i];
+      const next = bars[i + 1];
+      if (current === undefined || next === undefined) {
+        continue;
+      }
+      if (current.time <= anchorTimeSec && anchorTimeSec < next.time) {
+        return i;
+      }
+    }
+    const last = bars[bars.length - 1];
+    if (
+      last !== undefined &&
+      anchorTimeSec >= last.time &&
+      anchorTimeSec - last.time <= 6 * AUTO_AVWAP_SECONDS_PER_DAY
+    ) {
+      return bars.length - 1;
+    }
+    const fallback = findNearestBarIndex(bars, anchorTimeSec);
+    if (fallback >= 0) {
+      const bar = bars[fallback];
+      if (bar !== undefined && Math.abs(bar.time - anchorTimeSec) <= 7 * AUTO_AVWAP_SECONDS_PER_DAY) {
+        return fallback;
+      }
+    }
+    return -1;
+  }
+
+  const first = bars[0];
+  const last = bars[bars.length - 1];
+  if (first === undefined || last === undefined) {
+    return -1;
+  }
+  if (
+    anchorTimeSec < first.time - AUTO_AVWAP_SECONDS_PER_DAY ||
+    anchorTimeSec > last.time + AUTO_AVWAP_SECONDS_PER_DAY
+  ) {
+    return -1;
+  }
+  for (let i = 0; i < bars.length; i += 1) {
+    const bar = bars[i];
+    if (bar !== undefined && bar.time >= anchorTimeSec) {
+      return i;
+    }
+  }
+  return -1;
+}
