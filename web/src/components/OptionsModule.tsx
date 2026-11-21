@@ -27,6 +27,7 @@ import {
   fmtNum,
   fmtPct,
   OptionChainRow,
+  type OptionExpiryGroup,
 } from '../data/marketData';
 import {
   requestOptionsCatalysts,
@@ -36,6 +37,10 @@ import {
   requestUsVolSurface,
   useLiveMarketState,
 } from '../data/liveRuntimeBridge';
+import {
+  buildExpirySelectorEntries,
+  type ExpirySelectorEntry,
+} from '../data/expiryChainMerge';
 import {
   OPTIONS_FAVORITE_KEYS,
   parseOptionsUnderlyingKey,
@@ -985,29 +990,66 @@ export const OptionsModule: React.FC<{
   // Pieza 50.1: escalera de spreads con mids de cierre en mercado cerrado / EOD_CIERRE.
   const spreadPricingMode: VerticalSpreadPricingMode = opraSessionClosed ? 'EOD_MID' : 'LIVE_CROSS';
 
+  // Pieza 50.2.1: el selector de vencimientos se alimenta EXCLUSIVAMENTE del estado del
+  // subyacente seleccionado (`optionsByUnderlying[key].expiries`, que preserva las 30
+  // fechas del catálogo). El array global `GGAL_OPTION_EXPIRIES` es compartido AR/US y
+  // cualquier otro subyacente lo pisa al hidratarse (p. ej. GGAL BYMA en cada
+  // reconexión/warmup), recortando el desplegable de SPY a 2 fechas.
+  const expirySelectorEntries = useMemo<readonly ExpirySelectorEntry[]>(
+    () => buildExpirySelectorEntries(liveOptions?.expiries ?? []),
+    [liveOptions],
+  );
+
   // Pieza 50.2: seleccionar un vencimiento pendiente dispara la carga puntual
   // `GET /api/options/expiry` (`requestUsOptionExpiry`) sin re-pedir el snapshot completo;
   // un vencimiento ya cargado cambia instantáneamente en memoria sin llamada de red.
+  // Pieza 50.2.1: el estado cargado/pendiente sale del subyacente seleccionado
+  // (`expirySelectorEntries`), no del array global pisable `GGAL_OPTION_EXPIRIES`.
   const handleSelectExpiry = (nextId: string): void => {
     setSelectedExpiryId(nextId);
     if (!usUnderlying) return;
-    const target = GGAL_OPTION_EXPIRIES.find((e) => e.id === nextId);
-    const isLoaded =
-      target !== undefined && target.rows.length > 0 && target.loaded !== false;
-    if (!isLoaded) {
+    const entry = expirySelectorEntries.find((e) => e.id === nextId);
+    if (entry?.isLoaded !== true) {
       void requestUsOptionExpiry(selectedUnderlyingKey, nextId);
     }
   };
 
-  const activeExpiry = useMemo(() => {
-    if (GGAL_OPTION_EXPIRIES.length === 0) return null;
+  const activeExpiry = useMemo<OptionExpiryGroup | null>(() => {
+    // Pieza 50.2.1: si el array global fue pisado por otro subyacente, el vencimiento
+    // activo se resuelve igualmente desde el DTO del subyacente seleccionado (stub sin
+    // filas para fechas cargadas/pendientes hasta que la fusión on-demand lo rehidrate).
+    const stubFromSelector = (id: string | null | undefined): OptionExpiryGroup | null => {
+      if (id === null || id === undefined || id === '') return null;
+      const entry = expirySelectorEntries.find((e) => e.id === id);
+      if (entry === undefined) return null;
+      return {
+        id: entry.id,
+        label: `${entry.expiryDate} (${formatDteLabel(entry.daysToExpiry)})`,
+        expiryDate: entry.expiryDate,
+        daysToExpiry: entry.daysToExpiry,
+        callSharePct: 50,
+        putSharePct: 50,
+        totalVolumeM: Number.NaN,
+        atmIV: entry.atmIvPct,
+        syntheticRateTNA: Number.NaN,
+        oneSigmaLow: Number.NaN,
+        oneSigmaHigh: Number.NaN,
+        rows: [],
+      };
+    };
+    if (GGAL_OPTION_EXPIRIES.length === 0 && expirySelectorEntries.length === 0) return null;
     return (
       GGAL_OPTION_EXPIRIES.find((e) => e.id === selectedExpiryId) ??
-      (primaryLiquidCode ? GGAL_OPTION_EXPIRIES.find((e) => e.id === primaryLiquidCode) : undefined) ??
+      stubFromSelector(selectedExpiryId) ??
+      (primaryLiquidCode
+        ? GGAL_OPTION_EXPIRIES.find((e) => e.id === primaryLiquidCode) ??
+          stubFromSelector(primaryLiquidCode)
+        : undefined) ??
       GGAL_OPTION_EXPIRIES[0] ??
+      stubFromSelector(expirySelectorEntries[0]?.id) ??
       null
     );
-  }, [selectedExpiryId, primaryLiquidCode, liveMarket.version]);
+  }, [selectedExpiryId, primaryLiquidCode, liveMarket.version, expirySelectorEntries]);
 
   // Pieza 50.2: estado de carga on-demand del vencimiento activo (sin animaciones).
   const isActiveExpiryLoading = Boolean(
@@ -2040,31 +2082,30 @@ export const OptionsModule: React.FC<{
               {expiryDropdownOpen && (
                 <div className="absolute right-0 mt-2 w-84 rounded-[10px] border border-[#2A2F3D] bg-[#0E1118] shadow-2xl z-40 overflow-hidden">
                   <div className="px-3 py-1.5 text-[10px] font-mono-num tabular-nums uppercase tracking-wider text-[#787B86] flex items-center justify-between border-b border-[#1E222D] bg-[#0B0E14]">
-                    <span>{`Vencimiento · DTE (${String(GGAL_OPTION_EXPIRIES.length)})`}</span>
+                    <span>{`Vencimiento · DTE (${String(expirySelectorEntries.length)})`}</span>
                     <span>IV ATM / Fwd IV</span>
                   </div>
-                  {GGAL_OPTION_EXPIRIES.length === 0 ? (
+                  {expirySelectorEntries.length === 0 ? (
                     <div className="px-3 py-2 text-[11px] font-mono-num text-[#787B86]">
                       Sin vencimientos disponibles
                     </div>
                   ) : (
                     <div className="max-h-[320px] overflow-y-auto overscroll-contain p-1.5 space-y-1">
-                      {GGAL_OPTION_EXPIRIES.map((exp) => {
-                        const isSel = exp.id === activeExpiry?.id;
-                        const isLoaded = exp.rows.length > 0;
+                      {expirySelectorEntries.map((entry) => {
+                        const isSel = entry.id === activeExpiry?.id;
                         const isLoading = Boolean(
-                          liveMarket.loadingOptionExpiries[`${selectedUnderlyingKey}:${exp.id}`],
+                          liveMarket.loadingOptionExpiries[`${selectedUnderlyingKey}:${entry.id}`],
                         );
-                        const fwdSeg = forwardSegmentByFarCode.get(exp.id);
+                        const fwdSeg = forwardSegmentByFarCode.get(entry.id);
                         const hasArb = forwardIvSegments.some(
-                          (s) => (s.farExpiryCode === exp.id || s.nearExpiryCode === exp.id) && s.calendarArbFlag,
+                          (s) => (s.farExpiryCode === entry.id || s.nearExpiryCode === entry.id) && s.calendarArbFlag,
                         );
                         return (
                           <button
-                            key={exp.id}
+                            key={entry.id}
                             type="button"
                             onClick={() => {
-                              handleSelectExpiry(exp.id);
+                              handleSelectExpiry(entry.id);
                               setExpiryDropdownOpen(false);
                             }}
                             className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[7px] text-left font-mono-num tabular-nums text-[11.5px] transition-colors cursor-pointer ${
@@ -2074,24 +2115,26 @@ export const OptionsModule: React.FC<{
                             }`}
                           >
                             <div className="flex flex-col">
-                              <span className="font-bold">{exp.expiryDate}</span>
-                              {isLoaded ? (
+                              <span className="font-bold">{entry.expiryDate}</span>
+                              {entry.isLoaded ? (
                                 <span className="text-[10px] text-[#787B86]">
-                                  {exp.daysToExpiry === 0
+                                  {entry.daysToExpiry === 0
                                     ? '0DTE (vence hoy)'
-                                    : `${String(exp.daysToExpiry)}d al vto`}
+                                    : `${String(entry.daysToExpiry)}d al vto`}
                                 </span>
                               ) : (
                                 <span className="text-[10px] text-[#787B86]">
-                                  {formatDteLabel(exp.daysToExpiry)}
+                                  {formatDteLabel(entry.daysToExpiry)}
                                 </span>
                               )}
                             </div>
                             <div className="text-right flex flex-col items-end">
-                              {isLoaded ? (
+                              {entry.isLoaded ? (
                                 <>
                                   <span className="text-[#EAB308] font-semibold">
-                                    {Number.isFinite(exp.atmIV) && exp.atmIV > 0 ? `IV ${fmtNum(exp.atmIV, 1)}%` : 'IV —'}
+                                    {Number.isFinite(entry.atmIvPct) && entry.atmIvPct > 0
+                                      ? `IV ${fmtNum(entry.atmIvPct, 1)}%`
+                                      : 'IV —'}
                                   </span>
                                   {fwdSeg ? (
                                     fwdSeg.calendarArbFlag ? (
@@ -2119,7 +2162,7 @@ export const OptionsModule: React.FC<{
                                 >
                                   {isLoading
                                     ? 'Cargando...'
-                                    : `${formatDteLabel(exp.daysToExpiry)} · Cargar`}
+                                    : `${formatDteLabel(entry.daysToExpiry)} · Cargar`}
                                 </span>
                               )}
                             </div>

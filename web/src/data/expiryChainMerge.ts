@@ -8,8 +8,10 @@
 
 import type {
   ArOptionContractDto,
+  ArOptionExpiryDto,
   ArOptionsQuantEnginesDto,
   ArOptionsResponse,
+  FeedStatus,
   ForwardIvSegmentDto,
   UsOptionContractRowDto,
   UsOptionExpiryChainResponseDto,
@@ -17,7 +19,11 @@ import type {
   UsVolAnalyticsSuiteRef,
 } from './liveTypes.js';
 import { computeForwardIvTermStructure } from '../../../src/core/options/volSurface.js';
-import { etExpiryUtcSecFromDate, formatDteLabel } from '../../../src/core/options/zeroDteFixes.js';
+import {
+  calendarDteEt,
+  etExpiryUtcSecFromDate,
+  formatDteLabel,
+} from '../../../src/core/options/zeroDteFixes.js';
 
 /** Convierte una fila serializada OPRA del servidor en el contrato del motor de la web. */
 export function mapSerializedContractRowToArContract(
@@ -312,4 +318,253 @@ export function applyUsExpiryChainToSnapshot(
     ...withOptionsChain,
     terminalEngines: { ...engines, volAnalyticsSuite: updatedSuite },
   };
+}
+export function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): ArOptionsResponse {
+  const quote = snap.marketContext?.unifiedQuotes?.find((q) => q.ticker.toUpperCase() === clean);
+  const snapMetrics = snap.envelope?.snapshot?.metrics;
+  const spot = snapMetrics?.spot ?? snap.envelope?.metrics?.spot?.value ?? quote?.price ?? null;
+  const frontSlice = snap.volSurfaceSummary?.frontSlice ?? snap.volSurfaceSummary?.slices?.[0] ?? null;
+  const rateDec = frontSlice?.rate ?? snap.marketContext?.treasury?.rate30d ?? null;
+  const rateTna = rateDec !== null && Number.isFinite(rateDec) ? (Math.exp(rateDec) - 1) * 100 : null;
+  const rv20 = snapMetrics?.realizedVolAnnualized ?? snap.envelope?.metrics?.realizedVol20d?.value ?? null;
+  const rv60 = snapMetrics?.rvCenteredAnnualized ?? snap.envelope?.metrics?.realizedVol60d?.value ?? null;
+  const iv30 = snap.volSurfaceSummary?.iv30d ?? snapMetrics?.iv30d ?? frontSlice?.ivAtm ?? null;
+
+  type UsContractList = NonNullable<NonNullable<UsSnapshotResponseDto['volSurfaceSummary']>['contracts']>[number];
+  const contractsByExp = new Map<string, UsContractList[]>();
+  const sliceMap = new Map((snap.volSurfaceSummary?.slices ?? []).map((s) => [s.expirationDate, s]));
+  for (const row of snap.volSurfaceSummary?.contracts ?? []) {
+    const arr = contractsByExp.get(row.expirationDate) ?? [];
+    arr.push(row);
+    contractsByExp.set(row.expirationDate, arr);
+  }
+
+  const expiries = Array.from(contractsByExp.entries())
+    .map(([expDate, rows]) => {
+      const slice = sliceMap.get(expDate);
+      const firstRow = rows[0];
+      const expSec = slice?.expirySec ?? firstRow?.expiryUtcSec ?? snap.asOfUtcSec;
+      // Pieza 46.1: DTE calendario real en America/New_York (expiry == hoy ET -> 0, etiqueta 0DTE).
+      const dteEt = calendarDteEt(expDate, snap.asOfUtcSec * 1000);
+      const days = Number.isFinite(dteEt)
+        ? dteEt
+        : (slice?.timeToExpiryDays ?? Math.max(1, Math.round((expSec - snap.asOfUtcSec) / 86_400)));
+      const strikeSet = new Set<number>();
+      const calls: ArOptionsResponse['expiries'][number]['calls'][number][] = [];
+      const puts: ArOptionsResponse['expiries'][number]['puts'][number][] = [];
+      const rowDaysToExpiry = Number.isFinite(dteEt) ? dteEt : Math.max(1, Math.round(days));
+      for (const r of rows) {
+        strikeSet.add(r.strike);
+        const mapped = mapSerializedContractRowToArContract(clean, spot, r, rowDaysToExpiry);
+        if (r.contractType === 'call') calls.push(mapped);
+        else puts.push(mapped);
+      }
+      calls.sort((a, b) => a.strike - b.strike);
+      puts.sort((a, b) => a.strike - b.strike);
+      const strikes = Array.from(strikeSet).sort((a, b) => a - b);
+
+      let resolvedIvAtmDec =
+        slice?.ivAtm !== null && slice?.ivAtm !== undefined && Number.isFinite(slice.ivAtm) && slice.ivAtm > 0
+          ? slice.ivAtm
+          : null;
+      if (resolvedIvAtmDec === null && spot !== null && Number.isFinite(spot) && spot > 0) {
+        const nearOtmIvs = [...calls, ...puts]
+          .filter(
+            (c) =>
+              c.iv !== null &&
+              Number.isFinite(c.iv) &&
+              c.iv > 0 &&
+              c.iv < 9.99 &&
+              (c.contractType === 'call' ? c.strike >= spot - 1e-6 : c.strike <= spot + 1e-6),
+          )
+          .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))
+          .slice(0, 2)
+          .map((c) => c.iv as number);
+        if (nearOtmIvs.length > 0) {
+          resolvedIvAtmDec = nearOtmIvs.reduce((acc, v) => acc + v, 0) / nearOtmIvs.length;
+        }
+      }
+
+      const resolvedDays = Number.isFinite(dteEt) ? dteEt : Math.max(0, Math.round(days));
+      return {
+        expiryCode: expDate,
+        expiryLabel: `${expDate} (${formatDteLabel(resolvedDays)})`,
+        expirationDate: expDate,
+        expiryUtcSec: expSec,
+        days: resolvedDays,
+        ivAtm: resolvedIvAtmDec,
+        riskReversal25: slice?.riskReversal25 ?? null,
+        butterfly25: slice?.butterfly25 ?? null,
+        butterflyArbitrageFree: slice?.isButterflyArbitrageFree ?? true,
+        strikes,
+        calls,
+        puts,
+        loaded: true,
+      };
+    })
+    .sort((a, b) => a.days - b.days);
+
+  // Pieza 50.1: incluir fechas de `availableExpirations` aún no hidratadas en profundidad
+  // (stub sin contratos) para que el selector las muestre y dispare la carga on-demand.
+  const hydratedExpiryCodes = new Set(expiries.map((e) => e.expiryCode));
+  for (const candidate of snap.optionsChain?.availableExpirations ?? []) {
+    if (hydratedExpiryCodes.has(candidate.expirationDate)) continue;
+    const dteCandidate = calendarDteEt(candidate.expirationDate, snap.asOfUtcSec * 1_000);
+    const days = Number.isFinite(dteCandidate) ? dteCandidate : candidate.daysToExpiry;
+    const expiryUtcSec = etExpiryUtcSecFromDate(candidate.expirationDate);
+    expiries.push({
+      expiryCode: candidate.expirationDate,
+      expiryLabel: `${candidate.expirationDate} (${formatDteLabel(days)})`,
+      expirationDate: candidate.expirationDate,
+      expiryUtcSec: Number.isFinite(expiryUtcSec) ? expiryUtcSec : snap.asOfUtcSec,
+      days,
+      ivAtm: null,
+      riskReversal25: null,
+      butterfly25: null,
+      butterflyArbitrageFree: false,
+      strikes: [],
+      calls: [],
+      puts: [],
+      loaded: false,
+    });
+    hydratedExpiryCodes.add(candidate.expirationDate);
+  }
+  expiries.sort((a, b) => a.days - b.days);
+
+  const termStructure = (
+    (snap.volSurfaceSummary?.slices ?? []).some((s) => s.ivAtm !== null && s.ivAtm > 0)
+      ? (snap.volSurfaceSummary?.slices ?? [])
+          .filter((s) => s.ivAtm !== null && s.ivAtm > 0)
+          .map((s) => {
+            const sDteEt = calendarDteEt(s.expirationDate, snap.asOfUtcSec * 1_000);
+            return {
+              days: Number.isFinite(sDteEt) ? sDteEt : Math.max(0, Math.round(s.timeToExpiryDays)),
+              label: s.expirationDate,
+              expiryCode: s.expirationDate,
+              atm: s.ivAtm as number,
+            };
+          })
+      : expiries
+          .filter((e) => e.ivAtm !== null && Number.isFinite(e.ivAtm) && e.ivAtm > 0)
+          .map((e) => ({
+            days: e.days,
+            label: e.expirationDate,
+            expiryCode: e.expiryCode,
+            atm: e.ivAtm as number,
+          }))
+  );
+
+  const te = snap.terminalEngines ?? null;
+  const quantEngines: ArOptionsResponse['quantEngines'] = te
+    ? {
+        orderFlowArs: te.orderFlow,
+        netDirectionalPremiumUsdCcl: te.orderFlow?.netDirectionalPremiumUsd ?? null,
+        callNetPremiumCvdUsdCcl: te.orderFlow?.callNetPremiumCvdUsd ?? null,
+        putNetPremiumCvdUsdCcl: te.orderFlow?.putNetPremiumCvdUsd ?? null,
+        volOiAnomalies: te.volOiAnomalies,
+        flowAdjustedGex: te.flowAdjustedGex,
+        gexCharmPin: te.gexCharmPin,
+        qDistribution: te.qDistribution,
+        pDistribution: te.pDistribution,
+        pqDivergence: te.pqDivergence,
+        volCone: te.volCone,
+        syntheticRates: te.syntheticRates,
+        conversionReversal: te.conversionReversal,
+        buyWrite: te.buyWrite,
+        calendarRoll: te.calendarRoll,
+        structureOptimizerBullish: te.structureOptimizerBullish,
+        structureOptimizerBearish: te.structureOptimizerBearish,
+        structureCostPercentile: te.structureCostPercentile,
+        confluenceClusters: te.confluenceClusters,
+      }
+    : null;
+
+  const feedStatus: FeedStatus =
+    snap.feedMode ?? (snap.status === 'OK' ? 'LIVE' : 'PARTIAL');
+
+  return {
+    asOfUtcSec: snap.asOfUtcSec,
+    feedStatus,
+    underlying: clean,
+    market: 'US',
+    spot,
+    rateTna,
+    continuousRate: rateDec,
+    dividendYield:
+      frontSlice !== null &&
+      frontSlice.timeToExpiryDays >= 3 &&
+      frontSlice.dividendYield !== null &&
+      Number.isFinite(frontSlice.dividendYield) &&
+      frontSlice.dividendYield >= 0 &&
+      frontSlice.dividendYield <= 0.25
+        ? frontSlice.dividendYield
+        : snap.marketContext?.treasury?.dividendYieldFront !== null &&
+            snap.marketContext?.treasury?.dividendYieldFront !== undefined &&
+            Number.isFinite(snap.marketContext.treasury.dividendYieldFront) &&
+            snap.marketContext.treasury.dividendYieldFront >= 0 &&
+            snap.marketContext.treasury.dividendYieldFront <= 0.25
+          ? snap.marketContext.treasury.dividendYieldFront
+          : 0,
+    lotSize: 100,
+    settlement: 'T+0',
+    exerciseCutoffArt: '15:30 ART',
+    realizedVol20d: rv20,
+    realizedVol60d: rv60,
+    histMedianIv: iv30,
+    vrpSpread: iv30 !== null && rv20 !== null ? iv30 - rv20 : null,
+    historicalCloses: [],
+    termStructure,
+    expiries,
+    exposureSummary: snap.exposureSummary
+      ? mapUsExposureToArExposureSummary(snap.exposureSummary)
+      : null,
+    costSchedule: {
+      rvMarketFeeRate: 0.002,
+      optionsFeeRate: 0.002,
+      shortLoanFeeRate: 0,
+      vatRate: 0,
+      bondsVatExempt: true,
+    },
+    primaryLiquidExpiryCode: snap.optionsChain?.selectedExpirationDate ?? null,
+    ...(snap.volSurfaceSummary?.forwardIvSegments
+      ? { forwardIvSegments: snap.volSurfaceSummary.forwardIvSegments }
+      : {}),
+    quantEngines,
+    providerErrors: [],
+  };
+}
+
+/** Entrada del selector de vencimientos (100 % del catálogo del subyacente seleccionado). */
+export interface ExpirySelectorEntry {
+  readonly id: string;
+  readonly expiryDate: string;
+  readonly daysToExpiry: number;
+  /** IV ATM en puntos porcentuales (22.5 = 22.5 %); `NaN` si no es calculable (UI `—`). */
+  readonly atmIvPct: number;
+  /** `true` si la cadena del vencimiento está cargada (filas reales o `loaded: true`). */
+  readonly isLoaded: boolean;
+}
+
+/**
+ * Pieza 50.2.1: construye las filas del selector de vencimientos EXCLUSIVAMENTE desde el
+ * estado del subyacente seleccionado (`optionsByUnderlying[key].expiries`). El array
+ * global `GGAL_OPTION_EXPIRIES` es compartido AR/US y cualquier otro subyacente puede
+ * pisarlo (p. ej. GGAL BYMA al reconectar), recortando el catálogo de SPY a sus 2
+ * vencimientos: el selector jamás debe leerlo.
+ */
+export function buildExpirySelectorEntries(
+  expiries: readonly ArOptionExpiryDto[],
+): readonly ExpirySelectorEntry[] {
+  return [...expiries]
+    .map((expiry) => ({
+      id: expiry.expiryCode,
+      expiryDate: expiry.expirationDate,
+      daysToExpiry: expiry.days,
+      atmIvPct:
+        expiry.ivAtm !== null && expiry.ivAtm !== undefined && Number.isFinite(expiry.ivAtm)
+          ? expiry.ivAtm * 100
+          : Number.NaN,
+      isLoaded: expiry.loaded === true || expiry.calls.length > 0 || expiry.puts.length > 0,
+    }))
+    .sort((a, b) => a.daysToExpiry - b.daysToExpiry);
 }

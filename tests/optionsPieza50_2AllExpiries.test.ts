@@ -30,11 +30,17 @@ import {
   evaluateActiveExpiryHeaderTir,
   evaluateActiveExpiryRegimeAndBreaker,
 } from '../web/src/components/options/activeExpiryBinding.js';
-import { mergeUsExpiryChainIntoOptions } from '../web/src/data/expiryChainMerge.js';
+import {
+  buildExpirySelectorEntries,
+  mapUsSnapshotToArOptions,
+  mergeUsExpiryChainIntoOptions,
+} from '../web/src/data/expiryChainMerge.js';
 import type {
   ArOptionContractDto,
   ArOptionsResponse,
+  UsOptionContractRowDto,
   UsOptionExpiryChainResponseDto,
+  UsSnapshotResponseDto,
 } from '../web/src/data/liveTypes.js';
 
 type JsonNumber = number | 'NaN';
@@ -1164,5 +1170,182 @@ describe('Pieza 50.2 — TIR y régimen 0DTE/Short Gamma sobre el vencimiento ac
     });
     expect(staleFrontRegime.blocked).toBe(false);
     expect(staleFrontRegime.activeRegimeCode).toBe('VENTA_PRIMA_CUBIERTA');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5) Pieza 50.2.1 — El selector preserva el 100 % de optionsChain.availableExpirations
+// ---------------------------------------------------------------------------
+
+describe('Pieza 50.2.1 — El selector de vencimientos preserva el 100 % del catálogo', () => {
+  const asOfUtcSec = Math.floor(Date.UTC(2026, 10, 21, 21, 0, 0) / 1_000); // sábado 2026-11-21 16:00 ET
+  const LOADED_DATES = [
+    '2026-11-23',
+    '2026-11-27',
+    '2026-12-11',
+    '2027-01-15',
+    '2027-02-19',
+    '2027-05-21',
+  ] as const;
+  const PENDING_DATES: readonly string[] = (() => {
+    const list: string[] = [];
+    let t = Date.UTC(2027, 5, 4);
+    while (list.length < 23) {
+      list.push(new Date(t).toISOString().slice(0, 10));
+      t += 7 * 86_400_000;
+    }
+    list.push('2029-01-19'); // LEAPS 790d
+    return list;
+  })();
+  const ALL_DATES: readonly string[] = [...LOADED_DATES, ...PENDING_DATES].sort((a, b) =>
+    a.localeCompare(b),
+  );
+
+  function snapshotContractRow(
+    date: string,
+    strike: number,
+    type: 'call' | 'put',
+  ): UsOptionContractRowDto {
+    return {
+      ticker: `O:SPY${date.slice(2).replaceAll('-', '')}${type === 'call' ? 'C' : 'P'}${String(strike * 1_000).padStart(8, '0')}`,
+      contractType: type,
+      strike,
+      expirationDate: date,
+      expiryUtcSec: Math.floor(Date.parse(`${date}T21:00:00Z`) / 1_000),
+      bid: 5,
+      ask: 5.2,
+      mid: 5.1,
+      lastPrice: 5.1,
+      openInterest: 1_000,
+      volume: 100,
+      previousClose: 5,
+      changePct: 2,
+      ownIv: 0.22,
+      providerIv: 0.22,
+      ivSource: 'OWN',
+      delta: 0.5,
+      gamma: 0.01,
+      thetaDaily: -0.02,
+      vegaPer1Pct: 0.1,
+      vanna: 0,
+      charm: 0,
+    };
+  }
+
+  function buildRealisticSnapshotPayload(): UsSnapshotResponseDto {
+    const contracts: UsOptionContractRowDto[] = LOADED_DATES.flatMap((date) =>
+      [690, 700].flatMap((strike) =>
+        (['call', 'put'] as const).map((type) => snapshotContractRow(date, strike, type)),
+      ),
+    );
+    const availableExpirations = ALL_DATES.map((date) => {
+      const days = Math.round(
+        (Date.parse(`${date}T22:00:00Z`) / 1_000 - asOfUtcSec) / 86_400,
+      );
+      const loaded = (LOADED_DATES as readonly string[]).includes(date);
+      return {
+        expirationDate: date,
+        daysToExpiry: days,
+        loaded,
+        validCallCount: loaded ? 40 : 0,
+        validPutCount: loaded ? 40 : 0,
+        nearAtmLiquidity: loaded ? 120_000 : 0,
+        inDefaultWindow: days >= 14 && days <= 45,
+        hasCompleteAtmChain: loaded,
+      };
+    });
+    return {
+      status: 'PARTIAL',
+      feedMode: 'LIVE',
+      quoteMode: 'LIVE_NBBO',
+      symbol: 'SPY',
+      isIndex: false,
+      asOfUtcSec,
+      envelope: { snapshot: { metrics: { spot: 690 } } },
+      marketContext: {
+        unifiedQuotes: [
+          {
+            ticker: 'SPY',
+            assetType: 'stock',
+            price: 690,
+            change: 1,
+            changePct: 0.15,
+            previousClose: 689,
+            dayLow: 688.5,
+            dayHigh: 691,
+            dayRangePos: 0.6,
+            volumeM: 40,
+            iv30d: 0.22,
+            marketStatus: 'open',
+            volume: 40_000_000,
+          },
+        ],
+      },
+      volSurfaceSummary: { iv30d: 0.22, frontSlice: null, slices: [], contracts },
+      optionsChain: {
+        selectedExpirationDate: '2026-12-11',
+        selectionReason: 'DEFAULT_LIQUID_14_45_DTE',
+        prefetchExpirationDates: ['2026-12-11'],
+        availableExpirations,
+      },
+    };
+  }
+
+  it('mapea las 30 fechas (6 loaded:true + 24 pendientes hasta LEAPS 2029) sin recortarlas', () => {
+    const payload = buildRealisticSnapshotPayload();
+    expect(payload.optionsChain?.availableExpirations).toHaveLength(30);
+
+    const mapped = mapUsSnapshotToArOptions('SPY', payload);
+    // El mapeo del bridge conserva el catálogo COMPLETO: 6 anclas + 24 pendientes.
+    expect(mapped.expiries).toHaveLength(30);
+    expect(mapped.expiries.map((e) => e.expiryCode)).toEqual([...ALL_DATES]);
+    const loaded = mapped.expiries.filter((e) => e.loaded === true);
+    expect(loaded).toHaveLength(6);
+    for (const exp of loaded) {
+      expect(exp.calls.length + exp.puts.length, exp.expiryCode).toBeGreaterThan(0);
+      expect(exp.ivAtm, exp.expiryCode).not.toBeNull();
+      expect(Number.isFinite(exp.ivAtm ?? Number.NaN), exp.expiryCode).toBe(true);
+    }
+    const pending = mapped.expiries.filter((e) => e.loaded === false);
+    expect(pending).toHaveLength(24);
+    for (const exp of pending) {
+      expect(exp.calls).toHaveLength(0);
+      expect(exp.puts).toHaveLength(0);
+      expect(exp.strikes).toHaveLength(0);
+      expect(exp.ivAtm).toBeNull();
+    }
+    const days = mapped.expiries.map((e) => e.days);
+    expect(days).toEqual([...days].sort((a, b) => a - b));
+    expect(new Set(mapped.expiries.map((e) => e.expiryCode)).size).toBe(30);
+    expect(days[days.length - 1]).toBe(790);
+
+    // El selector se alimenta del estado del subyacente seleccionado: 30 filas, 6 con
+    // IV ATM (decimal del DTO → %) y Fwd IV, 24 clicables `DTE · Cargar`.
+    const entries = buildExpirySelectorEntries(mapped.expiries);
+    expect(entries).toHaveLength(30);
+    expect(entries.map((e) => e.expiryDate)).toEqual([...ALL_DATES]);
+    const loadedEntries = entries.filter((e) => e.isLoaded);
+    expect(loadedEntries).toHaveLength(6);
+    for (const entry of loadedEntries) {
+      expect(Number.isFinite(entry.atmIvPct), entry.id).toBe(true);
+      expect(entry.atmIvPct).toBeGreaterThan(0);
+    }
+    const pendingEntries = entries.filter((e) => !e.isLoaded);
+    expect(pendingEntries).toHaveLength(24);
+    for (const entry of pendingEntries) {
+      expect(Number.isNaN(entry.atmIvPct), entry.id).toBe(true);
+      expect(entry.expiryDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+    expect(entries[entries.length - 1]?.expiryDate).toBe('2029-01-19');
+
+    // Regresión del bug real: el array global compartido AR/US puede quedar pisado por
+    // GGAL BYMA (2 vencimientos); el selector del subyacente seleccionado NO se recorta.
+    const bymaLike = buildExpirySelectorEntries([
+      { expiryCode: '2026-12-18', expiryLabel: '2026-12-18', expirationDate: '2026-12-18', expiryUtcSec: 0, days: 27, ivAtm: 0.55, riskReversal25: null, butterfly25: null, butterflyArbitrageFree: true, strikes: [], calls: [], puts: [], loaded: true },
+      { expiryCode: '2027-02-19', expiryLabel: '2027-02-19', expirationDate: '2027-02-19', expiryUtcSec: 0, days: 90, ivAtm: 0.56, riskReversal25: null, butterfly25: null, butterflyArbitrageFree: true, strikes: [], calls: [], puts: [], loaded: true },
+    ]);
+    expect(bymaLike).toHaveLength(2);
+    expect(entries).toHaveLength(30);
+    expect(mapped.expiries).toHaveLength(30);
   });
 });
