@@ -217,6 +217,39 @@ export function computeSessionVwapPure(
   return out;
 }
 
+/**
+ * Pieza 50.6: alinea `overlays.sessionVwap` del backend US con las barras
+ * renderizadas. La asociación `time → valor` se construye desde las parejas
+ * ORIGINALES (`response.bars[i]` / `sessionVwap[i]`) antes de ordenar,
+ * deduplicar o descartar barras; ante `time` duplicado gana la última
+ * ocurrencia (misma política que `dedupAndSortBars`) y un valor no finito se
+ * preserva como `null`. Devuelve `null` si el overlay falta o su longitud no
+ * corresponde a las barras de origen: la vista deja la serie vacía sin
+ * recalcular un VWAP local.
+ */
+export function alignSessionVwapOverlayByTime(
+  sourceBars: readonly MinimalOhlcvBar[],
+  sessionVwap: readonly (number | null)[] | null | undefined,
+  renderedBars: readonly MinimalOhlcvBar[],
+): readonly (number | null)[] | null {
+  if (sessionVwap === null || sessionVwap === undefined) {
+    return null;
+  }
+  if (sessionVwap.length !== sourceBars.length) {
+    return null;
+  }
+  const byTime = new Map<number, number | null>();
+  for (let index = 0; index < sourceBars.length; index += 1) {
+    const bar = sourceBars[index];
+    if (bar === undefined || !Number.isFinite(bar.time)) {
+      continue;
+    }
+    const value = sessionVwap[index] ?? null;
+    byTime.set(bar.time, value !== null && Number.isFinite(value) ? value : null);
+  }
+  return renderedBars.map((bar) => byTime.get(bar.time) ?? null);
+}
+
 /** Calcula el timestamp UTC (00:00 UTC) del 3er viernes del mes dado `(year, month0)`. */
 export function thirdFridayUtcSec(year: number, monthZeroBased: number): number {
   const firstDay = new Date(Date.UTC(year, monthZeroBased, 1, 0, 0, 0));

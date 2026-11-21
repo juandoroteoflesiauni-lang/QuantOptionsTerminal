@@ -16,6 +16,7 @@ import { MarketRuntime, US_PANEL_TICKERS } from '../src/server/marketRuntime.js'
 import { createHttpWsServer, type HttpWsServerHandle } from '../src/server/httpWsServer.js';
 import { extractInvalidTradierSymbol } from '../src/server/tradierAdapter.js';
 import {
+  alignSessionVwapOverlayByTime,
   computeAnchoredVwapPure,
   computeAtrPositionSize,
   computeCi24hImpliedCarry,
@@ -869,5 +870,137 @@ describe('Pieza 38 — /api/bars enruta velas reales ARS (Panel Líder / CEDEARs
     const invalidMarket = await fetchBars(base, 'symbol=GGAL&market=MERVAL&timeframe=1D');
     expect(invalidMarket.status).toBe(400);
     expect(invalidMarket.body['reason']).toBe('INVALID_PARAMETER');
+  });
+});
+
+describe('Pieza 50.6 — VWAP US desde el backend (sin recálculo local)', () => {
+  const barAt = (time: number, close: number): MinimalOhlcvBar => ({
+    time,
+    open: close - 0.2,
+    high: close + 0.3,
+    low: close - 0.4,
+    close,
+    volume: 1_000,
+  });
+
+  it('usa los valores del backend US y no el VWAP local cuando difieren', () => {
+    const source = [barAt(1_800, 100), barAt(1_860, 101), barAt(1_920, 102)];
+    const backend = [null, 500.25, 500.5];
+    const local = computeSessionVwapPure(source, true, -14_400);
+    expect(Number.isFinite(local[2])).toBe(true);
+    expect(local[2]).not.toBeCloseTo(500.5, 9);
+
+    const aligned = alignSessionVwapOverlayByTime(source, backend, source);
+    expect(aligned).toEqual(backend);
+    expect(aligned?.[2]).toBeCloseTo(500.5, 12);
+    expect(aligned?.[0]).toBeNull();
+  });
+
+  it('alinea por timestamp: barras desordenadas, duplicados (última gana) y null preservado', () => {
+    const source = [barAt(120, 100), barAt(60, 99), barAt(120, 101), barAt(180, 102)];
+    const backend = [1, 2, 3, null];
+    const rendered = [barAt(60, 99), barAt(120, 101), barAt(180, 102), barAt(240, 103)];
+    const aligned = alignSessionVwapOverlayByTime(source, backend, rendered);
+    expect(aligned).toEqual([2, 3, null, null]);
+  });
+
+  it('overlay ausente o con longitud incorrecta deja la serie vacía sin respaldo local', () => {
+    const source = [barAt(60, 100), barAt(120, 101)];
+    const rendered = [barAt(60, 100), barAt(120, 101)];
+    expect(alignSessionVwapOverlayByTime(source, undefined, rendered)).toBeNull();
+    expect(alignSessionVwapOverlayByTime(source, null, rendered)).toBeNull();
+    expect(alignSessionVwapOverlayByTime(source, [1], rendered)).toBeNull();
+    expect(alignSessionVwapOverlayByTime(source, [1, 2, 3], rendered)).toBeNull();
+  });
+
+  it('valores no finitos del overlay se preservan como null y no contaminan la serie', () => {
+    const source = [barAt(60, 100), barAt(120, 101), barAt(180, 102)];
+    const aligned = alignSessionVwapOverlayByTime(
+      source,
+      [Number.NaN, 250.5, Number.POSITIVE_INFINITY],
+      source,
+    );
+    expect(aligned).toEqual([null, 250.5, null]);
+  });
+
+  it('el backend US publica soporte y serie alineada solo en marcos compatibles', async () => {
+    type MrDeps = NonNullable<ConstructorParameters<typeof MarketRuntime>[0]>;
+    const intradayBars: Bar[] = Array.from({ length: 30 }, (_, index) => ({
+      time: 1_780_000_000 + index * 300,
+      open: 100,
+      high: 100.5,
+      low: 99.5,
+      close: 100 + Math.sin(index / 5),
+      volume: 1_000,
+      vw: 100 + Math.sin(index / 5),
+    }));
+    const dailyBars: Bar[] = Array.from({ length: 30 }, (_, index) => ({
+      time: 1_779_000_000 + index * 86_400,
+      open: 100,
+      high: 100.5,
+      low: 99.5,
+      close: 100 + Math.sin(index / 7),
+      volume: 10_000,
+    }));
+    const runtime = new MarketRuntime({
+      apiKey: 'pieza506-offline-key',
+      enableWs: false,
+      nowMsFn: () => 1_780_100_000_000,
+      loadBarsFn: ((req: { readonly timeframe?: string; readonly visibleBars?: number }) =>
+        Promise.resolve({
+          bars: (req.timeframe === '1D' ? dailyBars : intradayBars).slice(-(req.visibleBars ?? 200)),
+          visibleStart: 0,
+          report: { provider: 'massive', fetchedPages: 1, barsCount: 30, providerError: null },
+        })) as unknown as NonNullable<MrDeps['loadBarsFn']>,
+    });
+
+    const five = await runtime.getBars('AMD', '5m', { visibleBars: 30 });
+    expect(five.bars.length).toBeGreaterThan(0);
+    expect(five.overlays.sessionVwapSupported).toBe(true);
+    expect(five.overlays.sessionVwap).toHaveLength(five.bars.length);
+
+    const fourHour = await runtime.getBars('AMD', '4h', { visibleBars: 30 });
+    expect(fourHour.overlays.sessionVwapSupported).toBe(false);
+    expect(fourHour.overlays.sessionVwap.every((value) => value === null)).toBe(true);
+
+    const daily = await runtime.getBars('AMD', '1D', { visibleBars: 30 });
+    expect(daily.overlays.sessionVwapSupported).toBe(false);
+    expect(daily.overlays.sessionVwap.every((value) => value === null)).toBe(true);
+  });
+
+  it('la vista consume el overlay US, apaga marcos no soportados y conserva la preferencia', () => {
+    const src = readFileSync(
+      new URL('../web/src/components/StockDetailView.tsx', import.meta.url),
+      'utf-8',
+    );
+
+    // US: overlay del backend alineado por tiempo desde las parejas originales;
+    // sin recálculo local (-14_400) y con el camino AR intacto (-10_800).
+    expect(src).toContain('usBarsResp.overlays.sessionVwapSupported === true');
+    expect(src).toContain(
+      'alignSessionVwapOverlayByTime(rawBars, usBarsResp.overlays.sessionVwap, bars)',
+    );
+    expect(src).not.toContain('computeSessionVwapPure(bars, isIntraday, isArMarket ? -10_800 : -14_400)');
+    expect(src).not.toContain('computeSessionVwapPure(bars, isIntraday, -14_400)');
+    expect(src).toContain('computeSessionVwapPure(bars, isIntraday, -10_800)');
+
+    // Marcos US soportados: solo 1m/5m/15m (1h/4h/1D/1W apagados).
+    for (const frame of ['1h', '4h', '1D', '1W']) {
+      expect(src).toContain(`effectiveChartTimeframe !== '${frame}'`);
+    }
+
+    // Soporte efectivo en chip y visibilidad; serie sustituida por el bundle.
+    expect(src).toContain('chartBundle.sessionVwapAvailable');
+    expect(src).toContain('visible: overlays.sessionVwap && bundle.sessionVwapAvailable');
+    expect(src).toContain('vwapRef.current?.setData(toLineData(bundle.sessionVwap))');
+    expect(src).toContain('}, [bundle, ticker, timeframe]);');
+
+    // Ningún tick inventa puntos: setData solo desde el bundle o limpieza.
+    expect(src.split('vwapRef.current?.setData(').length - 1).toBe(2);
+    expect(src.split('vwapRef.current?.update(').length - 1).toBe(0);
+    expect(src.split('vwapRef.current?.setData(toLineData(bundle.sessionVwap))').length - 1).toBe(1);
+
+    // La preferencia del usuario solo cambia con el toggle (se conserva al cambiar de marco).
+    expect(src.split('setOverlays(').length - 1).toBe(1);
   });
 });

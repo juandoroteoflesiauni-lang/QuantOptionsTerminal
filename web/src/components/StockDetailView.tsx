@@ -77,6 +77,7 @@ import type { GgalChartBarPoint } from '../../../src/core/ggal/institutionalCont
 import {
   type AvwapAnchorMode,
   type MinimalOhlcvBar,
+  alignSessionVwapOverlayByTime,
   computeAnchoredVwapWithAnchor,
   computeEmaSeriesPure,
   computeExpectedMoveBounds,
@@ -186,6 +187,8 @@ interface PanoramicChartBundle extends StockChartSeriesBundle {
   readonly autoAvwapLines: readonly ComputedAutoAvwapLine[];
   /** Pieza 50.5: `true` cuando el modo activo es `AUTO_INSTITUTIONAL`. */
   readonly isAutoAvwapMode: boolean;
+  /** Pieza 50.6: soporte efectivo del VWAP de sesión en el marco activo (US: backend; AR: intradiario local). */
+  readonly sessionVwapAvailable: boolean;
 }
 
 /** Pieza 50.5: ancla Auto-AVWAP proyectada sobre las barras del timeframe activo. */
@@ -1182,7 +1185,23 @@ export const StockDetailView: React.FC<{
     const ema21 = computeEmaSeriesPure(closes, 21).map(normalizeFiniteOrNull);
     const ema50 = computeEmaSeriesPure(closes, 50).map(normalizeFiniteOrNull);
     const ema200 = computeEmaSeriesPure(closes, 200).map(normalizeFiniteOrNull);
-    const sessionVwap = computeSessionVwapPure(bars, isIntraday, isArMarket ? -10_800 : -14_400).map(normalizeFiniteOrNull);
+    // Pieza 50.6: en US el VWAP de sesión proviene del backend (`overlays.sessionVwap`,
+    // alineado por `time` desde las parejas originales); jamás se recalcula en local.
+    // `sessionVwapSupported` desactiva el overlay en marcos no soportados (1h/4h/1D/1W)
+    // y un overlay ausente o desalineado deja la serie vacía, sin respaldo local.
+    const usSessionVwapAvailable =
+      !isArMarket &&
+      usBarsResp !== undefined &&
+      usBarsResp.overlays.sessionVwapSupported === true &&
+      effectiveChartTimeframe !== '1h' &&
+      effectiveChartTimeframe !== '4h' &&
+      !(effectiveChartTimeframe === '1D' || effectiveChartTimeframe === '1W');
+    const sessionVwap: readonly (number | null)[] = isArMarket
+      ? computeSessionVwapPure(bars, isIntraday, -10_800).map(normalizeFiniteOrNull)
+      : usSessionVwapAvailable && usBarsResp !== undefined
+        ? (alignSessionVwapOverlayByTime(rawBars, usBarsResp.overlays.sessionVwap, bars) ?? [])
+        : [];
+    const sessionVwapAvailable = isArMarket ? isIntraday : usSessionVwapAvailable;
     const lastClosedEma =
       bars.length >= 2
         ? {
@@ -1251,6 +1270,7 @@ export const StockDetailView: React.FC<{
       ema200,
       lastClosedEma,
       sessionVwap,
+      sessionVwapAvailable,
       avwapMode: 'MONTH_START',
       avwapSeries,
       avwapUpper1: avwapBands.upper1,
@@ -1861,12 +1881,14 @@ export const StockDetailView: React.FC<{
             </select>
             <ToolbarChip active={overlays.emas} label="EMA 9/21/50/200" onClick={() => handleToggleOverlay('emas')} />
             <ToolbarChip
-              active={overlays.sessionVwap && effectiveChartTimeframe !== '1D' && effectiveChartTimeframe !== '1W'}
-              disabled={effectiveChartTimeframe === '1D' || effectiveChartTimeframe === '1W'}
+              active={overlays.sessionVwap && chartBundle.sessionVwapAvailable}
+              disabled={!chartBundle.sessionVwapAvailable}
               label={
-                effectiveChartTimeframe === '1D' || effectiveChartTimeframe === '1W'
-                  ? 'VWAP (solo intradiario)'
-                  : 'VWAP'
+                chartBundle.sessionVwapAvailable
+                  ? 'VWAP'
+                  : isArMarket
+                    ? 'VWAP (solo intradiario)'
+                    : 'VWAP (1m/5m/15m)'
               }
               onClick={() => handleToggleOverlay('sessionVwap')}
             />
@@ -2517,7 +2539,9 @@ const PanoramicPriceChart: React.FC<{
   // Visibilidad de overlays sin ejecutar setData().
   useEffect(() => {
     emaRefs.current.forEach((series) => series.applyOptions({ visible: overlays.emas }));
-    vwapRef.current?.applyOptions({ visible: overlays.sessionVwap });
+    vwapRef.current?.applyOptions({
+      visible: overlays.sessionVwap && bundle.sessionVwapAvailable,
+    });
     const slots = avwapRefs.current;
     const isAutoMode = bundle.isAutoAvwapMode;
     slots['single_main']?.applyOptions({ visible: overlays.avwap && !isAutoMode });
@@ -2534,7 +2558,7 @@ const PanoramicPriceChart: React.FC<{
     slots['auto_EVENT']?.applyOptions({
       visible: overlays.avwap && isAutoMode && autoAnchorEnabled.EVENT,
     });
-  }, [overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands, bundle.isAutoAvwapMode, autoAnchorEnabled]);
+  }, [overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands, bundle.isAutoAvwapMode, bundle.sessionVwapAvailable, autoAnchorEnabled]);
 
   // Pieza 50.4/50.5: marcadores `t0` vía plugin v5 (sin setData) — ancla única o Auto por rol.
   useEffect(() => {
