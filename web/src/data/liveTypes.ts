@@ -257,7 +257,7 @@ export interface ArHistoricalBarDto {
   readonly dailyReturnPct: number | null;
 }
 
-export type TerminalTimeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1D';
+export type TerminalTimeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1D' | '1W';
 
 export interface SerializedBarDto {
   readonly time: number;
@@ -374,6 +374,9 @@ export interface VolumeProfileAmtDto {
   readonly profileVwap: number | null;
   readonly totalVolume: number | null;
   readonly valueAreaCoverage: number | null;
+  /** Pieza 50.4: ventana efectiva del perfil (`Math.min(cerradas, 252)`). */
+  readonly windowBars?: number | null;
+  readonly closedBarCount?: number | null;
   readonly bins: readonly VolumeProfileBinDto[];
   readonly hvnBins: readonly VolumeProfileBinDto[];
   readonly lvnBins: readonly VolumeProfileBinDto[];

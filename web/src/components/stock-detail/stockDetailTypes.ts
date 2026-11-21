@@ -39,6 +39,8 @@ export interface ChartKeyLevels {
   readonly poc: number | null;
   readonly vah: number | null;
   readonly val: number | null;
+  /** Pieza 50.4: ventana efectiva del Volume Profile (`windowBars` o `closedBarCount`), o `null`. */
+  readonly volumeProfileWindowBars?: number | null;
   readonly callWall: number | null;
   readonly putWall: number | null;
   readonly zeroGamma: number | null;

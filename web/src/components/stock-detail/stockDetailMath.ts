@@ -7,6 +7,8 @@
  * - Política Zero Silent Fallbacks: valores no calculables devuelven `NaN`.
  */
 
+import { resolveEffectiveAvwapAnchorIndex } from '../../../../src/core/stockDetailChartNavigation.js';
+
 export type AvwapAnchorMode =
   | 'MONTH_START'
   | 'LAST_EXPIRY'
@@ -324,6 +326,31 @@ export function computeAnchoredVwapPure(
     out[i] = cumVol > 0 ? cumPv / cumVol : Number.NaN;
   }
   return out;
+}
+
+/** Resultado de AVWAP con ancla efectiva resuelta (Pieza 50.4). */
+export interface AnchoredVwapWithAnchorResult {
+  readonly series: readonly number[];
+  readonly requestedAnchorIndex: number;
+  readonly effectiveAnchorIndex: number;
+  readonly effectiveAnchorTime: number | null;
+}
+
+/**
+ * Pieza 50.4: AVWAP con ancla efectiva — si la vela pedida tiene `volume <= 0` (o precio
+ * típico no finito), avanza a la primera vela válida para que la curva visual, la fecha
+ * declarada y el marcador coincidan exactamente. `series` es `computeAnchoredVwapPure`
+ * desde el ancla efectiva (`NaN` antes del ancla).
+ */
+export function computeAnchoredVwapWithAnchor(
+  bars: readonly MinimalOhlcvBar[],
+  requestedAnchorIndex: number,
+): AnchoredVwapWithAnchorResult {
+  const effectiveAnchorIndex = resolveEffectiveAvwapAnchorIndex(bars, requestedAnchorIndex);
+  const effectiveAnchorTime =
+    effectiveAnchorIndex >= 0 ? (bars[effectiveAnchorIndex]?.time ?? null) : null;
+  const series = computeAnchoredVwapPure(bars, effectiveAnchorIndex);
+  return { series, requestedAnchorIndex, effectiveAnchorIndex, effectiveAnchorTime };
 }
 
 /**

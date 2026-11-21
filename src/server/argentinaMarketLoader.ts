@@ -47,6 +47,7 @@ import {
 } from '../core/ggal/technicalIndicators.js';
 import type { GgalChartBarPoint } from '../core/ggal/institutionalContracts.js';
 import {
+  DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
   computeVolumeProfileAmt,
   trackNakedPocs,
   type TrackNakedPocsResult,
@@ -7008,12 +7009,19 @@ export class ArgentinaMarketRuntime {
         ? Math.max(0.01, Math.round((spot / 120) * 100) / 100)
         : 0.05;
 
+    // Pieza 50.4: `closedBars` (90 ruedas) se conserva para ATR/CVD/POCs/FVGs/FOBs y
+    // fuerza relativa; el Volume Profile usa su propia ventana de 252 ruedas (1 año).
+    const closedBarsVp = normalizeClosedDailyBarsForEngines(
+      params.bars.slice(-DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS),
+      evalSec,
+    );
     const volumeProfile =
-      closedBars.length >= 2
-        ? computeVolumeProfileAmt(closedBars, {
+      closedBarsVp.length >= 2
+        ? computeVolumeProfileAmt(closedBarsVp, {
             asOfUtcSec: evalSec,
             barSeconds: 86_400,
             tickSize,
+            lookbackBars: DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
           })
         : null;
 

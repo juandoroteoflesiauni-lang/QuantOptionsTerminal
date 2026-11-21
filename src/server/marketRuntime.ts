@@ -48,6 +48,7 @@ import {
 } from '../core/microstructure/mtfStructure.js';
 import { evaluateOpeningAuction } from '../core/microstructure/openingAuction.js';
 import {
+  DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
   computeVolumeProfileAmt,
   trackNakedPocs,
   type TrackNakedPocsResult,
@@ -8913,12 +8914,16 @@ export class MarketRuntime {
         ? Math.max(0.01, Math.round((spot / 500) * 100) / 100)
         : 0.01;
 
+    // Pieza 50.4: el POC/VAH/VAL se acota a las últimas 252 ruedas (1 año operativo);
+    // `closedDailyUs` completo se mantiene para EMA 200, gráfico y resto de motores.
+    const volumeProfileBarsUs = closedDailyUs.slice(-DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS);
     const volumeProfileUs =
-      closedDailyUs.length >= 2
-        ? computeVolumeProfileAmt(closedDailyUs, {
+      volumeProfileBarsUs.length >= 2
+        ? computeVolumeProfileAmt(volumeProfileBarsUs, {
             asOfUtcSec: evalSecUs,
             barSeconds: 86_400,
             tickSize: tickSizeUs,
+            lookbackBars: DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
           })
         : null;
     const nakedPocsUs =

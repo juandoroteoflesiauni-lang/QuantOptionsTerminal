@@ -24,6 +24,8 @@ import {
 export const DEFAULT_VALUE_AREA_PCT = 0.70;
 export const DEFAULT_HVN_PERCENTILE = 85;
 export const DEFAULT_LVN_PERCENTILE = 15;
+/** Pieza 50.4: ventana operativa por defecto del Volume Profile (1 año operativo). */
+export const DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS = 252;
 
 const BIN_EPS = 1e-12;
 
@@ -43,6 +45,8 @@ export interface VolumeProfileAmtOptions {
   readonly hvnPercentile?: number;
   /** Percentil máximo `[0, 100]` para clasificar un bin como `LVN` (por defecto `15`). */
   readonly lvnPercentile?: number;
+  /** Ventana máxima opcional de barras cerradas recientes (`>= 1`). Si se omite, usa todas las cerradas. */
+  readonly lookbackBars?: number;
 }
 
 export interface VolumeProfileBin {
@@ -60,6 +64,11 @@ export interface VolumeProfileAmtResult {
   readonly tickSize: number;
   readonly closedBarCount: number;
   readonly excludedFutureCount: number;
+  /**
+   * Pieza 50.4: cantidad efectiva de barras cerradas usadas en la ventana del perfil
+   * (`Math.min(closed.length, lookbackBars)`); `0` en payloads `NO_DATA`.
+   */
+  readonly windowBars: number;
   readonly minPrice: number;
   readonly maxPrice: number;
   readonly poc: number;
@@ -362,6 +371,7 @@ function emptyVolumeProfileResult(
   tickSize: number,
   closedBarCount: number,
   excludedFutureCount: number,
+  windowBars = 0,
 ): VolumeProfileAmtResult {
   return {
     status: 'NO_DATA',
@@ -370,6 +380,7 @@ function emptyVolumeProfileResult(
     tickSize,
     closedBarCount,
     excludedFutureCount,
+    windowBars,
     minPrice: Number.NaN,
     maxPrice: Number.NaN,
     poc: Number.NaN,
@@ -406,6 +417,25 @@ export function computeVolumeProfileAmt(
   );
 
   const tickSize = options.tickSize;
+  const lookbackBars = options.lookbackBars;
+  if (
+    lookbackBars !== undefined &&
+    (!Number.isInteger(lookbackBars) || lookbackBars <= 0)
+  ) {
+    return emptyVolumeProfileResult(
+      options.asOfUtcSec,
+      options.barSeconds,
+      Number.isFinite(tickSize) && tickSize > 0 ? tickSize : Number.NaN,
+      0,
+      excludedFutureCount,
+      0,
+    );
+  }
+  const windowedClosed =
+    lookbackBars !== undefined && closed.length > lookbackBars
+      ? closed.slice(-lookbackBars)
+      : closed;
+
   const valueAreaPct =
     options.valueAreaPct === undefined ? DEFAULT_VALUE_AREA_PCT : options.valueAreaPct;
   const hvnPctThreshold =
@@ -431,19 +461,21 @@ export function computeVolumeProfileAmt(
       options.asOfUtcSec,
       options.barSeconds,
       Number.isFinite(tickSize) && tickSize > 0 ? tickSize : Number.NaN,
-      closed.length,
+      windowedClosed.length,
       excludedFutureCount,
+      windowedClosed.length,
     );
   }
 
-  const histogram = buildRawHistogram(closed, tickSize, valueAreaPct);
+  const histogram = buildRawHistogram(windowedClosed, tickSize, valueAreaPct);
   if (histogram === null) {
     return emptyVolumeProfileResult(
       options.asOfUtcSec,
       options.barSeconds,
       tickSize,
-      closed.length,
+      windowedClosed.length,
       excludedFutureCount,
+      windowedClosed.length,
     );
   }
 
@@ -484,8 +516,9 @@ export function computeVolumeProfileAmt(
     asOfUtcSec: options.asOfUtcSec,
     barSeconds: options.barSeconds,
     tickSize,
-    closedBarCount: closed.length,
+    closedBarCount: windowedClosed.length,
     excludedFutureCount,
+    windowBars: windowedClosed.length,
     minPrice: histogram.minPrice,
     maxPrice: histogram.maxPrice,
     poc: histogram.poc,

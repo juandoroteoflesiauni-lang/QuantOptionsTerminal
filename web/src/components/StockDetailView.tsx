@@ -10,10 +10,13 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type LogicalRange as LogicalRangeAlias,
+  type SeriesMarker,
   type Time,
   type UTCTimestamp,
   createChart,
+  createSeriesMarkers,
 } from 'lightweight-charts';
 import { ArrowLeft, Keyboard, Zap } from 'lucide-react';
 import {
@@ -51,6 +54,7 @@ import {
   normalizeStockDetailOrderBook,
 } from '../../../src/core/stockDetailStability';
 import {
+  findNearestBarIndex,
   resolveAvwapClickAnchor,
   resolveChartFitKey,
   resolveChartViewportTransition,
@@ -58,13 +62,18 @@ import {
   shouldEmitLogicalRangeSync,
 } from '../../../src/core/stockDetailChartNavigation';
 import {
+  AR_MARKET_TIMEZONE,
+  US_MARKET_TIMEZONE,
+  resampleDailyToWeekly,
+} from '../../../src/core/resampleWeekly';
+import {
   computeAnchoredVwapSeries,
 } from '../../../src/core/ggal/technicalIndicators';
 import type { GgalChartBarPoint } from '../../../src/core/ggal/institutionalContracts';
 import {
   type AvwapAnchorMode,
   type MinimalOhlcvBar,
-  computeAnchoredVwapPure,
+  computeAnchoredVwapWithAnchor,
   computeEmaSeriesPure,
   computeExpectedMoveBounds,
   computeSessionVwapPure,
@@ -113,6 +122,7 @@ const CHART_TIMEFRAMES: readonly { readonly id: TerminalTimeframe; readonly labe
   { id: '1h', label: '1H' },
   { id: '4h', label: '4H' },
   { id: '1D', label: '1D' },
+  { id: '1W', label: '1W' },
 ];
 
 type PanoramicAvwapAnchorMode =
@@ -164,6 +174,8 @@ interface PanoramicChartBundle extends StockChartSeriesBundle {
   readonly avwapUpper2: readonly (number | null)[];
   readonly avwapLower2: readonly (number | null)[];
   readonly avwapAnchorModeLabel: string;
+  /** Pieza 50.4: timestamp UTC del ancla efectiva (misma vela donde nace la curva y el marcador). */
+  readonly avwapEffectiveAnchorTimeSec: number | null;
 }
 
 function normalizeFiniteOrNull(value: number | null | undefined): number | null {
@@ -267,13 +279,97 @@ function resolvePanoramicAnchorTime(
   }
   if (mode === 'CLICKED_CANDLE') {
     if (clickedTimeSec === null || !Number.isFinite(clickedTimeSec)) return null;
-    const exact = bars.find((bar) => bar.time === clickedTimeSec);
-    if (exact !== undefined) return exact.time;
-    const idx = bars.findIndex((bar) => bar.time >= clickedTimeSec);
-    const bar = idx >= 0 ? bars[idx] : undefined;
-    return bar?.time ?? null;
+    // Pieza 50.4: snap a la vela MÁS CERCANA (sin sesgo hacia adelante entre timestamps).
+    const idx = findNearestBarIndex(bars, clickedTimeSec);
+    return idx >= 0 ? (bars[idx]?.time ?? null) : null;
   }
   return null;
+}
+
+/** Convierte barras locales a la forma `Bar` de `resampleDailyToWeekly` (vw inválido se omite). */
+function toWeeklyResampleBars(bars: readonly MinimalOhlcvBar[]): {
+  readonly time: number;
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+  readonly volume: number;
+  readonly vw?: number;
+}[] {
+  return bars.map((bar) => ({
+    time: bar.time,
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+    ...(bar.vw !== undefined && bar.vw !== null && Number.isFinite(bar.vw) && bar.vw > 0
+      ? { vw: bar.vw }
+      : {}),
+  }));
+}
+
+/** Pieza 50.4: etiqueta de la ventana efectiva del Volume Profile (`1Y · 252R` por defecto). */
+function resolveVpWindowTag(windowBars: number | null): string {
+  return windowBars !== null && windowBars > 0
+    ? windowBars >= 252
+      ? `1Y · ${String(windowBars)}R`
+      : `${String(windowBars)}R`
+    : '1Y · 252R';
+}
+
+/** Pieza 50.4: tooltip determinista de la ventana del Volume Profile (252 ruedas). */
+function resolveVpWindowTooltip(windowBars: number | null): string {
+  return windowBars !== null && windowBars > 0
+    ? `Volume Profile (POC / VAH / VAL) sobre las últimas ${String(windowBars)} ruedas diarias cerradas (${resolveVpWindowTag(windowBars)})`
+    : 'Volume Profile (POC / VAH / VAL) sobre el último año operativo (1Y · 252R)';
+}
+
+const AVWAP_DATE_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * Pieza 50.4: etiqueta de fecha del ancla AVWAP (`DD/MM/YY` en 1D/1W, `DD/MM HH:mm` en
+ * intradiario) con `Intl.DateTimeFormat` cacheado por zona/fmt. `null` si el timestamp
+ * no es finito (la UI muestra el modo sin fecha, nunca una fecha inventada).
+ */
+function formatAvwapAnchorLabel(
+  timeSec: number,
+  timeZone: string,
+  includeTime: boolean,
+): string | null {
+  if (!Number.isFinite(timeSec)) return null;
+  const key = `${timeZone}|${includeTime ? 'ddmmhhmm' : 'ddmmyy'}`;
+  let formatter = AVWAP_DATE_FORMATTERS.get(key);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat(
+      'en-GB',
+      includeTime
+        ? {
+            timeZone,
+            day: '2-digit',
+            month: '2-digit',
+            year: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23',
+          }
+        : { timeZone, day: '2-digit', month: '2-digit', year: '2-digit' },
+    );
+    AVWAP_DATE_FORMATTERS.set(key, formatter);
+  }
+  const parts: Record<string, string> = {};
+  for (const part of formatter.formatToParts(new Date(timeSec * 1_000))) {
+    parts[part.type] = part.value;
+  }
+  const day = parts['day'];
+  const month = parts['month'];
+  const year = parts['year'];
+  if (day === undefined || month === undefined || year === undefined) return null;
+  if (!includeTime) return `${day}/${month}/${year}`;
+  const hour = parts['hour'];
+  const minute = parts['minute'];
+  if (hour === undefined || minute === undefined) return null;
+  return `${day}/${month} ${hour}:${minute}`;
 }
 
 function mergeArLiveOrderBookDto(
@@ -435,6 +531,23 @@ export const StockDetailView: React.FC<{
     setArFallbackNotice(null);
     if (!hasOverviewRef.current) void refreshOverview();
 
+    // Pieza 50.4: `1W` se deriva 100 % en cliente desde las velas `1D`; jamás se llama
+    // `/api/bars?timeframe=1W` ni `/api/ar/stock?timeframe=1W`. Si el 1D ya está en
+    // memoria no se emite ningún fetch.
+    const apiTimeframe: TerminalTimeframe = timeframe === '1W' ? '1D' : timeframe;
+    const storageTimeframe: TerminalTimeframe = timeframe === '1W' ? '1D' : timeframe;
+    const wantsDailySeries = timeframe === '1D' || timeframe === '1W';
+    const oneDayAlreadyLoaded =
+      timeframe === '1W' &&
+      (isArMarket
+        ? (arBarsByKey[`${currentStockKey}:1D`]?.bars.length ?? 0) > 0 ||
+          (stockDetail?.historicalBars.length ?? 0) > 0
+        : (usBarsByKey[`${currentStockKey}:1D`]?.bars.length ?? 0) > 0);
+    if (oneDayAlreadyLoaded) {
+      setLoading(false);
+      return undefined;
+    }
+
     const isCurrent = (): boolean => requestId === loadingRequestIdRef.current && !controller.signal.aborted;
 
     const load = async (): Promise<void> => {
@@ -442,16 +555,16 @@ export const StockDetailView: React.FC<{
         if (isArMarket) {
           // Pieza 41 + 43: BYMA usa /api/bars?market=AR con fallback no destructivo a 1D
           // para todos los timeframes intradiarios (`1m`, `5m`, `15m`, `1h`, `4h`).
-          const detailPromise = requestStockDetail(cleanTicker, false, timeframe, controller.signal);
+          const detailPromise = requestStockDetail(cleanTicker, false, apiTimeframe, controller.signal);
           void detailPromise.catch(() => undefined);
-          let arBarsRes = await requestTerminalBars(cleanTicker, timeframe, {
+          let arBarsRes = await requestTerminalBars(cleanTicker, apiTimeframe, {
             visibleBars: 1_250,
             market: 'AR',
             signal: controller.signal,
           }).catch(() => null);
           if (!isCurrent()) return;
 
-          if ((arBarsRes === null || arBarsRes.bars.length === 0) && timeframe !== '1D') {
+          if ((arBarsRes === null || arBarsRes.bars.length === 0) && !wantsDailySeries) {
             arBarsRes = await requestTerminalBars(cleanTicker, '1D', {
               visibleBars: 1_250,
               market: 'AR',
@@ -467,7 +580,7 @@ export const StockDetailView: React.FC<{
             }
           } else if (
             arBarsRes !== null &&
-            timeframe !== '1D' &&
+            !wantsDailySeries &&
             arBarsRes.effectiveTimeframe === '1D'
           ) {
             setArFallbackNotice({
@@ -481,8 +594,8 @@ export const StockDetailView: React.FC<{
             const finalArBars = arBarsRes;
             setArBarsByKey((prev) => ({
               ...prev,
-              [`${currentStockKey}:${timeframe}`]: finalArBars,
-              ...(finalArBars.effectiveTimeframe === '1D' || timeframe === '1D'
+              [`${currentStockKey}:${storageTimeframe}`]: finalArBars,
+              ...(finalArBars.effectiveTimeframe === '1D' || storageTimeframe === '1D'
                 ? { [`${currentStockKey}:1D`]: finalArBars }
                 : {}),
             }));
@@ -491,7 +604,7 @@ export const StockDetailView: React.FC<{
             const detailRes = await detailPromise.catch(() => null);
             if (!isCurrent()) return;
             if (detailRes !== null && detailRes.historicalBars.length > 0) {
-              if (timeframe !== '1D') {
+              if (!wantsDailySeries) {
                 setArFallbackNotice({
                   requested: timeframe,
                   effective: '1D',
@@ -506,8 +619,8 @@ export const StockDetailView: React.FC<{
           setLoading(false);
           void requestOptionsChain(cleanTicker).catch(() => undefined);
         } else {
-          const barsPromise = requestTerminalBars(cleanTicker, timeframe, {
-            visibleBars: timeframe === '1D' ? 1_250 : 1_000,
+          const barsPromise = requestTerminalBars(cleanTicker, apiTimeframe, {
+            visibleBars: apiTimeframe === '1D' ? 1_250 : 1_000,
             signal: controller.signal,
           });
           void requestUsSnapshot(cleanTicker, { signal: controller.signal }).catch(() => undefined);
@@ -516,7 +629,7 @@ export const StockDetailView: React.FC<{
           if (barsRes) {
             setUsBarsByKey((prev) => ({
               ...prev,
-              [`${currentStockKey}:${timeframe}`]: barsRes,
+              [`${currentStockKey}:${storageTimeframe}`]: barsRes,
             }));
           } else {
             setLoadError(`No se pudieron cargar velas para ${cleanTicker} (${timeframe}).`);
@@ -723,9 +836,13 @@ export const StockDetailView: React.FC<{
     : undefined;
   const usSnap = !isArMarket ? runtime.usSnapshotsBySymbol[cleanTicker] : undefined;
   const usBarsResp = !isArMarket ? usBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
+  // Pieza 50.4: `1W` se deriva de las velas `1D` ya cargadas (sin request propio).
+  const usBars1dResp = !isArMarket ? usBarsByKey[`${currentStockKey}:1D`] : undefined;
   // Pieza 38 / 43: velas reales ARS servidas por /api/bars?market=AR (fallback automático a 1D).
   const arBarsResp = isArMarket ? arBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
   const arBars1dResp = isArMarket ? arBarsByKey[`${currentStockKey}:1D`] : undefined;
+  // Pieza 50.4: en `1W` el contexto US se alimenta del mismo dataset 1D que el resample.
+  const usBarsContextResp = timeframe === '1W' ? usBars1dResp : usBarsResp;
 
   const contextInfo: StockContextBannerInfo = useMemo(() => {
     const cclMed = normalizeFiniteOrNull(runtime.overview?.cclMedian);
@@ -808,7 +925,7 @@ export const StockDetailView: React.FC<{
       snapQuote?.price ??
       usSnap?.envelope?.snapshot?.metrics?.spot ??
       usSnap?.envelope?.metrics?.spot?.value ??
-      usBarsResp?.bars.at(-1)?.close ??
+      usBarsContextResp?.bars.at(-1)?.close ??
       null;
     const liveUsPrice =
       snapExtBadge !== null
@@ -853,7 +970,7 @@ export const StockDetailView: React.FC<{
       dayHigh: normalizeFiniteOrNull(liveQuote?.dayHigh ?? snapQuote?.dayHigh),
       volumeCompact,
       volRelative: normalizeFiniteOrNull(usMeta?.volMultiple),
-      feedStatus: usSnap?.feedMode ?? (usBarsResp ? 'LIVE' : 'NO_DATA'),
+      feedStatus: usSnap?.feedMode ?? (usBarsContextResp ? 'LIVE' : 'NO_DATA'),
       intradayProvenanceNote: null,
       arHasAdr: false,
       adrUsTicker: cleanTicker,
@@ -876,11 +993,12 @@ export const StockDetailView: React.FC<{
       cedearArsPrice: cedPrice,
       cedearCclMismatchPct: cclMismatchPct,
     };
-  }, [cleanTicker, isArMarket, liveQuote, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, usBarsResp, usSnap]);
+  }, [cleanTicker, isArMarket, liveQuote, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, usBarsContextResp, usSnap]);
 
   const isArIntradayFallbackActive =
     isArMarket &&
     timeframe !== '1D' &&
+    timeframe !== '1W' &&
     (arBarsResp?.effectiveTimeframe === '1D' ||
       arFallbackNotice !== null ||
       ((arBarsResp?.bars.length ?? 0) === 0 &&
@@ -950,7 +1068,13 @@ export const StockDetailView: React.FC<{
       // Pieza 38 / 43: 1D prioriza /api/bars?market=AR; cualquier timeframe
       // intradiario BYMA sin velas locales cae automáticamente a 1D real sin
       // dejar el canvas en negro ni disparar un error rojo destructivo.
-      if (timeframe === '1D') {
+      if (timeframe === '1W') {
+        // Pieza 50.4: semanal derivado 100 % en cliente desde las velas 1D.
+        rawBars =
+          arBars1dResp !== undefined && arBars1dResp.bars.length > 0
+            ? arBars1dResp.bars
+            : (stockDetail?.historicalBars ?? []);
+      } else if (timeframe === '1D') {
         rawBars =
           arBarsResp !== undefined && arBarsResp.bars.length > 0
             ? arBarsResp.bars
@@ -968,7 +1092,7 @@ export const StockDetailView: React.FC<{
       const frontExpiry = arOptions?.expiries.find((expiry) => expiry.ivAtm !== null && expiry.ivAtm > 0) ?? arOptions?.expiries[0];
       if (frontExpiry?.ivAtm != null && Number.isFinite(frontExpiry.ivAtm)) ivAtmPct = frontExpiry.ivAtm * 100;
     } else {
-      rawBars = usBarsResp?.bars ?? [];
+      rawBars = timeframe === '1W' ? (usBars1dResp?.bars ?? []) : (usBarsResp?.bars ?? []);
       benchBars1d = dedupAndSortBars(usSnap?.benchmarkBars1d ?? []);
       const ivDecimal =
         usSnap?.volSurfaceSummary?.frontSlice?.ivAtm ??
@@ -978,9 +1102,18 @@ export const StockDetailView: React.FC<{
       if (ivDecimal !== null && Number.isFinite(ivDecimal) && ivDecimal > 0) ivAtmPct = ivDecimal * 100;
     }
 
-    const bars = dedupAndSortBars(rawBars);
+    const dedupDaily = dedupAndSortBars(rawBars);
+    // Pieza 50.4: en `1W` las velas diarias se resamplean a semanales nativas (lunes–viernes)
+    // en la zona horaria del mercado; el resto de timeframes usa las barras tal cual.
+    const bars: readonly MinimalOhlcvBar[] =
+      effectiveChartTimeframe === '1W'
+        ? resampleDailyToWeekly(
+            toWeeklyResampleBars(dedupDaily),
+            isArMarket ? AR_MARKET_TIMEZONE : US_MARKET_TIMEZONE,
+          )
+        : dedupDaily;
     const closes = bars.map((bar) => bar.close);
-    const isIntraday = effectiveChartTimeframe !== '1D';
+    const isIntraday = effectiveChartTimeframe !== '1D' && effectiveChartTimeframe !== '1W';
     const ema9 = computeEmaSeriesPure(closes, 9).map(normalizeFiniteOrNull);
     const ema21 = computeEmaSeriesPure(closes, 21).map(normalizeFiniteOrNull);
     const ema50 = computeEmaSeriesPure(closes, 50).map(normalizeFiniteOrNull);
@@ -1002,12 +1135,17 @@ export const StockDetailView: React.FC<{
       isArMarket ? 'AR' : 'US',
       effectiveClickedAnchorTimeSec,
     );
-    const anchorIndex =
-      avwapMode === 'CLICKED_CANDLE'
-        ? bars.findIndex((bar) => bar.time === anchorTimeSec)
-        : bars.findIndex((bar) => bar.time === anchorTimeSec);
-    const avwapSeries = computeAnchoredVwapPure(bars, anchorIndex).map(normalizeFiniteOrNull);
-    const avwapBands = alignVwapPointsToBars(bars, computeAnchoredVwapSeries(barsToGgalChartPoints(bars), anchorTimeSec ?? Number.NaN));
+    // Pieza 50.4: ancla efectiva (avanza a la primera vela con volumen y precio típico)
+    // para que fecha declarada, marcador y primer punto de la curva coincidan exactamente.
+    const avwapCalc = computeAnchoredVwapWithAnchor(
+      bars,
+      anchorTimeSec !== null ? findNearestBarIndex(bars, anchorTimeSec) : -1,
+    );
+    const avwapSeries = avwapCalc.series.map(normalizeFiniteOrNull);
+    const avwapBands = alignVwapPointsToBars(
+      bars,
+      computeAnchoredVwapSeries(barsToGgalChartPoints(bars), avwapCalc.effectiveAnchorTime ?? Number.NaN),
+    );
 
     const rv30Decimal = isArMarket
       ? stockDetail?.realizedVol20d ?? null
@@ -1030,8 +1168,9 @@ export const StockDetailView: React.FC<{
       avwapLower1: avwapBands.lower1,
       avwapUpper2: avwapBands.upper2,
       avwapLower2: avwapBands.lower2,
-      avwapAnchorAvailable: anchorIndex >= 0,
+      avwapAnchorAvailable: avwapCalc.effectiveAnchorIndex >= 0,
       avwapAnchorModeLabel: modeLabel,
+      avwapEffectiveAnchorTimeSec: avwapCalc.effectiveAnchorTime,
       benchmarkBars1d: benchBars1d,
       ivAtmPct,
       rv30Pct,
@@ -1039,7 +1178,7 @@ export const StockDetailView: React.FC<{
       barsAvailable: bars.length > 0 && intradayUnavailableReason === null,
       intradayUnavailableReason,
     };
-  }, [arBars1dResp, arBarsResp, arOptions, avwapMode, cleanTicker, effectiveChartTimeframe, effectiveClickedAnchorTimeSec, isArMarket, stockDetail, timeframe, usBarsResp, usSnap]);
+  }, [arBars1dResp, arBarsResp, arOptions, avwapMode, cleanTicker, effectiveChartTimeframe, effectiveClickedAnchorTimeSec, isArMarket, stockDetail, timeframe, usBars1dResp, usBarsResp, usSnap]);
 
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];
@@ -1051,6 +1190,10 @@ export const StockDetailView: React.FC<{
         poc: normalizeFiniteOrNull(engines?.volumeProfile?.poc),
         vah: normalizeFiniteOrNull(engines?.volumeProfile?.vah),
         val: normalizeFiniteOrNull(engines?.volumeProfile?.val),
+        // Pieza 50.4: ventana efectiva del perfil (252 ruedas operativas).
+        volumeProfileWindowBars: normalizeFiniteOrNull(
+          engines?.volumeProfile?.windowBars ?? engines?.volumeProfile?.closedBarCount,
+        ),
         callWall: normalizeFiniteOrNull(exposure?.callWallStrike),
         putWall: normalizeFiniteOrNull(exposure?.putWallStrike),
         zeroGamma: normalizeFiniteOrNull(exposure?.gammaFlipSpot),
@@ -1068,6 +1211,10 @@ export const StockDetailView: React.FC<{
       poc: normalizeFiniteOrNull(engines?.volumeProfile?.poc),
       vah: normalizeFiniteOrNull(engines?.volumeProfile?.vah),
       val: normalizeFiniteOrNull(engines?.volumeProfile?.val),
+      // Pieza 50.4: ventana efectiva del perfil (252 ruedas operativas).
+      volumeProfileWindowBars: normalizeFiniteOrNull(
+        engines?.volumeProfile?.windowBars ?? engines?.volumeProfile?.closedBarCount,
+      ),
       callWall: normalizeFiniteOrNull(exposure?.callWallStrike),
       putWall: normalizeFiniteOrNull(exposure?.putWallStrike),
       zeroGamma: normalizeFiniteOrNull(exposure?.gammaFlipSpot),
@@ -1079,6 +1226,24 @@ export const StockDetailView: React.FC<{
       orderBlocks: engines?.orderBlocks?.freshOrderBlocks ?? [],
     };
   }, [arOptions, chartBundle.bars, isArMarket, stockDetail, usSnap]);
+
+  // Pieza 50.4: etiqueta determinista de la ventana del Volume Profile (ancho reservado,
+  // sin CLS). Si el backend no informa la ventana, explicita el contrato 1Y · 252R.
+  const vpWindowBars = keyLevels.volumeProfileWindowBars ?? null;
+  const vpWindowTag = resolveVpWindowTag(vpWindowBars);
+  const vpTooltip = resolveVpWindowTooltip(vpWindowBars);
+
+  // Pieza 50.4: fecha visible del ancla AVWAP (`DD/MM/YY` en 1D/1W; `DD/MM HH:mm` intradiario).
+  const avwapAnchorIncludeTime =
+    effectiveChartTimeframe !== '1D' && effectiveChartTimeframe !== '1W';
+  const avwapDateLabel =
+    chartBundle.avwapAnchorAvailable && chartBundle.avwapEffectiveAnchorTimeSec !== null
+      ? formatAvwapAnchorLabel(
+          chartBundle.avwapEffectiveAnchorTimeSec,
+          isArMarket ? AR_MARKET_TIMEZONE : US_MARKET_TIMEZONE,
+          avwapAnchorIncludeTime,
+        )
+      : null;
 
   const { gexProfileStrikes, expectedMoveInfo } = useMemo(() => {
     const spot = contextInfo.spot;
@@ -1544,7 +1709,8 @@ export const StockDetailView: React.FC<{
               key={level.id}
               type="button"
               onClick={() => setHighlightedLevel((prev) => (prev === level.id ? null : level.id))}
-              className={`rounded-full border px-2 py-1 font-mono-num text-[10px] transition-colors cursor-pointer ${
+              title={level.id === 'POC' || level.id === 'VAH' || level.id === 'VAL' ? vpTooltip : undefined}
+              className={`rounded-full border px-2 py-1 font-mono-num tabular-nums text-[10px] transition-colors cursor-pointer ${
                 highlightedLevel === level.id
                   ? 'border-[#8B7CF6] bg-[#8B7CF6]/15 text-white'
                   : 'border-[#232733] bg-[#0A0A0D] text-[#9CA3AF] hover:border-[#2E3446] hover:text-white'
@@ -1601,14 +1767,30 @@ export const StockDetailView: React.FC<{
             </select>
             <ToolbarChip active={overlays.emas} label="EMA 9/21/50/200" onClick={() => handleToggleOverlay('emas')} />
             <ToolbarChip
-              active={overlays.sessionVwap && effectiveChartTimeframe !== '1D'}
-              disabled={effectiveChartTimeframe === '1D'}
-              label={effectiveChartTimeframe === '1D' ? 'VWAP (solo intradiario)' : 'VWAP'}
+              active={overlays.sessionVwap && effectiveChartTimeframe !== '1D' && effectiveChartTimeframe !== '1W'}
+              disabled={effectiveChartTimeframe === '1D' || effectiveChartTimeframe === '1W'}
+              label={
+                effectiveChartTimeframe === '1D' || effectiveChartTimeframe === '1W'
+                  ? 'VWAP (solo intradiario)'
+                  : 'VWAP'
+              }
               onClick={() => handleToggleOverlay('sessionVwap')}
             />
-            <ToolbarChip active={overlays.avwap} label={`AVWAP · ${chartBundle.avwapAnchorModeLabel}`} onClick={() => handleToggleOverlay('avwap')} />
+            <ToolbarChip
+              active={overlays.avwap}
+              label={avwapDateLabel !== null ? `AVWAP · ${avwapDateLabel}` : `AVWAP · ${chartBundle.avwapAnchorModeLabel}`}
+              title={`AVWAP (${chartBundle.avwapAnchorModeLabel})${avwapDateLabel !== null ? ` · Ancla: ${avwapDateLabel}` : ''}`}
+              className="min-w-[132px] font-mono-num tabular-nums text-center"
+              onClick={() => handleToggleOverlay('avwap')}
+            />
             <ToolbarChip active={showAvwapBands} label="AVWAP ±1σ/±2σ" onClick={() => setShowAvwapBands((visible) => !visible)} />
-            <ToolbarChip active={overlays.volumeProfile} label="POC/VAH/VAL" onClick={() => handleToggleOverlay('volumeProfile')} />
+            <ToolbarChip
+              active={overlays.volumeProfile}
+              label={`POC/VAH/VAL · ${vpWindowTag}`}
+              title={vpTooltip}
+              className="font-mono-num tabular-nums"
+              onClick={() => handleToggleOverlay('volumeProfile')}
+            />
             <ToolbarChip active={overlays.optionWalls} label="Walls" onClick={() => handleToggleOverlay('optionWalls')} />
           </div>
         </div>
@@ -1701,13 +1883,16 @@ const ToolbarChip: React.FC<{
   readonly active: boolean;
   readonly disabled?: boolean;
   readonly label: string;
+  readonly title?: string;
+  readonly className?: string;
   readonly onClick: () => void;
-}> = ({ active, disabled = false, label, onClick }) => (
+}> = ({ active, disabled = false, label, title, className = '', onClick }) => (
   <button
     type="button"
     disabled={disabled}
     onClick={onClick}
-    className={`rounded-[6px] border px-2 py-1 text-[11px] font-medium transition-colors ${
+    title={title}
+    className={`rounded-[6px] border px-2 py-1 text-[11px] font-medium transition-colors ${className} ${
       disabled
         ? 'cursor-not-allowed border-[#1D1D29] bg-[#111118] text-[#525870]'
         : active
@@ -1720,6 +1905,7 @@ const ToolbarChip: React.FC<{
 );
 
 function resolvePanoramicTimeframeSec(timeframe: TerminalTimeframe): number {
+  if (timeframe === '1W') return 604_800;
   if (timeframe === '1D') return 86_400;
   if (timeframe === '4h') return 14_400;
   if (timeframe === '1h') return 3_600;
@@ -1767,6 +1953,7 @@ const PanoramicPriceChart: React.FC<{
   const crosshairLegendRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const emaRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
   const vwapRef = useRef<ISeriesApi<'Line'> | null>(null);
   const avwapRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
@@ -1938,6 +2125,7 @@ const PanoramicPriceChart: React.FC<{
 
     chartRef.current = chart;
     candleRef.current = candles;
+    candleMarkersRef.current = createSeriesMarkers(candles, []);
     emaRefs.current = emaSeries;
     vwapRef.current = vwap;
     avwapRefs.current = avwapSeries;
@@ -2045,6 +2233,8 @@ const PanoramicPriceChart: React.FC<{
       chart.unsubscribeClick(handleChartClick);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeChange);
+      candleMarkersRef.current?.detach();
+      candleMarkersRef.current = null;
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
@@ -2062,7 +2252,7 @@ const PanoramicPriceChart: React.FC<{
 
   useEffect(() => {
     chartRef.current?.applyOptions({
-      timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false },
+      timeScale: { timeVisible: timeframe !== '1D' && timeframe !== '1W', secondsVisible: false },
     });
   }, [timeframe]);
 
@@ -2175,6 +2365,26 @@ const PanoramicPriceChart: React.FC<{
     avwapRefs.current[4]?.applyOptions({ visible: overlays.avwap && showAvwapBands });
   }, [overlays.emas, overlays.sessionVwap, overlays.avwap, showAvwapBands]);
 
+  // Pieza 50.4: marcador discreto en la vela del ancla AVWAP efectiva (plugin v5, sin setData).
+  useEffect(() => {
+    const markersPlugin = candleMarkersRef.current;
+    if (!markersPlugin) return;
+    const anchorSec = bundle.avwapEffectiveAnchorTimeSec;
+    if (!overlays.avwap || !bundle.barsAvailable || anchorSec === null || !Number.isFinite(anchorSec)) {
+      markersPlugin.setMarkers([]);
+      return;
+    }
+    const marker: SeriesMarker<Time> = {
+      time: anchorSec as UTCTimestamp,
+      position: 'belowBar',
+      shape: 'arrowUp',
+      color: '#C084FC',
+      text: 'AVWAP',
+      size: 1,
+    };
+    markersPlugin.setMarkers([marker]);
+  }, [bundle.avwapEffectiveAnchorTimeSec, bundle.barsAvailable, overlays.avwap]);
+
   // IPriceLine persistentes actualizadas in-place con applyOptions.
   useEffect(() => {
     const slots = priceLineSlotsRef.current;
@@ -2200,7 +2410,8 @@ const PanoramicPriceChart: React.FC<{
     };
     const prefix = currencySymbol === 'USD' ? 'US$' : '$';
     const hasBars = bundle.barsAvailable;
-    updateSlot(slots.poc, hasBars && overlays.volumeProfile, keyLevels.poc, `POC ${prefix}${fmtNum(keyLevels.poc, 2)}`, highlightedLevel === 'POC');
+    const vpTag = resolveVpWindowTag(keyLevels.volumeProfileWindowBars ?? null);
+    updateSlot(slots.poc, hasBars && overlays.volumeProfile, keyLevels.poc, `POC ${prefix}${fmtNum(keyLevels.poc, 2)} (${vpTag})`, highlightedLevel === 'POC');
     updateSlot(slots.vah, hasBars && overlays.volumeProfile, keyLevels.vah, 'VAH', highlightedLevel === 'VAH');
     updateSlot(slots.val, hasBars && overlays.volumeProfile, keyLevels.val, 'VAL', highlightedLevel === 'VAL');
     updateSlot(slots.callWall, hasBars && overlays.optionWalls, keyLevels.callWall, `CALL WALL ${prefix}${fmtNum(keyLevels.callWall, 2)}`, highlightedLevel === 'CALL_WALL');

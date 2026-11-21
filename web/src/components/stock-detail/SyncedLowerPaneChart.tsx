@@ -275,7 +275,7 @@ export const SyncedLowerPaneChart: React.FC<{
 
   useEffect(() => {
     chartRef.current?.applyOptions({
-      timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false },
+      timeScale: { timeVisible: timeframe !== '1D' && timeframe !== '1W', secondsVisible: false },
     });
   }, [timeframe]);
 
