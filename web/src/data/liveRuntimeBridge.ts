@@ -28,7 +28,7 @@ import {
   hydrateFromUsSnapshot,
 } from './marketData';
 import { parseOptionsUnderlyingKey } from './optionsUnderlying';
-import { calendarDteEt, formatDteLabel } from '../../../src/core/options/zeroDteFixes';
+import { calendarDteEt, etExpiryUtcSecFromDate, formatDteLabel } from '../../../src/core/options/zeroDteFixes';
 
 export interface LiveTickerUpdate {
   readonly id: string;
@@ -504,6 +504,8 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
           charm: r.charm,
           intrinsic,
           extrinsic: mark !== null ? Math.max(0, mark - intrinsic) : null,
+          previousClose: r.previousClose ?? null,
+          changePct: r.changePct ?? null,
           source: 'DATA912' as const,
         };
         if (r.contractType === 'call') calls.push(mapped);
@@ -552,6 +554,32 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
       };
     })
     .sort((a, b) => a.days - b.days);
+
+  // Pieza 50.1: incluir fechas de `availableExpirations` aún no hidratadas en profundidad
+  // (stub sin contratos) para que el selector las muestre y dispare la carga on-demand.
+  const hydratedExpiryCodes = new Set(expiries.map((e) => e.expiryCode));
+  for (const candidate of snap.optionsChain?.availableExpirations ?? []) {
+    if (hydratedExpiryCodes.has(candidate.expirationDate)) continue;
+    const dteCandidate = calendarDteEt(candidate.expirationDate, snap.asOfUtcSec * 1_000);
+    const days = Number.isFinite(dteCandidate) ? dteCandidate : candidate.daysToExpiry;
+    const expiryUtcSec = etExpiryUtcSecFromDate(candidate.expirationDate);
+    expiries.push({
+      expiryCode: candidate.expirationDate,
+      expiryLabel: `${candidate.expirationDate} (${formatDteLabel(days)})`,
+      expirationDate: candidate.expirationDate,
+      expiryUtcSec: Number.isFinite(expiryUtcSec) ? expiryUtcSec : snap.asOfUtcSec,
+      days,
+      ivAtm: null,
+      riskReversal25: null,
+      butterfly25: null,
+      butterflyArbitrageFree: false,
+      strikes: [],
+      calls: [],
+      puts: [],
+    });
+    hydratedExpiryCodes.add(candidate.expirationDate);
+  }
+  expiries.sort((a, b) => a.days - b.days);
 
   const termStructure = (
     (snap.volSurfaceSummary?.slices ?? []).some((s) => s.ivAtm !== null && s.ivAtm > 0)
@@ -699,6 +727,54 @@ function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponseDto): A
   };
 }
 
+/**
+ * Pieza 50.1: fusiona la cadena de un vencimiento recién cargado (snapshot con
+ * `?expiration=`) sobre el AR options ya hidratado, sin perder los otros vencimientos.
+ * Los stubs sin contratos adoptan los datos previos del mismo `expiryCode` cuando existan.
+ */
+function mergeArOptionsWithHydratedExpiry(
+  previous: ArOptionsResponse | undefined,
+  incoming: ArOptionsResponse,
+): ArOptionsResponse {
+  if (previous === undefined) return incoming;
+  const byCode = new Map<string, ArOptionsResponse['expiries'][number]>();
+  for (const expiry of previous.expiries) {
+    byCode.set(expiry.expiryCode, expiry);
+  }
+  for (const expiry of incoming.expiries) {
+    const prev = byCode.get(expiry.expiryCode);
+    const isEmptyStub =
+      expiry.calls.length === 0 && expiry.puts.length === 0 && expiry.strikes.length === 0;
+    if (prev !== undefined && isEmptyStub) {
+      byCode.set(expiry.expiryCode, {
+        ...expiry,
+        strikes: prev.strikes,
+        calls: prev.calls,
+        puts: prev.puts,
+        ivAtm: prev.ivAtm ?? expiry.ivAtm,
+        riskReversal25: prev.riskReversal25 ?? expiry.riskReversal25,
+        butterfly25: prev.butterfly25 ?? expiry.butterfly25,
+      });
+    } else {
+      byCode.set(expiry.expiryCode, expiry);
+    }
+  }
+  const termByCode = new Map<string, ArOptionsResponse['termStructure'][number]>();
+  for (const point of previous.termStructure) {
+    termByCode.set(point.expiryCode, point);
+  }
+  for (const point of incoming.termStructure) {
+    termByCode.set(point.expiryCode, point);
+  }
+  return {
+    ...previous,
+    ...incoming,
+    spot: incoming.spot ?? previous.spot,
+    expiries: [...byCode.values()].sort((a, b) => a.days - b.days),
+    termStructure: [...termByCode.values()].sort((a, b) => a.days - b.days),
+  };
+}
+
 export async function requestOptionsChain(
   underlying: string,
   force = false,
@@ -715,13 +791,15 @@ export async function requestOptionsChain(
     if (!snap) return;
     hydrateFromUsSnapshot(snap);
     const mapped = mapUsSnapshotToArOptions(clean, snap);
-    hydrateFromArOptions(mapped);
-    syncOptionEngineMarket(mapped);
+    // Pieza 50.1: fusionar el vencimiento recién cargado sin borrar los otros ya hidratados.
+    const merged = mergeArOptionsWithHydratedExpiry(state.optionsByUnderlying[selection.key], mapped);
+    hydrateFromArOptions(merged);
+    syncOptionEngineMarket(merged);
     state = {
       ...state,
       isBackendConnected: true,
       usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: snap },
-      optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: mapped },
+      optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: merged },
       ...(snap.catalysts
         ? {
             optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [clean]: snap.catalysts },

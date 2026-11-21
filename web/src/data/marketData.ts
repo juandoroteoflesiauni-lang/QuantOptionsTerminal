@@ -1090,8 +1090,18 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         const ivRaw = cc?.iv !== null && cc?.iv !== undefined && Number.isFinite(cc.iv) ? cc.iv : Number.NaN;
         const midRaw = toNumOrNaN(cc?.mark);
         const ext = Number.isFinite(midRaw) ? extrinsicValue(side, spot, strike, midRaw) : toNumOrNaN(cc?.extrinsic);
-        const unreliable = isUsMarket && Number.isFinite(ext) && isIvUnreliable(ivRaw, ext);
         const capped = Number.isFinite(ivRaw) && ivRaw >= 9.99;
+        // Pieza 50.1: si el backend ya entregó una delta finita, coherente de signo y no
+        // colapsada a ±1 (p. ej. rescate PARITY_OTM con spot alineado), no destruir su
+        // IV/delta por un extrínseco recalculado con spot extendido desfasado.
+        const backendDelta = toNumOrNaN(cc?.delta);
+        const backendDeltaCoherent =
+          Number.isFinite(backendDelta) &&
+          (side === 'call'
+            ? backendDelta > 0 && backendDelta < 0.9999
+            : backendDelta < 0 && backendDelta > -0.9999);
+        const unreliable =
+          isUsMarket && Number.isFinite(ext) && isIvUnreliable(ivRaw, ext) && !backendDeltaCoherent;
         const ivPct = unreliable || capped ? Number.NaN : Number.isFinite(ivRaw) ? ivRaw * 100 : Number.NaN;
         const fb =
           unreliable || capped
@@ -1147,7 +1157,7 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         callBid: toNumOrNaN(c?.bid),
         callAsk: toNumOrNaN(c?.ask),
         callLast: cLast,
-        callDeltaPct: Number.NaN,
+        callDeltaPct: toNumOrNaN(c?.changePct),
         callIV: cIvPct,
         callDelta: cQ.fb ? cQ.fb.delta : toNumOrNaN(c?.delta),
         callGamma: cQ.fb ? cQ.fb.gamma : toNumOrNaN(c?.gamma),
@@ -1163,7 +1173,7 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         putBid: toNumOrNaN(p?.bid),
         putAsk: toNumOrNaN(p?.ask),
         putLast: pLast,
-        putDeltaPct: Number.NaN,
+        putDeltaPct: toNumOrNaN(p?.changePct),
         putIV: pIvPct,
         putDelta: pQ.fb ? pQ.fb.delta : toNumOrNaN(p?.delta),
         putGamma: pQ.fb ? pQ.fb.gamma : toNumOrNaN(p?.gamma),

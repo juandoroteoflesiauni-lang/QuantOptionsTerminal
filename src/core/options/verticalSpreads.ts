@@ -28,6 +28,15 @@ export interface VerticalSpreadLegQuote {
 
 export type VerticalSpreadSide = 'CALL' | 'PUT';
 
+/**
+ * Pieza 50.1: modo de valoración de puntas.
+ *  - `LIVE_CROSS` (default): compra al ask / vende al bid con puntas cruzadas estrictas.
+ *  - `EOD_MID`: mercado cerrado / `EOD_CIERRE`; valora con mid de cierre degradando a
+ *    `last`/cierre si falta alguna punta, sin descartar por ensanchamiento de puntas
+ *    (el semáforo bid-ask queda informativo).
+ */
+export type VerticalSpreadPricingMode = 'LIVE_CROSS' | 'EOD_MID';
+
 export interface VerticalSpreadInput {
   readonly side: VerticalSpreadSide;
   /** Pata comprada. */
@@ -41,6 +50,7 @@ export interface VerticalSpreadInput {
   readonly minDebit?: number;
   readonly maxBidAskPctOfMid?: number;
   readonly requirePositiveBids?: boolean;
+  readonly pricingMode?: VerticalSpreadPricingMode;
 }
 
 export interface VerticalSpreadMetric {
@@ -323,6 +333,33 @@ function resolveSellPrice(
   return { price: Number.NaN, usesEodRef: false };
 }
 
+/**
+ * Pieza 50.1 (`EOD_MID`): valor de cierre de una pata con `mid = (bid + ask) / 2`
+ * cuando hay puntas positivas coherentes; degrada explícitamente a `last`/cierre
+ * (marcando `usesEodRef = true`) solo si falta alguna punta. Sin precio válido → NaN.
+ */
+function resolveEodMidPrice(leg: VerticalSpreadLegQuote): {
+  readonly price: number;
+  readonly usesEodRef: boolean;
+} {
+  if (finitePositive(leg.bid) && finitePositive(leg.ask) && leg.ask >= leg.bid) {
+    const mid = 0.5 * (leg.bid + leg.ask);
+    if (finitePositive(mid)) {
+      return { price: mid, usesEodRef: false };
+    }
+  }
+  if (finitePositive(leg.last)) {
+    return { price: leg.last, usesEodRef: true };
+  }
+  if (finitePositive(leg.bid)) {
+    return { price: leg.bid, usesEodRef: true };
+  }
+  if (finitePositive(leg.ask)) {
+    return { price: leg.ask, usesEodRef: true };
+  }
+  return { price: Number.NaN, usesEodRef: false };
+}
+
 function invalidMetric(
   width: number,
   long: { readonly price: number; readonly usesEodRef: boolean },
@@ -366,13 +403,20 @@ function invalidMetric(
 export function computeVerticalSpreadMetrics(
   input: VerticalSpreadInput,
 ): VerticalSpreadMetric {
+  const pricingMode = input.pricingMode ?? 'LIVE_CROSS';
   const requirePositiveBids = input.requirePositiveBids ?? true;
   const minDebit = input.minDebit ?? DEFAULT_MIN_SPREAD_DEBIT;
   const maxBidAskPctOfMid = input.maxBidAskPctOfMid ?? DEFAULT_MAX_BID_ASK_PCT_OF_MID;
 
   const width = Math.abs(input.shortLeg.strike - input.longLeg.strike);
-  const long = resolveBuyPrice(input.longLeg, requirePositiveBids);
-  const short = resolveSellPrice(input.shortLeg, requirePositiveBids);
+  const long =
+    pricingMode === 'EOD_MID'
+      ? resolveEodMidPrice(input.longLeg)
+      : resolveBuyPrice(input.longLeg, requirePositiveBids);
+  const short =
+    pricingMode === 'EOD_MID'
+      ? resolveEodMidPrice(input.shortLeg)
+      : resolveSellPrice(input.shortLeg, requirePositiveBids);
 
   const longBidAskPctOfMid = computeLegBidAskPctOfMid(input.longLeg.bid, input.longLeg.ask);
   const shortBidAskPctOfMid = computeLegBidAskPctOfMid(input.shortLeg.bid, input.shortLeg.ask);
@@ -394,39 +438,41 @@ export function computeVerticalSpreadMetrics(
       liquiditySemaphore,
     );
   }
-  if (
-    requirePositiveBids &&
-    (!finitePositive(input.longLeg.bid) ||
-      !finitePositive(input.longLeg.ask) ||
-      input.longLeg.ask < input.longLeg.bid)
-  ) {
-    return invalidMetric(
-      width,
-      long,
-      short,
-      'LONG_LEG_NO_POSITIVE_BID',
-      longBidAskPctOfMid,
-      shortBidAskPctOfMid,
-      bidAskPctOfMid,
-      liquiditySemaphore,
-    );
-  }
-  if (
-    requirePositiveBids &&
-    (!finitePositive(input.shortLeg.bid) ||
-      !finitePositive(input.shortLeg.ask) ||
-      input.shortLeg.ask < input.shortLeg.bid)
-  ) {
-    return invalidMetric(
-      width,
-      long,
-      short,
-      'SHORT_LEG_NO_POSITIVE_BID',
-      longBidAskPctOfMid,
-      shortBidAskPctOfMid,
-      bidAskPctOfMid,
-      liquiditySemaphore,
-    );
+  if (pricingMode === 'LIVE_CROSS') {
+    if (
+      requirePositiveBids &&
+      (!finitePositive(input.longLeg.bid) ||
+        !finitePositive(input.longLeg.ask) ||
+        input.longLeg.ask < input.longLeg.bid)
+    ) {
+      return invalidMetric(
+        width,
+        long,
+        short,
+        'LONG_LEG_NO_POSITIVE_BID',
+        longBidAskPctOfMid,
+        shortBidAskPctOfMid,
+        bidAskPctOfMid,
+        liquiditySemaphore,
+      );
+    }
+    if (
+      requirePositiveBids &&
+      (!finitePositive(input.shortLeg.bid) ||
+        !finitePositive(input.shortLeg.ask) ||
+        input.shortLeg.ask < input.shortLeg.bid)
+    ) {
+      return invalidMetric(
+        width,
+        long,
+        short,
+        'SHORT_LEG_NO_POSITIVE_BID',
+        longBidAskPctOfMid,
+        shortBidAskPctOfMid,
+        bidAskPctOfMid,
+        liquiditySemaphore,
+      );
+    }
   }
   if (!Number.isFinite(long.price)) {
     return invalidMetric(
@@ -516,6 +562,7 @@ export function computeVerticalSpreadMetrics(
   }
 
   if (
+    pricingMode === 'LIVE_CROSS' &&
     requirePositiveBids &&
     (!Number.isFinite(bidAskPctOfMid) || bidAskPctOfMid > maxBidAskPctOfMid + 1e-9)
   ) {
@@ -567,10 +614,12 @@ export function computeVerticalSpreadMetrics(
   }
 
   const eligibleForAutoRanking =
-    debit >= minDebit - 1e-12 &&
-    Number.isFinite(bidAskPctOfMid) &&
-    bidAskPctOfMid <= maxBidAskPctOfMid + 1e-9 &&
-    Math.max(longBidAskPctOfMid, shortBidAskPctOfMid) <= maxBidAskPctOfMid + 1e-9;
+    pricingMode === 'EOD_MID'
+      ? debit >= minDebit - 1e-12
+      : debit >= minDebit - 1e-12 &&
+        Number.isFinite(bidAskPctOfMid) &&
+        bidAskPctOfMid <= maxBidAskPctOfMid + 1e-9 &&
+        Math.max(longBidAskPctOfMid, shortBidAskPctOfMid) <= maxBidAskPctOfMid + 1e-9;
 
   return {
     valid: true,

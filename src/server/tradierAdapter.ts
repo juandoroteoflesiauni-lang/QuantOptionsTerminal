@@ -689,6 +689,10 @@ export interface TradierOptionContractNormalized {
   readonly openInterest: number;
   readonly last: number;
   readonly close: number;
+  /** Cierre previo Tradier (`prevclose`); opcional para compatibilidad de fixtures. */
+  readonly previousClose?: number;
+  /** Variación % diaria Tradier (`change_percentage`); opcional para compatibilidad. */
+  readonly changePercentage?: number;
   readonly greeks: TradierGreeks;
   readonly asOfUtcSec: number;
   readonly provider: 'TRADIER';
@@ -758,6 +762,8 @@ function parseChainRow(raw: unknown, parseDiscarded: { count: number }): Tradier
     openInterest: countNum(raw['open_interest']),
     last: priceNum(raw['last']),
     close: priceNum(raw['close_price'] ?? raw['close']),
+    previousClose: priceNum(raw['prevclose']),
+    changePercentage: num(raw['change_percentage']),
     greeks,
     asOfUtcSec: quoteAsOf,
     provider: 'TRADIER',
@@ -926,8 +932,22 @@ function overlayQuote(
 
   // Volumen del día (0 legítimo; solo avanza si Tradier observa más).
   if (Number.isFinite(tradier.volume) && tradier.volume > contract.day.volume) {
-    nextDay = { ...contract.day, volume: tradier.volume };
+    nextDay = { ...nextDay, volume: tradier.volume };
     summary.overlaidVolume += 1;
+    changed = true;
+  }
+
+  // Pieza 50.1: variación % / cierre previo de Tradier solo si Massive no los trae.
+  if (
+    !Number.isFinite(nextDay.previousClose) &&
+    Number.isFinite(tradier.previousClose ?? Number.NaN) &&
+    (tradier.previousClose ?? 0) > 0
+  ) {
+    nextDay = { ...nextDay, previousClose: tradier.previousClose ?? Number.NaN };
+    changed = true;
+  }
+  if (!Number.isFinite(nextDay.changePercent) && Number.isFinite(tradier.changePercentage ?? Number.NaN)) {
+    nextDay = { ...nextDay, changePercent: tradier.changePercentage ?? Number.NaN };
     changed = true;
   }
 

@@ -167,6 +167,8 @@ import {
   extrinsicValue,
   intrinsicValue,
   isIvUnreliable,
+  resolveParityItmRescueIv,
+  type ParityItmRescueResult,
 } from '../core/options/zeroDteFixes.js';
 import {
   computeYangZhangVol,
@@ -363,6 +365,9 @@ const TIMEFRAME_SECONDS: Readonly<Record<Timeframe, number>> = {
 
 const KNOWN_INDEX_ROOTS = new Set<string>(['SPX', 'NDX', 'VIX', 'SKEW', 'RUT', 'DJX', 'OEX']);
 const MAX_SERIALIZED_CONTRACTS = 360;
+/** Pieza 50.1: cuota balanceada por vencimiento (activo/front + curados) para no perder vencimientos. */
+const MAX_SERIALIZED_PRIMARY_CONTRACTS = 120;
+const MAX_SERIALIZED_SECONDARY_CONTRACTS = 48;
 const MAX_WS_OPTION_CONTRACTS = 40;
 const SYMBOL_PATTERN = /^[A-Z0-9.:_-]{1,24}$/;
 
@@ -622,9 +627,11 @@ export interface SerializedOptionContractRow {
   readonly lastPrice: number | null;
   readonly openInterest: number | null;
   readonly volume: number | null;
+  readonly previousClose: number | null;
+  readonly changePct: number | null;
   readonly ownIv: number | null;
   readonly providerIv: number | null;
-  readonly ivSource: 'OWN' | 'PROVIDER' | 'NONE';
+  readonly ivSource: 'OWN' | 'PROVIDER' | 'PARITY_OTM' | 'ATM_FALLBACK' | 'NONE';
   readonly delta: number | null;
   readonly gamma: number | null;
   readonly thetaDaily: number | null;
@@ -1692,6 +1699,289 @@ export function selectUsOptionExpirations(
   };
 }
 
+export interface CuratedUsExpirationsResult {
+  readonly curatedExpirationDates: readonly string[];
+  readonly reason: string | null;
+}
+
+/**
+ * Pieza 50.1: selección curada de hasta 6 vencimientos US (0–60 DTE) a partir del
+ * índice liviano de contratos de referencia, evitando paginar la ventana completa:
+ *  1) `requestedExpiration` (si se pidió explícitamente, aunque no esté en el índice);
+ *  2) front / próximo vencimiento líquido (≥ 0 DTE);
+ *  3) próximos 2 semanales espaciados (2–13 DTE);
+ *  4) mensual/líquido principal en ventana 14–45 DTE (mayor liquidez cerca de ATM);
+ *  5) siguiente vencimiento en (mensual, 60 DTE] para habilitar estructura temporal.
+ * Deduplicado y en orden ascendente; sin datos no inventa fechas.
+ */
+export function selectCuratedUsExpirations(
+  contracts: readonly OptionContract[],
+  spot: number,
+  nowSec: number,
+  requestedExpiration?: string,
+): CuratedUsExpirationsResult {
+  interface DateInfo {
+    readonly expirationDate: string;
+    readonly daysToExpiry: number;
+    readonly nearAtmLiquidity: number;
+    readonly expirationTime: number;
+  }
+  const isNearAtm = (strike: number): boolean =>
+    Number.isFinite(spot) && spot > 0 && Math.abs(strike - spot) <= spot * 0.15;
+
+  const byDate = new Map<string, DateInfo>();
+  for (const contract of contracts) {
+    const date = contract.expirationDate;
+    if (!(contract.expirationTime > nowSec + 60)) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const existing = byDate.get(date);
+    if (existing !== undefined) {
+      if (isNearAtm(contract.strikePrice)) {
+        byDate.set(date, { ...existing, nearAtmLiquidity: existing.nearAtmLiquidity + 1 });
+      }
+      continue;
+    }
+    const dteEt = calendarDteEt(date, nowSec * 1_000);
+    const approxDays = Math.max(0, Math.floor((contract.expirationTime - nowSec) / 86_400));
+    const daysToExpiry =
+      Number.isFinite(dteEt) && Math.abs(dteEt - approxDays) <= 2 ? dteEt : approxDays;
+    byDate.set(date, {
+      expirationDate: date,
+      daysToExpiry,
+      nearAtmLiquidity: isNearAtm(contract.strikePrice) ? 1 : 0,
+      expirationTime: contract.expirationTime,
+    });
+  }
+
+  const all = [...byDate.values()].sort(
+    (a, b) =>
+      a.expirationTime - b.expirationTime || a.expirationDate.localeCompare(b.expirationDate),
+  );
+
+  const requested = requestedExpiration?.trim() ?? '';
+  if (all.length === 0 && requested === '') {
+    return { curatedExpirationDates: [], reason: 'NO_REFERENCE_EXPIRATIONS' };
+  }
+
+  const selected = new Set<string>();
+  let reason: string | null = null;
+
+  if (requested !== '') {
+    if (byDate.has(requested)) {
+      selected.add(requested);
+    } else {
+      const dteRequested = calendarDteEt(requested, nowSec * 1_000);
+      if (
+        /^\d{4}-\d{2}-\d{2}$/.test(requested) &&
+        Number.isFinite(dteRequested) &&
+        dteRequested >= 0
+      ) {
+        // Carga directa por fecha exacta aunque no esté en el índice liviano (máx 60–95 DTE).
+        selected.add(requested);
+      } else {
+        reason = `REQUESTED_EXPIRATION_INVALID:${requested}`;
+      }
+    }
+  }
+
+  const front = all[0] ?? null;
+  if (front !== null) {
+    selected.add(front.expirationDate);
+  }
+
+  const weeklies = all.filter((d) => d.daysToExpiry >= 2 && d.daysToExpiry <= 13);
+  let weekliesTaken = 0;
+  let lastWeeklyDte: number | null = null;
+  for (const weekly of weeklies) {
+    if (weekliesTaken >= 2) break;
+    if (lastWeeklyDte !== null && weekly.daysToExpiry - lastWeeklyDte < 2) continue;
+    selected.add(weekly.expirationDate);
+    lastWeeklyDte = weekly.daysToExpiry;
+    weekliesTaken += 1;
+  }
+
+  const byLiquidity = (a: DateInfo, b: DateInfo): number =>
+    b.nearAtmLiquidity - a.nearAtmLiquidity ||
+    a.daysToExpiry - b.daysToExpiry ||
+    a.expirationDate.localeCompare(b.expirationDate);
+
+  const monthly =
+    all.filter((d) => d.daysToExpiry >= 14 && d.daysToExpiry <= 45).sort(byLiquidity)[0] ?? null;
+  if (monthly !== null) {
+    selected.add(monthly.expirationDate);
+  }
+
+  const nextMonthlyFloor = monthly?.daysToExpiry ?? 30;
+  const nextMonthly =
+    all
+      .filter((d) => d.daysToExpiry > nextMonthlyFloor && d.daysToExpiry <= 60)
+      .sort(byLiquidity)[0] ?? null;
+  if (nextMonthly !== null) {
+    selected.add(nextMonthly.expirationDate);
+  }
+
+  const curatedExpirationDates = [...selected].sort((a, b) => a.localeCompare(b)).slice(0, 6);
+  return {
+    curatedExpirationDates,
+    reason:
+      curatedExpirationDates.length === 0
+        ? 'NO_CURATED_EXPIRATIONS'
+        : requested !== '' && !byDate.has(requested) && selected.has(requested)
+          ? `REQUESTED_EXPIRATION_OUTSIDE_REFERENCE:${requested}`
+          : reason,
+  };
+}
+
+export type OpraAlignedSpotSource =
+  | 'FEED'
+  | 'RTH_CLOSE'
+  | 'PARITY_IMPLIED'
+  | 'FEED_CLOSED_NO_REF';
+
+export interface OpraAlignedSpotInput {
+  /** Spot del feed (tick extendido / último trade; puede incluir after-hours). */
+  readonly feedSpot: number;
+  /** Cierre RTH más reciente (bars 5m 09:30–16:00 ET o cierre diario) o NaN. */
+  readonly rthCloseSpot: number;
+  /** Spot implícito por paridad Put-Call (`forward * exp(-(r-q)T)`) o NaN. */
+  readonly parityImpliedSpot: number;
+  /** `true` si el mercado está cerrado (`anyClosedMarket || isWeekendEt || EOD_CIERRE`). */
+  readonly marketClosed: boolean;
+  /** Umbral relativo de divergencia contra paridad para alinear (default 25 bps = 0.0025). */
+  readonly divergenceThresholdRel?: number;
+}
+
+export interface OpraAlignedSpotResult {
+  readonly valuationSpot: number;
+  /** Spot informativo de encabezado (feed extendido) separado del spot de valuación OPRA. */
+  readonly headerSpot: number;
+  readonly source: OpraAlignedSpotSource;
+  readonly divergenceBps: number;
+}
+
+/**
+ * Pieza 50.1: alinea el spot de valuación de la cadena OPRA cuando el mercado está
+ * cerrado o cuando el feed diverge > umbral de la paridad Put-Call mediana ATM.
+ * Prefiere el spot implícito por paridad si el cierre RTH está más cerca de la paridad
+ * que el precio extendido; caso contrario el cierre RTH. Sin referencias válidas
+ * degrada honestamente al feed (`FEED_CLOSED_NO_REF`) sin inventar un precio.
+ */
+export function resolveOpraAlignedSpot(input: OpraAlignedSpotInput): OpraAlignedSpotResult {
+  const threshold =
+    input.divergenceThresholdRel !== undefined &&
+    Number.isFinite(input.divergenceThresholdRel) &&
+    input.divergenceThresholdRel >= 0
+      ? input.divergenceThresholdRel
+      : 0.0025;
+  const feed = Number.isFinite(input.feedSpot) && input.feedSpot > 0 ? input.feedSpot : Number.NaN;
+  const rth =
+    Number.isFinite(input.rthCloseSpot) && input.rthCloseSpot > 0
+      ? input.rthCloseSpot
+      : Number.NaN;
+  const parity =
+    Number.isFinite(input.parityImpliedSpot) && input.parityImpliedSpot > 0
+      ? input.parityImpliedSpot
+      : Number.NaN;
+
+  if (!Number.isFinite(feed)) {
+    if (Number.isFinite(parity)) {
+      return {
+        valuationSpot: parity,
+        headerSpot: Number.NaN,
+        source: 'PARITY_IMPLIED',
+        divergenceBps: Number.NaN,
+      };
+    }
+    if (Number.isFinite(rth)) {
+      return {
+        valuationSpot: rth,
+        headerSpot: Number.NaN,
+        source: 'RTH_CLOSE',
+        divergenceBps: Number.NaN,
+      };
+    }
+    return {
+      valuationSpot: Number.NaN,
+      headerSpot: Number.NaN,
+      source: 'FEED',
+      divergenceBps: Number.NaN,
+    };
+  }
+
+  const parityDivergenceRel = Number.isFinite(parity)
+    ? Math.abs(feed - parity) / parity
+    : Number.NaN;
+  const triggersAlignment =
+    input.marketClosed ||
+    (Number.isFinite(parityDivergenceRel) && parityDivergenceRel > threshold);
+
+  if (!triggersAlignment) {
+    return {
+      valuationSpot: feed,
+      headerSpot: feed,
+      source: 'FEED',
+      divergenceBps: Number.isFinite(parityDivergenceRel) ? parityDivergenceRel * 10_000 : Number.NaN,
+    };
+  }
+
+  if (Number.isFinite(rth) && Number.isFinite(parity)) {
+    const parityConsistentWithRth = Math.abs(rth - parity) <= Math.abs(rth - feed);
+    const chosen = parityConsistentWithRth ? parity : rth;
+    return {
+      valuationSpot: chosen,
+      headerSpot: feed,
+      source: parityConsistentWithRth ? 'PARITY_IMPLIED' : 'RTH_CLOSE',
+      divergenceBps: (Math.abs(feed - chosen) / chosen) * 10_000,
+    };
+  }
+  if (Number.isFinite(parity)) {
+    return {
+      valuationSpot: parity,
+      headerSpot: feed,
+      source: 'PARITY_IMPLIED',
+      divergenceBps: (Math.abs(feed - parity) / parity) * 10_000,
+    };
+  }
+  if (Number.isFinite(rth)) {
+    return {
+      valuationSpot: rth,
+      headerSpot: feed,
+      source: 'RTH_CLOSE',
+      divergenceBps: (Math.abs(feed - rth) / rth) * 10_000,
+    };
+  }
+  return {
+    valuationSpot: feed,
+    headerSpot: feed,
+    source: 'FEED_CLOSED_NO_REF',
+    divergenceBps: Number.isFinite(parityDivergenceRel) ? parityDivergenceRel * 10_000 : Number.NaN,
+  };
+}
+
+/**
+ * Pieza 50.1: variación % diaria estricta de un contrato (columna `var%`).
+ * Prioriza `day.changePercent`; si falta, deriva de `previousClose` y un precio de
+ * referencia válido; sin datos suficientes → `null` (sin fallbacks inventados).
+ */
+export function resolveContractChangePct(
+  changePercent: number,
+  previousClose: number,
+  referencePrice: number,
+): number | null {
+  if (Number.isFinite(changePercent)) {
+    return changePercent;
+  }
+  if (
+    Number.isFinite(previousClose) &&
+    previousClose > 0 &&
+    Number.isFinite(referencePrice) &&
+    referencePrice > 0
+  ) {
+    return ((referencePrice - previousClose) / previousClose) * 100;
+  }
+  return null;
+}
+
 export const US_VOL_SURFACE_TTL_MS = 10 * 60 * 1_000;
 
 export interface UsVolSurfaceResponse {
@@ -2069,6 +2359,40 @@ function resolveSpotPrice(
   const last1d = bars1d[bars1d.length - 1];
   if (last1d !== undefined && Number.isFinite(last1d.close) && last1d.close > 0) {
     return last1d.close;
+  }
+  return Number.NaN;
+}
+
+/**
+ * Pieza 50.1: cierre RTH más reciente para alinear el spot de valuación OPRA.
+ * Prioriza la última barra 5m dentro de 09:30–16:00 ET (<= ahora) y degrada al
+ * último cierre diario; `NaN` si no hay referencias válidas.
+ */
+function resolveRthCloseSpot(
+  bars5m: readonly Bar[],
+  bars1d: readonly Bar[],
+  nowSec: number,
+): number {
+  const nowParts = getMarketParts(nowSec, 'EQUITY');
+  for (let i = bars5m.length - 1; i >= 0; i -= 1) {
+    const bar = bars5m[i];
+    if (bar === undefined || bar.time > nowSec) continue;
+    const parts = getMarketParts(bar.time, 'EQUITY');
+    const isRthBar =
+      parts.weekday >= 1 &&
+      parts.weekday <= 5 &&
+      parts.minutesOfDay >= 570 &&
+      parts.minutesOfDay <= 960 &&
+      parts.dateKey <= nowParts.dateKey;
+    if (!isRthBar) continue;
+    return Number.isFinite(bar.close) && bar.close > 0 ? bar.close : Number.NaN;
+  }
+  for (let i = bars1d.length - 1; i >= 0; i -= 1) {
+    const bar = bars1d[i];
+    if (bar === undefined || bar.time > nowSec) continue;
+    if (Number.isFinite(bar.close) && bar.close > 0) {
+      return bar.close;
+    }
   }
   return Number.NaN;
 }
@@ -6902,12 +7226,13 @@ export class MarketRuntime {
       const minStrike = Math.max(0.01, Math.floor(spot * 0.75 * 100) / 100);
       const maxStrike = Math.ceil(spot * 1.25 * 100) / 100;
       const optionMaxDte = canonicalSymbol === 'GGAL' ? 95 : 45;
+      const referenceMaxDte = canonicalSymbol === 'GGAL' ? 95 : 60;
       try {
         const refRes = await this.loadOptionContractsFn({
           underlying: canonicalSymbol,
           isIndex,
           minDte: 0,
-          maxDte: optionMaxDte,
+          maxDte: referenceMaxDte,
           now: nowSec,
           minStrike,
           maxStrike,
@@ -6919,27 +7244,99 @@ export class MarketRuntime {
         });
         referenceContracts = refRes.contracts;
 
-        const chainRes = await this.loadOptionChainFn({
-          underlying: canonicalSymbol,
-          isIndex,
-          minDte: 0,
-          maxDte: optionMaxDte,
-          now: nowSec,
-          minStrike,
-          maxStrike,
-          excludeBinary: true,
-          excludeAdjusted: true,
-          referenceContracts,
-          snapshotLimit: 250,
-          maxPages: 4,
-          ...baseTransport,
-        });
-        contracts = chainRes.contracts;
-        chainUnderlying = chainRes.underlying;
-        if (chainRes.report.providerError !== null) {
-          warnings.push(
-            `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
-          );
+        // Pieza 50.1: en lugar de paginar 0–45 DTE en bloque (que agota las páginas en
+        // los 2 primeros vencimientos diarios), seleccionar ≤6 vencimientos curados del
+        // índice liviano y cargar cada fecha exacta en paralelo acotado (concurrencia ≤3).
+        const curated =
+          canonicalSymbol === 'GGAL'
+            ? { curatedExpirationDates: [], reason: null }
+            : selectCuratedUsExpirations(referenceContracts, spot, nowSec, options.expiration);
+        if (curated.reason !== null) {
+          warnings.push(`US options curated expirations: ${curated.reason}`);
+        }
+
+        if (curated.curatedExpirationDates.length > 0) {
+          const chainResultsByDate = new Map<
+            string,
+            {
+              readonly contracts: readonly OptionSnapshotContract[];
+              readonly underlying: OptionUnderlyingSnapshot | null;
+            }
+          >();
+          const loadExpiry = async (expirationDate: string, isPrimary: boolean): Promise<void> => {
+            const bandMin = isPrimary
+              ? minStrike
+              : Math.max(0.01, Math.floor(spot * 0.85 * 100) / 100);
+            const bandMax = isPrimary ? maxStrike : Math.ceil(spot * 1.15 * 100) / 100;
+            const chainRes = await this.loadOptionChainFn({
+              underlying: canonicalSymbol,
+              isIndex,
+              expirationDate,
+              now: nowSec,
+              minStrike: bandMin,
+              maxStrike: bandMax,
+              excludeBinary: true,
+              excludeAdjusted: true,
+              referenceContracts,
+              snapshotLimit: 250,
+              maxPages: 2,
+              ...baseTransport,
+            });
+            if (chainRes.report.providerError !== null) {
+              warnings.push(
+                `options chain error (${expirationDate}): ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
+              );
+            }
+            // El proveedor puede devolver más fechas de las pedidas: filtrado determinista
+            // por fecha exacta para fusionar sin duplicados entre cargas paralelas.
+            chainResultsByDate.set(expirationDate, {
+              contracts: chainRes.contracts.filter((c) => c.expirationDate === expirationDate),
+              underlying: chainRes.underlying,
+            });
+          };
+          const curatedDates = curated.curatedExpirationDates;
+          const loadConcurrency = 3;
+          for (let i = 0; i < curatedDates.length; i += loadConcurrency) {
+            const batch = curatedDates.slice(i, i + loadConcurrency);
+            await Promise.all(
+              batch.map((date, idx) => loadExpiry(date, i + idx === 0)),
+            );
+          }
+          const mergedContracts: OptionSnapshotContract[] = [];
+          let mergedUnderlying: OptionUnderlyingSnapshot | null = null;
+          for (const date of curatedDates) {
+            const res = chainResultsByDate.get(date);
+            if (res === undefined) continue;
+            mergedContracts.push(...res.contracts);
+            if (mergedUnderlying === null && res.underlying !== null) {
+              mergedUnderlying = res.underlying;
+            }
+          }
+          contracts = mergedContracts;
+          chainUnderlying = mergedUnderlying;
+        } else {
+          const chainRes = await this.loadOptionChainFn({
+            underlying: canonicalSymbol,
+            isIndex,
+            minDte: 0,
+            maxDte: optionMaxDte,
+            now: nowSec,
+            minStrike,
+            maxStrike,
+            excludeBinary: true,
+            excludeAdjusted: true,
+            referenceContracts,
+            snapshotLimit: 250,
+            maxPages: 4,
+            ...baseTransport,
+          });
+          contracts = chainRes.contracts;
+          chainUnderlying = chainRes.underlying;
+          if (chainRes.report.providerError !== null) {
+            warnings.push(
+              `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
+            );
+          }
         }
       } catch (err: unknown) {
         warnings.push(
@@ -6996,6 +7393,56 @@ export class MarketRuntime {
     contracts = eodQuotesRes.contracts;
     const usedEodCloseRef = eodQuotesRes.usedEodCloseRef;
     const quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF' = usedEodCloseRef ? 'EOD_CLOSE_REF' : 'LIVE_NBBO';
+
+    // Pieza 50.1: alineación del spot de valuación OPRA. Si el mercado está cerrado
+    // (`closed`/finde/EOD_CIERRE) o el precio extendido diverge >25 bps de la paridad
+    // Put-Call mediana ATM, se valúa la cadena contra el cierre RTH o el spot implícito
+    // por paridad; el precio extendido queda solo como dato informativo de encabezado.
+    const frontAlignmentSec = contracts
+      .filter((c) => c.expirationTime > nowSec + 60)
+      .reduce<number | null>(
+        (min, c) => (min === null || c.expirationTime < min ? c.expirationTime : min),
+        null,
+      );
+    const frontAlignmentContracts =
+      frontAlignmentSec === null
+        ? []
+        : contracts.filter((c) => c.expirationTime === frontAlignmentSec);
+    const frontAlignmentParity =
+      frontAlignmentSec === null
+        ? null
+        : evaluateParityForExpiry(
+            frontAlignmentSec,
+            frontAlignmentContracts,
+            nowSec,
+            spot,
+            latestTreasury,
+            sofrRate,
+          );
+    const parityImpliedSpot =
+      frontAlignmentParity !== null &&
+      Number.isFinite(frontAlignmentParity.forward) &&
+      frontAlignmentParity.forward > 0 &&
+      Number.isFinite(frontAlignmentParity.rate) &&
+      Number.isFinite(frontAlignmentParity.timeToExpiry) &&
+      frontAlignmentParity.timeToExpiry > 0
+        ? frontAlignmentParity.forward *
+          Math.exp(-frontAlignmentParity.rate * frontAlignmentParity.timeToExpiry)
+        : Number.NaN;
+    const alignedSpot = resolveOpraAlignedSpot({
+      feedSpot: spot,
+      rthCloseSpot: resolveRthCloseSpot(bars5mRes.bars, bars1dRes.bars, nowSec),
+      parityImpliedSpot,
+      marketClosed: anyClosedMarket || isWeekendEt || usedEodCloseRef,
+    });
+    if (Number.isFinite(alignedSpot.valuationSpot) && alignedSpot.valuationSpot > 0) {
+      spot = alignedSpot.valuationSpot;
+    }
+    if (alignedSpot.source !== 'FEED' && Number.isFinite(alignedSpot.divergenceBps)) {
+      warnings.push(
+        `US options spot alignment: feed=${alignedSpot.headerSpot.toFixed(4)} valuation=${alignedSpot.valuationSpot.toFixed(4)} source=${alignedSpot.source} divergence=${alignedSpot.divergenceBps.toFixed(2)}bps`,
+      );
+    }
 
     const byExpiry = new Map<number, OptionSnapshotContract[]>();
     for (const c of contracts) {
@@ -7308,17 +7755,68 @@ export class MarketRuntime {
         }
       }
 
-      const serializedContracts: SerializedOptionContractRow[] = [...contracts]
-        .filter((c) => c.expirationTime > nowSec + 60)
-        .sort((a, b) => {
-          const da = Math.abs(a.strikePrice - spot);
-          const db = Math.abs(b.strikePrice - spot);
-          if (a.expirationTime !== b.expirationTime) {
-            return a.expirationTime - b.expirationTime;
-          }
-          return da - db;
-        })
-        .slice(0, MAX_SERIALIZED_CONTRACTS)
+      const otmIvByExpiryStrike = new Map<string, number>();
+      for (const c of contracts) {
+        if (!(c.expirationTime > nowSec + 60)) continue;
+        const isOtm =
+          c.contractType === 'call'
+            ? c.strikePrice >= spot - 1e-6
+            : c.strikePrice <= spot + 1e-6;
+        if (!isOtm) continue;
+        const ivVal = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+        if (!Number.isFinite(ivVal) || ivVal <= 0 || ivVal >= IV_CAP_DECIMAL) continue;
+        const otmExtrinsic = extrinsicValue(
+          c.contractType,
+          spot,
+          c.strikePrice,
+          resolveQuoteMid(c),
+        );
+        if (!Number.isFinite(otmExtrinsic) || otmExtrinsic <= 0.01) continue;
+        const key = `${String(c.expirationTime)}|${String(c.strikePrice)}`;
+        if (!otmIvByExpiryStrike.has(key)) {
+          otmIvByExpiryStrike.set(key, ivVal);
+        }
+      }
+
+      // Pieza 50.1: cuota balanceada por vencimiento (front 120 + 48 por curado adicional)
+      // para que todos los vencimientos lleguen al selector y a la estructura temporal.
+      const serializableContracts = [...contracts].filter((c) => c.expirationTime > nowSec + 60);
+      const serializableByDate = new Map<string, OptionSnapshotContract[]>();
+      for (const c of serializableContracts) {
+        const list = serializableByDate.get(c.expirationDate) ?? [];
+        list.push(c);
+        serializableByDate.set(c.expirationDate, list);
+      }
+      const serializableDates = [...serializableByDate.keys()].sort((a, b) => a.localeCompare(b));
+      const primarySerializationDate =
+        usExpirySelection.defaultExpirationDate !== null &&
+        serializableByDate.has(usExpirySelection.defaultExpirationDate)
+          ? usExpirySelection.defaultExpirationDate
+          : (serializableDates[0] ?? null);
+      const byDistanceToSpot = (a: OptionSnapshotContract, b: OptionSnapshotContract): number =>
+        Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot);
+      const selectedForSerialization: OptionSnapshotContract[] = [];
+      if (primarySerializationDate !== null) {
+        const primaryList = [...(serializableByDate.get(primarySerializationDate) ?? [])].sort(
+          byDistanceToSpot,
+        );
+        selectedForSerialization.push(...primaryList.slice(0, MAX_SERIALIZED_PRIMARY_CONTRACTS));
+      }
+      let serializationBudget = MAX_SERIALIZED_CONTRACTS - selectedForSerialization.length;
+      for (const date of serializableDates) {
+        if (date === primarySerializationDate || serializationBudget <= 0) continue;
+        const list = [...(serializableByDate.get(date) ?? [])].sort(byDistanceToSpot);
+        const take = Math.min(MAX_SERIALIZED_SECONDARY_CONTRACTS, serializationBudget, list.length);
+        selectedForSerialization.push(...list.slice(0, take));
+        serializationBudget -= take;
+      }
+
+      const serializedContracts: SerializedOptionContractRow[] = selectedForSerialization
+        .sort(
+          (a, b) =>
+            a.expirationTime - b.expirationTime ||
+            Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot),
+        )
         .map((c) => {
           const parity = expiryParityMap.get(c.expirationTime) ?? activeFrontParity;
           const tExp = timeToExpiryYears(nowSec, c.expirationTime);
@@ -7350,18 +7848,46 @@ export class MarketRuntime {
             : Number.isFinite(cleanProvIv)
               ? cleanProvIv
               : Number.NaN;
-          const ivSource: 'OWN' | 'PROVIDER' | 'NONE' =
-            Number.isFinite(cleanOwnIv)
+
+          const effTExp = Number.isFinite(tExp) && tExp > 0 ? Math.max(tExp, 1e-4) : Number.NaN;
+          const effUsedIv = Number.isFinite(usedIv) && usedIv > 0 ? Math.max(usedIv, 1e-4) : Number.NaN;
+          const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
+
+          // Pieza 50.1: rescate ITM vía contraparte OTM del mismo strike (paridad Put-Call)
+          // o IV ATM (±15 % moneyness) antes de colapsar a DEEP_ITM_INTRINSIC.
+          const itmContract =
+            c.contractType === 'call' ? c.strikePrice < spot - 1e-6 : c.strikePrice > spot - 1e-6;
+          const moneynessAbs = Number.isFinite(spot) && spot > 0
+            ? Math.abs(c.strikePrice - spot) / spot
+            : Number.NaN;
+          const counterpartOtmIv =
+            otmIvByExpiryStrike.get(`${String(c.expirationTime)}|${String(c.strikePrice)}`) ??
+            Number.NaN;
+          const itmRescue: ParityItmRescueResult =
+            unreliableIv && itmContract
+              ? resolveParityItmRescueIv({
+                  counterpartOtmIv,
+                  atmIv: fallbackAtmIv,
+                  moneynessAbs,
+                })
+              : { iv: null, source: null };
+          const rescuedEngineIv =
+            itmRescue.iv !== null && Number.isFinite(effTExp)
+              ? Math.max(itmRescue.iv, 1e-4)
+              : Number.NaN;
+          const engineIv = Number.isFinite(rescuedEngineIv) ? rescuedEngineIv : effUsedIv;
+          const ivSource: SerializedOptionContractRow['ivSource'] = Number.isFinite(rescuedEngineIv)
+            ? itmRescue.source === 'ATM_RESCUE'
+              ? 'ATM_FALLBACK'
+              : 'PARITY_OTM'
+            : Number.isFinite(cleanOwnIv)
               ? 'OWN'
               : Number.isFinite(cleanProvIv)
                 ? 'PROVIDER'
                 : 'NONE';
 
-          const effTExp = Number.isFinite(tExp) && tExp > 0 ? Math.max(tExp, 1e-4) : Number.NaN;
-          const effUsedIv = Number.isFinite(usedIv) && usedIv > 0 ? Math.max(usedIv, 1e-4) : Number.NaN;
-          const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
           const fallbackGreeks =
-            unreliableIv && Number.isFinite(effTExp)
+            itmRescue.iv === null && unreliableIv && Number.isFinite(effTExp)
               ? computeFallbackGreeks({
                   side: c.contractType,
                   spot,
@@ -7387,7 +7913,7 @@ export class MarketRuntime {
                     vanna: 0,
                     charm: 0,
                   }
-              : Number.isFinite(effUsedIv) && Number.isFinite(effTExp)
+              : Number.isFinite(engineIv) && Number.isFinite(effTExp)
               ? isIndex
                 ? greeksBsm({
                     spot,
@@ -7395,7 +7921,7 @@ export class MarketRuntime {
                     timeToExpiry: effTExp,
                     rate: parity.rate,
                     dividendYield: parity.dividendYield,
-                    volatility: effUsedIv,
+                    volatility: engineIv,
                     contractType: c.contractType,
                   })
                 : greeksAmericanFiniteDiffOrAnalytical({
@@ -7404,7 +7930,7 @@ export class MarketRuntime {
                     timeToExpiry: effTExp,
                     rate: parity.rate,
                     dividendYield: parity.dividendYield,
-                    volatility: effUsedIv,
+                    volatility: engineIv,
                     contractType: c.contractType,
                   })
               : null;
@@ -7416,14 +7942,14 @@ export class MarketRuntime {
               !Number.isFinite(rawGreeks.thetaDaily) ||
               !Number.isFinite(rawGreeks.vegaPer1Pct));
           const bsmUsFallback =
-            needUsBsmFallback && Number.isFinite(effUsedIv) && Number.isFinite(effTExp)
+            needUsBsmFallback && Number.isFinite(engineIv) && Number.isFinite(effTExp)
               ? greeksBsm({
                   spot,
                   strike: c.strikePrice,
                   timeToExpiry: effTExp,
                   rate: parity.rate,
                   dividendYield: parity.dividendYield,
-                  volatility: effUsedIv,
+                  volatility: engineIv,
                   contractType: c.contractType,
                 })
               : null;
@@ -7446,6 +7972,12 @@ export class MarketRuntime {
                     charm: Number.isFinite(rawGreeks.charm) ? rawGreeks.charm : bsmUsFallback.charm,
                   };
 
+          const changePct = resolveContractChangePct(
+            c.day.changePercent,
+            c.day.previousClose,
+            firstPositiveFinite([c.day.close, c.lastTrade.price, mid]),
+          );
+
           return {
             ticker: c.ticker,
             contractType: c.contractType,
@@ -7458,6 +7990,8 @@ export class MarketRuntime {
             lastPrice: sanitizeFinite(c.lastTrade.price),
             openInterest: sanitizeFinite(c.openInterest),
             volume: sanitizeFinite(c.day.volume),
+            previousClose: sanitizeFinite(c.day.previousClose),
+            changePct,
             ownIv: sanitizeFinite(cleanOwnIv),
             providerIv: sanitizeFinite(cleanProvIv),
             ivSource,

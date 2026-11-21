@@ -125,6 +125,59 @@ export function computeFallbackGreeks(input: FallbackGreeksInput): FallbackGreek
   };
 }
 
+// ---------------------------------------------------------------------------
+// 2b. Pieza 50.1: rescate de IV ITM vía contraparte OTM (paridad Put-Call)
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_PARITY_RESCUE_MAX_MONEYNESS = 0.15;
+
+export type ParityItmRescueSource = 'PARITY_OTM' | 'ATM_RESCUE';
+
+export interface ParityItmRescueInput {
+  /** IV confiable de la contraparte OTM del mismo (vencimiento, strike) o NaN. */
+  readonly counterpartOtmIv: number;
+  /** IV ATM del vencimiento como rescate para |moneyness| <= `maxMoneynessAbs` o NaN. */
+  readonly atmIv: number;
+  /** |strike - spot| / spot. */
+  readonly moneynessAbs: number;
+  /** Ventana máxima de moneyness para el rescate ATM (default 0.15 = ±15 %). */
+  readonly maxMoneynessAbs?: number;
+}
+
+export interface ParityItmRescueResult {
+  /** IV decimal rescatada, o `null` si no corresponde rescate (deep ITM honesto). */
+  readonly iv: number | null;
+  readonly source: ParityItmRescueSource | null;
+}
+
+/**
+ * Pieza 50.1: antes de colapsar un contrato ITM con IV no confiable a
+ * `DEEP_ITM_INTRINSIC` (`Delta = ±1`), rescata una IV coherente:
+ *  1) `PARITY_OTM` si el mismo (vencimiento, strike) tiene contraparte OTM con IV confiable;
+ *  2) `ATM_RESCUE` con la IV ATM del vencimiento si `|moneyness| <= maxMoneynessAbs`.
+ * Sin rescate disponible → `{ iv: null, source: null }` (sin inventar valores).
+ */
+export function resolveParityItmRescueIv(input: ParityItmRescueInput): ParityItmRescueResult {
+  const maxMoneynessAbs = input.maxMoneynessAbs ?? DEFAULT_PARITY_RESCUE_MAX_MONEYNESS;
+  if (
+    Number.isFinite(input.counterpartOtmIv) &&
+    input.counterpartOtmIv > 0 &&
+    input.counterpartOtmIv < IV_CAP_DECIMAL
+  ) {
+    return { iv: input.counterpartOtmIv, source: 'PARITY_OTM' };
+  }
+  if (
+    Number.isFinite(input.moneynessAbs) &&
+    input.moneynessAbs <= maxMoneynessAbs &&
+    Number.isFinite(input.atmIv) &&
+    input.atmIv > 0 &&
+    input.atmIv < IV_CAP_DECIMAL
+  ) {
+    return { iv: input.atmIv, source: 'ATM_RESCUE' };
+  }
+  return { iv: null, source: null };
+}
+
 /** Un contrato participa en C-P (pp) solo si ambas IV son confiables. */
 export function includeInParityCpPp(
   callIv: number,
@@ -215,6 +268,36 @@ export function calendarDteEt(expiryDate: string, nowMs: number): number {
 export function formatDteLabel(dte: number): string {
   if (!Number.isFinite(dte)) return '—';
   return dte === 0 ? '0DTE' : `${String(dte)}d`;
+}
+
+/**
+ * Pieza 50.1: instante UTC (segundos) de las 16:00 ET del día de vencimiento
+ * `YYYY-MM-DD`, resolviendo EST/EDT con `America/New_York`. Formato o fecha
+ * inválidos → `NaN` (sin fallbacks inventados).
+ */
+export function etExpiryUtcSecFromDate(expiryDate: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(expiryDate);
+  if (m === null) return Number.NaN;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return Number.NaN;
+  }
+  // 16:00 ET = 20:00 UTC (EDT) o 21:00 UTC (EST).
+  for (const utcHour of [20, 21]) {
+    const candidateMs = Date.UTC(year, month - 1, day, utcHour, 0, 0);
+    const parts = easternParts(candidateMs);
+    if (
+      parts !== null &&
+      parts.date === expiryDate &&
+      parts.hour === 16 &&
+      parts.minute === 0
+    ) {
+      return Math.floor(candidateMs / 1_000);
+    }
+  }
+  return Number.NaN;
 }
 
 /** Horas reales restantes hasta las 16:00 ET del día actual (>= 0). */

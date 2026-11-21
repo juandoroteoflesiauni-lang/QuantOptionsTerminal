@@ -764,6 +764,8 @@ export interface ArOptionContractDto {
   readonly charm: number | null;
   readonly intrinsic: number;
   readonly extrinsic: number | null;
+  readonly previousClose?: number | null;
+  readonly changePct?: number | null;
   readonly source: 'DATA912' | 'MODEL';
   readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
   readonly quoteAsOfUtcSec?: number | null;
@@ -1040,9 +1042,11 @@ export interface UsOptionContractRowDto {
   readonly lastPrice: number | null;
   readonly openInterest: number | null;
   readonly volume: number | null;
+  readonly previousClose?: number | null;
+  readonly changePct?: number | null;
   readonly ownIv: number | null;
   readonly providerIv: number | null;
-  readonly ivSource: 'OWN' | 'PROVIDER' | 'NONE';
+  readonly ivSource: 'OWN' | 'PROVIDER' | 'PARITY_OTM' | 'ATM_FALLBACK' | 'NONE';
   readonly delta: number | null;
   readonly gamma: number | null;
   readonly thetaDaily: number | null;

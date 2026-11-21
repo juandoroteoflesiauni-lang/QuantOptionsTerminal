@@ -72,6 +72,7 @@ import {
   computeVerticalSpreadMetrics,
   isValidButterflyStrikes,
   type LiquiditySemaphore,
+  type VerticalSpreadPricingMode,
 } from '../../../src/core/options/verticalSpreads';
 import {
   type BidirectionalFlowRow,
@@ -641,6 +642,7 @@ function buildDetailedSpreadMatrix(
   atmIvDec: number,
   filter: 'donde_estoy' | 'cerca' | 'tenencia' | 'todas',
   isUsMarket: boolean,
+  pricingMode: VerticalSpreadPricingMode,
 ): readonly DetailedSpreadRow[] {
   if (rows.length < 2) return [];
   const formatStrike = (value: number): string =>
@@ -683,6 +685,7 @@ function buildDetailedSpreadMatrix(
       daysToExpiry,
       rateDec,
       atmIvDec,
+      pricingMode,
     });
     if (!result.valid) return null;
 
@@ -924,16 +927,56 @@ export const OptionsModule: React.FC<{
   const usUnderlying = underlyingMeta.market === 'US';
   const liveUnderlyingQuote = useAtomicMarketQuote(usUnderlying ? 'US' : 'AR', upperUnderlying, 250);
   const liveStreamMeta = useMarketStreamMeta(1_000);
-  const displaySpot =
+  // Pieza 50.1: separar spot de encabezado (tick extendido PRE/AH) del spot de valuación
+  // de la cadena OPRA cuando el feed está en EOD_CIERRE o fuera de RTH.
+  const liveQuoteSpot =
     liveUnderlyingQuote !== null &&
     Number.isFinite(liveUnderlyingQuote.price) &&
     liveUnderlyingQuote.price > 0
       ? liveUnderlyingQuote.price
-      : liveOptions?.spot ?? overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
-  const headerSpot = liveUnderlyingQuote?.price ?? displaySpot;
+      : Number.NaN;
+  const chainValuationSpot =
+    liveOptions?.spot !== null &&
+    liveOptions?.spot !== undefined &&
+    Number.isFinite(liveOptions.spot) &&
+    liveOptions.spot > 0
+      ? liveOptions.spot
+      : Number.NaN;
+  const opraSessionClosed =
+    liveOptions?.feedStatus === 'EOD_CIERRE' ||
+    (liveUnderlyingQuote?.sessionPhase !== null &&
+      liveUnderlyingQuote?.sessionPhase !== undefined &&
+      liveUnderlyingQuote.sessionPhase !== 'RTH');
+  const displaySpot =
+    opraSessionClosed && Number.isFinite(chainValuationSpot)
+      ? chainValuationSpot
+      : Number.isFinite(liveQuoteSpot)
+        ? liveQuoteSpot
+        : Number.isFinite(chainValuationSpot)
+          ? chainValuationSpot
+          : overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
+  const headerSpot = Number.isFinite(liveQuoteSpot) ? liveQuoteSpot : displaySpot;
   const headerDeltaPct = liveUnderlyingQuote?.changePct ?? displayDeltaPct;
   const headerFlash = useLivePriceFlash(liveUnderlyingQuote?.price ?? null);
   const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
+
+  // Pieza 50.1: escalera de spreads con mids de cierre en mercado cerrado / EOD_CIERRE.
+  const spreadPricingMode: VerticalSpreadPricingMode = opraSessionClosed ? 'EOD_MID' : 'LIVE_CROSS';
+
+  // Pieza 50.1: seleccionar un vencimiento sin filas hidratadas dispara la carga puntual
+  // (`?expiration=`) conservando el virtualizador y el estado local intactos.
+  const handleSelectExpiry = (nextId: string): void => {
+    setSelectedExpiryId(nextId);
+    if (!usUnderlying) return;
+    const target = GGAL_OPTION_EXPIRIES.find((e) => e.id === nextId);
+    const needsHydration =
+      target === undefined ||
+      target.rows.length === 0 ||
+      target.rows.every((r) => !(r.callIV > 0) && !(r.putIV > 0));
+    if (needsHydration) {
+      void requestOptionsChain(selectedUnderlyingKey, false, nextId);
+    }
+  };
 
   const activeExpiry = useMemo(() => {
     if (GGAL_OPTION_EXPIRIES.length === 0) return null;
@@ -1175,8 +1218,9 @@ export const OptionsModule: React.FC<{
         activeAtmIvDec,
         spreadFilter,
         isUsMarket,
+        spreadPricingMode,
       ),
-    [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, liveMarket.version],
+    [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, spreadPricingMode, liveMarket.version],
   );
 
   // Pieza 49.1: ventana virtual de la escalera de spreads (>50 filas → solo visibles).
@@ -1967,7 +2011,7 @@ export const OptionsModule: React.FC<{
                           key={exp.id}
                           type="button"
                           onClick={() => {
-                            setSelectedExpiryId(exp.id);
+                            handleSelectExpiry(exp.id);
                             setExpiryDropdownOpen(false);
                           }}
                           className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[7px] text-left font-mono-num text-[11.5px] transition-colors cursor-pointer ${
@@ -4352,7 +4396,7 @@ export const OptionsModule: React.FC<{
                 spot={displaySpot}
                 activeExpiry={activeExpiry}
                 expiries={GGAL_OPTION_EXPIRIES}
-                onSelectExpiry={setSelectedExpiryId}
+                onSelectExpiry={handleSelectExpiry}
                 effectiveTlrPct={effectiveTlrPct}
                 liveOptions={liveOptions}
                 activeQuantEngines={activeQuantEngines}
