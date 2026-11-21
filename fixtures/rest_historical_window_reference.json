@@ -1092,5 +1092,179 @@
     "bucketsInWindow": 2099
    }
   }
- ]
+ ],
+ "closedDailyEligibility": {
+  "rule": "UTC day of bar.time ended (dayOpen + 86400 <= asOf) and bar.time <= asOf, valid OHLCV",
+  "cases": [
+   {
+    "name": "rueda_previa_cerrada",
+    "bar": {
+     "time": 1795064400,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": true
+   },
+   {
+    "name": "rueda_en_curso_rth",
+    "bar": {
+     "time": 1795150800,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": false
+   },
+   {
+    "name": "rueda_en_curso_pre_utc",
+    "bar": {
+     "time": 1795150800,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795219199,
+    "expected": false
+   },
+   {
+    "name": "borde_utc_cerrado",
+    "bar": {
+     "time": 1795150800,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795219260,
+    "expected": true
+   },
+   {
+    "name": "dst_verano_en_curso",
+    "bar": {
+     "time": 1784088000,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1784145600,
+    "expected": false
+   },
+   {
+    "name": "dst_verano_dia_utc_cerrado",
+    "bar": {
+     "time": 1784088000,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1784160060,
+    "expected": true
+   },
+   {
+    "name": "media_rueda_viernes_cerrada",
+    "bar": {
+     "time": 1795755600,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795863600,
+    "expected": true
+   },
+   {
+    "name": "feriado_gracias_cerrado",
+    "bar": {
+     "time": 1795669200,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795813200,
+    "expected": true
+   },
+   {
+    "name": "timestamp_futuro",
+    "bar": {
+     "time": 1795212000,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": false
+   },
+   {
+    "name": "timestamp_no_positivo",
+    "bar": {
+     "time": -3600,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": false
+   },
+   {
+    "name": "invalida_high_menor_low",
+    "bar": {
+     "time": 1795064400,
+     "open": 100.0,
+     "high": 98.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": false
+   },
+   {
+    "name": "invalida_volumen_negativo",
+    "bar": {
+     "time": 1795064400,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 100.5,
+     "volume": -5.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": false
+   },
+   {
+    "name": "invalida_cierre_no_positivo",
+    "bar": {
+     "time": 1795064400,
+     "open": 100.0,
+     "high": 101.0,
+     "low": 99.0,
+     "close": 0.0,
+     "volume": 1000.0
+    },
+    "asOfUtcSec": 1795208400,
+    "expected": false
+   }
+  ]
+ }
 }

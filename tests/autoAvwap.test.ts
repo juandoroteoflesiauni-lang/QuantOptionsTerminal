@@ -455,6 +455,48 @@ function makeOfflineBarsLoader(): {
   return { calls, loader };
 }
 
+/** Loader offline mutable: `1D` devuelve `dailyBars` (ignora la ventana pedida). */
+function makeFixedDailyLoader(
+  readDailyBars: () => readonly Bar[],
+): {
+  readonly calls: string[];
+  readonly loader: NonNullable<MrDeps['loadBarsFn']>;
+} {
+  const calls: string[] = [];
+  const loader = ((req: { readonly timeframe?: string; readonly visibleBars?: number }) => {
+    calls.push(`${req.timeframe ?? '?'}:${String(req.visibleBars ?? '?')}`);
+    const bars =
+      req.timeframe === '1D' ? [...readDailyBars()] : makeBackendIntradayBars(320);
+    return Promise.resolve({
+      bars,
+      visibleStart: 0,
+      report: {
+        provider: 'massive',
+        fetchedPages: 1,
+        barsCount: bars.length,
+        providerError: null,
+      },
+    });
+  }) as unknown as NonNullable<MrDeps['loadBarsFn']>;
+  return { calls, loader };
+}
+
+function makeOfflineRuntime(
+  loader: NonNullable<MrDeps['loadBarsFn']>,
+  nowMs: () => number = () => FIXED_NOW_MS,
+): MarketRuntime {
+  return new MarketRuntime({
+    apiKey: 'bloque3-harness-key',
+    enableWs: false,
+    nowMsFn: nowMs,
+    loadBarsFn: loader,
+  });
+}
+
+function countDailyLoads(calls: readonly string[]): number {
+  return calls.filter((call) => call.startsWith('1D:')).length;
+}
+
 describe('Pieza 50.5 — backend: /api/bars adjunta autoAvwapAnchors cacheados por día', () => {
   it('cachea por símbolo y día: una sola carga 1D por día y cero requests FMP sin proveedor', async () => {
     const { calls, loader } = makeOfflineBarsLoader();
@@ -789,6 +831,233 @@ describe('Pieza 50.5 — backend: /api/bars adjunta autoAvwapAnchors cacheados p
     );
     expect(eventAnchors.length).toBeGreaterThanOrEqual(1);
     expect(eventAnchors.some((anchor) => anchor.eventLabel === 'CPI')).toBe(true);
+  });
+
+  it('Bloque 3: 5m primero y luego 1D comparten las últimas 380 cerradas sin recargar', async () => {
+    const closedDaily = makeBackendDailyBars(420, FIXED_NOW_SEC - 86_400);
+    const { calls, loader } = makeFixedDailyLoader(() => closedDaily);
+    const runtime = makeOfflineRuntime(loader);
+
+    const intraday = await runtime.getBars('B3A', '5m', { visibleBars: 200 });
+    const intradayAnchors = intraday.autoAvwapAnchors ?? [];
+    expect(intradayAnchors.length).toBeGreaterThanOrEqual(1);
+
+    const daily = await runtime.getBars('B3A', '1D', { visibleBars: 420 });
+    expect(daily.autoAvwapAnchors).toEqual(intradayAnchors);
+    // Insumo completo: la detección directa sobre las mismas cerradas coincide
+    // y la ventana se trunca a las últimas 380 ruedas.
+    const expected = detectAutoAvwapAnchors(closedDaily, []);
+    expect(intradayAnchors).toEqual(expected);
+    expect(detectAutoAvwapAnchors(closedDaily.slice(-380), [])).toEqual(expected);
+    // Carga interna única (1D:400) + la consulta diaria del usuario (1D:420):
+    // el hint diario ya cubría la ventana y no disparó otra carga de anclas.
+    expect(calls.filter((call) => call.startsWith('1D:'))).toEqual(['1D:400', '1D:420']);
+  });
+
+  it('Bloque 3: 1D primero y luego 5m reutilizan la caché del día sin recargar', async () => {
+    const closedDaily = makeBackendDailyBars(420, FIXED_NOW_SEC - 86_400);
+    const { calls, loader } = makeFixedDailyLoader(() => closedDaily);
+    const runtime = makeOfflineRuntime(loader);
+
+    const daily = await runtime.getBars('B3B', '1D', { visibleBars: 420 });
+    const dailyAnchors = daily.autoAvwapAnchors ?? [];
+    expect(dailyAnchors).toEqual(detectAutoAvwapAnchors(closedDaily, []));
+
+    const intraday = await runtime.getBars('B3B', '5m', { visibleBars: 200 });
+    expect(intraday.autoAvwapAnchors).toEqual(dailyAnchors);
+    expect(countDailyLoads(calls)).toBe(1);
+  });
+
+  it('Bloque 3: un histórico corto reutiliza la carga completa sin sellar cobertura parcial', async () => {
+    const shortHistory = makeBackendDailyBars(120, FIXED_NOW_SEC - 86_400);
+    const { calls, loader } = makeFixedDailyLoader(() => shortHistory);
+    const runtime = makeOfflineRuntime(loader);
+
+    const first = await runtime.getBars('B3C', '1D', { visibleBars: 120 });
+    const firstAnchors = first.autoAvwapAnchors ?? [];
+    expect(firstAnchors).toEqual(detectAutoAvwapAnchors(shortHistory, []));
+    // Hint corto (<380 cerradas): se carga una vez la ventana completa 1D.
+    expect(calls.filter((call) => call === '1D:400')).toHaveLength(1);
+
+    const second = await runtime.getBars('B3C', '1D', { visibleBars: 130 });
+    expect(second.autoAvwapAnchors).toEqual(firstAnchors);
+    // La caché diaria de 400 evita otra carga interna; la parcial no se sella.
+    expect(calls.filter((call) => call === '1D:400')).toHaveLength(1);
+  });
+
+  it('Bloque 3: la vela diaria del día en curso no entra en la selección', async () => {
+    const flatDaily: Bar[] = Array.from({ length: 420 }, (_, index) => ({
+      time: FIXED_NOW_SEC - (420 - index) * 86_400,
+      open: 100,
+      high: 100.4,
+      low: 99.6,
+      close: 100,
+      volume: 1_000,
+    }));
+    const forming: Bar = {
+      time: FIXED_NOW_SEC,
+      open: 101.6,
+      high: 102.4,
+      low: 101.2,
+      close: 102,
+      volume: 200_000,
+    };
+    const withForming = [...flatDaily, forming];
+
+    const loaderWith = makeFixedDailyLoader(() => withForming);
+    const runtimeWith = makeOfflineRuntime(loaderWith.loader);
+    const loaderWithout = makeFixedDailyLoader(() => flatDaily);
+    const runtimeWithout = makeOfflineRuntime(loaderWithout.loader);
+
+    const anchorsWith = (await runtimeWith.getBars('B3D', '5m', { visibleBars: 200 }))
+      .autoAvwapAnchors ?? [];
+    const anchorsWithout = (await runtimeWithout.getBars('B3D', '5m', { visibleBars: 200 }))
+      .autoAvwapAnchors ?? [];
+
+    // Sensibilidad: incluir la vela en formación crearía un ancla RVOL en su
+    // fecha (la serie plana no tiene anclas sin ella).
+    const directWith = detectAutoAvwapAnchors(withForming, []);
+    expect(directWith.some((anchor) => anchor.anchorTimeSec === forming.time)).toBe(true);
+    expect(detectAutoAvwapAnchors(flatDaily, [])).toEqual([]);
+
+    // El runtime la excluye: mismo resultado con o sin la vela abierta.
+    expect(anchorsWith).toEqual(anchorsWithout);
+    expect(anchorsWith).toEqual(detectAutoAvwapAnchors(flatDaily, []));
+  });
+
+  it('Bloque 3: proveedor con menos de 380 ruedas degrada con datos válidos sin inventar', async () => {
+    const shortHistory = makeBackendDailyBars(300, FIXED_NOW_SEC - 86_400);
+    const { calls, loader } = makeFixedDailyLoader(() => shortHistory);
+    const runtime = makeOfflineRuntime(loader);
+
+    const first = await runtime.getBars('B3E', '1D', { visibleBars: 300 });
+    const anchors = first.autoAvwapAnchors ?? [];
+    expect(anchors).toEqual(detectAutoAvwapAnchors(shortHistory, []));
+    expect(anchors.length).toBeGreaterThanOrEqual(1);
+    const minTime = shortHistory[0]?.time ?? 0;
+    const maxTime = shortHistory[shortHistory.length - 1]?.time ?? 0;
+    for (const anchor of anchors) {
+      expect(anchor.anchorTimeSec).toBeGreaterThanOrEqual(minTime);
+      expect(anchor.anchorTimeSec).toBeLessThanOrEqual(maxTime);
+    }
+
+    const second = await runtime.getBars('B3E', '5m', { visibleBars: 200 });
+    expect(second.autoAvwapAnchors).toEqual(anchors);
+    expect(countDailyLoads(calls)).toBe(2); // 1D:300 + carga completa 1D:400
+  });
+
+  it('Bloque 3: el cambio de sesión recomputa y no sirve una selección del día previo', async () => {
+    const dayOne = makeBackendDailyBars(420, FIXED_NOW_SEC - 86_400);
+    let dataset: readonly Bar[] = dayOne;
+    let nowMs = FIXED_NOW_MS;
+    const { calls, loader } = makeFixedDailyLoader(() => dataset);
+    const runtime = makeOfflineRuntime(loader, () => nowMs);
+
+    const first = await runtime.getBars('B3F', '5m', { visibleBars: 200 });
+    const firstAnchors = first.autoAvwapAnchors ?? [];
+    expect(firstAnchors).toEqual(detectAutoAvwapAnchors(dayOne, []));
+    const loadsAfterFirst = countDailyLoads(calls);
+
+    // Rueda siguiente: la EOD ahora incluye la sesión recién cerrada.
+    nowMs = FIXED_NOW_MS + 86_400_000;
+    dataset = makeBackendDailyBars(421, FIXED_NOW_SEC);
+    const second = await runtime.getBars('B3F', '5m', { visibleBars: 200 });
+    const secondAnchors = second.autoAvwapAnchors ?? [];
+
+    expect(countDailyLoads(calls)).toBeGreaterThan(loadsAfterFirst);
+    expect(secondAnchors).not.toEqual(firstAnchors);
+    expect(secondAnchors).toEqual(detectAutoAvwapAnchors(dataset, []));
+    // Equivalente a un arranque en frío del mismo día: la caché no sustituye
+    // silenciosamente el resultado por uno del día anterior.
+    const cold = makeOfflineRuntime(makeFixedDailyLoader(() => dataset).loader, () => nowMs);
+    const coldAnchors = (await cold.getBars('B3F', '5m', { visibleBars: 200 }))
+      .autoAvwapAnchors ?? [];
+    expect(secondAnchors).toEqual(coldAnchors);
+  });
+
+  it('Bloque 3: con FMP habilitado el EVENT entra sobre el insumo cerrado y 5m/1D coinciden', async () => {
+    const closedDaily = makeBackendDailyBars(420, FIXED_NOW_SEC - 86_400);
+    const eodRows = closedDaily.map((bar) => ({
+      symbol: 'B3G',
+      date: new Date(bar.time * 1_000).toISOString().slice(0, 10),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+    const earningsDate = new Date((closedDaily[100]?.time ?? 0) * 1_000)
+      .toISOString()
+      .slice(0, 10);
+    const intradayEtRows = makeBackendIntradayBars(320).map((bar) => {
+      const iso = new Date(bar.time * 1_000).toISOString();
+      return {
+        date: `${iso.slice(0, 10)} ${iso.slice(11, 19)}`,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+      };
+    });
+    let earningsCalls = 0;
+    const fmpConfig: NonNullable<MrDeps['fmpConfig']> = {
+      apiKey: 'bloque3-market-key',
+      quotesApiKey: null,
+      marketApiKey: null,
+      etfApiKey: null,
+      macroApiKey: null,
+      calendarsApiKey: null,
+      configured: true,
+      baseUrl: 'https://financialmodelingprep.com',
+    };
+    const loader = makeFixedDailyLoader(() => closedDaily);
+    const runtime = new MarketRuntime({
+      apiKey: 'bloque3-fmp-harness',
+      enableWs: false,
+      nowMsFn: () => FIXED_NOW_MS,
+      loadBarsFn: loader.loader,
+      fmpConfig,
+      fetchFn: ((url: string) => {
+        if (url.includes('historical-price-eod/full')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: {},
+            text: JSON.stringify(eodRows),
+          });
+        }
+        if (url.includes('/stable/historical-chart/5min')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: {},
+            text: JSON.stringify(intradayEtRows),
+          });
+        }
+        if (url.includes('/stable/earnings?symbol=B3G')) {
+          earningsCalls += 1;
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: {},
+            text: JSON.stringify([
+              { symbol: 'B3G', date: earningsDate, time: 'bmo', epsEstimated: 1.1, epsActual: 1.2 },
+            ]),
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, headers: {}, text: '{}' });
+      }) as unknown as FetchFn,
+    });
+
+    const intraday = await runtime.getBars('B3G', '5m', { visibleBars: 200 });
+    const intradayAnchors = intraday.autoAvwapAnchors ?? [];
+    expect(intradayAnchors.some((anchor) => anchor.sources.includes('EVENT'))).toBe(true);
+    expect(intradayAnchors.some((anchor) => !anchor.sources.includes('EVENT'))).toBe(true);
+
+    const daily = await runtime.getBars('B3G', '1D', { visibleBars: 420 });
+    expect(daily.autoAvwapAnchors).toEqual(intradayAnchors);
+    expect(earningsCalls).toBe(1);
   });
 });
 

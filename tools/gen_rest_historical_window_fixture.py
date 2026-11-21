@@ -58,6 +58,7 @@ CALENDAR_YEARS = range(2020, 2028)
 
 TARGET_MARGIN = 1.03
 SESSIONS_PER_CALENDAR_YEAR = 365.25 / 250
+MAX_TIME_SECONDS = 1e11
 # Pieza 50.5 (Bloque 2): velas previas al tramo visible para calentar la EMA 200 (SPEC.md:4).
 WARMUP_BARS = 1_000
 
@@ -321,6 +322,89 @@ def build_density_rows() -> list[dict]:
     return rows
 
 
+def is_closed_daily_bar_py(bar: dict, as_of: int) -> bool:
+    """Implementacion explicita e independiente de la regla de elegibilidad."""
+    if not isinstance(as_of, int) or as_of <= 0:
+        return False
+    time_sec = bar.get("time")
+    if (
+        not isinstance(time_sec, (int, float))
+        or not math.isfinite(time_sec)
+        or time_sec <= 0
+        or abs(time_sec) > MAX_TIME_SECONDS
+    ):
+        return False
+    for key in ("open", "high", "low", "close", "volume"):
+        value = bar.get(key)
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            return False
+    if bar["close"] <= 0 or bar["high"] < bar["low"] or bar["volume"] < 0:
+        return False
+    raw_time = int(time_sec)
+    if raw_time > as_of:
+        return False
+    day_open = (raw_time // 86_400) * 86_400
+    return day_open + 86_400 <= as_of
+
+
+def build_closed_daily_cases() -> list[dict]:
+    """Pieza 50.5 Bloque 3: elegibilidad de rueda diaria cerrada US.
+
+    Regla explicita e independiente (`is_closed_daily_bar_py`): la barra es
+    valida (OHLCV finito, cierre positivo, high >= low, volumen >= 0), no es
+    futura respecto de `asOfUtcSec` y el dia civil UTC de su apertura ya
+    termino (`dayOpen + 86400 <= asOf`). Cubre barras FMP/Massive (apertura
+    00:00 ET = 04:00/05:00Z), bordes DST, media rueda, feriado, futuro e
+    invalidas.
+    """
+
+    def utc_wall(year: int, month: int, day: int, minutes: int = 0) -> int:
+        return et_wall_to_utc_sec(date(year, month, day), minutes)
+
+    def valid_bar(time_sec: int) -> dict:
+        return {
+            "time": time_sec,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1_000.0,
+        }
+
+    def case(name: str, bar: dict, as_of: int) -> dict:
+        return {
+            "name": name,
+            "bar": bar,
+            "asOfUtcSec": as_of,
+            "expected": is_closed_daily_bar_py(bar, as_of),
+        }
+
+    to_regular = int(TO_REGULAR.timestamp())
+    yesterday = utc_wall(2026, 11, 19, 0)  # 00:00 ET => 05:00Z EST
+    today = utc_wall(2026, 11, 20, 0)
+    summer = utc_wall(2026, 7, 15, 0)  # 00:00 ET => 04:00Z EDT
+    summer_next_utc_day = ((summer // 86_400) + 1) * 86_400
+    friday_half = utc_wall(2026, 11, 27, 0)
+    thanksgiving = utc_wall(2026, 11, 26, 0)
+    today_next_utc_day = ((today // 86_400) + 1) * 86_400
+
+    return [
+        case("rueda_previa_cerrada", valid_bar(yesterday), to_regular),
+        case("rueda_en_curso_rth", valid_bar(today), to_regular),
+        case("rueda_en_curso_pre_utc", valid_bar(today), today_next_utc_day - 1),
+        case("borde_utc_cerrado", valid_bar(today), today_next_utc_day + 60),
+        case("dst_verano_en_curso", valid_bar(summer), utc_wall(2026, 7, 15, 16 * 60)),
+        case("dst_verano_dia_utc_cerrado", valid_bar(summer), summer_next_utc_day + 60),
+        case("media_rueda_viernes_cerrada", valid_bar(friday_half), utc_wall(2026, 11, 28, 360)),
+        case("feriado_gracias_cerrado", valid_bar(thanksgiving), utc_wall(2026, 11, 27, 16 * 60)),
+        case("timestamp_futuro", valid_bar(to_regular + 3_600), to_regular),
+        case("timestamp_no_positivo", valid_bar(-3_600), to_regular),
+        case("invalida_high_menor_low", {**valid_bar(yesterday), "high": 98.0}, to_regular),
+        case("invalida_volumen_negativo", {**valid_bar(yesterday), "volume": -5.0}, to_regular),
+        case("invalida_cierre_no_positivo", {**valid_bar(yesterday), "close": 0.0}, to_regular),
+    ]
+
+
 def main() -> None:
     fixture = {
         "version": 1,
@@ -337,6 +421,10 @@ def main() -> None:
         },
         "density": build_density_rows(),
         "windowCases": build_cases(),
+        "closedDailyEligibility": {
+            "rule": "UTC day of bar.time ended (dayOpen + 86400 <= asOf) and bar.time <= asOf, valid OHLCV",
+            "cases": build_closed_daily_cases(),
+        },
     }
     with open(OUT, "w", encoding="utf-8") as handle:
         json.dump(fixture, handle, indent=1)

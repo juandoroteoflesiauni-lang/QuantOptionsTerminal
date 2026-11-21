@@ -3103,6 +3103,63 @@ function normalizeClosedDailyBarsUs(bars: readonly Bar[], asOfUtcSec: number): r
   return [...byDay.values()].sort((a, b) => a.time - b.time);
 }
 
+/**
+ * Pieza 50.5 (Bloque 3): elegibilidad conservadora de rueda cerrada US para
+ * Auto-AVWAP. Reutiliza el criterio de `normalizeClosedDailyBarsUs` (el día UTC
+ * de la apertura ya terminó: nunca admite la sesión en curso ni barras futuras,
+ * y cubre cierres reducidos porque el día UTC termina después del cierre ET),
+ * sin reescribir el timestamp original.
+ */
+export function isUsClosedDailyBar(bar: Bar, asOfUtcSec: number): boolean {
+  const evalSec = Math.floor(asOfUtcSec);
+  if (!Number.isFinite(evalSec) || evalSec <= 0) {
+    return false;
+  }
+  if (
+    !Number.isFinite(bar.time) ||
+    bar.time <= 0 ||
+    Math.abs(bar.time) > MAX_TIME_SECONDS ||
+    !Number.isFinite(bar.open) ||
+    !Number.isFinite(bar.high) ||
+    !Number.isFinite(bar.low) ||
+    !Number.isFinite(bar.close) ||
+    !Number.isFinite(bar.volume) ||
+    bar.close <= 0 ||
+    bar.high < bar.low ||
+    bar.volume < 0
+  ) {
+    return false;
+  }
+  const rawTime = Math.floor(bar.time);
+  if (rawTime > evalSec) {
+    return false;
+  }
+  const dayOpenSec = Math.floor(rawTime / 86_400) * 86_400;
+  return dayOpenSec + 86_400 <= evalSec;
+}
+
+/**
+ * Ruedas cerradas mínimas para un insumo Auto-AVWAP completo (ventana por
+ * defecto de `detectAutoAvwapAnchors`).
+ */
+export const AUTO_AVWAP_MIN_CLOSED_DAILY_BARS = 380;
+
+/**
+ * Pieza 50.5 (Bloque 3): filtra las ruedas cerradas válidas, deduplica por
+ * `time` (última ocurrencia) y ordena ascendente sin mutar la entrada.
+ */
+function filterClosedDailyBarsUs(bars: readonly Bar[], asOfUtcSec: number): readonly Bar[] {
+  const byTime = new Map<number, Bar>();
+  for (const bar of bars) {
+    if (!isUsClosedDailyBar(bar, asOfUtcSec)) {
+      continue;
+    }
+    const time = Math.floor(bar.time);
+    byTime.set(time, { ...bar, time });
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
 function computeWilderAtr14Us(bars: readonly Bar[]): number | null {
   if (bars.length < 15) {
     return null;
@@ -10859,10 +10916,14 @@ export class MarketRuntime {
 
   /**
    * Pieza 50.5.1: resuelve las anclas Auto-AVWAP US con caché diario
-   * (`US:${symbol}:${fmpEtDateKey}`, TTL 24 h). Reutiliza el dataset `1D` ya cargado
-   * (`dailyBarsHint`) sin red; en otro caso consulta `barsCache` o carga `1D` con 400
-   * velas, con guard de re-entrada para que el `computeBars` anidado de `1D` calcule
-   * directo desde su hint sin reingresar a la caché.
+   * (`US:${symbol}:${fmpEtDateKey}`, TTL 24 h).
+   *
+   * Pieza 50.5 (Bloque 3): el insumo de anclas son **solo ruedas cerradas**
+   * (`isUsClosedDailyBar`). Un hint con menos de 380 ruedas cerradas válidas no
+   * evita la carga diaria completa: se reutiliza la caché `1D:ext:400` o se
+   * carga una vez, con el mismo filtro antes de detectar y el guard de
+   * re-entrada intacto. Con cobertura corta real se degrada con datos válidos
+   * sin sellar la caché diaria como si el insumo fuera completo.
    *
    * Si FMP está habilitado pero la consulta de eventos falló, devuelve las anclas
    * degradadas (`PIVOT + RVOL`) **sin** sellar la caché diaria, permitiendo recuperar
@@ -10877,11 +10938,17 @@ export class MarketRuntime {
     const cached = this.autoAvwapCache.peek(cacheKey);
     if (cached !== undefined) return cached.value;
 
-    // Re-entrada (computeBars anidado de 1D): calcular directo desde el hint, sin caché.
+    // Bloque 3: el hint solo sirve si llega a la ventana completa de cerradas.
+    const closedHint =
+      dailyBarsHint === null ? [] : filterClosedDailyBarsUs(dailyBarsHint, nowSec);
+    const hintCoversWindow = closedHint.length >= AUTO_AVWAP_MIN_CLOSED_DAILY_BARS;
+
+    // Re-entrada (computeBars anidado de 1D): calcular directo desde el hint
+    // cerrado, sin caché ni cargas nuevas (evita la espera circular).
     if (this.autoAvwapResolveInFlight.has(cacheKey)) {
       const reentrant = await this.computeAutoAvwapAnchorsOutcome(
         canonicalSymbol,
-        dailyBarsHint ?? [],
+        closedHint,
         nowSec,
       );
       return reentrant.anchors;
@@ -10889,32 +10956,48 @@ export class MarketRuntime {
 
     this.autoAvwapResolveInFlight.add(cacheKey);
     try {
-      let dailyBars: readonly Bar[] = dailyBarsHint ?? [];
+      // Fuente única: hint suficiente, caché diaria de 400 o una sola carga.
+      let dailyBars: readonly Bar[] = hintCoversWindow ? closedHint : [];
       if (dailyBars.length === 0) {
         const peeked = this.barsCache.peek(`bars:${canonicalSymbol}:1D:ext:400`)?.value;
-        dailyBars = (peeked?.bars ?? []).map((bar) => ({
-          time: bar.time,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-        }));
+        if (peeked !== undefined) {
+          const cachedClosed = filterClosedDailyBarsUs(
+            peeked.bars.map((bar) => ({
+              time: bar.time,
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume,
+            })),
+            nowSec,
+          );
+          if (cachedClosed.length > dailyBars.length) dailyBars = cachedClosed;
+        }
       }
       if (dailyBars.length === 0) {
         const fetched = await this.getBars(canonicalSymbol, '1D', { visibleBars: 400 });
-        dailyBars = fetched.bars.map((bar) => ({
-          time: bar.time,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-        }));
+        const fetchedClosed = filterClosedDailyBarsUs(
+          fetched.bars.map((bar) => ({
+            time: bar.time,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+          })),
+          nowSec,
+        );
+        if (fetchedClosed.length > dailyBars.length) dailyBars = fetchedClosed;
       }
       const outcome = await this.computeAutoAvwapAnchorsOutcome(canonicalSymbol, dailyBars, nowSec);
       assertJsonSafeSerialized(outcome.anchors);
       if (outcome.fmpFailed) {
+        return outcome.anchors;
+      }
+      if (dailyBars.length < AUTO_AVWAP_MIN_CLOSED_DAILY_BARS) {
+        // Cobertura corta real: degradación con datos válidos, sin sellar una
+        // ventana incompleta durante el TTL diario.
         return outcome.anchors;
       }
       const sealed = await this.autoAvwapCache.getOrCompute(

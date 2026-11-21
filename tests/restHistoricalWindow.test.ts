@@ -26,7 +26,11 @@ import {
 } from '../src/data/restHistoricalWindow.js';
 import type { FetchResponse, Timeframe } from '../src/data/types.js';
 import { fmpEtDateKey } from '../src/server/fmpClient.js';
-import { MarketRuntime } from '../src/server/marketRuntime.js';
+import {
+  AUTO_AVWAP_MIN_CLOSED_DAILY_BARS,
+  MarketRuntime,
+  isUsClosedDailyBar,
+} from '../src/server/marketRuntime.js';
 import { getMarketParts, isRth } from '../src/core/sessions.js';
 import type { TradierConfig } from '../src/server/tradierAdapter.js';
 
@@ -54,6 +58,20 @@ interface DensityRow {
   readonly barsPerSession: number;
 }
 
+interface ClosedDailyEligibilityCase {
+  readonly name: string;
+  readonly bar: {
+    readonly time: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+    readonly volume: number;
+  };
+  readonly asOfUtcSec: number;
+  readonly expected: boolean;
+}
+
 interface RestWindowFixture {
   readonly version: number;
   readonly generator: string;
@@ -61,6 +79,10 @@ interface RestWindowFixture {
   readonly sessionsPerCalendarYear: number;
   readonly density: readonly DensityRow[];
   readonly windowCases: readonly WindowFixtureCase[];
+  readonly closedDailyEligibility: {
+    readonly rule: string;
+    readonly cases: readonly ClosedDailyEligibilityCase[];
+  };
 }
 
 const fixture = JSON.parse(
@@ -134,6 +156,16 @@ describe('Pieza 50.5 — Ventana REST: referencia independiente Python', () => {
         item.targetBars,
       );
       expect(item.coverage.sessionsInWindow, `${item.name} sesiones`).toBeGreaterThan(0);
+    }
+  });
+
+  it('la elegibilidad de rueda cerrada US coincide con la referencia Python (DST, media rueda, futuro)', () => {
+    expect(AUTO_AVWAP_MIN_CLOSED_DAILY_BARS).toBe(380);
+    const { cases } = fixture.closedDailyEligibility;
+    expect(cases.length).toBeGreaterThanOrEqual(12);
+    for (const item of cases) {
+      const bar: Bar = item.bar;
+      expect(isUsClosedDailyBar(bar, item.asOfUtcSec), item.name).toBe(item.expected);
     }
   });
 
