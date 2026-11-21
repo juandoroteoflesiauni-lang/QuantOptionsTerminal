@@ -613,6 +613,102 @@
    }
   },
   {
+   "name": "fmp-1D-rth-2250-warmup",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 2250,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 2317.5,
+   "calendarDays": 3396,
+   "fromUtcSec": 1501794000,
+   "coverage": {
+    "sessionsInWindow": 2358,
+    "bucketsInWindow": 2358
+   }
+  },
+  {
+   "name": "fmp-1m-ext-2000-warmup",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 960,
+   "sessionsNeeded": 2.1458333333333335,
+   "calendarDays": 14,
+   "fromUtcSec": 1793998800,
+   "coverage": {
+    "sessionsInWindow": 11,
+    "bucketsInWindow": 9600
+   }
+  },
+  {
+   "name": "fmp-5m-ext-2000-warmup",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 192,
+   "sessionsNeeded": 10.729166666666666,
+   "calendarDays": 26,
+   "fromUtcSec": 1792962000,
+   "coverage": {
+    "sessionsInWindow": 20,
+    "bucketsInWindow": 3792
+   }
+  },
+  {
+   "name": "fmp-15m-rth-2000-warmup",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "15m",
+   "includeExtended": false,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 26,
+   "sessionsNeeded": 79.23076923076923,
+   "calendarDays": 126,
+   "fromUtcSec": 1784322000,
+   "coverage": {
+    "sessionsInWindow": 89,
+    "bucketsInWindow": 2314
+   }
+  },
+  {
+   "name": "fmp-1h-rth-2000-warmup",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1h",
+   "includeExtended": false,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 7,
+   "sessionsNeeded": 294.2857142857143,
+   "calendarDays": 440,
+   "fromUtcSec": 1757192400,
+   "coverage": {
+    "sessionsInWindow": 305,
+    "bucketsInWindow": 2129
+   }
+  },
+  {
+   "name": "fmp-4h-ext-2000-warmup",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "4h",
+   "includeExtended": true,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 4,
+   "sessionsNeeded": 515.0,
+   "calendarDays": 763,
+   "fromUtcSec": 1729285200,
+   "coverage": {
+    "sessionsInWindow": 525,
+    "bucketsInWindow": 2099
+   }
+  },
+  {
    "name": "tradier-1D-rth-20-dst",
    "provider": "TRADIER_REST",
    "timeframe": "1D",
@@ -898,6 +994,102 @@
    "coverage": {
     "sessionsInWindow": 525,
     "bucketsInWindow": 1050
+   }
+  },
+  {
+   "name": "tradier-1D-rth-2250-warmup",
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 2250,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 2317.5,
+   "calendarDays": 3396,
+   "fromUtcSec": 1501794000,
+   "coverage": {
+    "sessionsInWindow": 2358,
+    "bucketsInWindow": 2358
+   }
+  },
+  {
+   "name": "tradier-1m-ext-2000-warmup",
+   "provider": "TRADIER_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 960,
+   "sessionsNeeded": 2.1458333333333335,
+   "calendarDays": 14,
+   "fromUtcSec": 1793998800,
+   "coverage": {
+    "sessionsInWindow": 11,
+    "bucketsInWindow": 9600
+   }
+  },
+  {
+   "name": "tradier-5m-ext-2000-warmup",
+   "provider": "TRADIER_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 192,
+   "sessionsNeeded": 10.729166666666666,
+   "calendarDays": 26,
+   "fromUtcSec": 1792962000,
+   "coverage": {
+    "sessionsInWindow": 20,
+    "bucketsInWindow": 3792
+   }
+  },
+  {
+   "name": "tradier-15m-rth-2000-warmup",
+   "provider": "TRADIER_REST",
+   "timeframe": "15m",
+   "includeExtended": false,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 26,
+   "sessionsNeeded": 79.23076923076923,
+   "calendarDays": 126,
+   "fromUtcSec": 1784322000,
+   "coverage": {
+    "sessionsInWindow": 89,
+    "bucketsInWindow": 2314
+   }
+  },
+  {
+   "name": "tradier-1h-rth-2000-warmup",
+   "provider": "TRADIER_REST",
+   "timeframe": "1h",
+   "includeExtended": false,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 7,
+   "sessionsNeeded": 294.2857142857143,
+   "calendarDays": 440,
+   "fromUtcSec": 1757192400,
+   "coverage": {
+    "sessionsInWindow": 305,
+    "bucketsInWindow": 2129
+   }
+  },
+  {
+   "name": "tradier-4h-ext-2000-warmup",
+   "provider": "TRADIER_REST",
+   "timeframe": "4h",
+   "includeExtended": true,
+   "targetBars": 2000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 4,
+   "sessionsNeeded": 515.0,
+   "calendarDays": 763,
+   "fromUtcSec": 1729285200,
+   "coverage": {
+    "sessionsInWindow": 525,
+    "bucketsInWindow": 2099
    }
   }
  ]

@@ -11,6 +11,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { etWallTimeToUtc } from '../src/data/alignment.js';
+import { emaWarmupWeight } from '../src/core/ema.js';
 import {
   DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
   computeVolumeProfileAmt,
@@ -24,7 +26,7 @@ import {
   findNearestBarIndex,
   resolveEffectiveAvwapAnchorIndex,
 } from '../src/core/stockDetailChartNavigation.js';
-import { computeAnchoredVwapWithAnchor } from '../web/src/components/stock-detail/stockDetailMath.js';
+import { computeAnchoredVwapWithAnchor, computeEmaSeriesPure } from '../web/src/components/stock-detail/stockDetailMath.js';
 import type { Bar } from '../src/core/types.js';
 
 type JsonNumber = number | null;
@@ -159,6 +161,45 @@ function toTimedBar(row: Record<string, JsonNumber>): {
     volume: decodeNumber(row['volume']),
     ...(row['vw'] !== undefined ? { vw: row['vw'] } : {}),
   };
+}
+
+const DAY_MS_CHART = 86_400_000;
+
+/**
+ * Serie diaria estilo EOD (00:00 ET) para el Bloque 2: lunes feriado en la
+ * semana 1 (arranca el martes) y viernes de sesión reducida en la semana 2.
+ */
+function buildDerivedDailyWeeks(weeks: number): Bar[] {
+  const bars: Bar[] = [];
+  const startMs = Date.UTC(2020, 0, 6); // lunes 2020-01-06
+  let seed = 0;
+  for (let week = 0; week < weeks; week += 1) {
+    for (let day = 0; day < 5; day += 1) {
+      if (week === 1 && day === 0) continue; // lunes feriado
+      const date = new Date(startMs + (week * 7 + day) * DAY_MS_CHART);
+      const close = 100 + Math.sin(seed / 9) * 4 + (seed % 7) * 0.1;
+      const volume = week === 2 && day === 4 ? 120 : 1_000 + (seed % 50);
+      bars.push({
+        time: etWallTimeToUtc(
+          date.getUTCFullYear(),
+          date.getUTCMonth() + 1,
+          date.getUTCDate(),
+          0,
+        ),
+        open: close - 0.2,
+        high: close + 0.3,
+        low: close - 0.4,
+        close,
+        volume,
+      });
+      seed += 1;
+    }
+  }
+  return bars;
+}
+
+function toFiniteOrNull(values: readonly number[]): (number | null)[] {
+  return values.map((value) => (Number.isFinite(value) ? value : null));
 }
 
 describe('Pieza 50.4 — Volume Profile 252D, 1W nativo y AVWAP (referencia Python <= 1e-9)', () => {
@@ -304,6 +345,56 @@ describe('Pieza 50.4 — Volume Profile 252D, 1W nativo y AVWAP (referencia Pyth
     expect(advance?.expected.effectiveAnchorIndex).toBe(2);
     expect(Number.isNaN(decodeNumber(advance?.expected.series[1]))).toBe(true);
     expect(Number.isFinite(decodeNumber(advance?.expected.series[2]))).toBe(true);
+  });
+
+  it('EMA 200 semanal: umbral 199/200/201, lunes feriado y viernes reducido desde el diario', () => {
+    for (const weeks of [199, 200, 201]) {
+      const weekly = resampleDailyToWeekly(buildDerivedDailyWeeks(weeks));
+      expect(weekly.length, `semanas ${String(weeks)}`).toBe(weeks);
+      const ema = toFiniteOrNull(computeEmaSeriesPure(weekly.map((bar) => bar.close), 200));
+      if (weeks === 199) {
+        expect(ema.every((value) => value === null)).toBe(true);
+      } else {
+        expect(ema[198]).toBeNull();
+        expect(ema[199]).not.toBeNull();
+        if (weeks === 201) expect(ema[200]).not.toBeNull();
+      }
+    }
+
+    // Semana 1 con lunes feriado: arranca el martes con `time`/`open` reales y
+    // agrega extremos y volumen de sus cuatro ruedas.
+    const daily = buildDerivedDailyWeeks(3);
+    const weekly = resampleDailyToWeekly(daily);
+    const tuesday = daily[5];
+    const week1 = weekly[1];
+    const week1Bars = daily.slice(5, 9);
+    const week1Last = week1Bars[week1Bars.length - 1];
+    expect(week1?.time).toBe(tuesday?.time);
+    expect(week1?.open).toBeCloseTo(tuesday?.open ?? Number.NaN, 9);
+    expect(week1?.high).toBeCloseTo(Math.max(...week1Bars.map((bar) => bar.high)), 9);
+    expect(week1?.low).toBeCloseTo(Math.min(...week1Bars.map((bar) => bar.low)), 9);
+    expect(week1?.volume).toBeCloseTo(
+      week1Bars.reduce((sum, bar) => sum + bar.volume, 0),
+      9,
+    );
+    expect(week1?.close).toBe(week1Last?.close);
+
+    // Viernes de sesión reducida (semana 2): su cierre y volumen parcial
+    // entran en la vela semanal.
+    const fridayPartial = daily[13];
+    const week2 = weekly[2];
+    expect(fridayPartial?.volume).toBe(120);
+    expect(week2?.close).toBe(fridayPartial?.close);
+    expect(week2?.volume).toBeCloseTo(
+      daily.slice(9, 14).reduce((sum, bar) => sum + bar.volume, 0),
+      9,
+    );
+
+    // Convergencia de la semilla: 1.000 velas diarias de calentamiento dejan un
+    // residuo < 1e-3 en la primera visible; en 1W (~250 semanas) el residuo
+    // semanal sigue > 0.5 → limitación documentada, sin convergencia plena.
+    expect(emaWarmupWeight(200, 1_000 - 199)).toBeLessThan(1e-3);
+    expect(emaWarmupWeight(200, 250 - 199)).toBeGreaterThan(0.5);
   });
 
   it('guardas estructurales de StockDetailView.tsx (1W, marcadores v5, higiene Piezas 48–49.1)', () => {

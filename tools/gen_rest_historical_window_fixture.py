@@ -58,6 +58,8 @@ CALENDAR_YEARS = range(2020, 2028)
 
 TARGET_MARGIN = 1.03
 SESSIONS_PER_CALENDAR_YEAR = 365.25 / 250
+# Pieza 50.5 (Bloque 2): velas previas al tramo visible para calentar la EMA 200 (SPEC.md:4).
+WARMUP_BARS = 1_000
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +293,13 @@ def build_cases() -> list[dict]:
         add(provider, "15m", False, 1000, TO_REGULAR, "regular")
         add(provider, "1h", False, 1000, TO_REGULAR, "regular")
         add(provider, "4h", False, 1000, TO_REGULAR, "rth-unreachable")
+        # Bloque 2: objetivo interno = visibleBars + 1.000 en la ruta ordinaria.
+        add(provider, "1D", False, 1_250 + WARMUP_BARS, TO_REGULAR, "warmup")
+        add(provider, "1m", True, 1_000 + WARMUP_BARS, TO_REGULAR, "warmup")
+        add(provider, "5m", True, 1_000 + WARMUP_BARS, TO_REGULAR, "warmup")
+        add(provider, "15m", False, 1_000 + WARMUP_BARS, TO_REGULAR, "warmup")
+        add(provider, "1h", False, 1_000 + WARMUP_BARS, TO_REGULAR, "warmup")
+        add(provider, "4h", True, 1_000 + WARMUP_BARS, TO_REGULAR, "warmup")
     return cases
 
 

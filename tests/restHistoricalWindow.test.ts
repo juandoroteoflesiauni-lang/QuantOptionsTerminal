@@ -14,6 +14,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { etWallTimeToUtc } from '../src/data/alignment.js';
+import { emaWarmupWeight } from '../src/core/ema.js';
+import { resampleDailyToWeekly } from '../src/core/resampleWeekly.js';
+import type { Bar } from '../src/core/types.js';
+import { computeEmaSeriesPure } from '../web/src/components/stock-detail/stockDetailMath.js';
 import {
   barsPerSessionForRestProvider,
   restHistoricalFromUtcSec,
@@ -455,7 +459,7 @@ afterEach(() => {
 
 describe('Pieza 50.5 — Runtime REST: 1D con respuestas limitadas por fechas', () => {
   it('FMP entrega 1.250 diarias de un histórico suficiente con una sola consulta EOD', async () => {
-    const dailyRows = buildDailyRows('RTWX', '2018-01-01', '2026-11-20');
+    const dailyRows = buildDailyRows('RTWX', '2015-01-01', '2026-11-20');
     const router = makeFmpRouter({ dailyRows, intradayRows: [] });
     const res = await makeFmpRuntime(router.fetchFn).getBars('RTWX', '1D', { visibleBars: 1_250 });
 
@@ -467,11 +471,16 @@ describe('Pieza 50.5 — Runtime REST: 1D con respuestas limitadas por fechas', 
       url.includes('/stable/historical-price-eod/full'),
     );
     expect(eodUrls).toHaveLength(1);
-    expect(eodUrls[0]).toContain('from=');
+    // Bloque 2: el objetivo interno es `visibleBars + 1.000` (SPEC.md:4) y el
+    // `from` coincide con la referencia Python del caso de calentamiento.
+    const warmupCase = fixtureCase('fmp-1D-rth-2250-warmup');
+    expect(new URL(eodUrls[0] ?? '').searchParams.get('from')).toBe(
+      fmpEtDateKey(warmupCase.fromUtcSec),
+    );
     expect(eodUrls[0]).toContain('to=2026-11-20');
     // El proveedor respondió limitado por fechas: la ventana cubre el objetivo
     // y no pide todo el dataset simulado.
-    expect(router.state.eodRowsServed).toBeGreaterThanOrEqual(1_250);
+    expect(router.state.eodRowsServed).toBeGreaterThanOrEqual(1_250 + 1_000);
     expect(router.state.eodRowsServed).toBeLessThan(dailyRows.length);
     const times = res.bars.map((bar) => bar.time);
     expect(times.every((time, index) => index === 0 || time > (times[index - 1] ?? 0))).toBe(true);
@@ -499,7 +508,7 @@ describe('Pieza 50.5 — Runtime REST: 1D con respuestas limitadas por fechas', 
   });
 
   it('Tradier entrega 1.250 diarias con una sola consulta `history` acotada por fechas', async () => {
-    const dailyRows = buildTradierDailyRows('2018-01-01', '2026-11-20');
+    const dailyRows = buildTradierDailyRows('2015-01-01', '2026-11-20');
     const tradierRequests: string[] = [];
     stubTradierFetch({ dailyRows, requests: tradierRequests });
     const router = makeFmpRouter({ dailyRows: [], intradayRows: [] });
@@ -514,7 +523,9 @@ describe('Pieza 50.5 — Runtime REST: 1D con respuestas limitadas por fechas', 
     expect(historyUrls).toHaveLength(1);
     const query = new URL(historyUrls[0] ?? '').searchParams;
     expect(query.get('end')).toBe('2026-11-20');
-    expect(query.get('start')).toBe(fmpEtDateKey(fixtureCase('tradier-1D-rth-1250-regular').fromUtcSec));
+    expect(query.get('start')).toBe(
+      fmpEtDateKey(fixtureCase('tradier-1D-rth-2250-warmup').fromUtcSec),
+    );
     const times = res.bars.map((bar) => bar.time);
     expect(times.every((time, index) => index === 0 || time > (times[index - 1] ?? 0))).toBe(true);
   });
@@ -527,6 +538,10 @@ describe('Pieza 50.5 — Runtime REST: 1D con respuestas limitadas por fechas', 
     expect(res.bars).toHaveLength(dailyRows.length);
     expect(res.visibleStartIndex).toBe(0);
     expect(res.status).toBe('OK');
+    // Con menos de 200 observaciones no hay semilla SMA: EMA 200 null, sin NaN.
+    const recentEma200 = res.overlays.ema200 ?? [];
+    expect(recentEma200).toHaveLength(dailyRows.length);
+    expect(recentEma200.every((value) => value === null)).toBe(true);
   });
 });
 
@@ -550,6 +565,10 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
       expect(url).toContain('to=');
       expect(url).toContain('extended=true');
     }
+    // Bloque 2: el rango planificado es el del objetivo con calentamiento.
+    expect(plannedWindowFromKey(router.state.chartRequests)).toBe(
+      fmpEtDateKey(fixtureCase('fmp-5m-ext-2000-warmup').fromUtcSec),
+    );
     // La última rueda entra parcial (la ventana termina en `now`): hay barras
     // visibles con apertura fuera de RTH.
     const hasExtendedBar = res.bars.some(
@@ -586,7 +605,7 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
       expect(url).toContain('to=');
     }
     // 5m RTH (78/sesión) exige una ventana calendario mayor que 5m extendido
-    // (192/sesión): 30 vs 18 días en la referencia.
+    // (192/sesión): 49 vs 26 días en la referencia (objetivo 2.000, Bloque 2).
     const rthFrom = plannedWindowFromKey(rthRouter.state.chartRequests);
     expect(extendedFrom).toBeTruthy();
     expect(rthFrom).toBeTruthy();
@@ -598,8 +617,8 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     const hourRth = minuteGrid(9 * 60 + 30, 16 * 60, 60);
 
     const extendedRouter = makeFmpRouter({
-      dailyRows: buildDailyRows('RTWX', '2018-01-01', '2026-11-20'),
-      intradayRows: buildIntradayRows('2026-08-01', '2026-11-20', hourExtended),
+      dailyRows: buildDailyRows('RTWX', '2015-01-01', '2026-11-20'),
+      intradayRows: buildIntradayRows('2026-04-01', '2026-11-20', hourExtended),
     });
     const extendedRes = await makeFmpRuntime(extendedRouter.fetchFn).getBars('RTWX', '1h', {
       visibleBars: 1_000,
@@ -610,8 +629,8 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     );
 
     const rthRouter = makeFmpRouter({
-      dailyRows: buildDailyRows('RTWX', '2018-01-01', '2026-11-20'),
-      intradayRows: buildIntradayRows('2025-12-01', '2026-11-20', hourRth),
+      dailyRows: buildDailyRows('RTWX', '2015-01-01', '2026-11-20'),
+      intradayRows: buildIntradayRows('2025-08-01', '2026-11-20', hourRth),
     });
     const rthRes = await makeFmpRuntime(rthRouter.fetchFn).getBars('RTWX', '1h', {
       visibleBars: 1_000,
@@ -625,12 +644,14 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     expect(extendedFrom).toBeTruthy();
     expect(rthFrom).toBeTruthy();
     expect(rthFrom < extendedFrom).toBe(true);
+    // Rango RTH del Bloque 2 (2.000 objetivo) según la referencia Python.
+    expect(rthFrom).toBe(fmpEtDateKey(fixtureCase('fmp-1h-rth-2000-warmup').fromUtcSec));
   });
 
   it('4h conserva sesión extendida aunque se pida rthOnly (getBars lo desactiva)', async () => {
     const router = makeFmpRouter({
-      dailyRows: buildDailyRows('RTWX', '2018-01-01', '2026-11-20'),
-      intradayRows: buildIntradayRows('2025-08-01', '2026-11-20', [240, 480, 720, 960]),
+      dailyRows: buildDailyRows('RTWX', '2015-01-01', '2026-11-20'),
+      intradayRows: buildIntradayRows('2024-10-01', '2026-11-20', [240, 480, 720, 960]),
     });
     const res = await makeFmpRuntime(router.fetchFn).getBars('RTWX', '4h', {
       visibleBars: 1_000,
@@ -644,6 +665,10 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     for (const url of router.state.chartRequests) {
       expect(url).toContain('extended=true');
     }
+    // Rango extendido del Bloque 2 (2.000 objetivo) según la referencia Python.
+    expect(plannedWindowFromKey(router.state.chartRequests)).toBe(
+      fmpEtDateKey(fixtureCase('fmp-4h-ext-2000-warmup').fromUtcSec),
+    );
   });
 
   it('ordena y deduplica la combinación de ventanas solapadas del paginador FMP', async () => {
@@ -674,7 +699,7 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     // inicio planificado, así que el corte `earliestSeen <= from` detiene el
     // paginador tras la primera ventana (el merge acota al rango pedido).
     expect(router.state.legacyRequests).toHaveLength(1);
-    const expectedDays = fixtureCase('fmp-5m-ext-1000-regular').calendarDays;
+    const expectedDays = fixtureCase('fmp-5m-ext-2000-warmup').calendarDays;
     const earliestAllowed = NOW_SEC - expectedDays * 86_400;
     const times = res.bars.map((bar) => bar.time);
     expect(times.every((time, index) => index === 0 || time > (times[index - 1] ?? 0))).toBe(true);
@@ -683,7 +708,7 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
   });
 
   it('ante FMP vacío reconsulta Tradier con la densidad de Tradier', async () => {
-    const dailyRows = buildTradierDailyRows('2018-01-01', '2026-11-20');
+    const dailyRows = buildTradierDailyRows('2015-01-01', '2026-11-20');
     const tradierRequests: string[] = [];
     stubTradierFetch({ dailyRows, requests: tradierRequests });
     const router = makeFmpRouter({ dailyRows: [], intradayRows: [] });
@@ -698,7 +723,7 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     expect(historyUrls).toHaveLength(1);
     const query = new URL(historyUrls[0] ?? '').searchParams;
     expect(query.get('start')).toBe(
-      fmpEtDateKey(fixtureCase('tradier-1D-rth-1250-regular').fromUtcSec),
+      fmpEtDateKey(fixtureCase('tradier-1D-rth-2250-warmup').fromUtcSec),
     );
   });
 
@@ -706,5 +731,109 @@ describe('Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP
     expect(etWallTimeToUtc(2026, 11, 20, 0)).toBe(Date.parse('2026-11-20T05:00:00Z') / 1_000);
     expect(etWallTimeToUtc(2026, 7, 15, 4 * 60)).toBe(Date.parse('2026-07-15T08:00:00Z') / 1_000);
     expect(Date.parse('2026-07-15T08:00:00Z') / 1_000).toBe(1784102400);
+  });
+});
+
+describe('Pieza 50.5 — Bloque 2: warm-up de EMA 200 y suficiencia semanal', () => {
+  it('1D: 1.000 velas previas alimentan la EMA 200 en la primera barra visible', async () => {
+    const dailyRows = buildDailyRows('RTWX', '2015-01-01', '2026-11-20');
+    const router = makeFmpRouter({ dailyRows, intradayRows: [] });
+    const res = await makeFmpRuntime(router.fetchFn).getBars('RTWX', '1D', { visibleBars: 1_250 });
+
+    expect(res.bars).toHaveLength(1_250);
+    const warmupBars = router.state.eodRowsServed - res.bars.length;
+    expect(warmupBars).toBeGreaterThanOrEqual(1_000);
+    // EMA 200 alineada con la primera visible: sin null al inicio y con peso
+    // residual de la semilla SMA por debajo de 1e-3 tras el calentamiento.
+    const ema200 = res.overlays.ema200 ?? [];
+    expect(ema200).toHaveLength(1_250);
+    expect(ema200[0]).not.toBeNull();
+    expect(ema200[1_249]).not.toBeNull();
+    expect(emaWarmupWeight(200, warmupBars - 199)).toBeLessThan(1e-3);
+  });
+
+  it('EMA 200 con cierres constantes: semilla SMA propagada sin NaN en el tramo visible', async () => {
+    const keys = marketDateKeys('2021-01-01', '2026-11-20').slice(-1_500);
+    const dailyRows = keys.map((date, index) => ({
+      symbol: 'RTWX',
+      date,
+      open: 100,
+      high: 100.6,
+      low: 99.4,
+      close: 100.5,
+      volume: 1_000 + index,
+    }));
+    const router = makeFmpRouter({ dailyRows, intradayRows: [] });
+    const res = await makeFmpRuntime(router.fetchFn).getBars('RTWX', '1D', { visibleBars: 1_250 });
+
+    expect(res.bars).toHaveLength(1_250);
+    expect(router.state.eodRowsServed).toBe(1_500);
+    for (const value of res.overlays.ema200 ?? []) {
+      expect(value).not.toBeNull();
+      expect(value ?? Number.NaN).toBeCloseTo(100.5, 9);
+    }
+  });
+
+  it('umbral 199/200/201: null exacto cuando faltan 200 observaciones', async () => {
+    const allRows = buildDailyRows('RTWX', '2015-01-01', '2026-11-20');
+
+    const shortRouter = makeFmpRouter({ dailyRows: allRows.slice(-250), intradayRows: [] });
+    const shortRes = await makeFmpRuntime(shortRouter.fetchFn).getBars('RTWX', '1D', {
+      visibleBars: 1_250,
+    });
+    expect(shortRes.bars).toHaveLength(250);
+    const shortEma = shortRes.overlays.ema200 ?? [];
+    expect(shortEma.slice(0, 199).every((value) => value === null)).toBe(true);
+    expect(shortEma[199]).not.toBeNull();
+
+    const midRouter = makeFmpRouter({ dailyRows: allRows.slice(-1_350), intradayRows: [] });
+    const midRes = await makeFmpRuntime(midRouter.fetchFn).getBars('RTWX', '1D', {
+      visibleBars: 1_250,
+    });
+    expect(midRes.bars).toHaveLength(1_250);
+    // 1.350 barras con 1.250 visibles → 100 de calentamiento: el primer valor
+    // válido (índice 199 de la serie completa) cae en el índice visible 99.
+    const midEma = midRes.overlays.ema200 ?? [];
+    expect(midEma.slice(0, 99).every((value) => value === null)).toBe(true);
+    expect(midEma[99]).not.toBeNull();
+  });
+
+  it('1W derivado del 1D recuperado: semilla en la semana 200 y coherencia 1D/1W', async () => {
+    const dailyRows = buildDailyRows('RTWX', '2015-01-01', '2026-11-20');
+    const router = makeFmpRouter({ dailyRows, intradayRows: [] });
+    const res = await makeFmpRuntime(router.fetchFn).getBars('RTWX', '1D', { visibleBars: 1_250 });
+    const recoveredDaily: Bar[] = res.bars.map((bar) => ({
+      time: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+    const weekly = resampleDailyToWeekly(recoveredDaily);
+    expect(weekly.length).toBe(250);
+
+    // Coherencia 1D/1W: la última vela semanal cierra con el último cierre
+    // diario y su `time` es la apertura real de la primera rueda de la semana.
+    const lastDaily = recoveredDaily[recoveredDaily.length - 1];
+    const lastWeek = weekly[weekly.length - 1];
+    expect(lastWeek?.close).toBe(lastDaily?.close);
+    expect(lastWeek?.time).toBeLessThanOrEqual(lastDaily?.time ?? 0);
+    const lastWeekHigh = Math.max(...recoveredDaily.slice(-5).map((bar) => bar.high));
+    expect(lastWeek?.high).toBeCloseTo(lastWeekHigh, 9);
+    const lastWeekVolume = recoveredDaily
+      .slice(-5)
+      .reduce((sum, bar) => sum + bar.volume, 0);
+    expect(lastWeek?.volume).toBeCloseTo(lastWeekVolume, 9);
+
+    const weeklyEma200 = computeEmaSeriesPure(
+      weekly.map((bar) => bar.close),
+      200,
+    ).map((value) => (Number.isFinite(value) ? value : null));
+    expect(weeklyEma200[198]).toBeNull();
+    expect(weeklyEma200[199]).not.toBeNull();
+    // La semilla semanal aún pesa en el gráfico (250 semanas ≈ 51 posteriores
+    // a la semilla): limitación documentada, sin convergencia plena en 1W.
+    expect(emaWarmupWeight(200, weekly.length - 200)).toBeGreaterThan(0.1);
   });
 });

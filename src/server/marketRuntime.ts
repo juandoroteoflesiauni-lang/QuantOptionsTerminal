@@ -377,6 +377,9 @@ const TIMEFRAME_SECONDS: Readonly<Record<Timeframe, number>> = {
   '1D': 86_400,
 };
 
+/** Pieza 50.5 (Bloque 2): velas previas al tramo visible para calentar la EMA 200 (SPEC.md:4). */
+const REST_EMA_WARMUP_BARS = 1_000;
+
 const KNOWN_INDEX_ROOTS = new Set<string>(['SPX', 'NDX', 'VIX', 'SKEW', 'RUT', 'DJX', 'OEX']);
 const MAX_SERIALIZED_CONTRACTS = 480;
 /** Pieza 50.1/50.2: cuota balanceada por vencimiento (activo/front + anclas) para no perder vencimientos. */
@@ -10473,6 +10476,11 @@ export class MarketRuntime {
     let visibleStart = 0;
     let barsProvider: TerminalBarsResponse['barsProvider'] = providerChain[0] ?? 'MASSIVE_REST';    const providerFallbackUsed: string[] = [];
     const includeExtended = timeframe !== '1D' && !rthOnly;
+    // Pieza 50.5 (Bloque 2, SPEC.md:4): el tramo visible exige 1.000 velas
+    // previas de calentamiento. Se piden como objetivo interno en las ramas
+    // ordinarias FMP/Tradier; el recorte y el payload conservan `visibleBars`
+    // y la EMA se calcula sobre la serie completa antes del recorte.
+    const restFetchTargetBars = visibleBars + REST_EMA_WARMUP_BARS;
     if (useDeepHistory) {
       const fromSec = deepHistoryFromUtcSec(nowSec);
       const fmpLoad = async (): Promise<readonly Bar[]> => {
@@ -10567,7 +10575,7 @@ export class MarketRuntime {
         provider: 'FMP_ENTERPRISE_REST',
         timeframe,
         includeExtended,
-        targetBars: visibleBars,
+        targetBars: restFetchTargetBars,
       });
       // Intradía reutiliza el paginador FMP acotado al rango planificado (una
       // sola consulta cuando el rango cabe en una ventana del planificador);
@@ -10598,7 +10606,7 @@ export class MarketRuntime {
             provider: 'TRADIER_REST',
             timeframe,
             includeExtended,
-            targetBars: visibleBars,
+            targetBars: restFetchTargetBars,
           });
           const tradierResult = await this.tradierHistoricalClient.fetchHistoricalBars({
             symbol: parsed.canonicalSymbol,
@@ -10628,7 +10636,7 @@ export class MarketRuntime {
         provider: 'TRADIER_REST',
         timeframe,
         includeExtended,
-        targetBars: visibleBars,
+        targetBars: restFetchTargetBars,
       });
       const tradierResult = await this.tradierHistoricalClient.fetchHistoricalBars({
         symbol: parsed.canonicalSymbol,
