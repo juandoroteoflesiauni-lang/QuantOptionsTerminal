@@ -1,0 +1,904 @@
+{
+ "version": 1,
+ "generator": "tools/gen_rest_historical_window_fixture.py",
+ "timezone": "America/New_York",
+ "targetMargin": 1.03,
+ "sessionsPerCalendarYear": 1.461,
+ "calendar": {
+  "years": [
+   2020,
+   2027
+  ],
+  "holidays": [
+   "2020-01-01",
+   "2020-01-20",
+   "2020-02-17",
+   "2020-04-10",
+   "2020-05-25",
+   "2020-06-19",
+   "2020-07-03",
+   "2020-09-07",
+   "2020-11-26",
+   "2020-12-25",
+   "2021-01-01",
+   "2021-01-18",
+   "2021-02-15",
+   "2021-04-02",
+   "2021-05-31",
+   "2021-06-18",
+   "2021-07-05",
+   "2021-09-06",
+   "2021-11-25",
+   "2021-12-24",
+   "2021-12-31",
+   "2022-01-17",
+   "2022-02-21",
+   "2022-04-15",
+   "2022-05-30",
+   "2022-06-20",
+   "2022-07-04",
+   "2022-09-05",
+   "2022-11-24",
+   "2022-12-26",
+   "2023-01-02",
+   "2023-01-16",
+   "2023-02-20",
+   "2023-04-07",
+   "2023-05-29",
+   "2023-06-19",
+   "2023-07-04",
+   "2023-09-04",
+   "2023-11-23",
+   "2023-12-25",
+   "2024-01-01",
+   "2024-01-15",
+   "2024-02-19",
+   "2024-03-29",
+   "2024-05-27",
+   "2024-06-19",
+   "2024-07-04",
+   "2024-09-02",
+   "2024-11-28",
+   "2024-12-25",
+   "2025-01-01",
+   "2025-01-20",
+   "2025-02-17",
+   "2025-04-18",
+   "2025-05-26",
+   "2025-06-19",
+   "2025-07-04",
+   "2025-09-01",
+   "2025-11-27",
+   "2025-12-25",
+   "2026-01-01",
+   "2026-01-19",
+   "2026-02-16",
+   "2026-04-03",
+   "2026-05-25",
+   "2026-06-19",
+   "2026-07-03",
+   "2026-09-07",
+   "2026-11-26",
+   "2026-12-25",
+   "2027-01-01",
+   "2027-01-18",
+   "2027-02-15",
+   "2027-03-26",
+   "2027-05-31",
+   "2027-06-18",
+   "2027-07-05",
+   "2027-09-06",
+   "2027-11-25",
+   "2027-12-24"
+  ],
+  "halfDays": [
+   "2020-11-27",
+   "2020-12-24",
+   "2021-11-26",
+   "2022-11-25",
+   "2023-07-03",
+   "2023-11-24",
+   "2024-07-03",
+   "2024-11-29",
+   "2024-12-24",
+   "2025-07-03",
+   "2025-11-28",
+   "2025-12-24",
+   "2026-11-27",
+   "2026-12-24",
+   "2027-11-26"
+  ],
+  "sessionWindows": {
+   "extended": {
+    "open": 240,
+    "close": 1200
+   },
+   "rth": {
+    "open": 570,
+    "close": 960
+   }
+  },
+  "halfDayWindows": {
+   "extended": {
+    "open": 240,
+    "close": 1020
+   },
+   "rth": {
+    "open": 570,
+    "close": 780
+   }
+  }
+ },
+ "density": [
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "barsPerSession": 960,
+   "rawIntervalMinutes": 1,
+   "bucketMinutes": 1
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1m",
+   "includeExtended": false,
+   "barsPerSession": 390,
+   "rawIntervalMinutes": 1,
+   "bucketMinutes": 1
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "barsPerSession": 192,
+   "rawIntervalMinutes": 5,
+   "bucketMinutes": 5
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "5m",
+   "includeExtended": false,
+   "barsPerSession": 78,
+   "rawIntervalMinutes": 5,
+   "bucketMinutes": 5
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "15m",
+   "includeExtended": true,
+   "barsPerSession": 64,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 15
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "15m",
+   "includeExtended": false,
+   "barsPerSession": 26,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 15
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1h",
+   "includeExtended": true,
+   "barsPerSession": 16,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 60
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1h",
+   "includeExtended": false,
+   "barsPerSession": 7,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 60
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "4h",
+   "includeExtended": true,
+   "barsPerSession": 4,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 240
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "4h",
+   "includeExtended": false,
+   "barsPerSession": 2,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 240
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": true,
+   "barsPerSession": 1,
+   "rawIntervalMinutes": null,
+   "bucketMinutes": null
+  },
+  {
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "barsPerSession": 1,
+   "rawIntervalMinutes": null,
+   "bucketMinutes": null
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "barsPerSession": 960,
+   "rawIntervalMinutes": 1,
+   "bucketMinutes": 1
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "1m",
+   "includeExtended": false,
+   "barsPerSession": 390,
+   "rawIntervalMinutes": 1,
+   "bucketMinutes": 1
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "barsPerSession": 192,
+   "rawIntervalMinutes": 5,
+   "bucketMinutes": 5
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "5m",
+   "includeExtended": false,
+   "barsPerSession": 78,
+   "rawIntervalMinutes": 5,
+   "bucketMinutes": 5
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "15m",
+   "includeExtended": true,
+   "barsPerSession": 64,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 15
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "15m",
+   "includeExtended": false,
+   "barsPerSession": 26,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 15
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "1h",
+   "includeExtended": true,
+   "barsPerSession": 16,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 60
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "1h",
+   "includeExtended": false,
+   "barsPerSession": 7,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 60
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "4h",
+   "includeExtended": true,
+   "barsPerSession": 4,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 240
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "4h",
+   "includeExtended": false,
+   "barsPerSession": 2,
+   "rawIntervalMinutes": 15,
+   "bucketMinutes": 240
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": true,
+   "barsPerSession": 1,
+   "rawIntervalMinutes": null,
+   "bucketMinutes": null
+  },
+  {
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "barsPerSession": 1,
+   "rawIntervalMinutes": null,
+   "bucketMinutes": null
+  }
+ ],
+ "windowCases": [
+  {
+   "name": "fmp-1D-rth-20-dst",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 20,
+   "toUtcSec": 1775851200,
+   "barsPerSession": 1,
+   "sessionsNeeded": 20.6,
+   "calendarDays": 41,
+   "fromUtcSec": 1772308800,
+   "coverage": {
+    "sessionsInWindow": 29,
+    "bucketsInWindow": 29
+   }
+  },
+  {
+   "name": "fmp-1D-rth-20-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 20,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 20.6,
+   "calendarDays": 41,
+   "fromUtcSec": 1791666000,
+   "coverage": {
+    "sessionsInWindow": 30,
+    "bucketsInWindow": 30
+   }
+  },
+  {
+   "name": "fmp-1D-rth-400-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 400,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 412.0,
+   "calendarDays": 612,
+   "fromUtcSec": 1742331600,
+   "coverage": {
+    "sessionsInWindow": 423,
+    "bucketsInWindow": 423
+   }
+  },
+  {
+   "name": "fmp-1D-rth-1250-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 1250,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 1287.5,
+   "calendarDays": 1892,
+   "fromUtcSec": 1631739600,
+   "coverage": {
+    "sessionsInWindow": 1302,
+    "bucketsInWindow": 1302
+   }
+  },
+  {
+   "name": "fmp-1m-ext-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 960,
+   "sessionsNeeded": 1.0729166666666667,
+   "calendarDays": 12,
+   "fromUtcSec": 1794171600,
+   "coverage": {
+    "sessionsInWindow": 10,
+    "bucketsInWindow": 9360
+   }
+  },
+  {
+   "name": "fmp-1m-ext-1000-halfday",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1798135200,
+   "barsPerSession": 960,
+   "sessionsNeeded": 1.0729166666666667,
+   "calendarDays": 12,
+   "fromUtcSec": 1797098400,
+   "coverage": {
+    "sessionsInWindow": 9,
+    "bucketsInWindow": 8220
+   }
+  },
+  {
+   "name": "fmp-5m-ext-400-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "targetBars": 400,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 192,
+   "sessionsNeeded": 2.1458333333333335,
+   "calendarDays": 14,
+   "fromUtcSec": 1793998800,
+   "coverage": {
+    "sessionsInWindow": 11,
+    "bucketsInWindow": 1920
+   }
+  },
+  {
+   "name": "fmp-5m-ext-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 192,
+   "sessionsNeeded": 5.364583333333333,
+   "calendarDays": 18,
+   "fromUtcSec": 1793653200,
+   "coverage": {
+    "sessionsInWindow": 15,
+    "bucketsInWindow": 2688
+   }
+  },
+  {
+   "name": "fmp-15m-ext-1000-dst",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "15m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1775851200,
+   "barsPerSession": 64,
+   "sessionsNeeded": 16.09375,
+   "calendarDays": 34,
+   "fromUtcSec": 1772913600,
+   "coverage": {
+    "sessionsInWindow": 24,
+    "bucketsInWindow": 1520
+   }
+  },
+  {
+   "name": "fmp-15m-ext-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "15m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 64,
+   "sessionsNeeded": 16.09375,
+   "calendarDays": 34,
+   "fromUtcSec": 1792270800,
+   "coverage": {
+    "sessionsInWindow": 25,
+    "bucketsInWindow": 1584
+   }
+  },
+  {
+   "name": "fmp-1h-ext-400-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1h",
+   "includeExtended": true,
+   "targetBars": 400,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 16,
+   "sessionsNeeded": 25.75,
+   "calendarDays": 48,
+   "fromUtcSec": 1791061200,
+   "coverage": {
+    "sessionsInWindow": 35,
+    "bucketsInWindow": 556
+   }
+  },
+  {
+   "name": "fmp-1h-ext-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1h",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 16,
+   "sessionsNeeded": 64.375,
+   "calendarDays": 105,
+   "fromUtcSec": 1786136400,
+   "coverage": {
+    "sessionsInWindow": 75,
+    "bucketsInWindow": 1183
+   }
+  },
+  {
+   "name": "fmp-4h-ext-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "4h",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 4,
+   "sessionsNeeded": 257.5,
+   "calendarDays": 387,
+   "fromUtcSec": 1761771600,
+   "coverage": {
+    "sessionsInWindow": 267,
+    "bucketsInWindow": 1067
+   }
+  },
+  {
+   "name": "fmp-1m-rth-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1m",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 390,
+   "sessionsNeeded": 2.641025641025641,
+   "calendarDays": 14,
+   "fromUtcSec": 1793998800,
+   "coverage": {
+    "sessionsInWindow": 10,
+    "bucketsInWindow": 3900
+   }
+  },
+  {
+   "name": "fmp-5m-rth-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "5m",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 78,
+   "sessionsNeeded": 13.205128205128204,
+   "calendarDays": 30,
+   "fromUtcSec": 1792616400,
+   "coverage": {
+    "sessionsInWindow": 22,
+    "bucketsInWindow": 1716
+   }
+  },
+  {
+   "name": "fmp-15m-rth-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "15m",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 26,
+   "sessionsNeeded": 39.61538461538461,
+   "calendarDays": 68,
+   "fromUtcSec": 1789333200,
+   "coverage": {
+    "sessionsInWindow": 50,
+    "bucketsInWindow": 1300
+   }
+  },
+  {
+   "name": "fmp-1h-rth-1000-regular",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "1h",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 7,
+   "sessionsNeeded": 147.14285714285714,
+   "calendarDays": 225,
+   "fromUtcSec": 1775768400,
+   "coverage": {
+    "sessionsInWindow": 157,
+    "bucketsInWindow": 1099
+   }
+  },
+  {
+   "name": "fmp-4h-rth-1000-rth-unreachable",
+   "provider": "FMP_ENTERPRISE_REST",
+   "timeframe": "4h",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 2,
+   "sessionsNeeded": 515.0,
+   "calendarDays": 763,
+   "fromUtcSec": 1729285200,
+   "coverage": {
+    "sessionsInWindow": 525,
+    "bucketsInWindow": 1050
+   }
+  },
+  {
+   "name": "tradier-1D-rth-20-dst",
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 20,
+   "toUtcSec": 1775851200,
+   "barsPerSession": 1,
+   "sessionsNeeded": 20.6,
+   "calendarDays": 41,
+   "fromUtcSec": 1772308800,
+   "coverage": {
+    "sessionsInWindow": 29,
+    "bucketsInWindow": 29
+   }
+  },
+  {
+   "name": "tradier-1D-rth-20-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 20,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 20.6,
+   "calendarDays": 41,
+   "fromUtcSec": 1791666000,
+   "coverage": {
+    "sessionsInWindow": 30,
+    "bucketsInWindow": 30
+   }
+  },
+  {
+   "name": "tradier-1D-rth-400-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 400,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 412.0,
+   "calendarDays": 612,
+   "fromUtcSec": 1742331600,
+   "coverage": {
+    "sessionsInWindow": 423,
+    "bucketsInWindow": 423
+   }
+  },
+  {
+   "name": "tradier-1D-rth-1250-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1D",
+   "includeExtended": false,
+   "targetBars": 1250,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 1,
+   "sessionsNeeded": 1287.5,
+   "calendarDays": 1892,
+   "fromUtcSec": 1631739600,
+   "coverage": {
+    "sessionsInWindow": 1302,
+    "bucketsInWindow": 1302
+   }
+  },
+  {
+   "name": "tradier-1m-ext-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 960,
+   "sessionsNeeded": 1.0729166666666667,
+   "calendarDays": 12,
+   "fromUtcSec": 1794171600,
+   "coverage": {
+    "sessionsInWindow": 10,
+    "bucketsInWindow": 9360
+   }
+  },
+  {
+   "name": "tradier-1m-ext-1000-halfday",
+   "provider": "TRADIER_REST",
+   "timeframe": "1m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1798135200,
+   "barsPerSession": 960,
+   "sessionsNeeded": 1.0729166666666667,
+   "calendarDays": 12,
+   "fromUtcSec": 1797098400,
+   "coverage": {
+    "sessionsInWindow": 9,
+    "bucketsInWindow": 8220
+   }
+  },
+  {
+   "name": "tradier-5m-ext-400-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "targetBars": 400,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 192,
+   "sessionsNeeded": 2.1458333333333335,
+   "calendarDays": 14,
+   "fromUtcSec": 1793998800,
+   "coverage": {
+    "sessionsInWindow": 11,
+    "bucketsInWindow": 1920
+   }
+  },
+  {
+   "name": "tradier-5m-ext-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "5m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 192,
+   "sessionsNeeded": 5.364583333333333,
+   "calendarDays": 18,
+   "fromUtcSec": 1793653200,
+   "coverage": {
+    "sessionsInWindow": 15,
+    "bucketsInWindow": 2688
+   }
+  },
+  {
+   "name": "tradier-15m-ext-1000-dst",
+   "provider": "TRADIER_REST",
+   "timeframe": "15m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1775851200,
+   "barsPerSession": 64,
+   "sessionsNeeded": 16.09375,
+   "calendarDays": 34,
+   "fromUtcSec": 1772913600,
+   "coverage": {
+    "sessionsInWindow": 24,
+    "bucketsInWindow": 1520
+   }
+  },
+  {
+   "name": "tradier-15m-ext-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "15m",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 64,
+   "sessionsNeeded": 16.09375,
+   "calendarDays": 34,
+   "fromUtcSec": 1792270800,
+   "coverage": {
+    "sessionsInWindow": 25,
+    "bucketsInWindow": 1584
+   }
+  },
+  {
+   "name": "tradier-1h-ext-400-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1h",
+   "includeExtended": true,
+   "targetBars": 400,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 16,
+   "sessionsNeeded": 25.75,
+   "calendarDays": 48,
+   "fromUtcSec": 1791061200,
+   "coverage": {
+    "sessionsInWindow": 35,
+    "bucketsInWindow": 556
+   }
+  },
+  {
+   "name": "tradier-1h-ext-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1h",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 16,
+   "sessionsNeeded": 64.375,
+   "calendarDays": 105,
+   "fromUtcSec": 1786136400,
+   "coverage": {
+    "sessionsInWindow": 75,
+    "bucketsInWindow": 1183
+   }
+  },
+  {
+   "name": "tradier-4h-ext-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "4h",
+   "includeExtended": true,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 4,
+   "sessionsNeeded": 257.5,
+   "calendarDays": 387,
+   "fromUtcSec": 1761771600,
+   "coverage": {
+    "sessionsInWindow": 267,
+    "bucketsInWindow": 1067
+   }
+  },
+  {
+   "name": "tradier-1m-rth-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1m",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 390,
+   "sessionsNeeded": 2.641025641025641,
+   "calendarDays": 14,
+   "fromUtcSec": 1793998800,
+   "coverage": {
+    "sessionsInWindow": 10,
+    "bucketsInWindow": 3900
+   }
+  },
+  {
+   "name": "tradier-5m-rth-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "5m",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 78,
+   "sessionsNeeded": 13.205128205128204,
+   "calendarDays": 30,
+   "fromUtcSec": 1792616400,
+   "coverage": {
+    "sessionsInWindow": 22,
+    "bucketsInWindow": 1716
+   }
+  },
+  {
+   "name": "tradier-15m-rth-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "15m",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 26,
+   "sessionsNeeded": 39.61538461538461,
+   "calendarDays": 68,
+   "fromUtcSec": 1789333200,
+   "coverage": {
+    "sessionsInWindow": 50,
+    "bucketsInWindow": 1300
+   }
+  },
+  {
+   "name": "tradier-1h-rth-1000-regular",
+   "provider": "TRADIER_REST",
+   "timeframe": "1h",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 7,
+   "sessionsNeeded": 147.14285714285714,
+   "calendarDays": 225,
+   "fromUtcSec": 1775768400,
+   "coverage": {
+    "sessionsInWindow": 157,
+    "bucketsInWindow": 1099
+   }
+  },
+  {
+   "name": "tradier-4h-rth-1000-rth-unreachable",
+   "provider": "TRADIER_REST",
+   "timeframe": "4h",
+   "includeExtended": false,
+   "targetBars": 1000,
+   "toUtcSec": 1795208400,
+   "barsPerSession": 2,
+   "sessionsNeeded": 515.0,
+   "calendarDays": 763,
+   "fromUtcSec": 1729285200,
+   "coverage": {
+    "sessionsInWindow": 525,
+    "bucketsInWindow": 1050
+   }
+  }
+ ]
+}

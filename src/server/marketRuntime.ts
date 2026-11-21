@@ -262,6 +262,7 @@ import type {
   OptionSnapshotContract,
   OptionUnderlyingSnapshot,
 } from '../data/optionsTypes.js';
+import { restHistoricalFromUtcSec } from '../data/restHistoricalWindow.js';
 import type { FetchFn, FetchResponse, Timeframe } from '../data/types.js';
 import {
   loadUnusualTrades,
@@ -10559,22 +10560,50 @@ export class MarketRuntime {
       }
       bars = loadedBars;
     } else if (providerChain[0] === 'FMP_ENTERPRISE_REST') {
-      const fromSec = nowSec - visibleBars * barSeconds - 14 * 86_400;
-      const fmpResult = await this.fmpClient.fetchHistorical({
-        symbol: parsed.canonicalSymbol,
-        timeframe,
-        fromUtcSec: fromSec,
+      // Pieza 50.5 (Bloque 1): la ventana se deriva de la densidad real por
+      // sesión del adaptador, no de `visibleBars * barSeconds + 14 días`.
+      const fromSec = restHistoricalFromUtcSec({
         toUtcSec: nowSec,
+        provider: 'FMP_ENTERPRISE_REST',
+        timeframe,
         includeExtended,
+        targetBars: visibleBars,
       });
+      // Intradía reutiliza el paginador FMP acotado al rango planificado (una
+      // sola consulta cuando el rango cabe en una ventana del planificador);
+      // 1D conserva una única consulta EOD. Con la caída a legacy (URL sin
+      // rango) el merge recorta al rango pedido y deduplica.
+      const fmpResult =
+        timeframe === '1D'
+          ? await this.fmpClient.fetchHistorical({
+              symbol: parsed.canonicalSymbol,
+              timeframe,
+              fromUtcSec: fromSec,
+              toUtcSec: nowSec,
+              includeExtended,
+            })
+          : await this.fmpClient.fetchHistoricalPaginated({
+              symbol: parsed.canonicalSymbol,
+              timeframe,
+              fromUtcSec: fromSec,
+              toUtcSec: nowSec,
+              includeExtended,
+            });
       if (fmpResult.bars.length === 0) {
         if (canUseTradierHistorical) {
           providerFallbackUsed.push('FMP_ENTERPRISE_REST');
           barsProvider = 'TRADIER_REST';
+          const tradierFromSec = restHistoricalFromUtcSec({
+            toUtcSec: nowSec,
+            provider: 'TRADIER_REST',
+            timeframe,
+            includeExtended,
+            targetBars: visibleBars,
+          });
           const tradierResult = await this.tradierHistoricalClient.fetchHistoricalBars({
             symbol: parsed.canonicalSymbol,
             timeframe,
-            fromUtcSec: fromSec,
+            fromUtcSec: tradierFromSec,
             toUtcSec: nowSec,
             includeExtended,
           });
@@ -10594,7 +10623,13 @@ export class MarketRuntime {
       if (this.tradierHistoricalClient === null) {
         throw new RuntimeNoDataError('NO_BARS_DATA', 'Tradier historical client is unavailable', this.secrets, 503);
       }
-      const fromSec = nowSec - visibleBars * barSeconds - 14 * 86_400;
+      const fromSec = restHistoricalFromUtcSec({
+        toUtcSec: nowSec,
+        provider: 'TRADIER_REST',
+        timeframe,
+        includeExtended,
+        targetBars: visibleBars,
+      });
       const tradierResult = await this.tradierHistoricalClient.fetchHistoricalBars({
         symbol: parsed.canonicalSymbol,
         timeframe,
