@@ -23,7 +23,6 @@ import {
   AR_GENERAL_PANEL_STOCKS,
   AR_PANEL_ANALYTICS,
   BONDS_DATA,
-  GGAL_OPTION_EXPIRIES,
   MACRO_CARDS,
   US_MARKET_DATA,
   US_PANEL_ANALYTICS,
@@ -39,6 +38,8 @@ import {
 } from '../data/marketData';
 import type { EquityPanelAnalyticsDto, EquityPanelRowDto, UsUnifiedQuoteDto } from '../data/liveTypes';
 import {
+  getLiveOptionsForUnderlying,
+  getOptionExpiriesForUnderlying,
   refreshMacro,
   requestMonitoringPanel,
   requestRelations,
@@ -1667,7 +1668,9 @@ export const HomeDashboard: React.FC<{
         readonly atmIvRateTnaPct?: number | null;
       })
     | null;
-  const ggalOptsMeta = liveMarket.optionsByUnderlying['GGAL'] as
+  // Pieza 50.3: la tarjeta héroe de Inicio lee SIEMPRE el subyacente AR:GGAL aislado.
+  const ggalOptionExpiries = getOptionExpiriesForUnderlying(liveMarket, 'AR:GGAL');
+  const ggalOptsMeta = getLiveOptionsForUnderlying(liveMarket, 'AR:GGAL') as
     | ({
         readonly primaryLiquidExpiryCode?: string | null;
         readonly rateTna?: number | null;
@@ -1675,10 +1678,10 @@ export const HomeDashboard: React.FC<{
     | undefined;
   const frontOpt =
     (ggalOptsMeta?.primaryLiquidExpiryCode
-      ? GGAL_OPTION_EXPIRIES.find((e) => e.id === ggalOptsMeta.primaryLiquidExpiryCode)
+      ? ggalOptionExpiries.find((e) => e.id === ggalOptsMeta.primaryLiquidExpiryCode)
       : undefined) ??
-    GGAL_OPTION_EXPIRIES.find((e) => Number.isFinite(e.atmIV) && e.atmIV > 0) ??
-    GGAL_OPTION_EXPIRIES[0];
+    ggalOptionExpiries.find((e) => Number.isFinite(e.atmIV) && e.atmIV > 0) ??
+    ggalOptionExpiries[0];
   const atmIvHeroVal =
     overviewExt?.atmIvPct != null && Number.isFinite(overviewExt.atmIvPct)
       ? overviewExt.atmIvPct

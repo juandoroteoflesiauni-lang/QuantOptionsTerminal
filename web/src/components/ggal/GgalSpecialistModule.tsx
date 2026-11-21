@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { oratsVolToPct } from '../../../../src/core/options/zeroDteFixes';
+import {
+  normalizeOratsSignedRateToDecimal,
+  oratsVolToPct,
+} from '../../../../src/core/options/zeroDteFixes';
 import {
   Activity,
   AlertTriangle,
@@ -2029,13 +2032,21 @@ export const GgalSpecialistModule: React.FC<{
                     <KPICard
                       title="ORATS Div / Borrow / Implied Move"
                       heroValue={fmtPct(
-                        surfaceData.surface.impliedMove !== null
-                          ? surfaceData.surface.impliedMove * 100
+                        surfaceData.surface.impliedMove !== null &&
+                          Number.isFinite(oratsVolToPct(surfaceData.surface.impliedMove))
+                          ? oratsVolToPct(surfaceData.surface.impliedMove)
                           : null,
                         2,
                         false,
                       )}
-                      subtitle={`annIdiv: ${fmtNum(surfaceData.surface.annIdiv, 2)} · borrow30: ${fmtPct(surfaceData.surface.borrow30 !== null ? surfaceData.surface.borrow30 * 100 : null, 2, false)}`}
+                      subtitle={`annIdiv: ${fmtNum(surfaceData.surface.annIdiv, 2)} · borrow30: ${fmtPct(
+                        surfaceData.surface.borrow30 !== null &&
+                          Number.isFinite(normalizeOratsSignedRateToDecimal(surfaceData.surface.borrow30))
+                          ? normalizeOratsSignedRateToDecimal(surfaceData.surface.borrow30) * 100
+                          : null,
+                        2,
+                        false,
+                      )}`}
                     />
                   </>
                 ) : (

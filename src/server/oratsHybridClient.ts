@@ -26,7 +26,12 @@ import {
   type OratsCircuitBreakerDetails,
 } from './feedsHealthMonitor.js';
 import { redactSecrets } from './runtimeCache.js';
-import { normalizeOratsVolDecimal } from '../core/options/zeroDteFixes.js';
+import {
+  normalizeOratsSignedRateToDecimal,
+  normalizeOratsVolToDecimal,
+} from '../core/options/zeroDteFixes.js';
+
+export { normalizeOratsSignedRateToDecimal, normalizeOratsVolToDecimal };
 
 export type OratsHttpFn = (
   url: string,
@@ -123,9 +128,9 @@ function extractDataRows(payload: unknown): readonly Record<string, unknown>[] {
   return obj !== null ? [obj] : [];
 }
 
-/** Pieza 46.1: volatilidades ORATS siempre en decimal (0.3582 = 35.82 %), nunca en % (evita 3.582 %). */
+/** Pieza 46.1/50.3: volatilidades ORATS siempre en decimal (0.3582 = 35.82 %), nunca en % (evita 3.582 %). */
 function readVol(row: Record<string, unknown>, key: string): number {
-  return normalizeOratsVolDecimal(readNum(row, key));
+  return normalizeOratsVolToDecimal(readNum(row, key));
 }
 
 function readNum(row: Record<string, unknown>, key: string): number {
@@ -562,11 +567,11 @@ export class OratsHybridClient {
         fwd30_20: readVol(coreRow, 'fwd30_20'),
         fwd60_30: readVol(coreRow, 'fwd60_30'),
         fwd90_60: readVol(coreRow, 'fwd90_60'),
-        impliedMove: readNum(coreRow, 'impliedMove'),
+        impliedMove: readVol(coreRow, 'impliedMove'),
         annIdiv: readNum(coreRow, 'annIdiv'),
         impliedNextDiv: readNum(coreRow, 'impliedNextDiv'),
-        borrow30: readNum(coreRow, 'borrow30'),
-        yieldRate: readNum(coreRow, 'yieldRate'),
+        borrow30: normalizeOratsSignedRateToDecimal(readNum(coreRow, 'borrow30')),
+        yieldRate: readVol(coreRow, 'yieldRate'),
         yangZhangAdrVol: input.yangZhangAdrVol,
         strikes: strikeRows,
         reason: null,

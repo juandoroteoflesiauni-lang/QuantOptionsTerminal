@@ -17,6 +17,7 @@ import {
 } from 'lightweight-charts';
 import { ArrowLeft, Keyboard, Zap } from 'lucide-react';
 import {
+  getLiveOptionsForUnderlying,
   refreshOverview,
   requestOptionsChain,
   requestOptionsUniverse,
@@ -716,7 +717,10 @@ export const StockDetailView: React.FC<{
   const stockDetail = isArMarket
     ? (runtime.stockDetailsBySymbol[cleanTicker] as ArStockDetailWithOverlays | undefined)
     : undefined;
-  const arOptions = isArMarket ? runtime.optionsByUnderlying[cleanTicker] : undefined;
+  // Pieza 50.3: lectura aislada por mercado (`AR:<ticker>` vs `US:<ticker>`).
+  const arOptions = isArMarket
+    ? getLiveOptionsForUnderlying(runtime, `AR:${cleanTicker}`)
+    : undefined;
   const usSnap = !isArMarket ? runtime.usSnapshotsBySymbol[cleanTicker] : undefined;
   const usBarsResp = !isArMarket ? usBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
   // Pieza 38 / 43: velas reales ARS servidas por /api/bars?market=AR (fallback automático a 1D).

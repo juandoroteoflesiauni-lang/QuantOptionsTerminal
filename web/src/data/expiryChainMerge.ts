@@ -250,6 +250,12 @@ export function mergeUsExpiryChainIntoOptions(
           [expirationDate]: {
             ...base.quantEngines,
             syntheticRates: response.syntheticRates,
+            // Pieza 50.3: Buy-Write y Cobertura Sintética del vencimiento exacto, no
+            // congelados al front 0DTE del snapshot.
+            ...(response.conversionReversal !== undefined
+              ? { conversionReversal: response.conversionReversal }
+              : {}),
+            ...(response.buyWrite !== undefined ? { buyWrite: response.buyWrite } : {}),
           } satisfies ArOptionsQuantEnginesDto,
         }
       : {}),
@@ -348,11 +354,11 @@ export function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponse
       const dteEt = calendarDteEt(expDate, snap.asOfUtcSec * 1000);
       const days = Number.isFinite(dteEt)
         ? dteEt
-        : (slice?.timeToExpiryDays ?? Math.max(1, Math.round((expSec - snap.asOfUtcSec) / 86_400)));
+        : (slice?.timeToExpiryDays ?? Math.max(0, Math.round((expSec - snap.asOfUtcSec) / 86_400)));
       const strikeSet = new Set<number>();
       const calls: ArOptionsResponse['expiries'][number]['calls'][number][] = [];
       const puts: ArOptionsResponse['expiries'][number]['puts'][number][] = [];
-      const rowDaysToExpiry = Number.isFinite(dteEt) ? dteEt : Math.max(1, Math.round(days));
+      const rowDaysToExpiry = Number.isFinite(dteEt) ? dteEt : Math.max(0, Math.round(days));
       for (const r of rows) {
         strikeSet.add(r.strike);
         const mapped = mapSerializedContractRowToArContract(clean, spot, r, rowDaysToExpiry);

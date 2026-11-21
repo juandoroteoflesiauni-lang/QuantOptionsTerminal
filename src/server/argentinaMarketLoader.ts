@@ -1765,6 +1765,9 @@ function solveContractIvCascade(p: {
     prices.push(p.ask);
   }
   for (const price of prices) {
+    // Pieza 50.3: descartar soluciones explosivas >= 999 % (jamás IV 1.000%).
+    // Nota: un mid por debajo del intrínseco americano pero sobre la cota europea sigue
+    // resolviéndose por la cascada BSM (feature BYMA documentada en argentinaServer.test).
     const iv = solveImpliedVolAmerican({
       spot: p.spot,
       strike: p.strike,
@@ -1774,7 +1777,7 @@ function solveContractIvCascade(p: {
       contractType: p.contractType,
       marketPrice: price,
     });
-    if (Number.isFinite(iv) && iv > 0) {
+    if (Number.isFinite(iv) && iv > 0 && iv < IV_CAP_DECIMAL) {
       return iv;
     }
   }
@@ -1788,7 +1791,7 @@ function solveContractIvCascade(p: {
       contractType: p.contractType,
       price,
     });
-    if (Number.isFinite(iv) && iv > 0) {
+    if (Number.isFinite(iv) && iv > 0 && iv < IV_CAP_DECIMAL) {
       return iv;
     }
   }
@@ -8594,6 +8597,7 @@ export class ArgentinaMarketRuntime {
                   stockFeeRate: BYMA_RV_FEE,
                   optionFeeRate: BYMA_OPTION_FEE,
                   vatRate: BYMA_VAT_RATE,
+                  dte: frontExp.days,
                 });
               }
             }
@@ -8611,6 +8615,7 @@ export class ArgentinaMarketRuntime {
                 stockFeeRate: BYMA_RV_FEE,
                 optionFeeRate: BYMA_OPTION_FEE,
                 vatRate: BYMA_VAT_RATE,
+                dte: frontExp.days,
               });
             }
 

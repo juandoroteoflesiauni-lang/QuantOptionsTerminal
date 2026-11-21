@@ -22,10 +22,8 @@ import { DEFAULT_MIN_SPREAD_DEBIT, isValidButterflyStrikes } from './verticalSpr
 import {
   EXTRINSIC_EPS,
   MIN_EXPECTED_MOVE_T_YEARS,
-  MIN_RATIO_PREMIUM,
   SHORT_PREMIUM_RISK_MESSAGE,
   evaluateShortPremiumBreaker,
-  expectedMoveSigma,
   extrinsicValue,
   intrinsicValue,
   isIvUnreliable,
@@ -1774,6 +1772,11 @@ export function computeParityAndSyntheticRatesByStrike(input: {
 // 5. Relación de Primas (1:N) & Costo Relativo de Estructuras (BS2002)
 // ============================================================================
 
+/** Pieza 50.3: prima mínima exigible a la pata corta/larga OTM de un 1x2 (nunca $0.00/$0.01). */
+export const MIN_RATIO_SHORT_LEG_PREMIUM = 0.01;
+/** Pieza 50.3: múltiplos sigma del movimiento esperado para los objetivos de strike 1x2. */
+export const RATIO_SIGMA_MULTIPLIERS = [0.5, 1.0, 1.5] as const;
+
 export interface StructureChainStrikeInput {
   readonly strike: number;
   readonly callBid: number | null;
@@ -1861,11 +1864,13 @@ export function computeRatiosAndStructureCosts(input: {
   const { spot, daysToExpiry, rate, dividendYield } = input;
   const tExp =
     daysToExpiry > 0 ? daysToExpiry / CALENDAR_DAYS_PER_YEAR : MIN_EXPECTED_MOVE_T_YEARS;
-  const sigmaMove =
+  // Pieza 50.3: con IV ATM válida los objetivos 1x2 son σ-escalados (±0.5σ/±1.0σ/±1.5σ)
+  // con piso intradiario de 0.5 días; sin IV ATM se conservan los offsets fijos [5, 10, 15]%.
+  const ratioExpectedMove =
     input.ivAtmDec !== undefined && isPositiveFinite(input.ivAtmDec)
-      ? expectedMoveSigma(spot, input.ivAtmDec, tExp)
+      ? spot * input.ivAtmDec * Math.sqrt(Math.max(daysToExpiry, 0.5) / CALENDAR_DAYS_PER_YEAR)
       : Number.NaN;
-  const useSigma = Number.isFinite(sigmaMove);
+  const useSigma = Number.isFinite(ratioExpectedMove) && ratioExpectedMove > 0;
   const sorted = input.strikes
     .filter((s) => isPositiveFinite(s.strike))
     .slice()
@@ -1888,30 +1893,36 @@ export function computeRatiosAndStructureCosts(input: {
     .filter((v) => isPositiveFinite(v))
     .slice(-252);
 
-  // 1) Relación de primas 1:N en Calls (+5%, +10%, +15%) y Puts (-5%, -10%, -15%)
+  // 1) Relación de primas 1:N en Calls (σ-escaladas o +5%, +10%, +15%) y Puts (-5%, -10%, -15%)
   const callRatios: OptionRatioFinancingRow[] = [];
   const callLongCandidates = sorted
-    .filter((s) => isPositiveFinite(getLeg(s, 'call', 'buy').price))
+    .filter((s) => {
+      const leg = getLeg(s, 'call', 'buy');
+      return isPositiveFinite(leg.price) && leg.price > MIN_RATIO_SHORT_LEG_PREMIUM;
+    })
     .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   const anchorCallRow = callLongCandidates[0];
   if (anchorCallRow !== undefined) {
     const longLeg = getLeg(anchorCallRow, 'call', 'buy');
     const seenCallShortStrikes = new Set<number>();
-    const callTargets: readonly number[] = useSigma ? [1, 2] : [5, 10, 15];
+    const callTargets: readonly number[] = useSigma ? RATIO_SIGMA_MULTIPLIERS : [5, 10, 15];
     for (const targetPct of callTargets) {
-      const targetK = useSigma ? spot + targetPct * sigmaMove : spot * (1 + targetPct / 100);
+      const targetK = useSigma
+        ? spot + targetPct * ratioExpectedMove
+        : spot * (1 + targetPct / 100);
       const shortRow = sorted
-        .filter(
-          (s) =>
-            s.strike > anchorCallRow.strike &&
-            !seenCallShortStrikes.has(s.strike) &&
-            isPositiveFinite(getLeg(s, 'call', 'sell').price),
-        )
+        .filter((s) => {
+          if (s.strike <= anchorCallRow.strike || seenCallShortStrikes.has(s.strike)) {
+            return false;
+          }
+          const leg = getLeg(s, 'call', 'sell');
+          return isPositiveFinite(leg.price) && leg.price > MIN_RATIO_SHORT_LEG_PREMIUM;
+        })
         .sort((a, b) => Math.abs(a.strike - targetK) - Math.abs(b.strike - targetK))[0];
       if (shortRow === undefined) continue;
       seenCallShortStrikes.add(shortRow.strike);
       const shortLeg = getLeg(shortRow, 'call', 'sell');
-      if (!isRatioCardValid(longLeg.price, shortLeg.price) || (useSigma && shortLeg.price <= MIN_RATIO_PREMIUM)) {
+      if (!isRatioCardValid(longLeg.price, shortLeg.price)) {
         continue;
       }
       const netCash1x2 = 2 * shortLeg.price - longLeg.price;
@@ -1933,27 +1944,33 @@ export function computeRatiosAndStructureCosts(input: {
 
   const putRatios: OptionRatioFinancingRow[] = [];
   const putLongCandidates = sorted
-    .filter((s) => isPositiveFinite(getLeg(s, 'put', 'buy').price))
+    .filter((s) => {
+      const leg = getLeg(s, 'put', 'buy');
+      return isPositiveFinite(leg.price) && leg.price > MIN_RATIO_SHORT_LEG_PREMIUM;
+    })
     .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   const anchorPutRow = putLongCandidates[0];
   if (anchorPutRow !== undefined) {
     const longLeg = getLeg(anchorPutRow, 'put', 'buy');
     const seenPutShortStrikes = new Set<number>();
-    const putTargets: readonly number[] = useSigma ? [-1, -2] : [-5, -10, -15];
+    const putTargets: readonly number[] = useSigma ? [-0.5, -1.0, -1.5] : [-5, -10, -15];
     for (const targetPct of putTargets) {
-      const targetK = useSigma ? spot + targetPct * sigmaMove : spot * (1 + targetPct / 100);
+      const targetK = useSigma
+        ? spot + targetPct * ratioExpectedMove
+        : spot * (1 + targetPct / 100);
       const shortRow = sorted
-        .filter(
-          (s) =>
-            s.strike < anchorPutRow.strike &&
-            !seenPutShortStrikes.has(s.strike) &&
-            isPositiveFinite(getLeg(s, 'put', 'sell').price),
-        )
+        .filter((s) => {
+          if (s.strike >= anchorPutRow.strike || seenPutShortStrikes.has(s.strike)) {
+            return false;
+          }
+          const leg = getLeg(s, 'put', 'sell');
+          return isPositiveFinite(leg.price) && leg.price > MIN_RATIO_SHORT_LEG_PREMIUM;
+        })
         .sort((a, b) => Math.abs(a.strike - targetK) - Math.abs(b.strike - targetK))[0];
       if (shortRow === undefined) continue;
       seenPutShortStrikes.add(shortRow.strike);
       const shortLeg = getLeg(shortRow, 'put', 'sell');
-      if (!isRatioCardValid(longLeg.price, shortLeg.price) || (useSigma && shortLeg.price <= MIN_RATIO_PREMIUM)) {
+      if (!isRatioCardValid(longLeg.price, shortLeg.price)) {
         continue;
       }
       const netCash1x2 = 2 * shortLeg.price - longLeg.price;

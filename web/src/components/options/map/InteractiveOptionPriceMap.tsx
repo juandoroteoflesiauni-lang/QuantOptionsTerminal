@@ -2,7 +2,10 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } fr
 import { motion } from 'motion/react';
 import { Minus, Plus } from 'lucide-react';
 import { fmtNum } from '../../../data/marketData';
-import { useLiveMarketState } from '../../../data/liveRuntimeBridge';
+import {
+  getLiveOptionsForUnderlying,
+  useLiveMarketState,
+} from '../../../data/liveRuntimeBridge';
 import {
   FX_EASE,
   HIST_VOL,
@@ -80,7 +83,8 @@ export const InteractiveOptionPriceMap: React.FC<{
   const liveMarket = useLiveMarketState();
   const store = useMemo(() => createPointerStore(), []);
   const history = useMemo(() => {
-    const closes = liveMarket.optionsByUnderlying[mkt.ticker]?.historicalCloses;
+    // Pieza 50.3: lectura canónica `market:symbol` del subyacente del mapa.
+    const closes = getLiveOptionsForUnderlying(liveMarket, mkt.market === 'AR' ? `AR:${mkt.ticker}` : `US:${mkt.ticker}`)?.historicalCloses;
     if (!closes || closes.length === 0) {
       return Number.isFinite(mkt.spot) && mkt.spot > 0 ? [mkt.spot] : [];
     }

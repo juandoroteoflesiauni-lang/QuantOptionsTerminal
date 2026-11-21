@@ -314,15 +314,21 @@ export function greeksBymaAmericanBs02(
   volatility: number,
   contractType: OptionContractType,
 ): OptionGreeksResult {
-  const g = greeksAmericanFiniteDiffOrAnalytical({
-    spot: evalParams.adjustedSpotArs,
-    strike,
-    timeToExpiry: evalParams.tExpYears,
-    rate: evalParams.rEff,
-    dividendYield: 0,
-    volatility,
-    contractType,
-  });
+  const g = greeksAmericanFiniteDiffOrAnalytical(
+    {
+      spot: evalParams.adjustedSpotArs,
+      strike,
+      timeToExpiry: evalParams.tExpYears,
+      rate: evalParams.rEff,
+      dividendYield: 0,
+      volatility,
+      contractType,
+    },
+    // El pinning BYMA (Motor 4) está calibrado sobre la métrica FD legacy (paso relativo
+    // 1e-4 y sin atajo asintótico): Pieza 50.3 conserva aquí esa métrica exacta
+    // (fixture ggalSpecialist sin cambios).
+    { adaptiveSpotStep: false, deepAsymptotic: false },
+  );
   if (!Number.isFinite(g.price)) {
     return NAN_GREEKS;
   }

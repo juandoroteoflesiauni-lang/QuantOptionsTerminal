@@ -21,7 +21,6 @@ import {
 } from 'lucide-react';
 import {
   AR_STOCKS,
-  GGAL_OPTION_EXPIRIES,
   US_MARKET_DATA,
   fmtMoneyCompact,
   fmtNum,
@@ -30,11 +29,14 @@ import {
   type OptionExpiryGroup,
 } from '../data/marketData';
 import {
+  getLiveOptionsForUnderlying,
+  getOptionExpiriesForUnderlying,
   requestOptionsCatalysts,
   requestOptionsChain,
   requestOptionsUniverse,
   requestUsOptionExpiry,
   requestUsVolSurface,
+  setActiveOptionsUnderlyingKey,
   useLiveMarketState,
 } from '../data/liveRuntimeBridge';
 import {
@@ -118,6 +120,7 @@ import {
   formatDteLabel,
   hoursToCloseEt,
 } from '../../../src/core/options/zeroDteFixes';
+import { validateChainIntegrity } from '../../../src/core/options/chainIntegrity';
 import type { WhatIfOptionLeg } from '../../../src/core/options/whatIfPayoff';
 import { WhatIfPayoffSimulator } from './options/WhatIfPayoffSimulator';
 
@@ -204,6 +207,29 @@ function getLiquiditySemaphoreBadgeStyle(sem?: LiquiditySemaphore | string): str
   if (sem === 'RED') return 'bg-[#EF4444]/15 text-[#EF4444] border-[#EF4444]/40';
   return 'bg-[#1F2433] text-[#787B86] border-[#2D3242]';
 }
+
+/**
+ * Pieza 50.3: banner estático de integridad de cadena (altura reservada 72px, sin
+ * animaciones, sin backdrop-blur; fondo sólido y `tabular-nums`).
+ */
+const ChainIntegrityBanner: React.FC<{
+  readonly context: string;
+  readonly medianStrike: number;
+  readonly spot: number;
+  readonly ratio: number;
+}> = ({ context, medianStrike, spot, ratio }) => (
+  <div className="min-h-[72px] flex items-center gap-3 rounded-[12px] border border-[#EAB308]/40 bg-[#0A0A0D] px-4 py-3">
+    <span className="shrink-0 rounded border border-[#EAB308]/45 bg-[#2B2819] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#EAB308]">
+      Integridad
+    </span>
+    <p className="font-mono-num tabular-nums text-[12px] leading-snug text-[#D1D4DC]">
+      {context}: cadena bloqueada por escala de bases (mediana{' '}
+      {Number.isFinite(medianStrike) ? fmtNum(medianStrike, 2) : '—'} vs spot{' '}
+      {Number.isFinite(spot) ? fmtNum(spot, 2) : '—'} · ratio{' '}
+      {Number.isFinite(ratio) ? fmtNum(ratio, 3) : '—'}). Se espera la cadena del subyacente activo.
+    </p>
+  </div>
+);
 
 /* ============================================================================
    COMPONENTE DE TARJETA DE PAYOFF
@@ -782,6 +808,7 @@ export const OptionsModule: React.FC<{
   const selectedUnderlyingKey = parseOptionsUnderlyingKey(selectedUnderlying).key;
   const underlyingMeta = parseOptionsUnderlyingKey(selectedUnderlyingKey);
   const upperUnderlying = underlyingMeta.symbol;
+  const canonicalUnderlyingKey = underlyingMeta.canonicalKey;
   const isUsMarket = underlyingMeta.market === 'US';
   const optionCurrency = underlyingMeta.currency;
   // Pieza 32: origen del feed de opciones US (Tradier Live + ORATS / Massive + ORATS).
@@ -795,6 +822,15 @@ export const OptionsModule: React.FC<{
   useEffect(() => {
     void requestOptionsChain(selectedUnderlyingKey);
   }, [selectedUnderlyingKey]);
+
+  // Pieza 50.3: rastrea el subyacente activo para que solo su cadena alinee `engine.ts`;
+  // el polling de AR:GGAL jamás pisa el motor de US:SPY y viceversa.
+  useEffect(() => {
+    setActiveOptionsUnderlyingKey(canonicalUnderlyingKey);
+    return () => {
+      setActiveOptionsUnderlyingKey(null);
+    };
+  }, [canonicalUnderlyingKey]);
 
   // Pieza 36: ORATS se consulta solo al abrir Volatilidad en un subyacente US.
   useEffect(() => {
@@ -896,7 +932,9 @@ export const OptionsModule: React.FC<{
   const [simIvShift, setSimIvShift] = useState<number>(0);
   const [simTlr, setSimTlr] = useState<number>(Number.NaN);
 
-  const liveOptions = liveMarket.optionsByUnderlying[selectedUnderlyingKey];
+  // Pieza 50.3: lectura estrictamente por subyacente seleccionado (`market:symbol`).
+  const liveOptions = getLiveOptionsForUnderlying(liveMarket, canonicalUnderlyingKey);
+  const activeExpiries = getOptionExpiriesForUnderlying(liveMarket, canonicalUnderlyingKey);
   const liveOptionsExt = liveOptions as
     | (NonNullable<typeof liveOptions> & {
         readonly quantEnginesByExpiry?: Readonly<
@@ -912,7 +950,7 @@ export const OptionsModule: React.FC<{
     setExpiryDropdownOpen(false);
     setSelectedCreditId(null);
     setSelectedStrategyInspectorId(null);
-  }, [upperUnderlying]);
+  }, [canonicalUnderlyingKey]);
 
   // Pieza 50.2: cierre del popover de vencimientos con `mousedown` fuera o tecla Escape.
   useEffect(() => {
@@ -990,11 +1028,10 @@ export const OptionsModule: React.FC<{
   // Pieza 50.1: escalera de spreads con mids de cierre en mercado cerrado / EOD_CIERRE.
   const spreadPricingMode: VerticalSpreadPricingMode = opraSessionClosed ? 'EOD_MID' : 'LIVE_CROSS';
 
-  // Pieza 50.2.1: el selector de vencimientos se alimenta EXCLUSIVAMENTE del estado del
-  // subyacente seleccionado (`optionsByUnderlying[key].expiries`, que preserva las 30
-  // fechas del catálogo). El array global `GGAL_OPTION_EXPIRIES` es compartido AR/US y
-  // cualquier otro subyacente lo pisa al hidratarse (p. ej. GGAL BYMA en cada
-  // reconexión/warmup), recortando el desplegable de SPY a 2 fechas.
+  // Pieza 50.2.1/50.3: el selector de vencimientos se alimenta EXCLUSIVAMENTE del estado
+  // aislado del subyacente seleccionado (`optionExpiriesByUnderlyingKey[market:symbol]`),
+  // que preserva las 30 fechas del catálogo; el espejo global `GGAL_OPTION_EXPIRIES` ya
+  // no es compartido AR/US (solo AR:GGAL) y ningún otro subyacente lo pisa.
   const expirySelectorEntries = useMemo<readonly ExpirySelectorEntry[]>(
     () => buildExpirySelectorEntries(liveOptions?.expiries ?? []),
     [liveOptions],
@@ -1003,8 +1040,8 @@ export const OptionsModule: React.FC<{
   // Pieza 50.2: seleccionar un vencimiento pendiente dispara la carga puntual
   // `GET /api/options/expiry` (`requestUsOptionExpiry`) sin re-pedir el snapshot completo;
   // un vencimiento ya cargado cambia instantáneamente en memoria sin llamada de red.
-  // Pieza 50.2.1: el estado cargado/pendiente sale del subyacente seleccionado
-  // (`expirySelectorEntries`), no del array global pisable `GGAL_OPTION_EXPIRIES`.
+  // Pieza 50.2.1/50.3: el estado cargado/pendiente sale del subyacente seleccionado
+  // (`expirySelectorEntries`), nunca de un array global pisable.
   const handleSelectExpiry = (nextId: string): void => {
     setSelectedExpiryId(nextId);
     if (!usUnderlying) return;
@@ -1015,9 +1052,9 @@ export const OptionsModule: React.FC<{
   };
 
   const activeExpiry = useMemo<OptionExpiryGroup | null>(() => {
-    // Pieza 50.2.1: si el array global fue pisado por otro subyacente, el vencimiento
-    // activo se resuelve igualmente desde el DTO del subyacente seleccionado (stub sin
-    // filas para fechas cargadas/pendientes hasta que la fusión on-demand lo rehidrate).
+    // Pieza 50.3: el vencimiento activo se resuelve EXCLUSIVAMENTE desde las expiries del
+    // subyacente seleccionado (`market:symbol`) o su selector; cero fallback a cadenas de
+    // otro subyacente (`GGAL_OPTION_EXPIRIES[0]` jamás).
     const stubFromSelector = (id: string | null | undefined): OptionExpiryGroup | null => {
       if (id === null || id === undefined || id === '') return null;
       const entry = expirySelectorEntries.find((e) => e.id === id);
@@ -1037,19 +1074,53 @@ export const OptionsModule: React.FC<{
         rows: [],
       };
     };
-    if (GGAL_OPTION_EXPIRIES.length === 0 && expirySelectorEntries.length === 0) return null;
+    if (activeExpiries.length === 0 && expirySelectorEntries.length === 0) return null;
     return (
-      GGAL_OPTION_EXPIRIES.find((e) => e.id === selectedExpiryId) ??
+      activeExpiries.find((e) => e.id === selectedExpiryId) ??
       stubFromSelector(selectedExpiryId) ??
       (primaryLiquidCode
-        ? GGAL_OPTION_EXPIRIES.find((e) => e.id === primaryLiquidCode) ??
+        ? activeExpiries.find((e) => e.id === primaryLiquidCode) ??
           stubFromSelector(primaryLiquidCode)
         : undefined) ??
-      GGAL_OPTION_EXPIRIES[0] ??
+      activeExpiries[0] ??
       stubFromSelector(expirySelectorEntries[0]?.id) ??
       null
     );
-  }, [selectedExpiryId, primaryLiquidCode, liveMarket.version, expirySelectorEntries]);
+  }, [selectedExpiryId, primaryLiquidCode, activeExpiries, expirySelectorEntries]);
+
+  // Pieza 50.3: guarda de integridad de escala — una cadena de OTRO mercado/activo
+  // (strikes 6.000–9.000 ARS bajo un spot ~600 USD o viceversa) queda bloqueada del render.
+  const activeChainIntegrity = useMemo(
+    () => validateChainIntegrity(activeExpiry?.rows ?? [], displaySpot),
+    [activeExpiry?.rows, displaySpot],
+  );
+  const isActiveChainCorrupt = activeChainIntegrity.reason === 'SCALE_MISMATCH';
+  const safeActiveRows = isActiveChainCorrupt ? [] : activeExpiry?.rows ?? [];
+  const lastChainWarnKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isActiveChainCorrupt) {
+      lastChainWarnKeyRef.current = null;
+      return;
+    }
+    const warnKey = `${canonicalUnderlyingKey}|${activeExpiry?.id ?? '—'}|${String(activeChainIntegrity.medianStrike)}|${String(displaySpot)}`;
+    if (lastChainWarnKeyRef.current === warnKey) return;
+    lastChainWarnKeyRef.current = warnKey;
+    console.warn(
+      '[OptionsModule] Chain integrity blocked (%s %s): medianStrike=%s vs activeSpot=%s (ratio=%s)',
+      canonicalUnderlyingKey,
+      activeExpiry?.id ?? '—',
+      activeChainIntegrity.medianStrike.toFixed(2),
+      displaySpot.toFixed(2),
+      activeChainIntegrity.ratio.toFixed(3),
+    );
+  }, [
+    isActiveChainCorrupt,
+    canonicalUnderlyingKey,
+    activeExpiry?.id,
+    activeChainIntegrity.medianStrike,
+    activeChainIntegrity.ratio,
+    displaySpot,
+  ]);
 
   // Pieza 50.2: estado de carga on-demand del vencimiento activo (sin animaciones).
   const isActiveExpiryLoading = Boolean(
@@ -1119,7 +1190,8 @@ export const OptionsModule: React.FC<{
 
   useEffect(() => {
     if (activeExpiry) {
-      setSimDaysLeft(Math.max(1, activeExpiry.daysToExpiry));
+      // Pieza 50.3: 0DTE permitido; la valuación BS aplica piso intradiario al usar 0.
+      setSimDaysLeft(Math.max(0, activeExpiry.daysToExpiry));
     }
   }, [activeExpiry?.id]);
 
@@ -1178,6 +1250,13 @@ export const OptionsModule: React.FC<{
             0.25 / 24,
           );
   const isZeroDte = activeDte === 0;
+  // Pieza 50.3: piso intradiario de valuación BS en 0DTE (horas hasta cierre 16:00 ET,
+  // mínima 1/(252·6.5) años) para que `simDaysLeft === 0` no colapse a intrínseco.
+  const hoursToCloseNow = hoursToCloseEt(Date.now());
+  const bsZeroDteFloorDays = Math.max(
+    Number.isFinite(hoursToCloseNow) ? hoursToCloseNow / 24 : 0,
+    365 / (252 * 6.5),
+  );
   const activeVolSuite = useMemo(
     () =>
       resolveActiveVolAnalyticsSuite({
@@ -1299,14 +1378,15 @@ export const OptionsModule: React.FC<{
         selectedFamily,
         marketBias,
         targetPrice,
+        expiries: activeExpiries,
       }),
-    [labMarket, strategyMode, selectedFamily, marketBias, targetPrice]
+    [labMarket, strategyMode, selectedFamily, marketBias, targetPrice, activeExpiries]
   );
 
   const detailedSpreadRows: readonly DetailedSpreadRow[] = useMemo(
     () =>
       buildDetailedSpreadMatrix(
-        activeExpiry?.rows ?? [],
+        safeActiveRows,
         displaySpot,
         activeExpiry?.oneSigmaHigh ?? Number.NaN,
         activeDays,
@@ -1316,7 +1396,7 @@ export const OptionsModule: React.FC<{
         isUsMarket,
         spreadPricingMode,
       ),
-    [activeExpiry, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, spreadPricingMode, liveMarket.version],
+    [activeExpiry, safeActiveRows, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, spreadPricingMode],
   );
 
   // Pieza 49.1: ventana virtual de la escalera de spreads (>50 filas → solo visibles).
@@ -1500,7 +1580,7 @@ export const OptionsModule: React.FC<{
     // proporcional a expectedMove -> max(0, pdf) -> área = 1). Sin fallback a densidad cruda.
     if (
       !activeExpiry ||
-      activeExpiry.rows.length < 5 ||
+      safeActiveRows.length < 5 ||
       !Number.isFinite(displaySpot) ||
       displaySpot <= 0 ||
       activeDays <= 0 ||
@@ -1511,7 +1591,7 @@ export const OptionsModule: React.FC<{
       return [];
     }
     const nodes: { strike: number; iv: number | null; bid: number; ask?: number }[] = [];
-    for (const r of activeExpiry.rows) {
+    for (const r of safeActiveRows) {
       const isCall = r.strike >= displaySpot;
       const ivPct = isCall ? r.callIV : r.putIV;
       const bid = isCall ? r.callBid : r.putBid;
@@ -1534,11 +1614,11 @@ export const OptionsModule: React.FC<{
       nodes,
     });
     return extracted.status === 'OK' ? extracted.nodes : [];
-  }, [activeExpiry, displaySpot, activeDays, activeDte, effectiveRateDec, activeDividendYield, activeAtmIvDec]);
+  }, [activeExpiry, safeActiveRows, displaySpot, activeDays, activeDte, effectiveRateDec, activeDividendYield, activeAtmIvDec]);
 
   const creditRankingResult = useMemo(() => {
     const quotes: CreditOptionQuoteInput[] = [];
-    for (const row of activeExpiry?.rows ?? []) {
+    for (const row of safeActiveRows) {
       if (!Number.isFinite(row.strike) || row.strike <= 0) continue;
       if (Number.isFinite(row.callBid) && Number.isFinite(row.callAsk) && row.callBid > 0 && row.callAsk >= row.callBid) {
         quotes.push({
@@ -1579,7 +1659,7 @@ export const OptionsModule: React.FC<{
       operativeRegimeCode: activeRegimeCode,
     });
   }, [
-    activeExpiry?.rows,
+    safeActiveRows,
     displaySpot,
     activeDays,
     effectiveRateDec,
@@ -1633,7 +1713,7 @@ export const OptionsModule: React.FC<{
 
   const { forwardIvSegments, forwardSegmentByFarCode } = useMemo(() => {
     const localSegments = computeForwardIvTermStructure(
-      GGAL_OPTION_EXPIRIES.filter((e) => e.daysToExpiry > 0 && Number.isFinite(e.atmIV) && e.atmIV > 0).map(
+      activeExpiries.filter((e) => e.daysToExpiry > 0 && Number.isFinite(e.atmIV) && e.atmIV > 0).map(
         (e) => ({
           expiryCode: e.id,
           dte: e.daysToExpiry,
@@ -1670,7 +1750,7 @@ export const OptionsModule: React.FC<{
       forwardIvSegments: localSegments,
       forwardSegmentByFarCode: map,
     };
-  }, [liveOptions?.forwardIvSegments, liveMarket.version]);
+  }, [liveOptions?.forwardIvSegments, activeExpiries]);
 
   const dealerGammaReport = useMemo(() => {
     const expSum = liveOptions?.exposureSummary ?? null;
@@ -1789,11 +1869,11 @@ export const OptionsModule: React.FC<{
 
   const flowSummary = useMemo(
     () =>
-      buildBidirectionalFlow(activeExpiry?.rows ?? [], displaySpot, flowUnit, {
+      buildBidirectionalFlow(safeActiveRows, displaySpot, flowUnit, {
         market: underlyingMeta.market,
         contractMultiplier,
       }),
-    [activeExpiry, displaySpot, flowUnit, underlyingMeta.market, contractMultiplier, liveMarket.version]
+    [safeActiveRows, displaySpot, flowUnit, underlyingMeta.market, contractMultiplier]
   );
 
   // Pieza 49.1: ventana virtual del flujo por base (marcador Zero Gamma incluido como entrada).
@@ -1835,7 +1915,8 @@ export const OptionsModule: React.FC<{
         simTlr,
         displaySpot,
         activeExpiry?.daysToExpiry ?? 30,
-        activeExpiry?.rows ?? []
+        activeExpiry?.rows ?? [],
+        bsZeroDteFloorDays
       ),
     [legs, simSpot, simDaysLeft, simIvShift, simTlr, displaySpot, activeExpiry, liveMarket.version]
   );
@@ -2052,7 +2133,9 @@ export const OptionsModule: React.FC<{
                 title="Seleccionar vencimiento (con Forward IV consecutiva)"
               >
                 <span>
-                  {activeExpiry ? `${activeExpiry.label} · ${formatDteLabel(activeExpiry.daysToExpiry)}` : 'Sin vtos · —'}
+                  {activeExpiry
+                    ? `${activeExpiry.expiryDate || activeExpiry.label} · ${formatDteLabel(activeExpiry.daysToExpiry)}`
+                    : 'Sin vtos · —'}
                 </span>
                 {isActiveExpiryLoading && (
                   <span className="text-[10px] font-semibold text-[#9CA3AF]">(cargando...)</span>
@@ -3430,7 +3513,16 @@ export const OptionsModule: React.FC<{
                     )}
                   </div>
                 </div>
-                {detailedSpreadRows.length === 0 ? (
+                {isActiveChainCorrupt ? (
+                  <div className="p-3">
+                    <ChainIntegrityBanner
+                      context={`Spreads ${canonicalUnderlyingKey}`}
+                      medianStrike={activeChainIntegrity.medianStrike}
+                      spot={displaySpot}
+                      ratio={activeChainIntegrity.ratio}
+                    />
+                  </div>
+                ) : detailedSpreadRows.length === 0 ? (
                   <div className="py-8 text-[#787B86]">
                     Sin puntas ni referencias de cierre suficientes en {upperUnderlying} para construir spreads verticales.
                   </div>
@@ -4010,7 +4102,16 @@ export const OptionsModule: React.FC<{
                 <div className="col-span-4 py-2.5 bg-[#261D30] text-[#C084FC]">PUT</div>
               </div>
 
-              {flowSummary.rows.length === 0 ? (
+              {isActiveChainCorrupt ? (
+                <div className="p-3">
+                  <ChainIntegrityBanner
+                    context={`Flujo ${canonicalUnderlyingKey}`}
+                    medianStrike={activeChainIntegrity.medianStrike}
+                    spot={displaySpot}
+                    ratio={activeChainIntegrity.ratio}
+                  />
+                </div>
+              ) : flowSummary.rows.length === 0 ? (
                 <div className="py-8 text-center text-[#787B86] font-mono-num text-[12px]">
                   Sin flujo operado reportado para {upperUnderlying}.
                 </div>
@@ -4285,15 +4386,18 @@ export const OptionsModule: React.FC<{
             </div>
           </div>
 
-          {GGAL_OPTION_EXPIRIES.length === 0 ? (
+          {activeExpiries.length === 0 ? (
             <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-6 text-[13px] text-[#9CA3AF]">
-              Sin vencimientos de opciones cargados para {upperUnderlying}. Esperando datos de Data912 / Open BYMA...
+              Sin vencimientos de opciones cargados para {upperUnderlying}. Esperando cadena del subyacente activo...
             </div>
           ) : (
-            GGAL_OPTION_EXPIRIES.map((exp) => {
+            activeExpiries.map((exp) => {
               // Pieza 50.2: los vencimientos pendientes (stub sin filas) arrancan
               // colapsados para no renderizar decenas de tablas vacías.
               const isOpen = expandedExpiries[exp.id] ?? exp.rows.length > 0;
+              // Pieza 50.3: cada vencimiento se valida contra el spot activo antes de renderizar.
+              const expIntegrity = validateChainIntegrity(exp.rows, displaySpot);
+              const isExpiryChainCorrupt = expIntegrity.reason === 'SCALE_MISMATCH';
               const rawExpiry = liveOptions?.expiries.find((e) => e.expiryCode === exp.id);
               const { summary, rows: enrichedRows } = buildEnrichedChainForExpiry({
                 exp,
@@ -4482,20 +4586,30 @@ export const OptionsModule: React.FC<{
                     </div>
                   </div>
 
-                  {isOpen && (
-                    <VirtualizedOptionChainTable
-                      filteredRows={filteredRows}
-                      beforeFirst={beforeFirst}
-                      afterIndex={afterIndex}
-                      colMode={colMode}
-                      density={density}
-                      sigmaMultiplier={sigmaMultiplier}
-                      displaySpot={displaySpot}
-                      daysToExpiry={exp.daysToExpiry}
-                      effectiveRateDec={effectiveRateDec}
-                      onQuoteClick={handleQuoteClick}
-                    />
-                  )}
+                  {isOpen &&
+                    (isExpiryChainCorrupt ? (
+                      <div className="p-3">
+                        <ChainIntegrityBanner
+                          context={`Cadena ${canonicalUnderlyingKey} ${exp.id}`}
+                          medianStrike={expIntegrity.medianStrike}
+                          spot={displaySpot}
+                          ratio={expIntegrity.ratio}
+                        />
+                      </div>
+                    ) : (
+                      <VirtualizedOptionChainTable
+                        filteredRows={filteredRows}
+                        beforeFirst={beforeFirst}
+                        afterIndex={afterIndex}
+                        colMode={colMode}
+                        density={density}
+                        sigmaMultiplier={sigmaMultiplier}
+                        displaySpot={displaySpot}
+                        daysToExpiry={exp.daysToExpiry}
+                        effectiveRateDec={effectiveRateDec}
+                        onQuoteClick={handleQuoteClick}
+                      />
+                    ))}
                 </div>
               );
             })
@@ -4526,7 +4640,7 @@ export const OptionsModule: React.FC<{
                 stockName={stockName}
                 spot={displaySpot}
                 activeExpiry={activeExpiry}
-                expiries={GGAL_OPTION_EXPIRIES}
+                expiries={activeExpiries}
                 onSelectExpiry={handleSelectExpiry}
                 effectiveTlrPct={effectiveTlrPct}
                 liveOptions={liveOptions}
@@ -4719,7 +4833,7 @@ export const OptionsModule: React.FC<{
                               leg.type === 'Call' ? 'C' : 'P',
                               Number.isFinite(simSpot) ? simSpot : displaySpot,
                               leg.strike,
-                              simDaysLeft,
+                              Math.max(simDaysLeft, bsZeroDteFloorDays),
                               Math.max(0.02, (leg.iv + simIvShift) / 100),
                               rateDec
                             );

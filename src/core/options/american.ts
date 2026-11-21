@@ -115,6 +115,14 @@ export interface AmericanGreeksOptions {
   readonly timeStep?: number;
   /** Absolute rate step for Rho finite differences (default `1e-4`). */
   readonly rateStep?: number;
+  /** Activa `dS` adaptativo explícitamente (por defecto solo en régimen corto `T <= 7/365`). */
+  readonly adaptiveSpotStep?: boolean;
+  /**
+   * Activa el atajo asintótico deep ITM/OTM (`|S-K| > 4·S·σ·√T` o 0DTE agotado). Por
+   * defecto `true`; `false` preserva la métrica FD legacy para motores calibrados
+   * (p. ej. pinning BYMA Pieza 20).
+   */
+  readonly deepAsymptotic?: boolean;
 }
 
 /**
@@ -575,7 +583,7 @@ export function priceAmericanBjerksund2002(input: BsmInput): number {
   );
 }
 
-function computeSpotGammaFd(input: BsmInput, spotRelStep: number): {
+function computeSpotGammaFd(input: BsmInput, dS: number): {
   readonly price: number;
   readonly dS: number;
   readonly vUpS: number;
@@ -583,7 +591,6 @@ function computeSpotGammaFd(input: BsmInput, spotRelStep: number): {
   readonly gamma: number;
 } | null {
   const price = priceAmericanBjerksund2002(input);
-  const dS = input.spot * spotRelStep;
   if (!Number.isFinite(price) || !isPositiveFinite(dS)) {
     return null;
   }
@@ -599,12 +606,81 @@ function computeSpotGammaFd(input: BsmInput, spotRelStep: number): {
 }
 
 /**
+ * Paso absoluto `dS` para diferencias finitas en spot. Un `spotRelStep` explícito manda;
+ * en régimen corto (`T <= 7/365`) o con `adaptiveSpotStep: true` se usa un paso proporcional
+ * al movimiento sigma para no caer en el kink de ejercicio temprano de BS2002; en madureces
+ * estándar se preserva `DEFAULT_FD_SPOT_REL_STEP` (1e-4) para mantener la precisión < 1e-9
+ * de la referencia americana. `adaptiveSpotStep: false` desactiva explícitamente el paso
+ * adaptativo (motores calibrados al paso relativo legacy, p. ej. pinning BYMA).
+ */
+function resolveAmericanFdSpotStep(
+  input: BsmInput,
+  options?: Pick<AmericanGreeksOptions, 'spotRelStep' | 'adaptiveSpotStep'>,
+): number {
+  if (options?.spotRelStep !== undefined) {
+    return input.spot * options.spotRelStep;
+  }
+  const adaptive =
+    options?.adaptiveSpotStep === true ||
+    (options?.adaptiveSpotStep !== false && input.timeToExpiry <= 7 / 365);
+  if (adaptive) {
+    return Math.min(
+      input.spot * 0.005,
+      Math.max(
+        input.spot * 0.0005,
+        0.1 * input.spot * input.volatility * Math.sqrt(Math.max(input.timeToExpiry, 1e-6)),
+      ),
+    );
+  }
+  return input.spot * DEFAULT_FD_SPOT_REL_STEP;
+}
+
+/**
+ * Pieza 50.3: atajo asintótico exacto para colas deep ITM/OTM (`|S - K| > 4·S·σ·√T`) o
+ * 0DTE agotado (`T <= 0.001` y extrínseco `<= 0.01`), donde las diferencias finitas
+ * quedaban expuestas al kink de ejercicio temprano de BS2002 (Delta -0.66/-0.70 espurias).
+ * Se evalúa SIEMPRE después de `isMertonZeroEarlyExercise` para preservar la equivalencia
+ * BSM exacta del régimen Merton. Devuelve `null` si no aplica.
+ */
+function evaluateDeepAsymptoticAmericanGreeks(
+  input: BsmInput,
+  price: number,
+): OptionGreeksResult | null {
+  const isCall = input.contractType === 'call';
+  const intrinsic = isCall
+    ? Math.max(0, input.spot - input.strike)
+    : Math.max(0, input.strike - input.spot);
+  const extrinsic = price - intrinsic;
+  const isStrictItm = isCall ? input.spot > input.strike : input.strike > input.spot;
+  const isStrictOtm = isCall ? input.spot < input.strike : input.strike < input.spot;
+  const sigmaMove = input.spot * input.volatility * Math.sqrt(input.timeToExpiry);
+  const isFourSigmaTail = Math.abs(input.spot - input.strike) > 4 * sigmaMove;
+  const isZeroDteExhausted =
+    input.timeToExpiry <= 0.001 && Number.isFinite(extrinsic) && extrinsic <= 0.01;
+  if (!((isFourSigmaTail || isZeroDteExhausted) && (isStrictItm || isStrictOtm))) {
+    return null;
+  }
+  return {
+    price,
+    delta: isStrictItm ? (isCall ? 1.0 : -1.0) : 0.0,
+    gamma: 0,
+    theta: 0,
+    thetaDaily: 0,
+    vega: 0,
+    vegaPer1Pct: 0,
+    rho: 0,
+    vanna: 0,
+    charm: 0,
+  };
+}
+
+/**
  * Computes American option spot Gamma using analytical BSM in the zero-early-exercise
  * Merton regime or central spot finite differences on `priceAmericanBjerksund2002`.
  */
 export function gammaAmericanFiniteDiffOrAnalytical(
   input: BsmInput,
-  options?: Pick<AmericanGreeksOptions, 'spotRelStep'>,
+  options?: Pick<AmericanGreeksOptions, 'spotRelStep' | 'adaptiveSpotStep' | 'deepAsymptotic'>,
 ): number {
   if (!isValidBsmInput(input)) {
     return Number.NaN;
@@ -612,11 +688,17 @@ export function gammaAmericanFiniteDiffOrAnalytical(
   if (isMertonZeroEarlyExercise(input)) {
     return greeksBsm(input).gamma;
   }
-  const spotRelStep = options?.spotRelStep ?? DEFAULT_FD_SPOT_REL_STEP;
-  if (!isPositiveFinite(spotRelStep)) {
+  if (options?.deepAsymptotic !== false) {
+    const price = priceAmericanBjerksund2002(input);
+    if (evaluateDeepAsymptoticAmericanGreeks(input, price) !== null) {
+      return 0;
+    }
+  }
+  const dS = resolveAmericanFdSpotStep(input, options);
+  if (!isPositiveFinite(dS)) {
     return Number.NaN;
   }
-  const res = computeSpotGammaFd(input, spotRelStep);
+  const res = computeSpotGammaFd(input, dS);
   return res !== null && Number.isFinite(res.gamma) ? res.gamma : Number.NaN;
 }
 
@@ -639,13 +721,21 @@ export function greeksAmericanFiniteDiffOrAnalytical(
     return greeksBsm(input);
   }
 
-  const spotRelStep = options?.spotRelStep ?? DEFAULT_FD_SPOT_REL_STEP;
+  if (options?.deepAsymptotic !== false) {
+    const asymptoticPrice = priceAmericanBjerksund2002(input);
+    const deepAsymptotic = evaluateDeepAsymptoticAmericanGreeks(input, asymptoticPrice);
+    if (deepAsymptotic !== null) {
+      return deepAsymptotic;
+    }
+  }
+
+  const dS = resolveAmericanFdSpotStep(input, options);
   const volRelStep = options?.volRelStep ?? DEFAULT_FD_VOL_REL_STEP;
   const requestedTimeStep = options?.timeStep ?? DEFAULT_FD_TIME_STEP;
   const rateStep = options?.rateStep ?? DEFAULT_FD_RATE_STEP;
 
   if (
-    !isPositiveFinite(spotRelStep) ||
+    !isPositiveFinite(dS) ||
     !isPositiveFinite(volRelStep) ||
     !isPositiveFinite(requestedTimeStep) ||
     !isPositiveFinite(rateStep)
@@ -657,11 +747,11 @@ export function greeksAmericanFiniteDiffOrAnalytical(
   const dT = Math.min(requestedTimeStep, 0.25 * input.timeToExpiry);
   const dR = rateStep;
 
-  const spotFd = computeSpotGammaFd(input, spotRelStep);
+  const spotFd = computeSpotGammaFd(input, dS);
   if (spotFd === null || !isPositiveFinite(dSig) || !isPositiveFinite(dT)) {
     return NAN_GREEKS_RESULT;
   }
-  const { price, dS, vUpS, vDnS, gamma } = spotFd;
+  const { price, vUpS, vDnS, gamma } = spotFd;
 
   const evalAt = (
     spot: number,

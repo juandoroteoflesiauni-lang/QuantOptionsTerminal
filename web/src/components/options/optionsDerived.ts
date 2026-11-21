@@ -7,7 +7,6 @@ import type {
   UsSnapshotResponseDto,
 } from '../../data/liveTypes';
 import {
-  GGAL_OPTION_EXPIRIES,
   type OptionChainRow,
   type OptionExpiryGroup,
   fmtMoneyCompact,
@@ -214,7 +213,7 @@ function isFamilyMatch(cardFamily: StrategyFamilyId, selected: StrategyFamilyId)
 
 export function buildCalendarStrategies(
   mkt: Market,
-  expiries: readonly OptionExpiryGroup[] = GGAL_OPTION_EXPIRIES,
+  expiries: readonly OptionExpiryGroup[] = [],
 ): Strategy[] {
   if (!Number.isFinite(mkt.spot) || mkt.spot <= 0 || mkt.strikes.length === 0) {
     return [];
@@ -283,7 +282,7 @@ function buildStrategyPool(
   selectedFamily: StrategyFamilyId,
   marketBias: 'Alcista' | 'Lateral' | 'Bajista' | 'Se mueve',
   targetPrice: number,
-  expiries: readonly OptionExpiryGroup[] = GGAL_OPTION_EXPIRIES,
+  expiries: readonly OptionExpiryGroup[] = [],
 ): Strategy[] {
   if (selectedFamily === 'calendarios' && strategyMode === 'familia') {
     return buildCalendarStrategies(mkt, expiries);
@@ -384,7 +383,7 @@ export function buildLiveStrategyCardsAndRows(
     opts.selectedFamily,
     opts.marketBias,
     evalSpot,
-    opts.expiries ?? GGAL_OPTION_EXPIRIES,
+    opts.expiries ?? [],
   );
 
   const seenIds = new Set<string>();
@@ -795,15 +794,19 @@ function legBsValue(
   spot: number,
   daysLeft: number,
   ivShiftPts: number,
-  rateDec: number
+  rateDec: number,
+  floorDays = 0
 ): number {
   if (leg.type === 'Subyacente') return spot;
   const optType = leg.type === 'Call' ? 'C' : 'P';
   const sigma = Math.max(0.02, (leg.iv + ivShiftPts) / 100);
-  if (daysLeft <= 0) {
+  // Pieza 50.3: en 0DTE (simDaysLeft === 0) la valuación BS usa el piso intradiario real
+  // (horas hasta el cierre 16:00 ET, mínima 1/(252·6.5) años) en lugar del intrínseco.
+  const effectiveDays = daysLeft > 0 ? daysLeft : floorDays;
+  if (effectiveDays <= 0) {
     return optType === 'C' ? Math.max(0, spot - leg.strike) : Math.max(0, leg.strike - spot);
   }
-  return bsPrice(optType, spot, leg.strike, daysLeft, sigma, rateDec);
+  return bsPrice(optType, spot, leg.strike, effectiveDays, sigma, rateDec);
 }
 
 export function computeBuilderAnalytics(
@@ -814,7 +817,9 @@ export function computeBuilderAnalytics(
   simTlrPct: number,
   baseSpot: number,
   baseDays: number,
-  rows: readonly OptionChainRow[]
+  rows: readonly OptionChainRow[],
+  /** Pieza 50.3: piso de días para la valuación BS teórica cuando `simDaysLeft === 0` (0DTE). */
+  bsFloorDays = 0
 ): BuilderAnalytics {
   const safeSpot = Number.isFinite(simSpot) && simSpot > 0 ? simSpot : Number.isFinite(baseSpot) && baseSpot > 0 ? baseSpot : 100;
   const rateDec = Number.isFinite(simTlrPct) && simTlrPct >= 0 ? Math.log(1 + simTlrPct / 100) : 0;
@@ -843,12 +848,12 @@ export function computeBuilderAnalytics(
 
     const bucket = leg.type === 'Call' ? 'call' : 'put';
     const dS = Math.max(0.01, safeSpot * 0.005);
-    const v0 = legBsValue(leg, safeSpot, simDaysLeft, simIvShiftPts, rateDec);
-    const vUp = legBsValue(leg, safeSpot + dS, simDaysLeft, simIvShiftPts, rateDec);
-    const vDn = legBsValue(leg, Math.max(0.01, safeSpot - dS), simDaysLeft, simIvShiftPts, rateDec);
-    const vIvUp = legBsValue(leg, safeSpot, simDaysLeft, simIvShiftPts + 1, rateDec);
-    const vNextDay = legBsValue(leg, safeSpot, Math.max(0, simDaysLeft - 1), simIvShiftPts, rateDec);
-    const vRateUp = legBsValue(leg, safeSpot, simDaysLeft, simIvShiftPts, rateDec + 0.01);
+    const v0 = legBsValue(leg, safeSpot, simDaysLeft, simIvShiftPts, rateDec, bsFloorDays);
+    const vUp = legBsValue(leg, safeSpot + dS, simDaysLeft, simIvShiftPts, rateDec, bsFloorDays);
+    const vDn = legBsValue(leg, Math.max(0.01, safeSpot - dS), simDaysLeft, simIvShiftPts, rateDec, bsFloorDays);
+    const vIvUp = legBsValue(leg, safeSpot, simDaysLeft, simIvShiftPts + 1, rateDec, bsFloorDays);
+    const vNextDay = legBsValue(leg, safeSpot, Math.max(0, simDaysLeft - 1), simIvShiftPts, rateDec, bsFloorDays);
+    const vRateUp = legBsValue(leg, safeSpot, simDaysLeft, simIvShiftPts, rateDec + 0.01, bsFloorDays);
 
     const dPerShare = Number.isFinite(vUp) && Number.isFinite(vDn) ? (vUp - vDn) / (2 * dS) : leg.delta;
     const gPerShare = Number.isFinite(vUp) && Number.isFinite(vDn) && Number.isFinite(v0) ? (vUp - 2 * v0 + vDn) / (dS * dS) : 0;
@@ -890,7 +895,7 @@ export function computeBuilderAnalytics(
     for (const leg of legs) {
       const dir = leg.side === 'Compra' ? 1 : -1;
       const shares = leg.type === 'Subyacente' ? leg.qty : leg.qty * LOT;
-      const valTheo = legBsValue(leg, spotVal, simDaysLeft, simIvShiftPts, rateDec);
+      const valTheo = legBsValue(leg, spotVal, simDaysLeft, simIvShiftPts, rateDec, bsFloorDays);
       total += dir * (valTheo - leg.premium) * shares;
     }
     return total;

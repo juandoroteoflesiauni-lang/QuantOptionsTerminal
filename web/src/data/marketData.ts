@@ -1009,7 +1009,14 @@ export function hydrateFromArMonitoring(mon: ArMonitoringResponse): void {
   }
 }
 
-export function hydrateFromArOptions(res: ArOptionsResponse): void {
+/**
+ * Pieza 50.3: construcción pura de los grupos de vencimiento de una respuesta `/api/ar/options`
+ * (AR o US) SIN mutar ningún singleton global. `hydrateFromArOptions` la usa como espejo
+ * retrocompatible exclusivo de `AR:GGAL`.
+ */
+export function buildOptionExpiryGroupsFromArOptions(
+  res: ArOptionsResponse,
+): readonly OptionExpiryGroup[] {
   const spot = res.spot !== null && Number.isFinite(res.spot) ? res.spot : Number.NaN;
   const isUsMarket = res.market === 'US';
   const groups: OptionExpiryGroup[] = res.expiries.map((exp) => {
@@ -1092,7 +1099,16 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
         const ivRaw = cc?.iv !== null && cc?.iv !== undefined && Number.isFinite(cc.iv) ? cc.iv : Number.NaN;
         const midRaw = toNumOrNaN(cc?.mark);
         const ext = Number.isFinite(midRaw) ? extrinsicValue(side, spot, strike, midRaw) : toNumOrNaN(cc?.extrinsic);
+        // Pieza 50.3: cap de IV (>= 999 %) no confiable en AMBOS mercados (AR y US).
         const capped = Number.isFinite(ivRaw) && ivRaw >= 9.99;
+        // Pieza 50.3: jamás respetar una delta backend de cola deep ITM (|S-K| > 4·S·σ·√T)
+        // ni con IV capada: `-0.66` corrupta no debe inhibir el saneamiento.
+        const deepTailByAtm =
+          Number.isFinite(atmIvDec) &&
+          atmIvDec > 0 &&
+          Number.isFinite(spot) &&
+          Number.isFinite(tYears) &&
+          Math.abs(spot - strike) > 4 * spot * atmIvDec * Math.sqrt(tYears);
         // Pieza 50.1: si el backend ya entregó una delta finita, coherente de signo y no
         // colapsada a ±1 (p. ej. rescate PARITY_OTM con spot alineado), no destruir su
         // IV/delta por un extrínseco recalculado con spot extendido desfasado.
@@ -1101,10 +1117,17 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
           Number.isFinite(backendDelta) &&
           (side === 'call'
             ? backendDelta > 0 && backendDelta < 0.9999
-            : backendDelta < 0 && backendDelta > -0.9999);
+            : backendDelta < 0 && backendDelta > -0.9999) &&
+          !capped &&
+          !deepTailByAtm &&
+          cc?.iv !== null &&
+          cc?.iv !== undefined &&
+          Number.isFinite(cc.iv) &&
+          cc.iv < 9.99;
         const unreliable =
-          isUsMarket && Number.isFinite(ext) && isIvUnreliable(ivRaw, ext) && !backendDeltaCoherent;
-        const ivPct = unreliable || capped ? Number.NaN : Number.isFinite(ivRaw) ? ivRaw * 100 : Number.NaN;
+          capped ||
+          (isUsMarket && Number.isFinite(ext) && isIvUnreliable(ivRaw, ext) && !backendDeltaCoherent);
+        const ivPct = unreliable ? Number.NaN : Number.isFinite(ivRaw) ? ivRaw * 100 : Number.NaN;
         const fb =
           unreliable || capped
             ? computeFallbackGreeks({
@@ -1212,6 +1235,17 @@ export function hydrateFromArOptions(res: ArOptionsResponse): void {
     };
   });
 
+  return groups;
+}
+
+/**
+ * Pieza 50.3: `GGAL_OPTION_EXPIRIES` queda únicamente como espejo retrocompatible de
+ * `AR:GGAL`. Ninguna cadena US (`SPY`, `QQQ`, `US:GGAL`, …) escribe sobre el singleton
+ * compartido, eliminando el cruce BYMA (strikes 6.000–9.000 ARS) ↔ OPRA (spot ~600 USD).
+ */
+export function hydrateFromArOptions(res: ArOptionsResponse): void {
+  if (res.market === 'US' || res.underlying.trim().toUpperCase() !== 'GGAL') return;
+  const groups = buildOptionExpiryGroupsFromArOptions(res);
   GGAL_OPTION_EXPIRIES.splice(0, GGAL_OPTION_EXPIRIES.length, ...groups);
 }
 

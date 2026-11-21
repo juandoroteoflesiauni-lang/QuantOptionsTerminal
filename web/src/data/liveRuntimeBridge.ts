@@ -26,12 +26,14 @@ import {
   AR_STOCKS,
   GLOBAL_INDICATORS,
   US_MARKET_DATA,
+  buildOptionExpiryGroupsFromArOptions,
   hydrateFromArMacro,
   hydrateFromArMonitoring,
   hydrateFromArOptions,
   hydrateFromArOverview,
   hydrateFromArRelations,
   hydrateFromUsSnapshot,
+  type OptionExpiryGroup,
 } from './marketData';
 import { parseOptionsUnderlyingKey } from './optionsUnderlying';
 
@@ -56,7 +58,10 @@ export interface LiveMarketState {
   readonly monitoring: ArMonitoringResponse | null;
   readonly relations: ArRelationsResponse | null;
   readonly stockDetailsBySymbol: Readonly<Record<string, ArStockDetailResponse>>;
+  /** Pieza 50.3: indexado EXCLUSIVAMENTE por clave canónica `market:symbol` (`AR:GGAL`, `US:SPY`, …). */
   readonly optionsByUnderlying: Readonly<Record<string, ArOptionsResponse>>;
+  /** Pieza 50.3: grupos de vencimiento aislados por clave canónica `market:symbol`. */
+  readonly optionExpiriesByUnderlyingKey: Readonly<Record<string, readonly OptionExpiryGroup[]>>;
   readonly usSnapshotsBySymbol: Readonly<Record<string, UsSnapshotResponseDto>>;
   readonly optionsUnderlyings: readonly OptionsUnderlyingMetaDto[];
   readonly optionsUnderlyingsStatus: 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA';
@@ -91,6 +96,7 @@ let state: LiveMarketState = {
   relations: null,
   stockDetailsBySymbol: {},
   optionsByUnderlying: {},
+  optionExpiriesByUnderlyingKey: {},
   usSnapshotsBySymbol: {},
   optionsUnderlyings: [],
   optionsUnderlyingsStatus: 'IDLE',
@@ -492,12 +498,55 @@ function mergeArOptionsWithHydratedExpiry(
   };
 }
 
+/**
+ * Pieza 50.3: subyacente activo de la vista Opciones. `syncOptionEngineMarket` solo se
+ * aplica al store global `engine.ts` cuando llega una cadena del subyacente activo; el
+ * polling de `AR:GGAL` jamás pisa `engine.ts` mientras el usuario opera `US:SPY`.
+ */
+let activeOptionsCanonicalKey: string | null = null;
+
+export function setActiveOptionsUnderlyingKey(rawKey: string | null): void {
+  if (rawKey === null) {
+    activeOptionsCanonicalKey = null;
+    return;
+  }
+  const canonicalKey = parseOptionsUnderlyingKey(rawKey).canonicalKey;
+  activeOptionsCanonicalKey = canonicalKey;
+  const cached = state.optionsByUnderlying[canonicalKey];
+  if (cached !== undefined) {
+    syncOptionEngineMarket(cached);
+  }
+}
+
+/** Pieza 50.3: snapshot puro del estado en vivo para lecturas fuera de React (helpers/tests). */
+export function getLiveMarketStateSnapshot(): LiveMarketState {
+  return state;
+}
+
+/** Lectura pura de la cadena de opciones por clave cruda o canónica (`AR:GGAL`, `US:SPY`, …). */
+export function getLiveOptionsForUnderlying(
+  marketState: LiveMarketState,
+  rawKey: string,
+): ArOptionsResponse | undefined {
+  return marketState.optionsByUnderlying[parseOptionsUnderlyingKey(rawKey).canonicalKey];
+}
+
+/** Lectura pura de los grupos de vencimiento aislados del subyacente (`[]` si no cargó). */
+export function getOptionExpiriesForUnderlying(
+  marketState: LiveMarketState,
+  rawKey: string,
+): readonly OptionExpiryGroup[] {
+  return marketState.optionExpiriesByUnderlyingKey[parseOptionsUnderlyingKey(rawKey).canonicalKey] ?? [];
+}
+
 export async function requestOptionsChain(
   underlying: string,
   force = false,
   expiration?: string,
 ): Promise<void> {
   const selection = parseOptionsUnderlyingKey(underlying);
+  // Pieza 50.3: el almacenamiento y el motor se aíslan por `market:symbol`.
+  const canonicalKey = selection.canonicalKey;
   const clean = selection.symbol;
   if (!clean) return;
   if (selection.market === 'US') {
@@ -509,14 +558,17 @@ export async function requestOptionsChain(
     hydrateFromUsSnapshot(snap);
     const mapped = mapUsSnapshotToArOptions(clean, snap);
     // Pieza 50.1: fusionar el vencimiento recién cargado sin borrar los otros ya hidratados.
-    const merged = mergeArOptionsWithHydratedExpiry(state.optionsByUnderlying[selection.key], mapped);
-    hydrateFromArOptions(merged);
-    syncOptionEngineMarket(merged);
+    const merged = mergeArOptionsWithHydratedExpiry(state.optionsByUnderlying[canonicalKey], mapped);
+    const groups = buildOptionExpiryGroupsFromArOptions(merged);
+    if (activeOptionsCanonicalKey === canonicalKey) {
+      syncOptionEngineMarket(merged);
+    }
     state = {
       ...state,
       isBackendConnected: true,
       usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: snap },
-      optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: merged },
+      optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
+      optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       ...(snap.catalysts
         ? {
             optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [clean]: snap.catalysts },
@@ -538,12 +590,19 @@ export async function requestOptionsChain(
     { force }
   );
   if (!res) return;
-  hydrateFromArOptions(res);
-  syncOptionEngineMarket(res);
+  const groups = buildOptionExpiryGroupsFromArOptions(res);
+  // Espejo retrocompatible exclusivo de AR:GGAL (jamás toca claves US:*).
+  if (canonicalKey === 'AR:GGAL') {
+    hydrateFromArOptions(res);
+  }
+  if (activeOptionsCanonicalKey === canonicalKey) {
+    syncOptionEngineMarket(res);
+  }
   state = {
     ...state,
     isBackendConnected: true,
-    optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: res },
+    optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: res },
+    optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
   };
@@ -579,15 +638,19 @@ export async function requestUsOptionExpiry(
       { force },
     );
     if (!resp) return;
-    const previous = state.optionsByUnderlying[selection.key];
+    const canonicalKey = selection.canonicalKey;
+    const previous = state.optionsByUnderlying[canonicalKey];
     const merged = mergeUsExpiryChainIntoOptions(previous, resp);
-    hydrateFromArOptions(merged);
-    syncOptionEngineMarket(merged);
+    const groups = buildOptionExpiryGroupsFromArOptions(merged);
+    if (activeOptionsCanonicalKey === canonicalKey) {
+      syncOptionEngineMarket(merged);
+    }
     const previousSnap = state.usSnapshotsBySymbol[clean];
     state = {
       ...state,
       isBackendConnected: true,
-      optionsByUnderlying: { ...state.optionsByUnderlying, [selection.key]: merged },
+      optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
+      optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       ...(previousSnap !== undefined
         ? {
             usSnapshotsBySymbol: {
@@ -752,7 +815,7 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
       refreshOverview(),
       refreshMacro(),
       requestMonitoringPanel('bonos'),
-      requestOptionsChain('GGAL'),
+      requestOptionsChain('AR:GGAL'),
     ]);
     if (disposed) return;
     // Fase 2: pares relativos + mercado US prioritario, sin bloquear el render inicial AR
@@ -787,7 +850,7 @@ export function startLiveRuntimePolling(enabled: boolean): () => void {
     if (state.overview === null || state.feedStatus === 'NO_DATA') tasks.push(refreshOverview());
     if (state.macro === null) tasks.push(refreshMacro());
     if (state.monitoring === null) tasks.push(requestMonitoringPanel('bonos'));
-    if (state.optionsByUnderlying['GGAL'] === undefined) tasks.push(requestOptionsChain('GGAL'));
+    if (state.optionsByUnderlying['AR:GGAL'] === undefined) tasks.push(requestOptionsChain('AR:GGAL'));
     if (state.relations === null) tasks.push(requestRelations());
     if (state.usSnapshotsBySymbol['SPY'] === undefined) tasks.push(requestUsSnapshot('SPY'));
     if (state.usSnapshotsBySymbol['QQQ'] === undefined) tasks.push(requestUsSnapshot('QQQ'));

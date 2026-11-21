@@ -542,19 +542,19 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 border-t border-[#1C1C24] pt-3">
             <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS IV Rank 1Y</div>
-              <div className="text-[15px] font-extrabold font-mono-num text-[#E5C76B]">
+              <div className="text-[15px] font-extrabold font-mono-num tabular-nums text-[#E5C76B]">
                 {fmtNullableNumber(oratsIvRank?.ivRank1y ?? null, 1, '%')}
               </div>
             </div>
             <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS IV Percentile 1Y</div>
-              <div className="text-[15px] font-extrabold font-mono-num text-[#B794F4]">
+              <div className="text-[15px] font-extrabold font-mono-num tabular-nums text-[#B794F4]">
                 {fmtNullableNumber(oratsIvRank?.ivPct1y ?? null, 1, '%')}
               </div>
             </div>
             <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS Ex-Earnings IV 30D</div>
-              <div className="text-[15px] font-extrabold font-mono-num text-[#38BDF8]">
+              <div className="text-[15px] font-extrabold font-mono-num tabular-nums text-[#38BDF8]">
                 {fmtNullableNumber(
                   Number.isFinite(oratsVolToPct(oratsSurface?.exErnIv30d))
                     ? oratsVolToPct(oratsSurface?.exErnIv30d)
@@ -564,19 +564,19 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
                 )}
               </div>
               {oratsSurface?.iv20d != null && Number.isFinite(oratsVolToPct(oratsSurface.iv20d)) && (
-                <div className="text-[10px] font-mono-num text-[#9CA3AF]">
+                <div className="text-[10px] font-mono-num tabular-nums text-[#9CA3AF]">
                   IV 20D: {fmtNullableNumber(oratsVolToPct(oratsSurface.iv20d), 2, '%')}
                 </div>
               )}
             </div>
             <div className="rounded-[10px] bg-[#0A0A0D] border border-[#1C1C24] px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-[#6B7280]">ORATS Superficie smvVol</div>
-              <div className="text-[15px] font-extrabold font-mono-num text-[#F3F4F6]">
+              <div className="text-[15px] font-extrabold font-mono-num tabular-nums text-[#F3F4F6]">
                 {oratsSurface?.strikes?.length != null && oratsSurface.strikes.length > 0
                   ? `${String(oratsSurface.strikes.length)} nodos`
                   : '—'}
               </div>
-              <div className="text-[10px] font-mono-num text-[#9CA3AF]">
+              <div className="text-[10px] font-mono-num tabular-nums text-[#9CA3AF]">
                 {usVolSurface?.cacheState ?? '—'}
                 {usVolSurface?.stale === true ? ' · stale' : ''}
               </div>
@@ -834,7 +834,7 @@ const Tab1ResumenCono: React.FC<{
           ))}
         </div>
 
-        <div className="rounded-[14px] bg-[#0A0A0D] border border-[#1C1C24] p-4 space-y-2 text-[12px] font-mono-num">
+        <div className="rounded-[14px] bg-[#0A0A0D] border border-[#1C1C24] p-4 space-y-2 text-[12px] font-mono-num tabular-nums">
           <div className="text-[10.5px] font-bold uppercase tracking-wider text-[#E5C76B]">
             Buy-Write &amp; Cobertura Sistemática
           </div>
@@ -934,7 +934,7 @@ const ExpectedConeChart: React.FC<{
     cone.status === 'OK' &&
     Number.isFinite(spot) &&
     spot > 0 &&
-    daysToExpiry > 0 &&
+    daysToExpiry >= 0 &&
     cone.lower1Sigma !== null &&
     cone.upper1Sigma !== null &&
     cone.lower2Sigma !== null &&
@@ -999,7 +999,7 @@ const ExpectedConeChart: React.FC<{
         <div>
           <h3 className="text-[13px] font-bold text-[#F3F4F6]">Cono Esperado (±1σ / ±2σ) al Vencimiento</h3>
           <p className="text-[11px] text-[#9CA3AF]">
-            Horizonte {daysToExpiry}d · 1σ = ±{fmtNullableNumber(cone.horizonMove1SigmaPct, 1, '%')} · Diario ={' '}
+            Horizonte {formatDteLabel(daysToExpiry)} · 1σ = ±{fmtNullableNumber(cone.horizonMove1SigmaPct, 1, '%')} · Diario ={' '}
             {fmtNullableNumber(cone.dailyMovePct, 2, '%')}
           </p>
         </div>
@@ -1392,7 +1392,7 @@ const Tab2SonrisaMatriz: React.FC<{
         {/* Banner de advertencia DTE corto cuando se incluyen ITM */}
         {!onlyOtm && smile?.isShortDteSlice && (
           <div className="rounded-[8px] bg-[#E5C76B]/10 border border-[#E5C76B]/30 px-3 py-2 text-[11.5px] text-[#E5C76B]">
-            Advertencia DTE corto ({expirySuite?.daysToExpiry ?? '—'}d): incluir contratos ITM introduce dispersión extrema por valor extrínseco casi nulo y spreads bid/ask amplios.
+            Advertencia DTE corto ({expirySuite?.daysToExpiry != null ? formatDteLabel(expirySuite.daysToExpiry) : '—'}): incluir contratos ITM introduce dispersión extrema por valor extrínseco casi nulo y spreads bid/ask amplios.
           </div>
         )}
 
@@ -1587,7 +1587,7 @@ const Tab2SonrisaMatriz: React.FC<{
                       {fmtNum(row.atmIvPct, 1)}%
                     </text>
                     <text x={cx} y={th - 8} textAnchor="middle" fill="#6B7280" fontSize="9" className="font-mono-num">
-                      {row.daysToExpiry}d
+                      {formatDteLabel(row.daysToExpiry)}
                     </text>
                   </g>
                 );
@@ -1680,7 +1680,7 @@ const Tab2SonrisaMatriz: React.FC<{
                     <td className="py-1.5 px-2 font-sans font-semibold text-[#E5E7EB] whitespace-nowrap">
                       {row.expiryLabel}
                     </td>
-                    <td className="py-1.5 px-2 text-right text-[#9CA3AF]">{row.daysToExpiry}d</td>
+                    <td className="py-1.5 px-2 text-right text-[#9CA3AF]">{formatDteLabel(row.daysToExpiry)}</td>
                     {row.cells.map((cell) => (
                       <td
                         key={cell.offsetPct}
@@ -2049,23 +2049,26 @@ const Tab4ParidadTasas: React.FC<{
     parity.impliedRateStatus === 'BLOCKED_SHORT_DTE' ||
     (unifiedQuant?.syntheticRates as { readonly impliedRateStatus?: string } | null | undefined)
       ?.impliedRateStatus === 'BLOCKED_SHORT_DTE';
-  const borrowLabel = isShortDteBlocked
+  // Pieza 50.3: la Cobertura Sintética (Conv-Rev) también bloquea su anualización en DTE < 3.
+  const convRevBlocked =
+    isShortDteBlocked || unifiedQuant?.conversionReversal?.rateStatus === 'BLOCKED_SHORT_DTE';
+  const borrowLabel = convRevBlocked
     ? 'BLOCKED_SHORT_DTE'
     : unifiedQuant?.syntheticRates?.borrowRegime ?? '—';
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num">
+        <div className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num tabular-nums">
           <div className="text-[10px] uppercase text-[#6B7280]">{parity.benchmarkLabel}</div>
           <div className="text-[16px] font-extrabold text-[#38BDF8]">
             {fmtNullableNumber(parity.benchmarkTeaPct, 2, '%')}
           </div>
-          <div className="text-[10px] text-[#9CA3AF]">Benchmark TEA · {parity.daysToExpiry}d</div>
+          <div className="text-[10px] text-[#9CA3AF]">Benchmark TEA · {formatDteLabel(parity.daysToExpiry)}</div>
         </div>
         <div
           title={isShortDteBlocked ? 'DTE < 3: anualización de tasa implícita sintética suspendida' : undefined}
-          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num tabular-nums"
         >
           <div className="text-[10px] uppercase text-[#6B7280]">TEA Mid Mediana</div>
           <div className="text-[16px] font-extrabold text-[#F3F4F6]">
@@ -2077,7 +2080,7 @@ const Tab4ParidadTasas: React.FC<{
         </div>
         <div
           title={isShortDteBlocked ? 'DTE < 3: anualización de tasa implícita sintética suspendida' : undefined}
-          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num tabular-nums"
         >
           <div className="text-[10px] uppercase text-[#6B7280]">Mejor TEA Tomadora</div>
           <div className="text-[16px] font-extrabold text-[#E5C76B]">
@@ -2091,7 +2094,7 @@ const Tab4ParidadTasas: React.FC<{
         </div>
         <div
           title={isShortDteBlocked ? 'DTE < 3: anualización de tasa implícita sintética suspendida' : undefined}
-          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num tabular-nums"
         >
           <div className="text-[10px] uppercase text-[#6B7280]">Mejor TEA Colocadora</div>
           <div className="text-[16px] font-extrabold text-[#B794F4]">
@@ -2104,15 +2107,15 @@ const Tab4ParidadTasas: React.FC<{
           </div>
         </div>
         <div
-          title={isShortDteBlocked ? 'DTE < 3: alerta HARD_TO_BORROW_SQUEEZE_ALERT bloqueada por T < 3/365' : undefined}
-          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num"
+          title={convRevBlocked ? BLOCKED_SHORT_DTE_TOOLTIP : undefined}
+          className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] p-3 font-mono-num tabular-nums"
         >
           <div className="text-[10px] uppercase text-[#6B7280]">Borrow / Conv-Rev</div>
           <div className="text-[14px] font-extrabold text-[#38BDF8]">
             {borrowLabel}
           </div>
           <div className="text-[10px] text-[#9CA3AF]">
-            {isShortDteBlocked
+            {convRevBlocked
               ? 'HTB bloqueado (DTE < 3)'
               : `Edge: ${
                   unifiedQuant?.conversionReversal?.netEdgeVsRiskFreeBps != null
@@ -2319,7 +2322,7 @@ const Tab5EstructurasCosto: React.FC<{
         <RatioTable
           title={
             (expirySuite?.smileOtmOnly.atmIvPct ?? expirySuite?.smileAll.atmIvPct ?? 0) > 0
-              ? 'Ratios 1:N Calls (Financiación OTM +1σ / +2σ)'
+              ? 'Ratios 1:N Calls (Financiación OTM +0,5σ / +1,0σ / +1,5σ)'
               : 'Ratios 1:N Calls (Financiación OTM +5% / +10% / +15%)'
           }
           accentColor="text-[#E5C76B]"
@@ -2330,7 +2333,7 @@ const Tab5EstructurasCosto: React.FC<{
         <RatioTable
           title={
             (expirySuite?.smileOtmOnly.atmIvPct ?? expirySuite?.smileAll.atmIvPct ?? 0) > 0
-              ? 'Ratios 1:N Puts (Financiación OTM −1σ / −2σ)'
+              ? 'Ratios 1:N Puts (Financiación OTM −0,5σ / −1,0σ / −1,5σ)'
               : 'Ratios 1:N Puts (Financiación OTM −5% / −10% / −15%)'
           }
           accentColor="text-[#B794F4]"
@@ -2350,10 +2353,9 @@ const RatioTable: React.FC<{
   readonly currencyPrefix: string;
   readonly onSendToBuilder: (legs: StratLeg[]) => void;
 }> = ({ title, accentColor, rows, currencyPrefix, onSendToBuilder }) => {
+  // Pieza 50.3: nunca renderizar patas de $0.00 / $0.01 en Ratios 1x2.
   const validRows = rows.filter(
-    (r) =>
-      ((r.longPrice ?? 0) > 0.005 || (r.shortPrice ?? 0) > 0.005) &&
-      (r.shortPrice ?? 0) > 0.005,
+    (r) => (r.shortPrice ?? 0) > 0.01 && (r.longPrice ?? 0) > 0.01,
   );
   return (
     <div className="rounded-[14px] bg-[#0A0A0D] border border-[#1C1C24] p-4 space-y-2 overflow-x-auto">
@@ -2361,7 +2363,7 @@ const RatioTable: React.FC<{
       {validRows.length === 0 ? (
         <div className="py-6 text-center text-[12px] text-[#6B7280]">Sin primas válidas en este vencimiento</div>
       ) : (
-        <table className="w-full text-[11.5px] font-mono-num border-collapse">
+        <table className="w-full text-[11.5px] font-mono-num tabular-nums border-collapse">
           <thead>
             <tr className="border-b border-[#1C1C24] text-[#6B7280]">
               <th className="py-1.5 px-2 text-right">Compra</th>

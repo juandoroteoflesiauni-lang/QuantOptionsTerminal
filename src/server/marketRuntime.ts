@@ -159,6 +159,7 @@ import {
   type VolAnalyticsSuiteResult,
 } from '../core/options/volAnalyticsSuite.js';
 import {
+  EXTRINSIC_EPS,
   IV_CAP_DECIMAL,
   MIN_EXPECTED_MOVE_T_YEARS,
   calendarDteEt,
@@ -166,7 +167,7 @@ import {
   etExpiryUtcSecFromDate,
   expectedMoveSigma,
   extrinsicValue,
-  intrinsicValue,
+  formatDteLabel,
   isIvUnreliable,
   resolveParityItmRescueIv,
   todayEtDate,
@@ -557,6 +558,9 @@ export interface UsOptionExpiryChainResponse {
   readonly contracts: readonly SerializedOptionContractRow[];
   readonly exposureSummary: SerializedExposureSummary | null;
   readonly syntheticRates: JsonSafeValue<SyntheticImpliedRatesResult> | null;
+  /** Pieza 50.3: Buy-Write y Cobertura Sintética propias del vencimiento pedido. */
+  readonly conversionReversal?: JsonSafeValue<ConversionReversalResult> | null;
+  readonly buyWrite?: JsonSafeValue<BuyWriteResult> | null;
   readonly volAnalyticsExpiry: JsonSafeValue<VolAnalyticsExpirySuiteResult> | null;
   readonly usOptionsFeed?: UsOptionsFeedProvenance | undefined;
   readonly dataQuality: SnapshotDataQuality;
@@ -2819,7 +2823,14 @@ function solveContractOwnIv(
     }
   }
 
-  return isIndex
+  // Pieza 50.3: sin extrínseco no hay IV invertible (nunca una solución explosiva
+  // de deep ITM por encima del cap de 999 %).
+  const ext = extrinsicValue(contract.contractType, spot, contract.strikePrice, mid);
+  if (!Number.isFinite(ext) || ext <= EXTRINSIC_EPS) {
+    return Number.NaN;
+  }
+
+  const solved = isIndex
     ? solveImpliedVolBsm({
         spot,
         strike: contract.strikePrice,
@@ -2838,6 +2849,7 @@ function solveContractOwnIv(
         contractType: contract.contractType,
         marketPrice: mid,
       });
+  return Number.isFinite(solved) && solved > 0 && solved < IV_CAP_DECIMAL ? solved : Number.NaN;
 }
 
 function serializeSlice(pkg: SlicePackage): SerializedVolSliceSummary {
@@ -4912,8 +4924,8 @@ export class MarketRuntime {
     const moneynessMatrixOtm = buildNormalizedMoneynessMatrix(
       matrixExps.map((d) => ({
         expiryCode: d,
-        expiryLabel: `${d} (${String(expDaysMap.get(d) ?? 0)}d)`,
-        daysToExpiry: expDaysMap.get(d) ?? 1,
+        expiryLabel: `${d} (${formatDteLabel(expDaysMap.get(d) ?? 0)})`,
+        daysToExpiry: expDaysMap.get(d) ?? 0,
         compositeOtmPoints: smileOtmMap.get(d)?.compositeOtmPoints ?? [],
         fallbackAtmIvPct: expFallbackAtmMap.get(d) ?? null,
       })),
@@ -4921,8 +4933,8 @@ export class MarketRuntime {
     const moneynessMatrixAll = buildNormalizedMoneynessMatrix(
       matrixExps.map((d) => ({
         expiryCode: d,
-        expiryLabel: `${d} (${String(expDaysMap.get(d) ?? 0)}d)`,
-        daysToExpiry: expDaysMap.get(d) ?? 1,
+        expiryLabel: `${d} (${formatDteLabel(expDaysMap.get(d) ?? 0)})`,
+        daysToExpiry: expDaysMap.get(d) ?? 0,
         compositeOtmPoints: smileAllMap.get(d)?.compositeOtmPoints ?? [],
         fallbackAtmIvPct: expFallbackAtmMap.get(d) ?? null,
       })),
@@ -7539,18 +7551,38 @@ export class MarketRuntime {
       const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
       const provIv = c.impliedVolatility;
       const mid = resolveQuoteMid(c);
-      const spotInt = intrinsicValue(c.contractType, spot, c.strikePrice);
       const rawExt = extrinsicValue(c.contractType, spot, c.strikePrice, mid);
-      const effectiveExt = Number.isFinite(mid) && mid >= spotInt - 0.01 ? rawExt : Number.NaN;
+      const effTExp = Number.isFinite(tExp) && tExp > 0 ? Math.max(tExp, 1e-4) : Number.NaN;
+      const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
+      const itmContract =
+        c.contractType === 'call' ? c.strikePrice < spot - 1e-6 : c.strikePrice > spot - 1e-6;
+      const moneynessAbs = Number.isFinite(spot) && spot > 0
+        ? Math.abs(c.strikePrice - spot) / spot
+        : Number.NaN;
       const rawUsedIv =
         Number.isFinite(ownIv) && ownIv > 0
           ? ownIv
           : Number.isFinite(provIv) && provIv > 0
             ? provIv
             : Number.NaN;
+      // Pieza 50.3: extrínseco agotado = `rawExt <= EXTRINSIC_EPS` (incluye mid por debajo
+      // del intrínseco por spread/tick de spot). Antes se anulaba a NaN y desactivaba el
+      // colapso DEEP_ITM_INTRINSIC, dejando pasar una IV ruidosa (Delta -0.66/-0.70).
+      const extrinsicExhausted = Number.isFinite(rawExt) && rawExt <= EXTRINSIC_EPS;
+      const isDeep4SigmaByAtm =
+        Number.isFinite(fallbackAtmIv) &&
+        fallbackAtmIv > 0 &&
+        Number.isFinite(effTExp) &&
+        Math.abs(spot - c.strikePrice) > 4 * spot * fallbackAtmIv * Math.sqrt(effTExp);
+      const blownProviderDeepItm =
+        itmContract &&
+        isDeep4SigmaByAtm &&
+        Number.isFinite(rawUsedIv) &&
+        rawUsedIv > Math.max(3.0, fallbackAtmIv * 4);
       const unreliableIv =
-        (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, effectiveExt)) ||
-        (Number.isFinite(effectiveExt) && effectiveExt <= 0.01);
+        extrinsicExhausted ||
+        blownProviderDeepItm ||
+        (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, rawExt));
       const cleanOwnIv =
         !unreliableIv && Number.isFinite(ownIv) && ownIv > 0 && ownIv < IV_CAP_DECIMAL
           ? ownIv
@@ -7565,22 +7597,16 @@ export class MarketRuntime {
           ? cleanProvIv
           : Number.NaN;
 
-      const effTExp = Number.isFinite(tExp) && tExp > 0 ? Math.max(tExp, 1e-4) : Number.NaN;
       const effUsedIv = Number.isFinite(usedIv) && usedIv > 0 ? Math.max(usedIv, 1e-4) : Number.NaN;
-      const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
 
       // Pieza 50.1: rescate ITM vía contraparte OTM del mismo strike (paridad Put-Call)
-      // o IV ATM (±15 % moneyness) antes de colapsar a DEEP_ITM_INTRINSIC.
-      const itmContract =
-        c.contractType === 'call' ? c.strikePrice < spot - 1e-6 : c.strikePrice > spot - 1e-6;
-      const moneynessAbs = Number.isFinite(spot) && spot > 0
-        ? Math.abs(c.strikePrice - spot) / spot
-        : Number.NaN;
+      // o IV ATM (±15 % moneyness) antes de colapsar a DEEP_ITM_INTRINSIC. Pieza 50.3:
+      // la cola deep 4σ por IV ATM NO se rescata (el colapso honesto es ±1 / 0).
       const counterpartOtmIv =
         otmIvByExpiryStrike.get(`${String(c.expirationTime)}|${String(c.strikePrice)}`) ??
         Number.NaN;
       const itmRescue: ParityItmRescueResult =
-        unreliableIv && itmContract
+        unreliableIv && itmContract && !isDeep4SigmaByAtm
           ? resolveParityItmRescueIv({
               counterpartOtmIv,
               atmIv: fallbackAtmIv,
@@ -7612,7 +7638,8 @@ export class MarketRuntime {
               rate: parity.rate,
               dividendYield: parity.dividendYield,
               contractIv: null,
-              extrinsic: effectiveExt,
+              // Pieza 50.3: el extrínseco real finito (no NaN) dispara DEEP_ITM_INTRINSIC.
+              extrinsic: rawExt,
               ivAtm: fallbackAtmIv,
             })
           : null;
@@ -9240,7 +9267,7 @@ export class MarketRuntime {
             riskFreeRate: evalRateUs,
             dividendYield: evalDivUs,
             timeToExpiry: frontT,
-            dte: frontDteUs,
+            dte: frontDteCalendar,
             pairs: synthPairs,
           });
         }
@@ -9270,6 +9297,7 @@ export class MarketRuntime {
               stockFeeRate: 0.0005,
               optionFeeRate: 0.002,
               vatRate: 0,
+              dte: frontDteCalendar,
             });
           }
         }
@@ -9286,6 +9314,7 @@ export class MarketRuntime {
             stockFeeRate: 0.0005,
             optionFeeRate: 0.002,
             vatRate: 0,
+            dte: frontDteCalendar,
           });
         }
 
@@ -9510,7 +9539,7 @@ export class MarketRuntime {
                 spot,
                 targetPrice: spot * 1.06,
                 direction: 'BULLISH',
-                dte: frontDteUs,
+                dte: frontDteCalendar,
                 lotSize: lotUs,
                 contracts: optInputs,
                 terminalPrices,
@@ -9522,7 +9551,7 @@ export class MarketRuntime {
                 spot,
                 targetPrice: spot * 0.94,
                 direction: 'BEARISH',
-                dte: frontDteUs,
+                dte: frontDteCalendar,
                 lotSize: lotUs,
                 contracts: optInputs,
                 terminalPrices,
@@ -10109,6 +10138,8 @@ export class MarketRuntime {
 
     // Tasas sintéticas de ese vencimiento con el DTE exacto de `expirationDate`.
     let syntheticRates: SyntheticImpliedRatesResult | null = null;
+    let conversionReversal: ConversionReversalResult | null = null;
+    let buyWrite: BuyWriteResult | null = null;
     if (expiryParity !== null && contracts.length > 0) {
       const callMap = new Map<number, OptionSnapshotContract>();
       const putMap = new Map<number, OptionSnapshotContract>();
@@ -10135,8 +10166,57 @@ export class MarketRuntime {
           riskFreeRate: expiryParity.rate,
           dividendYield: expiryParity.dividendYield,
           timeToExpiry: Math.max(1 / 365, expiryParity.timeToExpiry),
-          dte: Math.max(1, expiryDteCalendar),
+          dte: expiryDteCalendar,
           pairs: synthPairs,
+        });
+      }
+      // Pieza 50.3: Buy-Write y Cobertura Sintética del vencimiento exacto, no congelados
+      // al front 0DTE del snapshot (DTE < 3 → BLOCKED_SHORT_DTE; DTE exacto sin clamp).
+      const expiryT = Math.max(1 / 365, expiryParity.timeToExpiry);
+      const atmStrikeExpiry = [...callMap.keys()].sort(
+        (a, b) => Math.abs(a - spot) - Math.abs(b - spot),
+      )[0];
+      if (atmStrikeExpiry !== undefined) {
+        const cAtm = callMap.get(atmStrikeExpiry);
+        const pAtm = putMap.get(atmStrikeExpiry);
+        if (
+          cAtm !== undefined &&
+          pAtm !== undefined &&
+          cAtm.lastQuote.bid > 0 &&
+          cAtm.lastQuote.ask >= cAtm.lastQuote.bid &&
+          pAtm.lastQuote.bid > 0 &&
+          pAtm.lastQuote.ask >= pAtm.lastQuote.bid
+        ) {
+          conversionReversal = evaluateConversionReversal({
+            strike: atmStrikeExpiry,
+            timeToExpiry: expiryT,
+            riskFreeTna: Math.max(0, Math.exp(expiryParity.rate) - 1),
+            spotBid: spot,
+            spotAsk: spot,
+            callBid: cAtm.lastQuote.bid,
+            callAsk: cAtm.lastQuote.ask,
+            putBid: pAtm.lastQuote.bid,
+            putAsk: pAtm.lastQuote.ask,
+            stockFeeRate: 0.0005,
+            optionFeeRate: 0.002,
+            vatRate: 0,
+            dte: expiryDteCalendar,
+          });
+        }
+      }
+      const otmCallExpiry = [...callMap.values()]
+        .filter((c) => c.strikePrice >= spot && c.lastQuote.bid > 0)
+        .sort((a, b) => a.strikePrice - b.strikePrice)[0];
+      if (otmCallExpiry !== undefined) {
+        buyWrite = evaluateBuyWrite({
+          spotAsk: spot,
+          strike: otmCallExpiry.strikePrice,
+          callBid: otmCallExpiry.lastQuote.bid,
+          timeToExpiry: expiryT,
+          stockFeeRate: 0.0005,
+          optionFeeRate: 0.002,
+          vatRate: 0,
+          dte: expiryDteCalendar,
         });
       }
     }
@@ -10246,6 +10326,9 @@ export class MarketRuntime {
       contracts: serializedContracts,
       exposureSummary: exposureResult === undefined ? null : serializeExposure(exposureResult),
       syntheticRates: syntheticRates === null ? null : sanitizeJsonValue(syntheticRates),
+      // Pieza 50.3: tasas propias del vencimiento pedido (antes congeladas al front 0DTE).
+      conversionReversal: conversionReversal === null ? null : sanitizeJsonValue(conversionReversal),
+      buyWrite: buyWrite === null ? null : sanitizeJsonValue(buyWrite),
       volAnalyticsExpiry:
         volAnalyticsExpiry === null ? null : sanitizeJsonValue(volAnalyticsExpiry),
       ...(tradierOverlay.summary !== null

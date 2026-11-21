@@ -19,9 +19,18 @@ export const MIN_EXPECTED_MOVE_T_YEARS = 1 / (252 * 6.5);
  * Normaliza una volatilidad ORATS a decimal (0.3582 = 35.82 %). Valores >= 5 (500 %) se
  * interpretan como porcentaje y se dividen por 100. Entrada no finita o negativa -> NaN.
  */
-export function normalizeOratsVolDecimal(raw: number): number {
-  if (!Number.isFinite(raw) || raw < 0) return Number.NaN;
-  return raw >= ORATS_PERCENT_DETECTION_THRESHOLD ? raw / 100 : raw;
+export function normalizeOratsVolToDecimal(v: number): number {
+  if (!Number.isFinite(v) || v < 0) return Number.NaN;
+  return v >= ORATS_PERCENT_DETECTION_THRESHOLD ? v / 100 : v;
+}
+
+/** Alias retrocompatible de Pieza 46.1 (preserva tests existentes). */
+export const normalizeOratsVolDecimal = normalizeOratsVolToDecimal;
+
+/** Normaliza tasas ORATS firmadas (ej. `borrow30`) a decimal canónico. */
+export function normalizeOratsSignedRateToDecimal(v: number): number {
+  if (!Number.isFinite(v)) return Number.NaN;
+  return Math.abs(v) >= ORATS_PERCENT_DETECTION_THRESHOLD ? v / 100 : v;
 }
 
 /** Convierte una volatilidad ORATS (decimal o porcentaje) a puntos porcentuales sin doble * 100. */

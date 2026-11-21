@@ -595,6 +595,8 @@ export interface ConversionReversalDto {
   readonly reversalAnnualizedTna: number | null;
   readonly netEdgeVsRiskFreeBps: number | null;
   readonly arbitrageSignal: string;
+  /** Pieza 50.3: bloqueo de anualización por DTE < 3. */
+  readonly rateStatus?: 'OK' | 'BLOCKED_SHORT_DTE' | 'NO_DATA';
 }
 
 export interface BuyWriteDto {
@@ -1315,6 +1317,9 @@ export interface UsOptionExpiryChainResponseDto {
   readonly contracts: readonly UsOptionContractRowDto[];
   readonly exposureSummary: NonNullable<UsSnapshotResponseDto['exposureSummary']> | null;
   readonly syntheticRates: ArOptionsQuantEnginesDto['syntheticRates'] | null;
+  /** Pieza 50.3: tasas propias del vencimiento (antes quedaban congeladas al front 0DTE). */
+  readonly conversionReversal?: ArOptionsQuantEnginesDto['conversionReversal'];
+  readonly buyWrite?: ArOptionsQuantEnginesDto['buyWrite'];
   readonly volAnalyticsExpiry: unknown | null;
   readonly usOptionsFeed?: {
     readonly provider: 'TRADIER' | 'MASSIVE';

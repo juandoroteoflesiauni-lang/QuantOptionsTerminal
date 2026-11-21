@@ -91,6 +91,8 @@ export interface ConversionReversalInput {
   readonly optionFeeRate?: number;
   readonly vatRate?: number;
   readonly shortBorrowRateTna?: number;
+  /** DTE calendario exacto (permite bloquear `DTE < 3` sin depender del float `T`). */
+  readonly dte?: number;
 }
 
 export interface ConversionReversalResult {
@@ -105,6 +107,8 @@ export interface ConversionReversalResult {
   readonly reversalEdgeVsRiskFreeBps: number;
   readonly netEdgeVsRiskFreeBps: number;
   readonly arbitrageSignal: ConversionReversalSignal;
+  /** Pieza 50.3: `BLOCKED_SHORT_DTE` si `DTE < 3`; `NO_DATA` en el payload no calculable. */
+  readonly rateStatus?: ImpliedRateStatus;
 }
 
 export interface BuyWriteInput {
@@ -116,6 +120,8 @@ export interface BuyWriteInput {
   readonly stockFeeRate?: number;
   readonly optionFeeRate?: number;
   readonly vatRate?: number;
+  /** DTE calendario exacto (permite bloquear `DTE < 3` sin depender del float `T`). */
+  readonly dte?: number;
 }
 
 export interface BuyWriteResult {
@@ -186,6 +192,7 @@ const NO_DATA_CONV_REV: ConversionReversalResult = Object.freeze({
   reversalEdgeVsRiskFreeBps: Number.NaN,
   netEdgeVsRiskFreeBps: Number.NaN,
   arbitrageSignal: 'NO_DATA',
+  rateStatus: 'NO_DATA',
 });
 
 const NO_DATA_BUY_WRITE: BuyWriteResult = Object.freeze({
@@ -465,6 +472,27 @@ export function evaluateConversionReversal(
     return NO_DATA_CONV_REV;
   }
 
+  const isShortDteBlocked =
+    (input.dte !== undefined && Number.isFinite(input.dte) && input.dte < MIN_SYNTHETIC_RATE_DTE) ||
+    timeToExpiry < MIN_SYNTHETIC_RATE_T - SHORT_DTE_EPS;
+  if (isShortDteBlocked) {
+    const blockedShortBorrowCost = spotBid * shortBorrowRateTna * timeToExpiry;
+    return {
+      status: 'OK',
+      rateStatus: 'BLOCKED_SHORT_DTE',
+      conversionNetCost,
+      conversionAnnualizedTna: Number.NaN,
+      conversionEdgeVsRiskFreeBps: Number.NaN,
+      reversalNetProceeds,
+      shortBorrowCost: blockedShortBorrowCost,
+      reversalTerminalObligation: strike + blockedShortBorrowCost,
+      reversalAnnualizedTna: Number.NaN,
+      reversalEdgeVsRiskFreeBps: Number.NaN,
+      netEdgeVsRiskFreeBps: Number.NaN,
+      arbitrageSignal: 'NO_DATA',
+    };
+  }
+
   const conversionAnnualizedTna =
     ((strike - conversionNetCost) / conversionNetCost) / timeToExpiry;
   const conversionEdgeVsRiskFreeBps =
@@ -497,6 +525,7 @@ export function evaluateConversionReversal(
 
   return {
     status: 'OK',
+    rateStatus: 'OK',
     conversionNetCost,
     conversionAnnualizedTna,
     conversionEdgeVsRiskFreeBps,
@@ -550,8 +579,22 @@ export function evaluateBuyWrite(input: BuyWriteInput): BuyWriteResult {
   const staticReturnPct = (staticProfitPerShare / netCostBasis) * 100;
   const maxAssignedProfitPerShare = strike + dividendCash - netCostBasis;
   const maxAssignedReturnPct = (maxAssignedProfitPerShare / netCostBasis) * 100;
-  const annualized = annualizeEffectiveRate(staticReturnPct / 100, timeToExpiry * 365);
-  const blocked = annualized.rateStatus === 'BLOCKED_SHORT_DTE';
+  // Pieza 50.3: `(3/365) * 365 === 2.9999999999999996 < 3` bloqueaba falsamente DTE = 3;
+  // el DTE explícito manda y la frontera exacta se ajusta con tolerancia IEEE-754.
+  const rawDteFromT = timeToExpiry * 365;
+  const effectiveDte =
+    input.dte !== undefined && Number.isFinite(input.dte)
+      ? input.dte
+      : Math.abs(rawDteFromT - MIN_SYNTHETIC_RATE_DTE) <= SHORT_DTE_EPS * 365
+        ? MIN_SYNTHETIC_RATE_DTE
+        : rawDteFromT;
+  const isShortDteBlocked =
+    (input.dte !== undefined && Number.isFinite(input.dte) && input.dte < MIN_SYNTHETIC_RATE_DTE) ||
+    timeToExpiry < MIN_SYNTHETIC_RATE_T - SHORT_DTE_EPS;
+  const annualized = isShortDteBlocked
+    ? { annualizedRate: null, rateStatus: 'BLOCKED_SHORT_DTE' as const }
+    : annualizeEffectiveRate(staticReturnPct / 100, effectiveDte);
+  const blocked = isShortDteBlocked;
   const staticAnnualizedTna = blocked ? Number.NaN : staticReturnPct / timeToExpiry;
   const assignedAnnualizedTna = blocked ? Number.NaN : maxAssignedReturnPct / timeToExpiry;
 

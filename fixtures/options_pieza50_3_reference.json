@@ -1,0 +1,1368 @@
+{
+ "meta": {
+  "generator": "tools/gen_options_pieza50_3_reference.py",
+  "tolerance": 1e-09
+ },
+ "chainIntegrityCases": [
+  {
+   "name": "spy_odd_ok",
+   "rows": [
+    580.0,
+    590.0,
+    600.0,
+    610.0,
+    620.0
+   ],
+   "spot": 600.0,
+   "expected": {
+    "valid": true,
+    "reason": "OK",
+    "medianStrike": 600.0,
+    "ratio": 1.0,
+    "validStrikeCount": 5
+   }
+  },
+  {
+   "name": "spy_even_ok",
+   "rows": [
+    580.0,
+    590.0,
+    600.0,
+    610.0,
+    620.0,
+    630.0
+   ],
+   "spot": 600.0,
+   "expected": {
+    "valid": true,
+    "reason": "OK",
+    "medianStrike": 605.0,
+    "ratio": 1.0083333333333333,
+    "validStrikeCount": 6
+   }
+  },
+  {
+   "name": "ggal_under_spy_scale_mismatch",
+   "rows": [
+    6400.0,
+    6800.0,
+    7200.0,
+    7600.0
+   ],
+   "spot": 600.0,
+   "expected": {
+    "valid": false,
+    "reason": "SCALE_MISMATCH",
+    "medianStrike": 7000.0,
+    "ratio": 11.666666666666666,
+    "validStrikeCount": 4
+   }
+  },
+  {
+   "name": "spy_under_ggal_scale_mismatch",
+   "rows": [
+    590.0,
+    600.0,
+    610.0
+   ],
+   "spot": 7200.0,
+   "expected": {
+    "valid": false,
+    "reason": "SCALE_MISMATCH",
+    "medianStrike": 600.0,
+    "ratio": 0.08333333333333333,
+    "validStrikeCount": 3
+   }
+  },
+  {
+   "name": "lower_bound_ok",
+   "rows": [
+    25.0
+   ],
+   "spot": 100.0,
+   "expected": {
+    "valid": true,
+    "reason": "OK",
+    "medianStrike": 25.0,
+    "ratio": 0.25,
+    "validStrikeCount": 1
+   }
+  },
+  {
+   "name": "upper_bound_ok",
+   "rows": [
+    300.0
+   ],
+   "spot": 100.0,
+   "expected": {
+    "valid": true,
+    "reason": "OK",
+    "medianStrike": 300.0,
+    "ratio": 3.0,
+    "validStrikeCount": 1
+   }
+  },
+  {
+   "name": "below_lower_bound",
+   "rows": [
+    24.9999
+   ],
+   "spot": 100.0,
+   "expected": {
+    "valid": false,
+    "reason": "SCALE_MISMATCH",
+    "medianStrike": 24.9999,
+    "ratio": 0.249999,
+    "validStrikeCount": 1
+   }
+  },
+  {
+   "name": "above_upper_bound",
+   "rows": [
+    300.0001
+   ],
+   "spot": 100.0,
+   "expected": {
+    "valid": false,
+    "reason": "SCALE_MISMATCH",
+    "medianStrike": 300.0001,
+    "ratio": 3.0000009999999997,
+    "validStrikeCount": 1
+   }
+  },
+  {
+   "name": "empty_chain",
+   "rows": [],
+   "spot": 600.0,
+   "expected": {
+    "valid": false,
+    "reason": "EMPTY_CHAIN",
+    "medianStrike": null,
+    "ratio": null,
+    "validStrikeCount": 0
+   }
+  },
+  {
+   "name": "invalid_spot_nan",
+   "rows": [
+    600.0
+   ],
+   "spot": null,
+   "expected": {
+    "valid": false,
+    "reason": "INVALID_SPOT",
+    "medianStrike": 600.0,
+    "ratio": null,
+    "validStrikeCount": 1
+   }
+  },
+  {
+   "name": "invalid_spot_zero",
+   "rows": [
+    600.0
+   ],
+   "spot": 0.0,
+   "expected": {
+    "valid": false,
+    "reason": "INVALID_SPOT",
+    "medianStrike": 600.0,
+    "ratio": null,
+    "validStrikeCount": 1
+   }
+  },
+  {
+   "name": "invalid_strikes",
+   "rows": [
+    -5.0,
+    null,
+    0.0
+   ],
+   "spot": 600.0,
+   "expected": {
+    "valid": false,
+    "reason": "INVALID_STRIKES",
+    "medianStrike": null,
+    "ratio": null,
+    "validStrikeCount": 0
+   }
+  },
+  {
+   "name": "valid_strike_survives_invalid_mix",
+   "rows": [
+    600.0,
+    -1.0,
+    null
+   ],
+   "spot": 600.0,
+   "expected": {
+    "valid": true,
+    "reason": "OK",
+    "medianStrike": 600.0,
+    "ratio": 1.0,
+    "validStrikeCount": 1
+   }
+  }
+ ],
+ "oratsScaleCases": {
+  "vol": [
+   {
+    "raw": 35.82,
+    "expected": 0.3582
+   },
+   {
+    "raw": 0.3582,
+    "expected": 0.3582
+   },
+   {
+    "raw": 4.99,
+    "expected": 4.99
+   },
+   {
+    "raw": 5.0,
+    "expected": 0.05
+   },
+   {
+    "raw": 0.0,
+    "expected": 0.0
+   },
+   {
+    "raw": -1.0,
+    "expected": null
+   },
+   {
+    "raw": null,
+    "expected": null
+   }
+  ],
+  "signed": [
+   {
+    "raw": -8.5,
+    "expected": -0.085
+   },
+   {
+    "raw": 0.005,
+    "expected": 0.005
+   },
+   {
+    "raw": 5.0,
+    "expected": 0.05
+   },
+   {
+    "raw": -4.99,
+    "expected": -4.99
+   }
+  ],
+  "pctIdempotence": [
+   {
+    "raw": 35.82,
+    "expectedPct": 35.82
+   },
+   {
+    "raw": 0.3582,
+    "expectedPct": 35.82
+   },
+   {
+    "raw": 4.99,
+    "expectedPct": 499.0
+   },
+   {
+    "raw": 5.0,
+    "expectedPct": 5.0
+   },
+   {
+    "raw": 0.0,
+    "expectedPct": 0.0
+   }
+  ]
+ },
+ "americanDeepAndAdaptiveCases": {
+  "deepGreeks": [
+   {
+    "name": "deep_itm_put_5d",
+    "input": {
+     "name": "deep_itm_put_5d",
+     "contractType": "put",
+     "spot": 600,
+     "strike": 680,
+     "t": 0.0136986301369863,
+     "rate": 0.043,
+     "q": 0.012,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 80,
+     "delta": -1.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   },
+   {
+    "name": "deep_itm_call_div_5d",
+    "input": {
+     "name": "deep_itm_call_div_5d",
+     "contractType": "call",
+     "spot": 700,
+     "strike": 600,
+     "t": 0.0136986301369863,
+     "rate": 0.043,
+     "q": 0.03,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 100.06570845941519,
+     "delta": 1.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   },
+   {
+    "name": "deep_otm_put_5d",
+    "input": {
+     "name": "deep_otm_put_5d",
+     "contractType": "put",
+     "spot": 600,
+     "strike": 530,
+     "t": 0.0136986301369863,
+     "rate": 0.043,
+     "q": 0.012,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 1.8629153828442213e-06,
+     "delta": 0.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   },
+   {
+    "name": "deep_otm_call_5d",
+    "input": {
+     "name": "deep_otm_call_5d",
+     "contractType": "call",
+     "spot": 600,
+     "strike": 670,
+     "t": 0.0136986301369863,
+     "rate": 0.043,
+     "q": 0.012,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 3.4226880784814055e-05,
+     "delta": 0.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   },
+   {
+    "name": "zero_dte_itm_call",
+    "input": {
+     "name": "zero_dte_itm_call",
+     "contractType": "call",
+     "spot": 600,
+     "strike": 580,
+     "t": 0.0005,
+     "rate": 0.043,
+     "q": 0.012,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 20.0088698767496,
+     "delta": 1.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   },
+   {
+    "name": "zero_dte_otm_call",
+    "input": {
+     "name": "zero_dte_otm_call",
+     "contractType": "call",
+     "spot": 600,
+     "strike": 680,
+     "t": 0.0005,
+     "rate": 0.043,
+     "q": 0.012,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 5.625650232451751e-144,
+     "delta": 0.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   },
+   {
+    "name": "zero_dte_otm_put",
+    "input": {
+     "name": "zero_dte_otm_put",
+     "contractType": "put",
+     "spot": 600,
+     "strike": 520,
+     "t": 0.0005,
+     "rate": 0.043,
+     "q": 0.012,
+     "sigma": 0.22
+    },
+    "expected": {
+     "price": 2.1022315289466476e-187,
+     "delta": 0.0,
+     "gamma": 0.0,
+     "theta": 0.0,
+     "thetaDaily": 0.0,
+     "vega": 0.0,
+     "vegaPer1Pct": 0.0,
+     "rho": 0.0,
+     "vanna": 0.0,
+     "charm": 0.0
+    }
+   }
+  ],
+  "adaptiveShortDte": {
+   "input": {
+    "spot": 600,
+    "strike": 600,
+    "t": 0.00821917808219178,
+    "rate": 0.043,
+    "q": 0.012,
+    "sigma": 0.22,
+    "contractType": "put",
+    "dS": 1.1967078127266888
+   },
+   "expected": {
+    "price": 4.700544658345109,
+    "delta": -0.491531129806898,
+    "gamma": 0.033398849921299004,
+    "theta": -281.7281000193361,
+    "thetaDaily": -0.7718578082721538,
+    "vega": 21.670242612065685,
+    "vegaPer1Pct": 0.21670242612065685,
+    "rho": -2.186424668195741,
+    "vanna": 0.0014114742110577926,
+    "charm": -0.47682219164763007
+   }
+  },
+  "ivCapCases": [
+   {
+    "name": "capped_999",
+    "iv": 9.99,
+    "extrinsic": 5.0,
+    "expected": null
+   },
+   {
+    "name": "below_cap",
+    "iv": 9.98,
+    "extrinsic": 5.0,
+    "expected": 9.98
+   },
+   {
+    "name": "exhausted_extrinsic",
+    "iv": 0.5,
+    "extrinsic": 0.0,
+    "expected": null
+   },
+   {
+    "name": "extrinsic_eps_bound",
+    "iv": 0.5,
+    "extrinsic": 0.01,
+    "expected": null
+   },
+   {
+    "name": "extrinsic_above_eps",
+    "iv": 0.5,
+    "extrinsic": 0.0100001,
+    "expected": 0.5
+   }
+  ]
+ },
+ "buyWriteCases": [
+  {
+   "name": "blocked_dte_0",
+   "input": {
+    "spotAsk": 100.0,
+    "strike": 105.0,
+    "callBid": 2.2,
+    "timeToExpiry": 0.0027397260273972603,
+    "dte": 0,
+    "vatRate": 0.0
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 0.054400000000000004,
+    "netCostBasis": 97.8544,
+    "breakevenPrice": 97.8544,
+    "downsideProtectionPct": 2.1456000000000017,
+    "staticProfitPerShare": 2.1456000000000017,
+    "staticReturnPct": 2.1926453996958766,
+    "staticAnnualizedTna": null,
+    "maxAssignedProfitPerShare": 7.145600000000002,
+    "maxAssignedReturnPct": 7.302277669680671,
+    "assignedAnnualizedTna": null,
+    "annualizedRate": null,
+    "rateStatus": "BLOCKED_SHORT_DTE"
+   }
+  },
+  {
+   "name": "blocked_dte_1",
+   "input": {
+    "spotAsk": 100.0,
+    "strike": 105.0,
+    "callBid": 2.2,
+    "timeToExpiry": 0.0027397260273972603,
+    "dte": 1,
+    "vatRate": 0.0
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 0.054400000000000004,
+    "netCostBasis": 97.8544,
+    "breakevenPrice": 97.8544,
+    "downsideProtectionPct": 2.1456000000000017,
+    "staticProfitPerShare": 2.1456000000000017,
+    "staticReturnPct": 2.1926453996958766,
+    "staticAnnualizedTna": null,
+    "maxAssignedProfitPerShare": 7.145600000000002,
+    "maxAssignedReturnPct": 7.302277669680671,
+    "assignedAnnualizedTna": null,
+    "annualizedRate": null,
+    "rateStatus": "BLOCKED_SHORT_DTE"
+   }
+  },
+  {
+   "name": "blocked_dte_2",
+   "input": {
+    "spotAsk": 100.0,
+    "strike": 105.0,
+    "callBid": 2.2,
+    "timeToExpiry": 0.005479452054794521,
+    "dte": 2,
+    "vatRate": 0.0
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 0.054400000000000004,
+    "netCostBasis": 97.8544,
+    "breakevenPrice": 97.8544,
+    "downsideProtectionPct": 2.1456000000000017,
+    "staticProfitPerShare": 2.1456000000000017,
+    "staticReturnPct": 2.1926453996958766,
+    "staticAnnualizedTna": null,
+    "maxAssignedProfitPerShare": 7.145600000000002,
+    "maxAssignedReturnPct": 7.302277669680671,
+    "assignedAnnualizedTna": null,
+    "annualizedRate": null,
+    "rateStatus": "BLOCKED_SHORT_DTE"
+   }
+  },
+  {
+   "name": "boundary_3_365_no_dte",
+   "input": {
+    "spotAsk": 100.0,
+    "strike": 105.0,
+    "callBid": 2.2,
+    "timeToExpiry": 0.00821917808219178,
+    "vatRate": 0.0
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 0.054400000000000004,
+    "netCostBasis": 97.8544,
+    "breakevenPrice": 97.8544,
+    "downsideProtectionPct": 2.1456000000000017,
+    "staticProfitPerShare": 2.1456000000000017,
+    "staticReturnPct": 2.1926453996958766,
+    "staticAnnualizedTna": 266.77185696299836,
+    "maxAssignedProfitPerShare": 7.145600000000002,
+    "maxAssignedReturnPct": 7.302277669680671,
+    "assignedAnnualizedTna": 888.4437831444817,
+    "annualizedRate": 12.99769082792722,
+    "rateStatus": "OK"
+   }
+  },
+  {
+   "name": "boundary_3_365_dte_3",
+   "input": {
+    "spotAsk": 100.0,
+    "strike": 105.0,
+    "callBid": 2.2,
+    "timeToExpiry": 0.00821917808219178,
+    "dte": 3,
+    "vatRate": 0.0
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 0.054400000000000004,
+    "netCostBasis": 97.8544,
+    "breakevenPrice": 97.8544,
+    "downsideProtectionPct": 2.1456000000000017,
+    "staticProfitPerShare": 2.1456000000000017,
+    "staticReturnPct": 2.1926453996958766,
+    "staticAnnualizedTna": 266.77185696299836,
+    "maxAssignedProfitPerShare": 7.145600000000002,
+    "maxAssignedReturnPct": 7.302277669680671,
+    "assignedAnnualizedTna": 888.4437831444817,
+    "annualizedRate": 12.99769082792722,
+    "rateStatus": "OK"
+   }
+  },
+  {
+   "name": "spy_30dte",
+   "input": {
+    "spotAsk": 600.0,
+    "strike": 610.0,
+    "callBid": 8.5,
+    "timeToExpiry": 0.0821917808219178,
+    "stockFeeRate": 0.0005,
+    "optionFeeRate": 0.002,
+    "vatRate": 0.21
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 0.38356999999999997,
+    "netCostBasis": 591.88357,
+    "breakevenPrice": 591.88357,
+    "downsideProtectionPct": 1.3527383333333394,
+    "staticProfitPerShare": 8.116430000000037,
+    "staticReturnPct": 1.3712882754964861,
+    "staticAnnualizedTna": 16.684007351873916,
+    "maxAssignedProfitPerShare": 18.116430000000037,
+    "maxAssignedReturnPct": 3.060809746754761,
+    "assignedAnnualizedTna": 37.239851918849595,
+    "annualizedRate": 0.18022664923816256,
+    "rateStatus": "OK"
+   }
+  },
+  {
+   "name": "ggal_30dte",
+   "input": {
+    "spotAsk": 7200.0,
+    "strike": 7500.0,
+    "callBid": 260.0,
+    "timeToExpiry": 0.0821917808219178,
+    "stockFeeRate": 0.0005,
+    "optionFeeRate": 0.002,
+    "vatRate": 0.21
+   },
+   "expected": {
+    "status": "OK",
+    "totalFeesPerShare": 4.9852,
+    "netCostBasis": 6944.9852,
+    "breakevenPrice": 6944.9852,
+    "downsideProtectionPct": 3.541872222222221,
+    "staticProfitPerShare": 255.01479999999992,
+    "staticReturnPct": 3.6719271914359144,
+    "staticAnnualizedTna": 44.675114162470294,
+    "maxAssignedProfitPerShare": 555.0147999999999,
+    "maxAssignedReturnPct": 7.991590824412411,
+    "assignedAnnualizedTna": 97.23102169701767,
+    "annualizedRate": 0.5507588115520234,
+    "rateStatus": "OK"
+   }
+  }
+ ],
+ "conversionReversalCases": [
+  {
+   "name": "blocked_dte_0",
+   "input": {
+    "strike": 100.0,
+    "riskFreeTna": 0.3,
+    "spotBid": 99.0,
+    "spotAsk": 100.0,
+    "callBid": 5.0,
+    "callAsk": 5.2,
+    "putBid": 4.0,
+    "putAsk": 4.2,
+    "vatRate": 0.21,
+    "timeToExpiry": 0.0027397260273972603,
+    "dte": 0
+   },
+   "expected": {
+    "status": "OK",
+    "rateStatus": "BLOCKED_SHORT_DTE",
+    "conversionNetCost": 99.282764,
+    "conversionAnnualizedTna": null,
+    "conversionEdgeVsRiskFreeBps": null,
+    "reversalNetProceeds": 97.71784099999999,
+    "shortBorrowCost": 0.005424657534246575,
+    "reversalTerminalObligation": 100.00542465753425,
+    "reversalAnnualizedTna": null,
+    "reversalEdgeVsRiskFreeBps": null,
+    "netEdgeVsRiskFreeBps": null,
+    "arbitrageSignal": "NO_DATA"
+   }
+  },
+  {
+   "name": "blocked_dte_1",
+   "input": {
+    "strike": 100.0,
+    "riskFreeTna": 0.3,
+    "spotBid": 99.0,
+    "spotAsk": 100.0,
+    "callBid": 5.0,
+    "callAsk": 5.2,
+    "putBid": 4.0,
+    "putAsk": 4.2,
+    "vatRate": 0.21,
+    "timeToExpiry": 0.0027397260273972603,
+    "dte": 1
+   },
+   "expected": {
+    "status": "OK",
+    "rateStatus": "BLOCKED_SHORT_DTE",
+    "conversionNetCost": 99.282764,
+    "conversionAnnualizedTna": null,
+    "conversionEdgeVsRiskFreeBps": null,
+    "reversalNetProceeds": 97.71784099999999,
+    "shortBorrowCost": 0.005424657534246575,
+    "reversalTerminalObligation": 100.00542465753425,
+    "reversalAnnualizedTna": null,
+    "reversalEdgeVsRiskFreeBps": null,
+    "netEdgeVsRiskFreeBps": null,
+    "arbitrageSignal": "NO_DATA"
+   }
+  },
+  {
+   "name": "blocked_dte_2",
+   "input": {
+    "strike": 100.0,
+    "riskFreeTna": 0.3,
+    "spotBid": 99.0,
+    "spotAsk": 100.0,
+    "callBid": 5.0,
+    "callAsk": 5.2,
+    "putBid": 4.0,
+    "putAsk": 4.2,
+    "vatRate": 0.21,
+    "timeToExpiry": 0.005479452054794521,
+    "dte": 2
+   },
+   "expected": {
+    "status": "OK",
+    "rateStatus": "BLOCKED_SHORT_DTE",
+    "conversionNetCost": 99.282764,
+    "conversionAnnualizedTna": null,
+    "conversionEdgeVsRiskFreeBps": null,
+    "reversalNetProceeds": 97.71784099999999,
+    "shortBorrowCost": 0.01084931506849315,
+    "reversalTerminalObligation": 100.0108493150685,
+    "reversalAnnualizedTna": null,
+    "reversalEdgeVsRiskFreeBps": null,
+    "netEdgeVsRiskFreeBps": null,
+    "arbitrageSignal": "NO_DATA"
+   }
+  },
+  {
+   "name": "ok_dte_3",
+   "input": {
+    "strike": 100.0,
+    "riskFreeTna": 0.3,
+    "spotBid": 99.0,
+    "spotAsk": 100.0,
+    "callBid": 5.0,
+    "callAsk": 5.2,
+    "putBid": 4.0,
+    "putAsk": 4.2,
+    "vatRate": 0.21,
+    "timeToExpiry": 0.00821917808219178,
+    "dte": 3
+   },
+   "expected": {
+    "status": "OK",
+    "rateStatus": "OK",
+    "conversionNetCost": 99.282764,
+    "conversionAnnualizedTna": 0.8789412161544305,
+    "conversionEdgeVsRiskFreeBps": 5789.4121615443055,
+    "reversalNetProceeds": 97.71784099999999,
+    "shortBorrowCost": 0.016273972602739724,
+    "reversalTerminalObligation": 100.01627397260275,
+    "reversalAnnualizedTna": 2.861736152493741,
+    "reversalEdgeVsRiskFreeBps": -25617.36152493741,
+    "netEdgeVsRiskFreeBps": 5789.4121615443055,
+    "arbitrageSignal": "EXECUTABLE_CONVERSION"
+   }
+  },
+  {
+   "name": "ok_dte_30",
+   "input": {
+    "strike": 100.0,
+    "riskFreeTna": 0.3,
+    "spotBid": 99.0,
+    "spotAsk": 100.0,
+    "callBid": 5.0,
+    "callAsk": 5.2,
+    "putBid": 4.0,
+    "putAsk": 4.2,
+    "vatRate": 0.21,
+    "timeToExpiry": 0.0821917808219178,
+    "dte": 30
+   },
+   "expected": {
+    "status": "OK",
+    "rateStatus": "OK",
+    "conversionNetCost": 99.282764,
+    "conversionAnnualizedTna": 0.08789412161544305,
+    "conversionEdgeVsRiskFreeBps": -2121.0587838455695,
+    "reversalNetProceeds": 97.71784099999999,
+    "shortBorrowCost": 0.16273972602739725,
+    "reversalTerminalObligation": 100.1627397260274,
+    "reversalAnnualizedTna": 0.304409793840343,
+    "reversalEdgeVsRiskFreeBps": -44.09793840343013,
+    "netEdgeVsRiskFreeBps": -44.09793840343013,
+    "arbitrageSignal": "NO_ARBITRAGE_WITHIN_BOUNDS"
+   }
+  }
+ ],
+ "zeroDteAndRatiosSigmaCases": {
+  "dteLabels": [
+   {
+    "dte": 0,
+    "expected": "0DTE"
+   },
+   {
+    "dte": 1,
+    "expected": "1d"
+   },
+   {
+    "dte": 30,
+    "expected": "30d"
+   },
+   {
+    "dte": null,
+    "expected": "\u2014"
+   }
+  ],
+  "ratiosCases": [
+   {
+    "name": "zero_dte_sigma_0_20",
+    "input": {
+     "spot": 600.0,
+     "daysToExpiry": 0,
+     "rate": 0.04,
+     "dividendYield": 0.0,
+     "ivAtmDec": 0.2,
+     "strikes": [
+      {
+       "strike": 560,
+       "callBid": 0.02,
+       "callAsk": 0.04,
+       "callMid": 0.03,
+       "putBid": 42.0,
+       "putAsk": 42.4,
+       "putMid": 42.2
+      },
+      {
+       "strike": 575,
+       "callBid": 0.05,
+       "callAsk": 0.09,
+       "callMid": 0.07,
+       "putBid": 27.5,
+       "putAsk": 27.9,
+       "putMid": 27.7
+      },
+      {
+       "strike": 585,
+       "callBid": 0.2,
+       "callAsk": 0.3,
+       "callMid": 0.25,
+       "putBid": 17.6,
+       "putAsk": 18.0,
+       "putMid": 17.8
+      },
+      {
+       "strike": 590,
+       "callBid": 0.4,
+       "callAsk": 0.5,
+       "callMid": 0.45,
+       "putBid": 12.9,
+       "putAsk": 13.3,
+       "putMid": 13.1
+      },
+      {
+       "strike": 595,
+       "callBid": 0.8,
+       "callAsk": 0.92,
+       "callMid": 0.86,
+       "putBid": 8.3,
+       "putAsk": 8.7,
+       "putMid": 8.5
+      },
+      {
+       "strike": 598,
+       "callBid": 1.15,
+       "callAsk": 1.3,
+       "callMid": 1.22,
+       "putBid": 5.7,
+       "putAsk": 6.1,
+       "putMid": 5.9
+      },
+      {
+       "strike": 600,
+       "callBid": 1.6,
+       "callAsk": 1.8,
+       "callMid": 1.7,
+       "putBid": 4.3,
+       "putAsk": 4.7,
+       "putMid": 4.5
+      },
+      {
+       "strike": 602,
+       "callBid": 2.2,
+       "callAsk": 2.45,
+       "callMid": 2.32,
+       "putBid": 3.0,
+       "putAsk": 3.4,
+       "putMid": 3.2
+      },
+      {
+       "strike": 604,
+       "callBid": 2.9,
+       "callAsk": 3.2,
+       "callMid": 3.05,
+       "putBid": 2.0,
+       "putAsk": 2.3,
+       "putMid": 2.15
+      },
+      {
+       "strike": 606,
+       "callBid": 3.6,
+       "callAsk": 3.95,
+       "callMid": 3.77,
+       "putBid": 1.25,
+       "putAsk": 1.5,
+       "putMid": 1.37
+      },
+      {
+       "strike": 608,
+       "callBid": 4.4,
+       "callAsk": 4.8,
+       "callMid": 4.6,
+       "putBid": 0.75,
+       "putAsk": 0.95,
+       "putMid": 0.85
+      },
+      {
+       "strike": 610,
+       "callBid": 5.3,
+       "callAsk": 5.75,
+       "callMid": 5.52,
+       "putBid": 0.4,
+       "putAsk": 0.55,
+       "putMid": 0.475
+      },
+      {
+       "strike": 615,
+       "callBid": 7.8,
+       "callAsk": 8.4,
+       "callMid": 8.1,
+       "putBid": 0.12,
+       "putAsk": 0.2,
+       "putMid": 0.16
+      },
+      {
+       "strike": 620,
+       "callBid": 10.5,
+       "callAsk": 11.2,
+       "callMid": 10.85,
+       "putBid": 0.02,
+       "putAsk": 0.05,
+       "putMid": 0.035
+      },
+      {
+       "strike": 630,
+       "callBid": 16.2,
+       "callAsk": 17.1,
+       "callMid": 16.65,
+       "putBid": 0.01,
+       "putAsk": 0.02,
+       "putMid": 0.015
+      },
+      {
+       "strike": 640,
+       "callBid": 22.5,
+       "callAsk": 23.5,
+       "callMid": 23.0,
+       "putBid": 0.005,
+       "putAsk": 0.01,
+       "putMid": 0.0075
+      },
+      {
+       "strike": 660,
+       "callBid": 35.0,
+       "callAsk": 36.5,
+       "callMid": 35.75,
+       "putBid": 0.0,
+       "putAsk": 0.0,
+       "putMid": 0.0
+      }
+     ]
+    },
+    "expected": {
+     "useSigma": true,
+     "ratioExpectedMove": 4.441399261185632,
+     "callRatios": [
+      {
+       "side": "CALL",
+       "targetOffsetPct": 0.3701166050988025,
+       "longStrike": 600,
+       "longPrice": 1.8,
+       "shortStrike": 602,
+       "shortPrice": 2.2,
+       "otmLotsPerBought": 0.8181818181818181,
+       "netCash1x2": 2.6000000000000005,
+       "outerBreakeven1x2": 606.6
+      },
+      {
+       "side": "CALL",
+       "targetOffsetPct": 0.740233210197605,
+       "longStrike": 600,
+       "longPrice": 1.8,
+       "shortStrike": 604,
+       "shortPrice": 2.9,
+       "otmLotsPerBought": 0.6206896551724138,
+       "netCash1x2": 4.0,
+       "outerBreakeven1x2": 612.0
+      },
+      {
+       "side": "CALL",
+       "targetOffsetPct": 1.1103498152964075,
+       "longStrike": 600,
+       "longPrice": 1.8,
+       "shortStrike": 606,
+       "shortPrice": 3.6,
+       "otmLotsPerBought": 0.5,
+       "netCash1x2": 5.4,
+       "outerBreakeven1x2": 617.4
+      }
+     ],
+     "putRatios": [
+      {
+       "side": "PUT",
+       "targetOffsetPct": -0.3701166050987914,
+       "longStrike": 600,
+       "longPrice": 4.7,
+       "shortStrike": 598,
+       "shortPrice": 5.7,
+       "otmLotsPerBought": 0.8245614035087719,
+       "netCash1x2": 6.7,
+       "outerBreakeven1x2": 589.3
+      },
+      {
+       "side": "PUT",
+       "targetOffsetPct": -0.7402332101976161,
+       "longStrike": 600,
+       "longPrice": 4.7,
+       "shortStrike": 595,
+       "shortPrice": 8.3,
+       "otmLotsPerBought": 0.5662650602409638,
+       "netCash1x2": 11.900000000000002,
+       "outerBreakeven1x2": 578.1
+      },
+      {
+       "side": "PUT",
+       "targetOffsetPct": -1.1103498152964075,
+       "longStrike": 600,
+       "longPrice": 4.7,
+       "shortStrike": 590,
+       "shortPrice": 12.9,
+       "otmLotsPerBought": 0.3643410852713178,
+       "netCash1x2": 21.1,
+       "outerBreakeven1x2": 558.9
+      }
+     ]
+    }
+   },
+   {
+    "name": "thirty_dte_sigma_0_22",
+    "input": {
+     "spot": 600.0,
+     "daysToExpiry": 30,
+     "rate": 0.04,
+     "dividendYield": 0.0,
+     "ivAtmDec": 0.22,
+     "strikes": [
+      {
+       "strike": 540,
+       "callBid": 0.1,
+       "callAsk": 0.15,
+       "callMid": 0.12,
+       "putBid": 0.02,
+       "putAsk": 0.05,
+       "putMid": 0.035
+      },
+      {
+       "strike": 543,
+       "callBid": 0.15,
+       "callAsk": 0.22,
+       "callMid": 0.18,
+       "putBid": 0.01,
+       "putAsk": 0.025,
+       "putMid": 0.0175
+      },
+      {
+       "strike": 550,
+       "callBid": 0.3,
+       "callAsk": 0.4,
+       "callMid": 0.35,
+       "putBid": 0.02,
+       "putAsk": 0.05,
+       "putMid": 0.035
+      },
+      {
+       "strike": 560,
+       "callBid": 0.7,
+       "callAsk": 0.9,
+       "callMid": 0.8,
+       "putBid": 0.15,
+       "putAsk": 0.25,
+       "putMid": 0.2
+      },
+      {
+       "strike": 562,
+       "callBid": 0.85,
+       "callAsk": 1.05,
+       "callMid": 0.95,
+       "putBid": 0.2,
+       "putAsk": 0.32,
+       "putMid": 0.26
+      },
+      {
+       "strike": 581,
+       "callBid": 3.2,
+       "callAsk": 3.6,
+       "callMid": 3.4,
+       "putBid": 3.1,
+       "putAsk": 3.6,
+       "putMid": 3.35
+      },
+      {
+       "strike": 600,
+       "callBid": 11.5,
+       "callAsk": 12.2,
+       "callMid": 11.85,
+       "putBid": 11.0,
+       "putAsk": 11.7,
+       "putMid": 11.35
+      },
+      {
+       "strike": 610,
+       "callBid": 6.4,
+       "callAsk": 6.9,
+       "callMid": 6.65,
+       "putBid": 17.4,
+       "putAsk": 18.2,
+       "putMid": 17.8
+      },
+      {
+       "strike": 619,
+       "callBid": 0.01,
+       "callAsk": 4.55,
+       "callMid": 2.28,
+       "putBid": 22.6,
+       "putAsk": 23.5,
+       "putMid": 23.05
+      },
+      {
+       "strike": 620,
+       "callBid": 0.02,
+       "callAsk": 3.85,
+       "callMid": 1.93,
+       "putBid": 23.4,
+       "putAsk": 24.3,
+       "putMid": 23.85
+      },
+      {
+       "strike": 638,
+       "callBid": 0.8,
+       "callAsk": 1.0,
+       "callMid": 0.9,
+       "putBid": 34.6,
+       "putAsk": 35.6,
+       "putMid": 35.1
+      },
+      {
+       "strike": 640,
+       "callBid": 0.6,
+       "callAsk": 0.8,
+       "callMid": 0.7,
+       "putBid": 35.4,
+       "putAsk": 36.5,
+       "putMid": 35.95
+      },
+      {
+       "strike": 657,
+       "callBid": 0.02,
+       "callAsk": 0.06,
+       "callMid": 0.04,
+       "putBid": 45.6,
+       "putAsk": 47.0,
+       "putMid": 46.3
+      },
+      {
+       "strike": 660,
+       "callBid": 0.01,
+       "callAsk": 0.03,
+       "callMid": 0.02,
+       "putBid": 47.0,
+       "putAsk": 48.4,
+       "putMid": 47.7
+      }
+     ]
+    },
+    "expected": {
+     "useSigma": true,
+     "ratioExpectedMove": 37.843223819345724,
+     "callRatios": [
+      {
+       "side": "CALL",
+       "targetOffsetPct": 3.1536019849454755,
+       "longStrike": 600,
+       "longPrice": 12.2,
+       "shortStrike": 620,
+       "shortPrice": 0.02,
+       "otmLotsPerBought": 610.0,
+       "netCash1x2": -12.16,
+       "outerBreakeven1x2": 627.84
+      },
+      {
+       "side": "CALL",
+       "targetOffsetPct": 6.307203969890951,
+       "longStrike": 600,
+       "longPrice": 12.2,
+       "shortStrike": 638,
+       "shortPrice": 0.8,
+       "otmLotsPerBought": 15.249999999999998,
+       "netCash1x2": -10.6,
+       "outerBreakeven1x2": 665.4
+      },
+      {
+       "side": "CALL",
+       "targetOffsetPct": 9.460805954836427,
+       "longStrike": 600,
+       "longPrice": 12.2,
+       "shortStrike": 657,
+       "shortPrice": 0.02,
+       "otmLotsPerBought": 610.0,
+       "netCash1x2": -12.16,
+       "outerBreakeven1x2": 701.84
+      }
+     ],
+     "putRatios": [
+      {
+       "side": "PUT",
+       "targetOffsetPct": -3.1536019849454755,
+       "longStrike": 600,
+       "longPrice": 11.7,
+       "shortStrike": 581,
+       "shortPrice": 3.1,
+       "otmLotsPerBought": 3.7741935483870965,
+       "netCash1x2": -5.499999999999999,
+       "outerBreakeven1x2": 567.5
+      },
+      {
+       "side": "PUT",
+       "targetOffsetPct": -6.30720396989094,
+       "longStrike": 600,
+       "longPrice": 11.7,
+       "shortStrike": 562,
+       "shortPrice": 0.2,
+       "otmLotsPerBought": 58.49999999999999,
+       "netCash1x2": -11.299999999999999,
+       "outerBreakeven1x2": 535.3
+      },
+      {
+       "side": "PUT",
+       "targetOffsetPct": -9.460805954836438,
+       "longStrike": 600,
+       "longPrice": 11.7,
+       "shortStrike": 540,
+       "shortPrice": 0.02,
+       "otmLotsPerBought": 585.0,
+       "netCash1x2": -11.66,
+       "outerBreakeven1x2": 491.66
+      }
+     ]
+    }
+   },
+   {
+    "name": "illiquid_short_legs",
+    "input": {
+     "spot": 600.0,
+     "daysToExpiry": 15,
+     "rate": 0.04,
+     "dividendYield": 0.0,
+     "ivAtmDec": 0.25,
+     "strikes": [
+      {
+       "strike": 590,
+       "callBid": 0.5,
+       "callAsk": 0.7,
+       "callMid": 0.6,
+       "putBid": 0.01,
+       "putAsk": 0.02,
+       "putMid": 0.015
+      },
+      {
+       "strike": 600,
+       "callBid": 0.8,
+       "callAsk": 1.0,
+       "callMid": 0.9,
+       "putBid": 0.8,
+       "putAsk": 1.0,
+       "putMid": 0.9
+      },
+      {
+       "strike": 610,
+       "callBid": 0.01,
+       "callAsk": 0.05,
+       "callMid": 0.03,
+       "putBid": 0.9,
+       "putAsk": 1.1,
+       "putMid": 1.0
+      }
+     ]
+    },
+    "expected": {
+     "useSigma": true,
+     "ratioExpectedMove": 30.408182027976867,
+     "callRatios": [],
+     "putRatios": []
+    }
+   }
+  ]
+ }
+}
