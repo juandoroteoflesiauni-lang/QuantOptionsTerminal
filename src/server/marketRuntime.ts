@@ -10495,7 +10495,7 @@ export class MarketRuntime {
 
     const result = await this.barsCache.getOrCompute(
       cacheKey,
-      () => this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly),
+      () => this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly, cacheKey),
       options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh },
     );
     return result.value;
@@ -10506,6 +10506,7 @@ export class MarketRuntime {
     timeframe: Timeframe,
     visibleBars: number,
     rthOnly: boolean,
+    barsCacheKey: string,
   ): Promise<TerminalBarsResponse> {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const barSeconds = TIMEFRAME_SECONDS[timeframe];
@@ -10843,6 +10844,7 @@ export class MarketRuntime {
         parsed.canonicalSymbol,
         timeframe === '1D' ? bars : null,
         nowSec,
+        barsCacheKey,
       );
     } catch {
       autoAvwapAnchors = [];
@@ -10925,6 +10927,12 @@ export class MarketRuntime {
    * re-entrada intacto. Con cobertura corta real se degrada con datos válidos
    * sin sellar la caché diaria como si el insumo fuera completo.
    *
+   * Hotfix 50.5 (single-flight): `enclosingBarsKey` es la clave de barras que
+   * está computando esta resolución. Si es la propia `bars:…:1D:ext:400`, la
+   * carga de recuperación queda prohibida porque `getOrCompute` de esa clave
+   * devolvería el vuelo pendiente de la operación (espera circular); en ese
+   * caso se degrada con las cerradas ya disponibles.
+   *
    * Si FMP está habilitado pero la consulta de eventos falló, devuelve las anclas
    * degradadas (`PIVOT + RVOL`) **sin** sellar la caché diaria, permitiendo recuperar
    * `EVENT` automáticamente al siguiente refresh tras el backoff corto.
@@ -10933,6 +10941,7 @@ export class MarketRuntime {
     canonicalSymbol: string,
     dailyBarsHint: readonly Bar[] | null,
     nowSec: number,
+    enclosingBarsKey: string,
   ): Promise<readonly AutoAvwapAnchor[]> {
     const cacheKey = `US:${canonicalSymbol}:${fmpEtDateKey(nowSec)}`;
     const cached = this.autoAvwapCache.peek(cacheKey);
@@ -10954,12 +10963,16 @@ export class MarketRuntime {
       return reentrant.anchors;
     }
 
+    const daily400Key = `bars:${canonicalSymbol}:1D:ext:400`;
+    // Hotfix: nunca esperar la propia clave SingleFlight en vuelo.
+    const canLoadDailyWindow = enclosingBarsKey !== daily400Key;
+
     this.autoAvwapResolveInFlight.add(cacheKey);
     try {
       // Fuente única: hint suficiente, caché diaria de 400 o una sola carga.
       let dailyBars: readonly Bar[] = hintCoversWindow ? closedHint : [];
-      if (dailyBars.length === 0) {
-        const peeked = this.barsCache.peek(`bars:${canonicalSymbol}:1D:ext:400`)?.value;
+      if (dailyBars.length === 0 && canLoadDailyWindow) {
+        const peeked = this.barsCache.peek(daily400Key)?.value;
         if (peeked !== undefined) {
           const cachedClosed = filterClosedDailyBarsUs(
             peeked.bars.map((bar) => ({
@@ -10975,7 +10988,7 @@ export class MarketRuntime {
           if (cachedClosed.length > dailyBars.length) dailyBars = cachedClosed;
         }
       }
-      if (dailyBars.length === 0) {
+      if (dailyBars.length === 0 && canLoadDailyWindow) {
         const fetched = await this.getBars(canonicalSymbol, '1D', { visibleBars: 400 });
         const fetchedClosed = filterClosedDailyBarsUs(
           fetched.bars.map((bar) => ({
@@ -10989,6 +11002,11 @@ export class MarketRuntime {
           nowSec,
         );
         if (fetchedClosed.length > dailyBars.length) dailyBars = fetchedClosed;
+      }
+      if (dailyBars.length === 0 && !canLoadDailyWindow) {
+        // Se está computando la propia ventana 1D:400: sin otra fuente posible
+        // sin esperar el propio vuelo, se degrada con las cerradas disponibles.
+        dailyBars = closedHint;
       }
       const outcome = await this.computeAutoAvwapAnchorsOutcome(canonicalSymbol, dailyBars, nowSec);
       assertJsonSafeSerialized(outcome.anchors);

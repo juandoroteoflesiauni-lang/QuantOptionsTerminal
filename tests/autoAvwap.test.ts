@@ -497,6 +497,27 @@ function countDailyLoads(calls: readonly string[]): number {
   return calls.filter((call) => call.startsWith('1D:')).length;
 }
 
+/** Timeout de seguridad para detectar bloqueos; nunca es el mecanismo de sincronización. */
+const HOTFIX_SAFETY_TIMEOUT_MS = 2_000;
+
+function withSafetyTimeout<T>(promise: Promise<T>, ms = HOTFIX_SAFETY_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('HOTFIX_SINGLEFLIGHT_TIMEOUT'));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 describe('Pieza 50.5 — backend: /api/bars adjunta autoAvwapAnchors cacheados por día', () => {
   it('cachea por símbolo y día: una sola carga 1D por día y cero requests FMP sin proveedor', async () => {
     const { calls, loader } = makeOfflineBarsLoader();
@@ -1058,6 +1079,71 @@ describe('Pieza 50.5 — backend: /api/bars adjunta autoAvwapAnchors cacheados p
     const daily = await runtime.getBars('B3G', '1D', { visibleBars: 420 });
     expect(daily.autoAvwapAnchors).toEqual(intradayAnchors);
     expect(earningsCalls).toBe(1);
+  });
+
+  it('Hotfix single-flight: 1D:400 en frío con <380 cerradas degrada sin esperar su propia clave', async () => {
+    const shortDaily = makeBackendDailyBars(250, FIXED_NOW_SEC - 86_400);
+    const { calls, loader } = makeFixedDailyLoader(() => shortDaily);
+    const runtime = makeOfflineRuntime(loader);
+
+    const first = await withSafetyTimeout(runtime.getBars('HF1', '1D', { visibleBars: 400 }));
+    const firstAnchors = first.autoAvwapAnchors ?? [];
+    // Degradación segura con las cerradas disponibles, sin inventar barras.
+    expect(firstAnchors).toEqual(detectAutoAvwapAnchors(shortDaily, []));
+    expect(firstAnchors.length).toBeGreaterThanOrEqual(1);
+    // Sin recursión ni cargas repetidas: una sola ejecución del loader 1D:400.
+    expect(calls.filter((call) => call === '1D:400')).toHaveLength(1);
+
+    // Consulta posterior: reutiliza la ventana completada, sin REST nuevo.
+    const second = await withSafetyTimeout(runtime.getBars('HF1', '5m', { visibleBars: 200 }));
+    expect(second.autoAvwapAnchors).toEqual(firstAnchors);
+    expect(calls.filter((call) => call === '1D:400')).toHaveLength(1);
+  });
+
+  it('Hotfix single-flight: dos solicitudes concurrentes de la misma clave resuelven sin bloqueo', async () => {
+    const shortDaily = makeBackendDailyBars(250, FIXED_NOW_SEC - 86_400);
+    const { calls, loader } = makeFixedDailyLoader(() => shortDaily);
+    const runtime = makeOfflineRuntime(loader);
+
+    const [first, second] = await withSafetyTimeout(
+      Promise.all([
+        runtime.getBars('HF2', '1D', { visibleBars: 400 }),
+        runtime.getBars('HF2', '1D', { visibleBars: 400 }),
+      ]),
+    );
+    expect(first.autoAvwapAnchors).toEqual(second.autoAvwapAnchors);
+    expect(first.bars).toHaveLength(250);
+    // SingleFlight conserva la deduplicación legítima: una sola carga.
+    expect(calls.filter((call) => call.startsWith('1D:'))).toHaveLength(1);
+  });
+
+  it('Hotfix single-flight: la cobertura corta no se sella y una consulta posterior recupera', async () => {
+    let dataset: readonly Bar[] = makeBackendDailyBars(250, FIXED_NOW_SEC - 86_400);
+    let nowMs = FIXED_NOW_MS;
+    const { calls, loader } = makeFixedDailyLoader(() => dataset);
+    const runtime = makeOfflineRuntime(loader, () => nowMs);
+
+    const degraded = await withSafetyTimeout(runtime.getBars('HF3', '1D', { visibleBars: 400 }));
+    const degradedAnchors = degraded.autoAvwapAnchors ?? [];
+    expect(degradedAnchors).toEqual(detectAutoAvwapAnchors(dataset, []));
+
+    // Mismo día, misma caché de barras parcial: se reutiliza sin sellarla.
+    const withinTtl = await withSafetyTimeout(runtime.getBars('HF3', '5m', { visibleBars: 200 }));
+    expect(withinTtl.autoAvwapAnchors).toEqual(degradedAnchors);
+    expect(calls.filter((call) => call === '1D:400')).toHaveLength(1);
+
+    // Proveedor con cobertura completa y TTL de barras vencido: recupera y sella.
+    nowMs = FIXED_NOW_MS + 60_000;
+    dataset = makeBackendDailyBars(420, FIXED_NOW_SEC - 86_400);
+    const recovered = await withSafetyTimeout(runtime.getBars('HF3', '5m', { visibleBars: 200 }));
+    const recoveredAnchors = recovered.autoAvwapAnchors ?? [];
+    expect(recoveredAnchors).toEqual(detectAutoAvwapAnchors(dataset, []));
+    expect(calls.filter((call) => call === '1D:400').length).toBeGreaterThanOrEqual(2);
+
+    // Sellado: una consulta del mismo día con hint corto usa la caché diaria.
+    const sealed = await withSafetyTimeout(runtime.getBars('HF3', '1D', { visibleBars: 120 }));
+    expect(sealed.autoAvwapAnchors).toEqual(recoveredAnchors);
+    expect(calls.filter((call) => call === '1D:400')).toHaveLength(2);
   });
 });
 
