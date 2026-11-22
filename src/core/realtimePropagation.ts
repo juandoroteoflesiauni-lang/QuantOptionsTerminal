@@ -8,7 +8,34 @@
  *  - inputs are never mutated.
  */
 
+import { getMarketParts } from './sessions.js';
+import { getCalendarWeekMondayKey } from './resampleWeekly.js';
+
 export type LiveMarket = 'AR' | 'US';
+
+/** Pieza 50.8 (Bloque A): marcos con identidad de período calendario. */
+export type LiveCalendarTimeframe = '1D' | '1W';
+
+/**
+ * Pieza 50.8 (Bloque A): identidad calendario para la proyección live de 1D/1W.
+ * La `key` agrupa eventos por rueda/semana civil del mercado; nunca se usa como
+ * timestamp. `nextPeriodOpeningTimeSec` es la etiqueta de apertura acreditada por
+ * la fuente para la rueda/semana nueva (US EOD 00:00 ET, Data912 `20:00Z`, o la
+ * primera diaria de la semana); sin ella, un período nuevo no se abre desde un
+ * tick: se espera una barra válida de la fuente.
+ */
+export interface LiveCalendarProjection {
+  readonly market: LiveMarket;
+  readonly timeframe: LiveCalendarTimeframe;
+  readonly nextPeriodOpeningTimeSec?: number | null;
+}
+
+export interface LivePeriodIdentity {
+  /** Clave de período (fecha civil US/AR en 1D; lunes civil en 1W). */
+  readonly key: string;
+  /** Etiqueta EOD derivable de la fuente (US 00:00 ET); `null` si no aplica. */
+  readonly openingTimeSec: number | null;
+}
 
 export interface PropagationQuote {
   readonly market: LiveMarket;
@@ -201,17 +228,23 @@ export function projectLiveCandle(
   bar: LiveChartBar,
   input: LiveTickProjectionInput,
   barSeconds: number,
+  calendar?: LiveCalendarProjection,
 ): LiveChartBar | null {
   if (!Number.isInteger(barSeconds) || barSeconds <= 0) return null;
   if (!Number.isInteger(input.timeSec) || input.timeSec < 0) return null;
   if (!isFinitePositive(input.price)) return null;
   if (!Number.isInteger(bar.timeSec) || bar.timeSec < 0) return null;
 
-  const bucketStart = Math.floor(input.timeSec / barSeconds) * barSeconds;
   const volumeDelta =
     input.volumeDelta !== null && input.volumeDelta !== undefined && Number.isFinite(input.volumeDelta) && input.volumeDelta >= 0
       ? input.volumeDelta
       : 0;
+  if (calendar !== undefined) {
+    // Pieza 50.8 (Bloque A): 1D/1W se agrupan por calendario del mercado, no
+    // por la época Unix (`floor(t/86400)` o `floor(t/604800)`).
+    return projectLiveCalendarCandle(bar, input, volumeDelta, calendar);
+  }
+  const bucketStart = Math.floor(input.timeSec / barSeconds) * barSeconds;
   if (bucketStart === bar.timeSec) {
     return {
       timeSec: bar.timeSec,
@@ -225,6 +258,130 @@ export function projectLiveCandle(
   if (bucketStart < bar.timeSec) return null;
   return {
     timeSec: bucketStart,
+    open: input.price,
+    high: input.price,
+    low: input.price,
+    close: input.price,
+    volume: volumeDelta,
+  };
+}
+
+const AR_CALENDAR_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Argentina/Buenos_Aires',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function readFormatterPart(parts: readonly Intl.DateTimeFormatPart[], type: string): string {
+  for (const part of parts) {
+    if (part.type === type) return part.value;
+  }
+  return '';
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function arCivilDateKey(timeSec: number): string | null {
+  const parts = AR_CALENDAR_FORMATTER.formatToParts(new Date(timeSec * 1_000));
+  const year = Number(readFormatterPart(parts, 'year'));
+  const month = Number(readFormatterPart(parts, 'month'));
+  const day = Number(readFormatterPart(parts, 'day'));
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  return `${String(year).padStart(4, '0')}-${pad2(month)}-${pad2(day)}`;
+}
+
+/**
+ * Pieza 50.8 (Bloque A): 00:00 ET (00:00 del día civil de Nueva York) en UTC,
+ * convención EOD de FMP/Tradier (05:00Z en EST, 04:00Z en EDT).
+ */
+function usEtMidnightUtcSec(year: number, month: number, day: number): number | null {
+  const guess = Date.UTC(year, month - 1, day) / 1_000;
+  for (const offsetSeconds of [4 * 3_600, 5 * 3_600]) {
+    const candidate = guess + offsetSeconds;
+    const parts = getMarketParts(candidate, 'EQUITY');
+    if (
+      parts.year === year &&
+      parts.month === month &&
+      parts.day === day &&
+      parts.minutesOfDay === 0
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resuelve la identidad calendario de un timestamp para 1D/1W del mercado:
+ * US (New York, EST/EDT) y AR (Buenos Aires, convención Data912 sin hora
+ * conocida). Devuelve `null` si el timestamp no es válido.
+ */
+export function resolveLivePeriodIdentity(
+  timeSec: number,
+  projection: LiveCalendarProjection,
+): LivePeriodIdentity | null {
+  if (!Number.isInteger(timeSec) || timeSec < 0) return null;
+  if (projection.timeframe === '1W') {
+    const timeZone =
+      projection.market === 'US' ? 'America/New_York' : 'America/Argentina/Buenos_Aires';
+    const key = getCalendarWeekMondayKey(timeSec, timeZone);
+    return key === null ? null : { key, openingTimeSec: null };
+  }
+  if (projection.market === 'US') {
+    const parts = getMarketParts(timeSec, 'EQUITY');
+    return {
+      key: parts.dateKey,
+      openingTimeSec: usEtMidnightUtcSec(parts.year, parts.month, parts.day),
+    };
+  }
+  const key = arCivilDateKey(timeSec);
+  return key === null ? null : { key, openingTimeSec: null };
+}
+
+function projectLiveCalendarCandle(
+  bar: LiveChartBar,
+  input: LiveTickProjectionInput,
+  volumeDelta: number,
+  calendar: LiveCalendarProjection,
+): LiveChartBar | null {
+  const eventIdentity = resolveLivePeriodIdentity(input.timeSec, calendar);
+  const barIdentity = resolveLivePeriodIdentity(bar.timeSec, calendar);
+  if (eventIdentity === null || barIdentity === null) return null;
+
+  if (eventIdentity.key === barIdentity.key) {
+    // Misma rueda/semana: se actualiza preservando timestamp y apertura.
+    return {
+      timeSec: bar.timeSec,
+      open: bar.open,
+      high: Math.max(bar.high, input.price),
+      low: Math.min(bar.low, input.price),
+      close: input.price,
+      volume: bar.volume + volumeDelta,
+    };
+  }
+  if (eventIdentity.key < barIdentity.key) {
+    // Período anterior: nunca se revierte la vela vigente.
+    return null;
+  }
+  // Período posterior: solo con etiqueta de apertura acreditable.
+  const provided = calendar.nextPeriodOpeningTimeSec;
+  let openingTimeSec: number | null = null;
+  if (provided !== null && provided !== undefined) {
+    const providedIdentity = resolveLivePeriodIdentity(provided, calendar);
+    if (providedIdentity !== null && providedIdentity.key === eventIdentity.key) {
+      openingTimeSec = provided;
+    }
+  } else if (calendar.market === 'US' && calendar.timeframe === '1D') {
+    openingTimeSec = eventIdentity.openingTimeSec;
+  }
+  if (openingTimeSec === null) return null;
+  return {
+    timeSec: openingTimeSec,
     open: input.price,
     high: input.price,
     low: input.price,

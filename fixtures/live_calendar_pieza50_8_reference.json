@@ -1,0 +1,560 @@
+{
+ "meta": {
+  "generator": "tools/gen_live_calendar_pieza50_8.py",
+  "timezones": {
+   "US": "America/New_York",
+   "AR": "America/Argentina/Buenos_Aires"
+  }
+ },
+ "identityCases": [
+  {
+   "name": "us_1d_est",
+   "timeSec": 1736951400,
+   "market": "US",
+   "timeframe": "1D",
+   "expected": {
+    "key": "2025-01-15",
+    "openingTimeSec": 1736917200
+   }
+  },
+  {
+   "name": "us_1d_edt",
+   "timeSec": 1749562200,
+   "market": "US",
+   "timeframe": "1D",
+   "expected": {
+    "key": "2025-06-10",
+    "openingTimeSec": 1749528000
+   }
+  },
+  {
+   "name": "us_1d_tras_medianoche_utc",
+   "timeSec": 1736989200,
+   "market": "US",
+   "timeframe": "1D",
+   "expected": {
+    "key": "2025-01-15",
+    "openingTimeSec": 1736917200
+   }
+  },
+  {
+   "name": "us_1d_pre_medianoche_utc",
+   "timeSec": 1737001800,
+   "market": "US",
+   "timeframe": "1D",
+   "expected": {
+    "key": "2025-01-15",
+    "openingTimeSec": 1736917200
+   }
+  },
+  {
+   "name": "ar_1d_data912",
+   "timeSec": 1741636800,
+   "market": "AR",
+   "timeframe": "1D",
+   "expected": {
+    "key": "2025-03-10",
+    "openingTimeSec": null
+   }
+  },
+  {
+   "name": "us_1w",
+   "timeSec": 1736348400,
+   "market": "US",
+   "timeframe": "1W",
+   "expected": {
+    "key": "2025-01-06",
+    "openingTimeSec": null
+   }
+  },
+  {
+   "name": "us_1w_lunes_feriado",
+   "timeSec": 1737471600,
+   "market": "US",
+   "timeframe": "1W",
+   "expected": {
+    "key": "2025-01-20",
+    "openingTimeSec": null
+   }
+  },
+  {
+   "name": "ar_1w",
+   "timeSec": 1741636800,
+   "market": "AR",
+   "timeframe": "1W",
+   "expected": {
+    "key": "2025-03-10",
+    "openingTimeSec": null
+   }
+  }
+ ],
+ "projectionCases": [
+  {
+   "name": "us_1d_misma_rueda_est",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "tick": {
+    "price": 102.0,
+    "timeSec": 1736951400,
+    "volumeDelta": 50.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "expected": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 102.0,
+    "volume": 1050.0
+   }
+  },
+  {
+   "name": "us_1d_misma_rueda_edt",
+   "bar": {
+    "timeSec": 1749528000,
+    "open": 200.0,
+    "high": 205.0,
+    "low": 199.0,
+    "close": 201.0,
+    "volume": 500.0
+   },
+   "tick": {
+    "price": 250.0,
+    "timeSec": 1749585600,
+    "volumeDelta": 10.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "expected": {
+    "timeSec": 1749528000,
+    "open": 200.0,
+    "high": 250.0,
+    "low": 199.0,
+    "close": 250.0,
+    "volume": 510.0
+   }
+  },
+  {
+   "name": "us_1d_evento_tras_medianoche_utc",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "tick": {
+    "price": 103.0,
+    "timeSec": 1736989200,
+    "volumeDelta": 20.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "expected": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 103.0,
+    "volume": 1020.0
+   }
+  },
+  {
+   "name": "us_1d_periodo_anterior",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "tick": {
+    "price": 98.0,
+    "timeSec": 1736863200,
+    "volumeDelta": 5.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "expected": null
+  },
+  {
+   "name": "us_1d_rueda_nueva_fuente",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "tick": {
+    "price": 104.0,
+    "timeSec": 1737037800,
+    "volumeDelta": 30.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "expected": {
+    "timeSec": 1737003600,
+    "open": 104.0,
+    "high": 104.0,
+    "low": 104.0,
+    "close": 104.0,
+    "volume": 30.0
+   }
+  },
+  {
+   "name": "ar_1d_misma_rueda",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "tick": {
+    "price": 302.0,
+    "timeSec": 1741640400,
+    "volumeDelta": 15.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "expected": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 302.0,
+    "volume": 815.0
+   }
+  },
+  {
+   "name": "ar_1d_periodo_anterior",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "tick": {
+    "price": 297.0,
+    "timeSec": 1741554000,
+    "volumeDelta": 4.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "expected": null
+  },
+  {
+   "name": "ar_1d_nueva_sin_etiqueta",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "tick": {
+    "price": 305.0,
+    "timeSec": 1741694400,
+    "volumeDelta": 12.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "expected": null
+  },
+  {
+   "name": "ar_1d_nueva_data912",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "tick": {
+    "price": 305.0,
+    "timeSec": 1741694400,
+    "volumeDelta": 12.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D",
+    "nextPeriodOpeningTimeSec": 1741723200
+   },
+   "expected": {
+    "timeSec": 1741723200,
+    "open": 305.0,
+    "high": 305.0,
+    "low": 305.0,
+    "close": 305.0,
+    "volume": 12.0
+   }
+  },
+  {
+   "name": "ar_1d_nueva_etiqueta_incompatible",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "tick": {
+    "price": 305.0,
+    "timeSec": 1741694400,
+    "volumeDelta": 12.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D",
+    "nextPeriodOpeningTimeSec": 1741809600
+   },
+   "expected": null
+  },
+  {
+   "name": "us_1w_misma_semana",
+   "bar": {
+    "timeSec": 1736139600,
+    "open": 400.0,
+    "high": 405.0,
+    "low": 399.0,
+    "close": 401.0,
+    "volume": 2000.0
+   },
+   "tick": {
+    "price": 402.0,
+    "timeSec": 1736348400,
+    "volumeDelta": 25.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W"
+   },
+   "expected": {
+    "timeSec": 1736139600,
+    "open": 400.0,
+    "high": 405.0,
+    "low": 399.0,
+    "close": 402.0,
+    "volume": 2025.0
+   }
+  },
+  {
+   "name": "us_1w_lunes_feriado",
+   "bar": {
+    "timeSec": 1737435600,
+    "open": 410.0,
+    "high": 415.0,
+    "low": 409.0,
+    "close": 411.0,
+    "volume": 2100.0
+   },
+   "tick": {
+    "price": 412.0,
+    "timeSec": 1737558000,
+    "volumeDelta": 26.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W"
+   },
+   "expected": {
+    "timeSec": 1737435600,
+    "open": 410.0,
+    "high": 415.0,
+    "low": 409.0,
+    "close": 412.0,
+    "volume": 2126.0
+   }
+  },
+  {
+   "name": "us_1w_semana_incompleta",
+   "bar": {
+    "timeSec": 1736485200,
+    "open": 430.0,
+    "high": 435.0,
+    "low": 429.0,
+    "close": 431.0,
+    "volume": 900.0
+   },
+   "tick": {
+    "price": 432.0,
+    "timeSec": 1736348400,
+    "volumeDelta": 15.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W"
+   },
+   "expected": {
+    "timeSec": 1736485200,
+    "open": 430.0,
+    "high": 435.0,
+    "low": 429.0,
+    "close": 432.0,
+    "volume": 915.0
+   }
+  },
+  {
+   "name": "us_1w_semana_nueva_fuente",
+   "bar": {
+    "timeSec": 1736139600,
+    "open": 400.0,
+    "high": 405.0,
+    "low": 399.0,
+    "close": 401.0,
+    "volume": 2000.0
+   },
+   "tick": {
+    "price": 404.0,
+    "timeSec": 1736780400,
+    "volumeDelta": 40.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W",
+    "nextPeriodOpeningTimeSec": 1736744400
+   },
+   "expected": {
+    "timeSec": 1736744400,
+    "open": 404.0,
+    "high": 404.0,
+    "low": 404.0,
+    "close": 404.0,
+    "volume": 40.0
+   }
+  },
+  {
+   "name": "us_1w_semana_nueva_sin_fuente",
+   "bar": {
+    "timeSec": 1736139600,
+    "open": 400.0,
+    "high": 405.0,
+    "low": 399.0,
+    "close": 401.0,
+    "volume": 2000.0
+   },
+   "tick": {
+    "price": 404.0,
+    "timeSec": 1736780400,
+    "volumeDelta": 40.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W"
+   },
+   "expected": null
+  },
+  {
+   "name": "us_1w_semana_nueva_anio",
+   "bar": {
+    "timeSec": 1735534800,
+    "open": 420.0,
+    "high": 425.0,
+    "low": 419.0,
+    "close": 421.0,
+    "volume": 2200.0
+   },
+   "tick": {
+    "price": 423.0,
+    "timeSec": 1736262000,
+    "volumeDelta": 35.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W",
+    "nextPeriodOpeningTimeSec": 1736139600
+   },
+   "expected": {
+    "timeSec": 1736139600,
+    "open": 423.0,
+    "high": 423.0,
+    "low": 423.0,
+    "close": 423.0,
+    "volume": 35.0
+   }
+  },
+  {
+   "name": "us_1w_etiqueta_semana_previa",
+   "bar": {
+    "timeSec": 1736139600,
+    "open": 400.0,
+    "high": 405.0,
+    "low": 399.0,
+    "close": 401.0,
+    "volume": 2000.0
+   },
+   "tick": {
+    "price": 404.0,
+    "timeSec": 1736780400,
+    "volumeDelta": 40.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W",
+    "nextPeriodOpeningTimeSec": 1736139600
+   },
+   "expected": null
+  },
+  {
+   "name": "ar_1w_misma_semana",
+   "bar": {
+    "timeSec": 1741575600,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "tick": {
+    "price": 303.0,
+    "timeSec": 1741701600,
+    "volumeDelta": 10.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1W"
+   },
+   "expected": {
+    "timeSec": 1741575600,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 303.0,
+    "volume": 810.0
+   }
+  }
+ ]
+}

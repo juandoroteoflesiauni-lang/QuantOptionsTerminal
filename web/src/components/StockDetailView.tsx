@@ -2651,6 +2651,9 @@ const PanoramicPriceChart: React.FC<{
           currentForming,
           { price: pending.price, timeSec: pending.timeSec, volumeDelta: pending.volumeDelta },
           tfSec,
+          timeframe === '1D' || timeframe === '1W'
+            ? { market, timeframe }
+            : undefined,
         );
         if (projected === null || projected.timeSec < currentForming.timeSec) return;
         if (projected.timeSec > currentForming.timeSec) {
