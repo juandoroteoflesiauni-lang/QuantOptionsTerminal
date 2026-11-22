@@ -1340,26 +1340,40 @@ export const StockDetailView: React.FC<{
     const spot =
       trace !== undefined && trace.valuationSpot !== null && Number.isFinite(trace.valuationSpot)
         ? `${trace.valuationSpot.toFixed(2)}${
-            'valuationSpotSource' in trace && trace.valuationSpotSource !== null
-              ? ` · ${String(trace.valuationSpotSource)}`
-              : ''
+            trace.valuationSpotSource !== null ? ` · ${trace.valuationSpotSource}` : ''
           }`
         : '— (sin traza)';
-    const quoteTimes = trace?.quoteTimes ?? null;
+    const quoteTimes = trace?.quoteTimes;
     const quoteLabel =
-      quoteTimes === null || quoteTimes.knownCount === 0
-        ? `sin hora verificable (${String(quoteTimes?.unknownCount ?? 0)} sin hora)`
-        : `${String(quoteTimes.knownCount)} con hora · ${String(quoteTimes.unknownCount)} sin hora · edad ${String(Math.round(quoteTimes.newestAgeSec ?? 0))}–${String(Math.round(quoteTimes.oldestAgeSec ?? 0))}s`;
+      trace === undefined
+        ? '— (sin hora verificable)'
+        : quoteTimes === null || quoteTimes === undefined
+          ? 'origen sin hora de puntas acreditada'
+          : quoteTimes.knownCount === 0
+            ? `sin hora verificable (${String(quoteTimes.unknownCount)} sin hora)`
+            : `${String(quoteTimes.knownCount)} con hora · ${String(quoteTimes.unknownCount)} sin hora · edad ${String(Math.round(quoteTimes.newestAgeSec ?? 0))}–${String(Math.round(quoteTimes.oldestAgeSec ?? 0))}s`;
     const mode = trace?.quoteMode ?? null;
     const modeLabel =
-      mode === 'EOD_CLOSE_REF' ? ' · referencia EOD' : mode === 'LIVE_NBBO' ? ' · NBBO live' : '';
+      mode === 'EOD_CLOSE_REF' ? ' · modo EOD' : mode === 'LIVE_NBBO' ? ' · modo NBBO' : '';
+    const engineDates = trace?.engineExpirationDates ?? [];
+    const strikeRange = trace?.engineStrikeRange;
+    const scopeLabel =
+      trace === undefined || engineDates.length === 0
+        ? '—'
+        : `${String(engineDates.length)} venc. motor · strikes ${
+            strikeRange?.min !== null && strikeRange?.min !== undefined && strikeRange?.max !== null && strikeRange?.max !== undefined
+              ? `${strikeRange.min.toFixed(2)}–${strikeRange.max.toFixed(2)}`
+              : '—'
+          }${'payloadContractCount' in trace ? ` · payload ${String(trace.payloadContractCount)}` : ''}`;
     const status = exposure?.gammaFlipStatus ?? null;
     const candidates = exposure?.gammaFlipCandidates ?? [];
+    const candidateText =
+      candidates.length > 0 ? ` · candidatos ${candidates.map((value) => value.toFixed(2)).join(', ')}` : '';
     const zeroGammaLabel =
       status === 'unique'
         ? 'cruce único'
         : status === 'multiple_crossings'
-          ? `cruces múltiples (${String(candidates.length)} candidatos; REST elige el más cercano)`
+          ? `cruces múltiples (${String(candidates.length)})${candidateText}; REST elige el más cercano`
           : status === 'no_crossing'
             ? 'sin cruce en el rango'
             : status === 'indeterminate'
@@ -1368,6 +1382,7 @@ export const StockDetailView: React.FC<{
     return [
       { label: 'GEX spot', text: `${spot} · ${coverageLabel}` },
       { label: 'Cotizaciones', text: `${quoteLabel}${modeLabel}` },
+      { label: 'Alcance', text: scopeLabel },
       { label: 'Zero-γ', text: zeroGammaLabel },
       { label: 'Supuesto', text: 'calls +1 · puts −1 (modelo teórico)' },
     ];

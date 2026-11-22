@@ -252,18 +252,24 @@
      110,
      null
     ],
-    "engineExpirations": [
-     1,
-     2,
-     2,
-     3
+    "engineExpirationDates": [
+     "2025-01-17",
+     "2025-02-21",
+     "2025-02-21"
     ],
     "byStrike": [
      95,
      105
     ],
     "catalogExpirationsCount": 32,
+    "catalogExpirationDates": [
+     "2025-01-17",
+     "2025-02-21"
+    ],
     "payloadContractCount": 120,
+    "payloadExpirationDates": [
+     "2025-01-17"
+    ],
     "quoteTimes": {
      "knownCount": 3,
      "unknownCount": 1,
@@ -273,6 +279,22 @@
      "oldestAgeSec": 300,
      "overlayQuoteCount": 1,
      "eodReferenceCount": 0
+    },
+    "chainCoverage": {
+     "requestedDates": [
+      "2025-01-17",
+      "2025-02-21",
+      "2025-06-20"
+     ],
+     "deliveredDates": [
+      "2025-01-17",
+      "2025-02-21"
+     ],
+     "missingDates": [
+      "2025-06-20"
+     ],
+     "chainTruncated": true,
+     "chainErrors": false
     }
    },
    "expected": {
@@ -283,7 +305,12 @@
     "spotDivergenceBps": 36.1,
     "quoteMode": "EOD_CLOSE_REF",
     "coverage": "partial",
-    "engineExpirationsCount": 4,
+    "engineExpirationsCount": 3,
+    "engineExpirationDates": [
+     "2025-01-17",
+     "2025-02-21",
+     "2025-02-21"
+    ],
     "engineStrikeRange": {
      "min": 90,
      "max": 110
@@ -295,7 +322,14 @@
     },
     "byStrikeCount": 2,
     "catalogExpirationsCount": 32,
+    "catalogExpirationDates": [
+     "2025-01-17",
+     "2025-02-21"
+    ],
     "payloadContractCount": 120,
+    "payloadExpirationDates": [
+     "2025-01-17"
+    ],
     "quoteTimes": {
      "knownCount": 3,
      "unknownCount": 1,
@@ -305,7 +339,172 @@
      "oldestAgeSec": 300,
      "overlayQuoteCount": 1,
      "eodReferenceCount": 0
+    },
+    "chainCoverage": {
+     "requestedDates": [
+      "2025-01-17",
+      "2025-02-21",
+      "2025-06-20"
+     ],
+     "deliveredDates": [
+      "2025-01-17",
+      "2025-02-21"
+     ],
+     "missingDates": [
+      "2025-06-20"
+     ],
+     "chainTruncated": true,
+     "chainErrors": false
     }
+   }
+  }
+ ],
+ "chainCoverageCases": [
+  {
+   "name": "maxpages",
+   "reports": [
+    {
+     "dateKey": "2025-01-17",
+     "stoppedReason": "maxPages",
+     "providerError": false,
+     "contractCount": 5
+    }
+   ],
+   "requestedDates": [
+    "2025-01-17"
+   ],
+   "expected": {
+    "requestedDates": [
+     "2025-01-17"
+    ],
+    "deliveredDates": [
+     "2025-01-17"
+    ],
+    "missingDates": [],
+    "chainTruncated": true,
+    "chainErrors": false
+   }
+  },
+  {
+   "name": "fecha_ausente",
+   "reports": [
+    {
+     "dateKey": "2025-01-17",
+     "stoppedReason": "noMorePages",
+     "providerError": false,
+     "contractCount": 5
+    }
+   ],
+   "requestedDates": [
+    "2025-01-17",
+    "2025-02-21"
+   ],
+   "expected": {
+    "requestedDates": [
+     "2025-01-17",
+     "2025-02-21"
+    ],
+    "deliveredDates": [
+     "2025-01-17"
+    ],
+    "missingDates": [
+     "2025-02-21"
+    ],
+    "chainTruncated": false,
+    "chainErrors": false
+   }
+  },
+  {
+   "name": "error_proveedor",
+   "reports": [
+    {
+     "dateKey": "2025-01-17",
+     "stoppedReason": "providerError",
+     "providerError": true,
+     "contractCount": 0
+    }
+   ],
+   "requestedDates": [
+    "2025-01-17"
+   ],
+   "expected": {
+    "requestedDates": [
+     "2025-01-17"
+    ],
+    "deliveredDates": [],
+    "missingDates": [
+     "2025-01-17"
+    ],
+    "chainTruncated": false,
+    "chainErrors": true
+   }
+  },
+  {
+   "name": "completa",
+   "reports": [
+    {
+     "dateKey": "2025-01-17",
+     "stoppedReason": "noMorePages",
+     "providerError": false,
+     "contractCount": 5
+    }
+   ],
+   "requestedDates": [
+    "2025-01-17"
+   ],
+   "expected": {
+    "requestedDates": [
+     "2025-01-17"
+    ],
+    "deliveredDates": [
+     "2025-01-17"
+    ],
+    "missingDates": [],
+    "chainTruncated": false,
+    "chainErrors": false
+   }
+  }
+ ],
+ "arOiCases": [
+  {
+   "name": "directo",
+   "inputs": [
+    {
+     "oiFromReported": true
+    },
+    {
+     "oiFromReported": true
+    }
+   ],
+   "expected": {
+    "directOiInputs": 2,
+    "proxyOiInputs": 0,
+    "oiProxy": false
+   }
+  },
+  {
+   "name": "proxy",
+   "inputs": [
+    {
+     "oiFromReported": true
+    },
+    {
+     "oiFromReported": false
+    }
+   ],
+   "expected": {
+    "directOiInputs": 1,
+    "proxyOiInputs": 1,
+    "oiProxy": true
+   }
+  },
+  {
+   "name": "desconocido",
+   "inputs": [],
+   "expected": {
+    "directOiInputs": 0,
+    "proxyOiInputs": 0,
+    "oiProxy": null
    }
   }
  ]

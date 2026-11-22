@@ -850,12 +850,17 @@ export interface ArOptionsResponse {
     readonly trace?: {
       readonly evaluationSec: number;
       readonly valuationSpot: number | null;
-      readonly valuationSpotSource: null;
+      readonly valuationSpotSource: 'OVERVIEW' | 'HISTORICAL_CLOSE' | null;
       readonly quoteMode: null;
       readonly coverage: 'complete' | 'partial' | 'unknown';
       readonly quoteTimes: null;
+      readonly engineExpirationDates: readonly string[];
+      readonly engineStrikeRange: { readonly min: number | null; readonly max: number | null };
+      readonly engineStrikeCount: number;
       readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
       readonly byStrikeCount: number;
+      readonly directOiInputs: number;
+      readonly proxyOiInputs: number;
       readonly oiProxy: boolean | null;
     };
     readonly quality?: {
@@ -1181,12 +1186,15 @@ export interface UsSnapshotResponseDto {
       readonly quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF' | null;
       readonly coverage: 'complete' | 'partial' | 'unknown';
       readonly engineExpirationsCount: number;
+      readonly engineExpirationDates: readonly string[];
       readonly engineStrikeRange: { readonly min: number | null; readonly max: number | null };
       readonly engineStrikeCount: number;
       readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
       readonly byStrikeCount: number;
       readonly catalogExpirationsCount: number | null;
+      readonly catalogExpirationDates: readonly string[];
       readonly payloadContractCount: number;
+      readonly payloadExpirationDates: readonly string[];
       readonly quoteTimes: {
         readonly knownCount: number;
         readonly unknownCount: number;
@@ -1196,6 +1204,13 @@ export interface UsSnapshotResponseDto {
         readonly oldestAgeSec: number | null;
         readonly overlayQuoteCount: number;
         readonly eodReferenceCount: number;
+      } | null;
+      readonly chainCoverage: {
+        readonly requestedDates: readonly string[];
+        readonly deliveredDates: readonly string[];
+        readonly missingDates: readonly string[];
+        readonly chainTruncated: boolean;
+        readonly chainErrors: boolean;
       } | null;
     };
     readonly expectedMove?: {

@@ -71,9 +71,52 @@ def coverage(evidence):
         return "unknown"
     if not isinstance(skipped, (int, float)) or not math.isfinite(skipped):
         return "unknown"
-    if skipped > 0 or evidence.get("chainTruncated") is True:
+    if (
+        skipped > 0
+        or evidence.get("chainTruncated") is True
+        or evidence.get("chainErrors") is True
+        or (evidence.get("missingDatesCount") or 0) > 0
+    ):
         return "partial"
     return "complete"
+
+
+def chain_coverage(reports, requested_dates):
+    requested = []
+    for date in requested_dates:
+        if date != "" and date not in requested:
+            requested.append(date)
+    delivered = []
+    truncated = errors = False
+    for report in reports:
+        if report.get("stoppedReason") == "maxPages":
+            truncated = True
+        if report.get("providerError") is True:
+            errors = True
+        if (
+            report.get("contractCount", 0) > 0
+            and report.get("dateKey") in requested
+            and report.get("dateKey") not in delivered
+        ):
+            delivered.append(report.get("dateKey"))
+    missing = [date for date in requested if date not in delivered]
+    return {
+        "requestedDates": requested,
+        "deliveredDates": sorted(delivered),
+        "missingDates": missing,
+        "chainTruncated": truncated,
+        "chainErrors": errors,
+    }
+
+
+def ar_oi(inputs):
+    direct = sum(1 for item in inputs if item.get("oiFromReported") is True)
+    proxy = len(inputs) - direct
+    return {
+        "directOiInputs": direct,
+        "proxyOiInputs": proxy,
+        "oiProxy": None if len(inputs) == 0 else proxy > 0,
+    }
 
 
 def finite_or_null(value):
@@ -94,14 +137,18 @@ def metadata(inp):
         "spotDivergenceBps": finite_or_null(inp.get("spotDivergenceBps")),
         "quoteMode": inp.get("quoteMode"),
         "coverage": inp.get("coverage"),
-        "engineExpirationsCount": len(inp["engineExpirations"]),
+        "engineExpirationsCount": len(inp["engineExpirationDates"]),
+        "engineExpirationDates": list(inp["engineExpirationDates"]),
         "engineStrikeRange": strike_range(inp["engineStrikes"]),
         "engineStrikeCount": len(inp["engineStrikes"]),
         "byStrikeRange": strike_range(inp["byStrike"]),
         "byStrikeCount": len(inp["byStrike"]),
         "catalogExpirationsCount": inp.get("catalogExpirationsCount"),
+        "catalogExpirationDates": list(inp["catalogExpirationDates"]),
         "payloadContractCount": inp.get("payloadContractCount", 0),
+        "payloadExpirationDates": list(inp["payloadExpirationDates"]),
         "quoteTimes": inp.get("quoteTimes"),
+        "chainCoverage": inp.get("chainCoverage"),
     }
 
 
@@ -156,19 +203,61 @@ def build():
         "quoteMode": "EOD_CLOSE_REF",
         "coverage": "partial",
         "engineStrikes": [90, 100, 110, None],
-        "engineExpirations": [1, 2, 2, 3],
+        "engineExpirationDates": ["2025-01-17", "2025-02-21", "2025-02-21"],
         "byStrike": [95, 105],
         "catalogExpirationsCount": 32,
+        "catalogExpirationDates": ["2025-01-17", "2025-02-21"],
         "payloadContractCount": 120,
+        "payloadExpirationDates": ["2025-01-17"],
         "quoteTimes": summarize(quote_cases[0]["entries"], as_of),
+        "chainCoverage": chain_coverage(
+            [
+                {"dateKey": "2025-01-17", "stoppedReason": "maxPages", "providerError": False, "contractCount": 5},
+                {"dateKey": "2025-02-21", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 3},
+            ],
+            ["2025-01-17", "2025-02-21", "2025-06-20"],
+        ),
     }
     metadata_case = {"name": "metadatos_mixtos", "input": metadata_input, "expected": metadata(metadata_input)}
+
+    chain_cases = []
+    for name, reports, requested in [
+        (
+            "maxpages",
+            [{"dateKey": "2025-01-17", "stoppedReason": "maxPages", "providerError": False, "contractCount": 5}],
+            ["2025-01-17"],
+        ),
+        (
+            "fecha_ausente",
+            [{"dateKey": "2025-01-17", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 5}],
+            ["2025-01-17", "2025-02-21"],
+        ),
+        (
+            "error_proveedor",
+            [{"dateKey": "2025-01-17", "stoppedReason": "providerError", "providerError": True, "contractCount": 0}],
+            ["2025-01-17"],
+        ),
+        (
+            "completa",
+            [{"dateKey": "2025-01-17", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 5}],
+            ["2025-01-17"],
+        ),
+    ]:
+        chain_cases.append({"name": name, "reports": reports, "requestedDates": requested, "expected": chain_coverage(reports, requested)})
+
+    ar_oi_cases = [
+        {"name": "directo", "inputs": [{"oiFromReported": True}, {"oiFromReported": True}], "expected": ar_oi([{"oiFromReported": True}, {"oiFromReported": True}])},
+        {"name": "proxy", "inputs": [{"oiFromReported": True}, {"oiFromReported": False}], "expected": ar_oi([{"oiFromReported": True}, {"oiFromReported": False}])},
+        {"name": "desconocido", "inputs": [], "expected": ar_oi([])},
+    ]
 
     return {
         "meta": {"generator": "tools/gen_exposure_trace_pieza50_9.py"},
         "quoteCases": quote_cases,
         "coverageCases": coverage_cases,
         "metadataCases": [metadata_case],
+        "chainCoverageCases": chain_cases,
+        "arOiCases": ar_oi_cases,
     }
 
 

@@ -71,6 +71,10 @@ import {
 import { greeksBsm, priceBsm } from '../core/options/blackScholes.js';
 import { solveImpliedVolBsm } from '../core/options/impliedVol.js';
 import {
+  resolveArOiProvenance,
+  type ArOiProvenanceInput,
+} from '../core/exposureTrace.js';
+import {
   computeDealerExposure,
   type ExposureContractInput,
   type VannaRegime,
@@ -939,12 +943,18 @@ export interface ArOptionsResponse {
     readonly trace?: {
       readonly evaluationSec: number;
       readonly valuationSpot: number | null;
-      readonly valuationSpotSource: null;
+      readonly valuationSpotSource: 'OVERVIEW' | 'HISTORICAL_CLOSE' | null;
       readonly quoteMode: null;
       readonly coverage: 'unknown';
       readonly quoteTimes: null;
+      readonly engineExpirationDates: readonly string[];
+      readonly engineStrikeRange: { readonly min: number | null; readonly max: number | null };
+      readonly engineStrikeCount: number;
       readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
       readonly byStrikeCount: number;
+      readonly directOiInputs: number;
+      readonly proxyOiInputs: number;
+      /** `true` si el motor usó OI proxy de volumen nominal; `null` sin inputs acreditables. */
       readonly oiProxy: boolean | null;
     };
     readonly expectedMoveAbs: number | null;
@@ -7730,6 +7740,13 @@ export class ArgentinaMarketRuntime {
           null;
         const bars = histRes.bars;
         const spot = stock?.last ?? (bars.length > 0 ? bars[bars.length - 1]?.close ?? null : null);
+        // Pieza 50.9: origen real del spot elegido (overview vs cierre histórico).
+        const arSpotSource: 'OVERVIEW' | 'HISTORICAL_CLOSE' | null =
+          spot === null || !Number.isFinite(spot) || spot <= 0
+            ? null
+            : stock?.last !== null && stock?.last !== undefined && spot === stock.last
+              ? 'OVERVIEW'
+              : 'HISTORICAL_CLOSE';
         const dividendYield = STOCK_META_MAP.get(underlying)?.dividendYield ?? 0;
 
         // Tasa libre de riesgo desde BCRA BADLAR/TAMAR/TPM/PF; sin fallback inventado si falta BCRA
@@ -7799,6 +7816,8 @@ export class ArgentinaMarketRuntime {
         const sortedExpKeys = [...byExpiry.keys()].sort();
         const expiries: ArOptionExpiryDto[] = [];
         const allExposureInputs: ExposureContractInput[] = [];
+        // Pieza 50.9: procedencia del OI usado por el motor (directo vs proxy de volumen).
+        const arOiProvenance: ArOiProvenanceInput[] = [];
         const evalRate = continuousRate ?? Number.NaN;
         const inheritedIvSymbols = new Set<string>();
 
@@ -7913,6 +7932,15 @@ export class ArgentinaMarketRuntime {
                   ? Math.round(row.openInterest)
                   : null
                 : Math.max(1, Math.round(row.nominalVol ?? 1));
+            // Pieza 50.9: el OI del modelo es proxy de volumen nominal cuando la
+            // fuente no acredita OI reportado (aunque la fila venga fusionada con BMB).
+            const oiIsProxy = !(
+              row.quoteSource === 'BMB_HOMEBROKER_BRIDGE' &&
+              row.openInterest !== null &&
+              row.openInterest !== undefined &&
+              Number.isFinite(row.openInterest) &&
+              row.openInterest > 0
+            );
 
             const intrinsic =
               spot !== null
@@ -8018,6 +8046,11 @@ export class ArgentinaMarketRuntime {
                 ...(bid !== null && bid >= 0 ? { bid } : {}),
                 ...(ask !== null && ask > 0 ? { ask } : {}),
               });
+              if (oiIsProxy) {
+                arOiProvenance.push({ oiFromReported: false });
+              } else {
+                arOiProvenance.push({ oiFromReported: true });
+              }
             }
 
             const dto: ArOptionContractDto = {
@@ -8298,6 +8331,17 @@ export class ArgentinaMarketRuntime {
           const arExposureStrikes = expResult.byStrike
             .map((s) => s.strike)
             .filter((value) => Number.isFinite(value));
+          const arEngineStrikes = allExposureInputs
+            .map((input) => input.strike)
+            .filter((value) => Number.isFinite(value));
+          const arEngineExpirationDates = [
+            ...new Set(
+              allExposureInputs.map((input) =>
+                new Date(input.expiryUtcSec * 1_000).toISOString().slice(0, 10),
+              ),
+            ),
+          ].sort();
+          const arOiSummary = resolveArOiProvenance(arOiProvenance);
           exposureSummary = {
             netGex: sanitizeFinite(expResult.netGex),
             netDex: sanitizeFinite(expResult.netDex),
@@ -8313,16 +8357,24 @@ export class ArgentinaMarketRuntime {
             trace: {
               evaluationSec: nowSec,
               valuationSpot: Number.isFinite(spot) && spot > 0 ? spot : null,
-              valuationSpotSource: null,
+              valuationSpotSource: arSpotSource,
               quoteMode: null,
               coverage: 'unknown',
               quoteTimes: null,
+              engineExpirationDates: arEngineExpirationDates,
+              engineStrikeRange: {
+                min: arEngineStrikes.length > 0 ? Math.min(...arEngineStrikes) : null,
+                max: arEngineStrikes.length > 0 ? Math.max(...arEngineStrikes) : null,
+              },
+              engineStrikeCount: allExposureInputs.length,
               byStrikeRange: {
                 min: arExposureStrikes.length > 0 ? Math.min(...arExposureStrikes) : null,
                 max: arExposureStrikes.length > 0 ? Math.max(...arExposureStrikes) : null,
               },
               byStrikeCount: expResult.byStrike.length,
-              oiProxy: null,
+              directOiInputs: arOiSummary.directOiInputs,
+              proxyOiInputs: arOiSummary.proxyOiInputs,
+              oiProxy: arOiSummary.oiProxy,
             },
             expectedMoveAbs: sanitizeFinite(expResult.expectedMove.formulaMove),
             expectedMovePct: sanitizeFinite(expResult.expectedMove.formulaMovePct),

@@ -81,7 +81,9 @@ import { greeksBsm, timeToExpiryYears } from '../core/options/blackScholes.js';
 import {
   buildExposureTraceMetadata,
   resolveExposureCoverage,
+  summarizeChainCoverage,
   summarizeQuoteTimes,
+  type ChainDateReport,
   type ExposureTraceMetadata,
 } from '../core/exposureTrace.js';
 import {
@@ -7945,16 +7947,17 @@ export class MarketRuntime {
   ): Promise<{
     readonly contracts: readonly OptionSnapshotContract[];
     readonly summary: TradierChainOverlaySummary | null;
+    readonly quoteSubstitutedTickers: ReadonlySet<string>;
   }> {
     if (!this.tradierConfig.configured || this.isTradierAuthInvalid() || isIndex || contracts.length === 0) {
-      return { contracts, summary: null };
+      return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>() };
     }
     const expirations = [...new Set(contracts.map((c) => c.expirationDate))]
       .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
       .sort()
       .slice(0, TRADIER_MAX_CHAIN_EXPIRIES);
     if (expirations.length === 0) {
-      return { contracts, summary: null };
+      return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>() };
     }
 
     const chainParts: TradierOptionContractNormalized[] = [];
@@ -7969,7 +7972,7 @@ export class MarketRuntime {
         }
       } catch (err: unknown) {
         if (err instanceof TradierAuthInvalidError) {
-          return { contracts, summary: null };
+          return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>() };
         }
         errors.push(
           `Tradier chain ${expiration}: ${redactSecrets(extractErrorMessage(err, 'tradier chain failed'), this.secrets)}`,
@@ -8000,6 +8003,7 @@ export class MarketRuntime {
           httpStatus,
           lastError,
         },
+        quoteSubstitutedTickers: new Set<string>(),
       };
     }
     warnings.push(...errors);
@@ -8012,6 +8016,7 @@ export class MarketRuntime {
         httpStatus,
         lastError,
       },
+      quoteSubstitutedTickers: overlay.quoteSubstitutedTickers,
     };
   }
 
@@ -8023,6 +8028,9 @@ export class MarketRuntime {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const { canonicalSymbol, correlatedSymbol, isIndex } = parsed;
     const warnings: string[] = [];
+    // Pieza 50.9: evidencia de la carga de cadena (fechas pedidas/entregadas).
+    let chainRequestedDates: readonly string[] = [];
+    const chainDateReports: ChainDateReport[] = [];
 
     const macroDateGte = addCalendarDaysEt(nowSec, -35);
     const unifiedTickers = [
@@ -8380,6 +8388,7 @@ export class MarketRuntime {
           loadDates.sort((a, b) => a.localeCompare(b));
 
           if (loadDates.length > 0) {
+            chainRequestedDates = [...loadDates];
             const chainResultsByDate = new Map<
               string,
               {
@@ -8431,8 +8440,16 @@ export class MarketRuntime {
               }
               // El proveedor puede devolver más fechas de las pedidas: filtrado determinista
               // por fecha exacta para fusionar sin duplicados entre cargas paralelas.
+              const filteredContracts = chainRes.contracts.filter((c) => c.expirationDate === expirationDate);
+              // Pieza 50.9: evidencia real de corte/error/faltante por fecha.
+              chainDateReports.push({
+                dateKey: expirationDate,
+                stoppedReason: chainRes.report.stoppedReason,
+                providerError: chainRes.report.providerError !== null,
+                contractCount: filteredContracts.length,
+              });
               chainResultsByDate.set(expirationDate, {
-                contracts: chainRes.contracts.filter((c) => c.expirationDate === expirationDate),
+                contracts: filteredContracts,
                 underlying: chainRes.underlying,
               });
             };
@@ -8513,9 +8530,6 @@ export class MarketRuntime {
       [...v2StocksRes.map.values()].some((q) => q.marketStatus?.toLowerCase() === 'closed');
 
     // Pieza 50.9: procedencia previa al overlay Tradier (hora de cotización Massive).
-    const preOverlayQuoteTimes = new Map<string, number>(
-      contracts.map((c) => [c.ticker, c.lastQuote.updatedAt] as const),
-    );
     const tradierOverlay = await this.tryTradierChainOverlay(canonicalSymbol, isIndex, contracts, nowSec, warnings);
     contracts = tradierOverlay.contracts;
 
@@ -8759,14 +8773,19 @@ export class MarketRuntime {
       }
 
       // Pieza 50.9: la traza se captura junto con la exposición que produjo los
-      // niveles. Los tiempos de cotización son los inputs reales del motor y las
-      // referencias EOD quedan fuera del rango verificable.
+      // niveles. Los tiempos de cotización son los inputs reales del motor; una
+      // punta sustituida por Tradier (aunque coincida en precio/hora) cuenta como
+      // desconocida, y las referencias EOD quedan fuera del rango verificable.
+      const chainCoverage = summarizeChainCoverage(chainDateReports, chainRequestedDates);
       const exposureQuoteTimes = summarizeQuoteTimes(
-        contracts.map((c) => ({
-          updatedAtSec: c.lastQuote.updatedAt,
-          fromOverlay: preOverlayQuoteTimes.get(c.ticker) !== c.lastQuote.updatedAt,
-          eodReference: eodQuotesRes.eodFixedTickers.has(c.ticker),
-        })),
+        contracts.map((c) => {
+          const substituted = tradierOverlay.quoteSubstitutedTickers.has(c.ticker);
+          return {
+            updatedAtSec: substituted ? null : c.lastQuote.updatedAt,
+            fromOverlay: substituted,
+            eodReference: eodQuotesRes.eodFixedTickers.has(c.ticker),
+          };
+        }),
         nowSec,
       );
       exposureTrace = buildExposureTraceMetadata({
@@ -8780,14 +8799,21 @@ export class MarketRuntime {
           evidenced: true,
           engineInputs: terminalExposureInputs.length,
           skippedContracts: exposureResult.quality.skippedContracts,
-          chainTruncated: warnings.some((w) => w.includes('options chain error')),
+          chainTruncated: chainCoverage.chainTruncated,
+          chainErrors: chainCoverage.chainErrors,
+          missingDatesCount: chainCoverage.missingDates.length,
         }),
         engineStrikes: terminalExposureInputs.map((input) => input.strike),
-        engineExpirations: [...new Set(terminalExposureInputs.map((input) => input.expiryUtcSec))],
+        engineExpirationDates: [
+          ...new Set(terminalExposureInputs.map((input) => getMarketParts(input.expiryUtcSec, 'EQUITY').dateKey)),
+        ].sort(),
         byStrike: exposureResult.byStrike.map((s) => s.strike),
         catalogExpirationsCount: mergedAvailableExpirations.length,
+        catalogExpirationDates: mergedAvailableExpirations.map((entry) => entry.expirationDate),
         payloadContractCount: selectedForSerialization.length,
+        payloadExpirationDates: [...new Set(selectedForSerialization.map((c) => c.expirationDate))].sort(),
         quoteTimes: exposureQuoteTimes,
+        chainCoverage,
       });
 
       const serializedContracts: SerializedOptionContractRow[] = this.serializeExpiryContractRows({

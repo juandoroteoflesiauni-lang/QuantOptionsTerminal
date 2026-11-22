@@ -923,6 +923,9 @@ function overlayQuote(
     const askSize = Number.isFinite(tradier.askSize) ? tradier.askSize : contract.lastQuote.askSize;
     if (bid !== contract.lastQuote.bid || ask !== contract.lastQuote.ask) summary.overlaidBidAsk += 1;
     if (bidSize !== contract.lastQuote.bidSize || askSize !== contract.lastQuote.askSize) summary.overlaidSizes += 1;
+    // Pieza 50.9: la sustitución se registra por rama efectiva, sin depender de
+    // que precio o timestamp cambien (una hora Tradier puede derivar de trade o griegas).
+    summary.quoteSubstitutedTickers.add(contract.ticker);
     const updatedAt = Number.isFinite(tradier.asOfUtcSec)
       ? Math.max(contract.lastQuote.updatedAt, tradier.asOfUtcSec)
       : contract.lastQuote.updatedAt;
@@ -1004,6 +1007,8 @@ interface MutableOverlaySummary {
   unmatchedTradierContracts: number;
   overlaidContracts: number;
   skippedStaleQuotes: number;
+  /** Pieza 50.9: contratos cuya punta fue sustituida por Tradier (aunque coincida en valor). */
+  quoteSubstitutedTickers: Set<string>;
 }
 
 /**
@@ -1024,7 +1029,12 @@ export function overlayTradierChainOnCanonicalContracts(
     readonly nowSec: number;
     readonly maxQuoteAgeSec?: number;
   },
-): { readonly contracts: readonly OptionSnapshotContract[]; readonly summary: TradierChainOverlaySummary } {
+): {
+  readonly contracts: readonly OptionSnapshotContract[];
+  readonly summary: TradierChainOverlaySummary;
+  /** Pieza 50.9: tickers con punta efectivamente sustituida por Tradier. */
+  readonly quoteSubstitutedTickers: ReadonlySet<string>;
+} {
   const maxQuoteAgeSec = options.maxQuoteAgeSec ?? TRADIER_MAX_QUOTE_AGE_SEC;
   const summary: MutableOverlaySummary = {
     overlaidBidAsk: 0,
@@ -1038,6 +1048,7 @@ export function overlayTradierChainOnCanonicalContracts(
     unmatchedTradierContracts: 0,
     overlaidContracts: 0,
     skippedStaleQuotes: 0,
+    quoteSubstitutedTickers: new Set<string>(),
   };
 
   const byOcc = new Map<string, TradierOptionContractNormalized>();
@@ -1105,6 +1116,7 @@ export function overlayTradierChainOnCanonicalContracts(
       httpStatus: null,
       lastError: null,
     },
+    quoteSubstitutedTickers: summary.quoteSubstitutedTickers,
   };
 }
 

@@ -79,12 +79,58 @@ export function summarizeQuoteTimes(
   };
 }
 
+export interface ChainDateReport {
+  readonly dateKey: string;
+  readonly stoppedReason: string | null;
+  readonly providerError: boolean;
+  readonly contractCount: number;
+}
+
+export interface ChainCoverageSummary {
+  readonly requestedDates: readonly string[];
+  readonly deliveredDates: readonly string[];
+  readonly missingDates: readonly string[];
+  /** Corte comprobable del paginador (`maxPages`). */
+  readonly chainTruncated: boolean;
+  readonly chainErrors: boolean;
+}
+
+/** Evidencia de cobertura de la carga de cadena por fecha (informe real). */
+export function summarizeChainCoverage(
+  reports: readonly ChainDateReport[],
+  requestedDates: readonly string[],
+): ChainCoverageSummary {
+  const requested = [...new Set(requestedDates)].filter((date) => date !== '');
+  const delivered: string[] = [];
+  let chainTruncated = false;
+  let chainErrors = false;
+  for (const report of reports) {
+    if (report.stoppedReason === 'maxPages') chainTruncated = true;
+    if (report.providerError) chainErrors = true;
+    if (report.contractCount > 0 && requested.includes(report.dateKey) && !delivered.includes(report.dateKey)) {
+      delivered.push(report.dateKey);
+    }
+  }
+  const missingDates = requested.filter((date) => !delivered.includes(date));
+  return {
+    requestedDates: requested,
+    deliveredDates: delivered.sort((a, b) => a.localeCompare(b)),
+    missingDates,
+    chainTruncated,
+    chainErrors,
+  };
+}
+
 export interface ExposureCoverageEvidence {
   /** `false` cuando no hay evidencia acreditable (respuesta legacy o AR). */
   readonly evidenced: boolean;
   readonly engineInputs: number;
   readonly skippedContracts: number;
   readonly chainTruncated: boolean;
+  /** Corte/error comprobable en la carga de cadena (Pieza 50.9 corrección). */
+  readonly chainErrors?: boolean;
+  /** Fechas solicitadas sin resultado entregado. */
+  readonly missingDatesCount?: number;
 }
 
 export type ExposureCoverageStatus = 'complete' | 'partial' | 'unknown';
@@ -99,8 +145,47 @@ export function resolveExposureCoverage(evidence: ExposureCoverageEvidence): Exp
   ) {
     return 'unknown';
   }
-  if (evidence.skippedContracts > 0 || evidence.chainTruncated) return 'partial';
+  if (
+    evidence.skippedContracts > 0 ||
+    evidence.chainTruncated ||
+    evidence.chainErrors === true ||
+    (evidence.missingDatesCount ?? 0) > 0
+  ) {
+    return 'partial';
+  }
   return 'complete';
+}
+
+export interface ArOiProvenanceInput {
+  /** `true` si el OI del input proviene de OI reportado (BMB), no de volumen nominal. */
+  readonly oiFromReported: boolean;
+}
+
+export interface ArOiProvenanceSummary {
+  readonly directOiInputs: number;
+  readonly proxyOiInputs: number;
+  /** `true` si algún input usa proxy de volumen; `null` sin inputs acreditables. */
+  readonly oiProxy: boolean | null;
+}
+
+/** Procedencia del OI de los inputs AR: directo, proxy de volumen o desconocido. */
+export function resolveArOiProvenance(
+  inputs: readonly ArOiProvenanceInput[],
+): ArOiProvenanceSummary {
+  let directOiInputs = 0;
+  let proxyOiInputs = 0;
+  for (const input of inputs) {
+    if (input.oiFromReported) {
+      directOiInputs += 1;
+    } else {
+      proxyOiInputs += 1;
+    }
+  }
+  return {
+    directOiInputs,
+    proxyOiInputs,
+    oiProxy: inputs.length === 0 ? null : proxyOiInputs > 0,
+  };
 }
 
 export interface StrikeRange {
@@ -117,15 +202,21 @@ export interface ExposureTraceMetadata {
   readonly quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF' | null;
   readonly coverage: ExposureCoverageStatus;
   readonly engineExpirationsCount: number;
+  /** Fechas concretas entregadas al motor (no catálogo ni payload). */
+  readonly engineExpirationDates: readonly string[];
   readonly engineStrikeRange: StrikeRange;
   readonly engineStrikeCount: number;
   readonly byStrikeRange: StrikeRange;
   readonly byStrikeCount: number;
   /** Catálogo completo disponible (vencimientos) frente a lo enviado al motor. */
   readonly catalogExpirationsCount: number | null;
+  readonly catalogExpirationDates: readonly string[];
   /** Filas de contrato serializadas en el payload REST. */
   readonly payloadContractCount: number;
+  readonly payloadExpirationDates: readonly string[];
   readonly quoteTimes: QuoteTimeTrace | null;
+  /** Cobertura de la carga de cadena (fechas pedidas/entregadas/faltantes). */
+  readonly chainCoverage: ChainCoverageSummary | null;
 }
 
 export interface ExposureTraceMetadataInput {
@@ -137,11 +228,14 @@ export interface ExposureTraceMetadataInput {
   readonly quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF' | null;
   readonly coverage: ExposureCoverageStatus;
   readonly engineStrikes: readonly number[];
-  readonly engineExpirations: readonly number[];
+  readonly engineExpirationDates: readonly string[];
   readonly byStrike: readonly number[];
   readonly catalogExpirationsCount: number | null;
+  readonly catalogExpirationDates: readonly string[];
   readonly payloadContractCount: number;
+  readonly payloadExpirationDates: readonly string[];
   readonly quoteTimes: QuoteTimeTrace | null;
+  readonly chainCoverage: ChainCoverageSummary | null;
 }
 
 function finiteOrNull(value: number | null | undefined): number | null {
@@ -171,13 +265,17 @@ export function buildExposureTraceMetadata(
     spotDivergenceBps: finiteOrNull(input.spotDivergenceBps),
     quoteMode: input.quoteMode,
     coverage: input.coverage,
-    engineExpirationsCount: input.engineExpirations.length,
+    engineExpirationsCount: input.engineExpirationDates.length,
+    engineExpirationDates: [...input.engineExpirationDates],
     engineStrikeRange: rangeOf(input.engineStrikes),
     engineStrikeCount: input.engineStrikes.length,
     byStrikeRange: rangeOf(input.byStrike),
     byStrikeCount: input.byStrike.length,
     catalogExpirationsCount: input.catalogExpirationsCount,
+    catalogExpirationDates: [...input.catalogExpirationDates],
     payloadContractCount: input.payloadContractCount,
+    payloadExpirationDates: [...input.payloadExpirationDates],
     quoteTimes: input.quoteTimes,
+    chainCoverage: input.chainCoverage,
   };
 }
