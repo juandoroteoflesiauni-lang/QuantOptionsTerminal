@@ -57,7 +57,6 @@ import {
   normalizeStockDetailOrderBook,
 } from '../../../src/core/stockDetailStability';
 import {
-  findNearestBarIndex,
   resolveAutoAvwapBarIndex,
   resolveAvwapClickAnchor,
   resolveChartFitKey,
@@ -72,6 +71,7 @@ import {
 } from '../../../src/core/resampleWeekly';
 import {
   type AvwapAnchorMode,
+  type AvwapAnchorCoverage,
   type MinimalOhlcvBar,
   alignSessionVwapOverlayByTime,
   computeAnchoredVwapWithAnchor,
@@ -80,7 +80,9 @@ import {
   computeSessionVwapPure,
   computeSingleAnchorAvwapOverlayPure,
   computeWilderAtrPure,
+  projectDailyAvwapToWeeklyPure,
   resolveAvwapAnchorIndex,
+  resolveSingleAnchorAvwapPure,
 } from './stock-detail/stockDetailMath';
 import type {
   ChartKeyLevels,
@@ -180,6 +182,10 @@ interface PanoramicChartBundle extends StockChartSeriesBundle {
   readonly avwapAnchorModeLabel: string;
   /** Pieza 50.4: timestamp UTC del ancla efectiva (misma vela donde nace la curva y el marcador). */
   readonly avwapEffectiveAnchorTimeSec: number | null;
+  /** Pieza 50.7: fecha real del ancla para la etiqueta (en 1W YTD/MTD es la rueda diaria). */
+  readonly avwapAnchorDateSec: number | null;
+  /** Pieza 50.7: cobertura acreditada del período del ancla. */
+  readonly avwapCoverage: AvwapAnchorCoverage;
   /** Pieza 50.5: líneas Auto-AVWAP (máx 1 por rol) proyectadas al timeframe activo. */
   readonly autoAvwapLines: readonly ComputedAutoAvwapLine[];
   /** Pieza 50.5: `true` cuando el modo activo es `AUTO_INSTITUTIONAL`. */
@@ -252,61 +258,6 @@ function dedupAndSortBars(rawBars: readonly MinimalOhlcvBar[]): readonly Minimal
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
-function resolvePanoramicAnchorTime(
-  bars: readonly MinimalOhlcvBar[],
-  mode: PanoramicAvwapAnchorMode,
-  market: 'AR' | 'US',
-  clickedTimeSec: number | null,
-): number | null {
-  if (bars.length === 0) return null;
-  const lastBar = bars[bars.length - 1];
-  if (lastBar === undefined || !Number.isFinite(lastBar.time)) return null;
-  const lastTime = lastBar.time;
-
-  if (mode === 'SESSION_START') {
-    const offsetSec = market === 'AR' ? -10_800 : -14_400;
-    const sessionKey = Math.floor((lastTime + offsetSec) / 86_400);
-    const idx = bars.findIndex((bar) => Math.floor((bar.time + offsetSec) / 86_400) === sessionKey);
-    const bar = idx >= 0 ? bars[idx] : undefined;
-    return bar?.time ?? null;
-  }
-  if (mode === 'MONTH_START') {
-    const date = new Date(lastTime * 1_000);
-    const monthStartSec = Math.floor(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) / 1_000);
-    const idx = bars.findIndex((bar) => bar.time >= monthStartSec);
-    const bar = idx >= 0 ? bars[idx] : undefined;
-    return bar?.time ?? null;
-  }
-  if (mode === 'YEAR_START') {
-    const yearStartSec = Math.floor(Date.UTC(new Date(lastTime * 1_000).getUTCFullYear(), 0, 1) / 1_000);
-    const idx = bars.findIndex((bar) => bar.time >= yearStartSec);
-    const bar = idx >= 0 ? bars[idx] : undefined;
-    return bar?.time ?? null;
-  }
-  if (mode === 'RANGE_LOW' || mode === 'RANGE_HIGH') {
-    const startIdx = Math.max(0, bars.length - 60);
-    let bestTime: number | null = null;
-    let bestValue = mode === 'RANGE_LOW' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
-    for (let i = startIdx; i < bars.length; i += 1) {
-      const bar = bars[i];
-      if (bar === undefined) continue;
-      const value = mode === 'RANGE_LOW' ? bar.low : bar.high;
-      if (!Number.isFinite(value)) continue;
-      if ((mode === 'RANGE_LOW' && value < bestValue) || (mode === 'RANGE_HIGH' && value > bestValue)) {
-        bestValue = value;
-        bestTime = bar.time;
-      }
-    }
-    return bestTime;
-  }
-  if (mode === 'CLICKED_CANDLE') {
-    if (clickedTimeSec === null || !Number.isFinite(clickedTimeSec)) return null;
-    // Pieza 50.4: snap a la vela MÁS CERCANA (sin sesgo hacia adelante entre timestamps).
-    const idx = findNearestBarIndex(bars, clickedTimeSec);
-    return idx >= 0 ? (bars[idx]?.time ?? null) : null;
-  }
-  return null;
-}
 
 /** Convierte barras locales a la forma `Bar` de `resampleDailyToWeekly` (vw inválido se omite). */
 function toWeeklyResampleBars(bars: readonly MinimalOhlcvBar[]): {
@@ -484,6 +435,9 @@ export const StockDetailView: React.FC<{
   const avwapModeRef = useRef(avwapMode);
   avwapModeRef.current = avwapMode;
   const [clickedAnchorTimeSec, setClickedAnchorTimeSec] = useState<number | null>(null);
+  // Pieza 50.7 (Bloque B): el clic se conserva al cambiar de temporalidad dentro
+  // del mismo instrumento y se limpia al cambiar de instrumento.
+  const clickedAnchorStockKeyRef = useRef<string | null>(null);
   const [showAvwapBands, setShowAvwapBands] = useState(true);
   /** Pieza 50.5: visibilidad individual de cada rol Auto-AVWAP (sin `setData`). */
   const [autoAnchorEnabled, setAutoAnchorEnabled] = useState<Readonly<Record<AutoAnchorRole, boolean>>>({
@@ -555,7 +509,10 @@ export const StockDetailView: React.FC<{
     setLoading(true);
     setLoadError(null);
     setHighlightedLevel(null);
-    setClickedAnchorTimeSec(null);
+    if (clickedAnchorStockKeyRef.current !== currentStockKey) {
+      clickedAnchorStockKeyRef.current = currentStockKey;
+      setClickedAnchorTimeSec(null);
+    }
     setArFallbackNotice(null);
     if (!hasOverviewRef.current) void refreshOverview();
 
@@ -1178,27 +1135,65 @@ export const StockDetailView: React.FC<{
           }
         : { 9: null, 21: null, 50: null, 200: null };
 
-    const anchorTimeSec = resolvePanoramicAnchorTime(
-      bars,
-      avwapMode,
-      isArMarket ? 'AR' : 'US',
-      effectiveClickedAnchorTimeSec,
-    );
-    // Pieza 50.7 (Bloque A): ancla única desde `calculateAnchoredVwap` (HLC3 +
-    // Welford, SPEC punto 5): centro y bandas ±1σ/±2σ del mismo estado, alineados
-    // por `time`. El primer punto efectivo fija ancla, fecha y marcador; antes
-    // de él no hay línea (NaN → null).
-    const singleAvwap = computeSingleAnchorAvwapOverlayPure(
-      bars,
-      anchorTimeSec !== null ? findNearestBarIndex(bars, anchorTimeSec) : -1,
-    );
-    const avwapSeries = singleAvwap.vwap.map(normalizeFiniteOrNull);
-    const avwapUpper1 = singleAvwap.upper1.map(normalizeFiniteOrNull);
-    const avwapLower1 = singleAvwap.lower1.map(normalizeFiniteOrNull);
-    const avwapUpper2 = singleAvwap.upper2.map(normalizeFiniteOrNull);
-    const avwapLower2 = singleAvwap.lower2.map(normalizeFiniteOrNull);
-    const avwapAnchorAvailable = singleAvwap.anchorIndex >= 0;
-    const avwapEffectiveAnchorTimeSec = singleAvwap.anchorTimeSec;
+    const market: 'US' | 'AR' = isArMarket ? 'AR' : 'US';
+    const isAutoAvwapMode = avwapMode === 'AUTO_INSTITUTIONAL';
+    let bundleAvwapSeries: readonly (number | null)[] = [];
+    let bundleAvwapUpper1: readonly (number | null)[] = [];
+    let bundleAvwapLower1: readonly (number | null)[] = [];
+    let bundleAvwapUpper2: readonly (number | null)[] = [];
+    let bundleAvwapLower2: readonly (number | null)[] = [];
+    let bundleAvwapAnchorAvailable = false;
+    let bundleAvwapEffectiveAnchorTimeSec: number | null = null;
+    let bundleAvwapAnchorDateSec: number | null = null;
+    let bundleAvwapCoverage: AvwapAnchorCoverage = 'unavailable';
+
+    if (
+      effectiveChartTimeframe === '1W' &&
+      (avwapMode === 'MONTH_START' || avwapMode === 'YEAR_START')
+    ) {
+      // Pieza 50.7 (Bloque B, decisión 1W): YTD/MTD se calculan sobre el 1D ya
+      // cargado (sin REST nuevo), incluyendo solo ruedas del período (sin
+      // volumen anterior al ancla) y se proyectan a la vela semanal como
+      // coordenada gráfica (último cierre diario incluido, no la apertura).
+      const dailySource = dedupAndSortBars(
+        isArMarket ? (arBars1dResp?.bars ?? []) : (usBars1dResp?.bars ?? []),
+      );
+      const projected = projectDailyAvwapToWeeklyPure(bars, dailySource, avwapMode, market);
+      bundleAvwapSeries = projected.vwap.map(normalizeFiniteOrNull);
+      bundleAvwapUpper1 = projected.upper1.map(normalizeFiniteOrNull);
+      bundleAvwapLower1 = projected.lower1.map(normalizeFiniteOrNull);
+      bundleAvwapUpper2 = projected.upper2.map(normalizeFiniteOrNull);
+      bundleAvwapLower2 = projected.lower2.map(normalizeFiniteOrNull);
+      bundleAvwapCoverage = projected.coverage;
+      bundleAvwapAnchorAvailable = projected.anchorWeeklyTimeSec !== null;
+      bundleAvwapEffectiveAnchorTimeSec = projected.anchorWeeklyTimeSec;
+      bundleAvwapAnchorDateSec = projected.anchorDailyTimeSec;
+    } else if (!isAutoAvwapMode) {
+      // Pieza 50.7 (Bloque A+B): ancla única con fechas civiles del mercado,
+      // cobertura acreditada y centro/bandas desde `calculateAnchoredVwap`
+      // (HLC3 Welford); el primer punto efectivo fija ancla, fecha y marcador.
+      // Pieza 50.4 → 50.7: el snap `findNearestBarIndex(bars, clickedTimeSec)`
+      // y la validación de rango viven ahora en `resolveSingleAnchorAvwapPure`
+      // (cubiertos por fixture Python independiente).
+      const resolution = resolveSingleAnchorAvwapPure(
+        bars,
+        avwapMode,
+        market,
+        effectiveClickedAnchorTimeSec,
+      );
+      const singleAvwap = computeSingleAnchorAvwapOverlayPure(bars, resolution.anchorIndex);
+      const avwapAnchorAvailable = singleAvwap.anchorIndex >= 0;
+      const avwapEffectiveAnchorTimeSec = singleAvwap.anchorTimeSec;
+      bundleAvwapSeries = singleAvwap.vwap.map(normalizeFiniteOrNull);
+      bundleAvwapUpper1 = singleAvwap.upper1.map(normalizeFiniteOrNull);
+      bundleAvwapLower1 = singleAvwap.lower1.map(normalizeFiniteOrNull);
+      bundleAvwapUpper2 = singleAvwap.upper2.map(normalizeFiniteOrNull);
+      bundleAvwapLower2 = singleAvwap.lower2.map(normalizeFiniteOrNull);
+      bundleAvwapCoverage = avwapAnchorAvailable ? resolution.coverage : 'unavailable';
+      bundleAvwapAnchorAvailable = avwapAnchorAvailable;
+      bundleAvwapEffectiveAnchorTimeSec = avwapEffectiveAnchorTimeSec;
+      bundleAvwapAnchorDateSec = avwapEffectiveAnchorTimeSec;
+    }
 
     const rv30Decimal = isArMarket
       ? stockDetail?.realizedVol20d ?? null
@@ -1213,7 +1208,6 @@ export const StockDetailView: React.FC<{
     const rawAutoAnchors: readonly AutoAvwapAnchorDto[] = isArMarket
       ? (arBarsResp?.autoAvwapAnchors ?? arBars1dResp?.autoAvwapAnchors ?? [])
       : (usBarsResp?.autoAvwapAnchors ?? usBars1dResp?.autoAvwapAnchors ?? []);
-    const isAutoAvwapMode = avwapMode === 'AUTO_INSTITUTIONAL';
     const autoAvwapLines: ComputedAutoAvwapLine[] = [];
     if (isAutoAvwapMode) {
       for (const anchor of rawAutoAnchors) {
@@ -1242,14 +1236,16 @@ export const StockDetailView: React.FC<{
       sessionVwap,
       sessionVwapAvailable,
       avwapMode: 'MONTH_START',
-      avwapSeries,
-      avwapUpper1,
-      avwapLower1,
-      avwapUpper2,
-      avwapLower2,
-      avwapAnchorAvailable,
+      avwapSeries: bundleAvwapSeries,
+      avwapUpper1: bundleAvwapUpper1,
+      avwapLower1: bundleAvwapLower1,
+      avwapUpper2: bundleAvwapUpper2,
+      avwapLower2: bundleAvwapLower2,
+      avwapAnchorAvailable: bundleAvwapAnchorAvailable,
       avwapAnchorModeLabel: modeLabel,
-      avwapEffectiveAnchorTimeSec,
+      avwapEffectiveAnchorTimeSec: bundleAvwapEffectiveAnchorTimeSec,
+      avwapAnchorDateSec: bundleAvwapAnchorDateSec,
+      avwapCoverage: bundleAvwapCoverage,
       autoAvwapLines,
       isAutoAvwapMode,
       benchmarkBars1d: benchBars1d,
@@ -1317,10 +1313,12 @@ export const StockDetailView: React.FC<{
   // Pieza 50.4: fecha visible del ancla AVWAP (`DD/MM/YY` en 1D/1W; `DD/MM HH:mm` intradiario).
   const avwapAnchorIncludeTime =
     effectiveChartTimeframe !== '1D' && effectiveChartTimeframe !== '1W';
+  const avwapAnchorLabelSec =
+    chartBundle.avwapAnchorDateSec ?? chartBundle.avwapEffectiveAnchorTimeSec;
   const avwapDateLabel =
-    chartBundle.avwapAnchorAvailable && chartBundle.avwapEffectiveAnchorTimeSec !== null
+    chartBundle.avwapAnchorAvailable && avwapAnchorLabelSec !== null
       ? formatAvwapAnchorLabel(
-          chartBundle.avwapEffectiveAnchorTimeSec,
+          avwapAnchorLabelSec,
           isArMarket ? AR_MARKET_TIMEZONE : US_MARKET_TIMEZONE,
           avwapAnchorIncludeTime,
         )
@@ -1864,8 +1862,8 @@ export const StockDetailView: React.FC<{
             />
             <ToolbarChip
               active={overlays.avwap}
-              label={avwapDateLabel !== null ? `AVWAP · ${avwapDateLabel}` : `AVWAP · ${chartBundle.avwapAnchorModeLabel}`}
-              title={`AVWAP (${chartBundle.avwapAnchorModeLabel})${avwapDateLabel !== null ? ` · Ancla: ${avwapDateLabel}` : ''}`}
+              label={`${avwapDateLabel !== null ? `AVWAP · ${avwapDateLabel}` : `AVWAP · ${chartBundle.avwapAnchorModeLabel}`}${chartBundle.avwapCoverage === 'partial' ? ' (AVWAP parcial)' : ''}`}
+              title={`AVWAP (${chartBundle.avwapAnchorModeLabel})${avwapDateLabel !== null ? ` · Ancla: ${avwapDateLabel}` : ''}${chartBundle.avwapCoverage === 'partial' ? ' · AVWAP parcial' : ''}`}
               className="min-w-[132px] font-mono-num tabular-nums text-center"
               onClick={() => handleToggleOverlay('avwap')}
             />

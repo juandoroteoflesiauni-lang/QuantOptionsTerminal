@@ -8,7 +8,20 @@
  */
 
 import { calculateAnchoredVwap, type AvwapPoint } from '../../../../src/core/avwap.js';
-import { resolveEffectiveAvwapAnchorIndex } from '../../../../src/core/stockDetailChartNavigation.js';
+import {
+  AR_MARKET_TIMEZONE,
+  US_MARKET_TIMEZONE,
+  getCalendarWeekMondayKey,
+} from '../../../../src/core/resampleWeekly.js';
+import {
+  RTH_START_MINUTES,
+  getMarketParts,
+  isRth,
+} from '../../../../src/core/sessions.js';
+import {
+  findNearestBarIndex,
+  resolveEffectiveAvwapAnchorIndex,
+} from '../../../../src/core/stockDetailChartNavigation.js';
 import type { Bar } from '../../../../src/core/types.js';
 
 export type AvwapAnchorMode =
@@ -448,6 +461,296 @@ export function computeSingleAnchorAvwapOverlayPure(
   const anchorIndex =
     anchorTimeSec !== null ? bars.findIndex((bar) => bar.time === anchorTimeSec) : -1;
   return { vwap, upper1, lower1, upper2, lower2, anchorTimeSec, anchorIndex };
+}
+
+/** Pieza 50.7 (Bloque B): modos de ancla única con resolución temporal de mercado. */
+export type TemporalAvwapAnchorMode =
+  | 'SESSION_START'
+  | 'MONTH_START'
+  | 'YEAR_START'
+  | 'RANGE_LOW'
+  | 'RANGE_HIGH'
+  | 'CLICKED_CANDLE';
+
+/** Cobertura acreditada del insumo del ancla. */
+export type AvwapAnchorCoverage = 'complete' | 'partial' | 'unavailable';
+
+export interface SingleAnchorResolution {
+  /** Timestamp UTC de la barra pedida como ancla (coordenada del gráfico). */
+  readonly anchorTimeSec: number | null;
+  /** Índice de la barra pedida en `bars`, o `-1` si el ancla es indisponible. */
+  readonly anchorIndex: number;
+  readonly coverage: AvwapAnchorCoverage;
+}
+
+interface LocalDateParts {
+  readonly year: number;
+  readonly month: number;
+  readonly day: number;
+  readonly dateKey: string;
+  readonly minutesOfDay: number;
+}
+
+const arDateFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function getArDateFormatter(): Intl.DateTimeFormat {
+  const cached = arDateFormatterCache.get(AR_MARKET_TIMEZONE);
+  if (cached !== undefined) return cached;
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: AR_MARKET_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  arDateFormatterCache.set(AR_MARKET_TIMEZONE, formatter);
+  return formatter;
+}
+
+function readIntlPart(parts: readonly Intl.DateTimeFormatPart[], type: string): string {
+  for (const part of parts) {
+    if (part.type === type) return part.value;
+  }
+  return '';
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/**
+ * Fecha civil del mercado del timestamp: `America/New_York` (DST incluido) para
+ * US y `America/Argentina/Buenos_Aires` para AR. `null` si no es resoluble.
+ */
+function localDateParts(timeSec: number, market: 'US' | 'AR'): LocalDateParts | null {
+  if (!Number.isFinite(timeSec)) return null;
+  if (market === 'US') {
+    const parts = getMarketParts(Math.floor(timeSec), 'EQUITY');
+    return {
+      year: parts.year,
+      month: parts.month,
+      day: parts.day,
+      dateKey: parts.dateKey,
+      minutesOfDay: parts.minutesOfDay,
+    };
+  }
+  const parts = getArDateFormatter().formatToParts(new Date(timeSec * 1_000));
+  const year = Number(readIntlPart(parts, 'year'));
+  const month = Number(readIntlPart(parts, 'month'));
+  const day = Number(readIntlPart(parts, 'day'));
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  return {
+    year,
+    month,
+    day,
+    dateKey: `${String(year).padStart(4, '0')}-${pad2(month)}-${pad2(day)}`,
+    minutesOfDay: 0,
+  };
+}
+
+/**
+ * Pieza 50.7 (Bloque B): resuelve la barra pedida como ancla de un modo de ancla
+ * única con fechas civiles del mercado (DST, fines de semana y feriados sin
+ * velas) y acredita la cobertura:
+ *  - SESSION US: primera barra RTH de la fecha local; indisponible antes de RTH
+ *    y `partial` si el buffer arranca después de las 09:30 (sin offsets fijos).
+ *  - SESSION AR: primera barra de la fecha local (semántica vigente).
+ *  - MONTH/YEAR: primera barra del período civil; `complete` solo si el buffer
+ *    incluye una barra anterior al inicio del período; si no, `partial`.
+ *  - RANGE_LOW/HIGH: últimas 60 barras, comportamiento intacto.
+ *  - CLICKED: snap 50.4 solo si el instante cae dentro del histórico; fuera de
+ *    rango → indisponible (nunca ancla de borde silenciosa).
+ */
+export function resolveSingleAnchorAvwapPure(
+  bars: readonly MinimalOhlcvBar[],
+  mode: TemporalAvwapAnchorMode,
+  market: 'US' | 'AR',
+  clickedTimeSec: number | null = null,
+): SingleAnchorResolution {
+  const unavailable: SingleAnchorResolution = {
+    anchorTimeSec: null,
+    anchorIndex: -1,
+    coverage: 'unavailable',
+  };
+  const lastBar = bars[bars.length - 1];
+  if (bars.length === 0 || lastBar === undefined || !Number.isFinite(lastBar.time)) {
+    return unavailable;
+  }
+  const lastParts = localDateParts(lastBar.time, market);
+  if (lastParts === null) return unavailable;
+
+  if (mode === 'RANGE_LOW' || mode === 'RANGE_HIGH') {
+    const startIdx = Math.max(0, bars.length - 60);
+    let anchorIndex = -1;
+    let bestValue = mode === 'RANGE_LOW' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    for (let index = startIdx; index < bars.length; index += 1) {
+      const bar = bars[index];
+      if (bar === undefined) continue;
+      const value = mode === 'RANGE_LOW' ? bar.low : bar.high;
+      if (!Number.isFinite(value)) continue;
+      if ((mode === 'RANGE_LOW' && value < bestValue) || (mode === 'RANGE_HIGH' && value > bestValue)) {
+        bestValue = value;
+        anchorIndex = index;
+      }
+    }
+    if (anchorIndex < 0) return unavailable;
+    return {
+      anchorTimeSec: bars[anchorIndex]?.time ?? null,
+      anchorIndex,
+      coverage: 'complete',
+    };
+  }
+
+  if (mode === 'CLICKED_CANDLE') {
+    if (clickedTimeSec === null || !Number.isFinite(clickedTimeSec)) return unavailable;
+    const firstBar = bars[0];
+    if (firstBar === undefined || !Number.isFinite(firstBar.time)) return unavailable;
+    const step =
+      bars.length >= 2 ? Math.abs(lastBar.time - (bars[bars.length - 2]?.time ?? lastBar.time)) : 0;
+    if (clickedTimeSec < firstBar.time || clickedTimeSec > lastBar.time + step) {
+      return unavailable;
+    }
+    const index = findNearestBarIndex(bars, clickedTimeSec);
+    const bar = index >= 0 ? bars[index] : undefined;
+    if (bar === undefined || !Number.isFinite(bar.time)) return unavailable;
+    return { anchorTimeSec: bar.time, anchorIndex: index, coverage: 'complete' };
+  }
+
+  if (mode === 'SESSION_START') {
+    for (let index = 0; index < bars.length; index += 1) {
+      const bar = bars[index];
+      if (bar === undefined || !Number.isFinite(bar.time)) continue;
+      const parts = localDateParts(bar.time, market);
+      if (parts === null || parts.dateKey !== lastParts.dateKey) continue;
+      if (market === 'US') {
+        if (!isRth(bar.time)) continue;
+        const coverage: AvwapAnchorCoverage =
+          parts.minutesOfDay === RTH_START_MINUTES ? 'complete' : 'partial';
+        return { anchorTimeSec: bar.time, anchorIndex: index, coverage };
+      }
+      return { anchorTimeSec: bar.time, anchorIndex: index, coverage: 'complete' };
+    }
+    return unavailable;
+  }
+
+  const periodStartKey =
+    mode === 'MONTH_START'
+      ? `${String(lastParts.year).padStart(4, '0')}-${pad2(lastParts.month)}-01`
+      : `${String(lastParts.year).padStart(4, '0')}-01-01`;
+  for (let index = 0; index < bars.length; index += 1) {
+    const bar = bars[index];
+    if (bar === undefined || !Number.isFinite(bar.time)) continue;
+    const parts = localDateParts(bar.time, market);
+    if (parts === null) continue;
+    const inPeriod =
+      mode === 'MONTH_START'
+        ? parts.year === lastParts.year && parts.month === lastParts.month
+        : parts.year === lastParts.year;
+    if (!inPeriod) continue;
+    let boundaryCovered = false;
+    for (let prev = 0; prev < index; prev += 1) {
+      const prevBar = bars[prev];
+      if (prevBar === undefined || !Number.isFinite(prevBar.time)) continue;
+      const prevParts = localDateParts(prevBar.time, market);
+      if (prevParts !== null && prevParts.dateKey < periodStartKey) {
+        boundaryCovered = true;
+        break;
+      }
+    }
+    return {
+      anchorTimeSec: bar.time,
+      anchorIndex: index,
+      coverage: boundaryCovered ? 'complete' : 'partial',
+    };
+  }
+  return unavailable;
+}
+
+export interface WeeklyProjectedAvwapOverlay {
+  /** Alineado a `weeklyBars`; `NaN` en semanas sin valor del período. */
+  readonly vwap: readonly number[];
+  readonly upper1: readonly number[];
+  readonly lower1: readonly number[];
+  readonly upper2: readonly number[];
+  readonly lower2: readonly number[];
+  /** Coordenada gráfica: timestamp de la vela semanal con el primer valor. */
+  readonly anchorWeeklyTimeSec: number | null;
+  /** Fecha real del ancla: primera rueda diaria del período. */
+  readonly anchorDailyTimeSec: number | null;
+  readonly coverage: AvwapAnchorCoverage;
+}
+
+/**
+ * Pieza 50.7 (Bloque B, decisión 1W): AVWAP temporal YTD/MTD calculado sobre el
+ * histórico 1D disponible (HLC3 Welford, Bloque A) incluyendo SOLO barras
+ * diarias del período (sin volumen anterior al ancla) y proyectado a la vela
+ * semanal como coordenada gráfica: cada semana toma el último valor diario
+ * acumulado disponible de sus ruedas incluidas. La vela semanal que cruza el
+ * límite del período queda recortada a sus ruedas del período.
+ */
+export function projectDailyAvwapToWeeklyPure(
+  weeklyBars: readonly MinimalOhlcvBar[],
+  dailyBars: readonly MinimalOhlcvBar[],
+  mode: 'MONTH_START' | 'YEAR_START',
+  market: 'US' | 'AR',
+): WeeklyProjectedAvwapOverlay {
+  const vwap = new Array<number>(weeklyBars.length).fill(Number.NaN);
+  const upper1 = new Array<number>(weeklyBars.length).fill(Number.NaN);
+  const lower1 = new Array<number>(weeklyBars.length).fill(Number.NaN);
+  const upper2 = new Array<number>(weeklyBars.length).fill(Number.NaN);
+  const lower2 = new Array<number>(weeklyBars.length).fill(Number.NaN);
+  const empty = (
+    coverage: AvwapAnchorCoverage,
+  ): WeeklyProjectedAvwapOverlay => ({
+    vwap,
+    upper1,
+    lower1,
+    upper2,
+    lower2,
+    anchorWeeklyTimeSec: null,
+    anchorDailyTimeSec: null,
+    coverage,
+  });
+  if (weeklyBars.length === 0 || dailyBars.length === 0) {
+    return empty('unavailable');
+  }
+  const resolution = resolveSingleAnchorAvwapPure(dailyBars, mode, market);
+  if (resolution.anchorIndex < 0) {
+    return empty('unavailable');
+  }
+  const overlay = computeSingleAnchorAvwapOverlayPure(dailyBars, resolution.anchorIndex);
+  const timeZone = market === 'US' ? US_MARKET_TIMEZONE : AR_MARKET_TIMEZONE;
+  const dailyKeys = dailyBars.map((bar) => getCalendarWeekMondayKey(bar.time, timeZone));
+  let anchorWeeklyTimeSec: number | null = null;
+  for (let weeklyIndex = 0; weeklyIndex < weeklyBars.length; weeklyIndex += 1) {
+    const weeklyBar = weeklyBars[weeklyIndex];
+    if (weeklyBar === undefined || !Number.isFinite(weeklyBar.time)) continue;
+    const weeklyKey = getCalendarWeekMondayKey(weeklyBar.time, timeZone);
+    if (weeklyKey === null) continue;
+    for (let dailyIndex = dailyBars.length - 1; dailyIndex >= 0; dailyIndex -= 1) {
+      if (dailyKeys[dailyIndex] !== weeklyKey) continue;
+      const value = overlay.vwap[dailyIndex];
+      if (value === undefined || !Number.isFinite(value)) break;
+      vwap[weeklyIndex] = value;
+      upper1[weeklyIndex] = overlay.upper1[dailyIndex] ?? Number.NaN;
+      lower1[weeklyIndex] = overlay.lower1[dailyIndex] ?? Number.NaN;
+      upper2[weeklyIndex] = overlay.upper2[dailyIndex] ?? Number.NaN;
+      lower2[weeklyIndex] = overlay.lower2[dailyIndex] ?? Number.NaN;
+      if (anchorWeeklyTimeSec === null) anchorWeeklyTimeSec = weeklyBar.time;
+      break;
+    }
+  }
+  return {
+    vwap,
+    upper1,
+    lower1,
+    upper2,
+    lower2,
+    anchorWeeklyTimeSec,
+    anchorDailyTimeSec: dailyBars[resolution.anchorIndex]?.time ?? null,
+    coverage: resolution.coverage,
+  };
 }
 
 /**
