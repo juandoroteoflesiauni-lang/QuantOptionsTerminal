@@ -21,6 +21,7 @@
  */
 
 import { isRth } from './sessions.js';
+import { getCalendarWeekMondayKey, resampleDailyToWeekly, US_MARKET_TIMEZONE } from './resampleWeekly.js';
 import {
   resolveLivePeriodIdentity,
   type LiveCalendarProjection,
@@ -109,6 +110,62 @@ function sameSnapshot(a: LiveMinuteSnapshot, b: LiveMinuteSnapshot): boolean {
   return (
     a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close && a.volume === b.volume
   );
+}
+
+/**
+ * Pieza 50.8 (Bloque B2): reconstruye la vela semanal de la semana activa
+ * reemplazando primero la diaria actualizada en una copia de la serie y
+ * reagrupando SOLO esa semana con `resampleDailyToWeekly` (nunca sumando
+ * volumen semanal sobre acumulados). El timestamp es el de la primera rueda
+ * diaria real (martes si el lunes es feriado) y el volumen la suma de las
+ * diarias incluidas. Devuelve `null` si no hay diarias.
+ */
+export function reconstructFormingWeeklyBar(
+  dailyBars: readonly LiveChartBar[],
+  timeZone: string = US_MARKET_TIMEZONE,
+): LiveChartBar | null {
+  if (dailyBars.length === 0) return null;
+  const last = dailyBars[dailyBars.length - 1];
+  if (last === undefined || !Number.isFinite(last.timeSec)) return null;
+  const weekKey = getCalendarWeekMondayKey(last.timeSec, timeZone);
+  if (weekKey === null) return null;
+  const weekBars = dailyBars.filter(
+    (bar) => getCalendarWeekMondayKey(bar.timeSec, timeZone) === weekKey,
+  );
+  const weekly = resampleDailyToWeekly(
+    weekBars.map((bar) => ({
+      time: bar.timeSec,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    })),
+    timeZone,
+  );
+  const forming = weekly[weekly.length - 1];
+  if (forming === undefined) return null;
+  return {
+    timeSec: forming.time,
+    open: forming.open,
+    high: forming.high,
+    low: forming.low,
+    close: forming.close,
+    volume: forming.volume,
+  };
+}
+
+/** Reemplaza (o agrega) la diaria de `bar.timeSec` en la serie, ordenada asc. */
+export function upsertDailyBar(
+  dailyBars: readonly LiveChartBar[],
+  bar: LiveChartBar,
+): readonly LiveChartBar[] {
+  const byTime = new Map<number, LiveChartBar>();
+  for (const item of dailyBars) {
+    byTime.set(item.timeSec, item);
+  }
+  byTime.set(bar.timeSec, bar);
+  return [...byTime.values()].sort((a, b) => a.timeSec - b.timeSec);
 }
 
 /**

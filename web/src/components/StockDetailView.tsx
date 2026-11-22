@@ -53,8 +53,10 @@ import { projectLiveEma } from '../../../src/core/ema';
 import { projectLiveCandle, type LiveCalendarProjection, type LiveChartBar } from '../../../src/core/realtimePropagation';
 import {
   createLiveFrameState,
+  reconstructFormingWeeklyBar,
   reduceMinuteSnapshot,
   reduceQuoteTick,
+  upsertDailyBar,
   type LiveFrameState,
   type LiveMinuteSnapshot,
 } from '../../../src/core/liveBarReconciler';
@@ -199,6 +201,8 @@ interface PanoramicChartBundle extends StockChartSeriesBundle {
   readonly isAutoAvwapMode: boolean;
   /** Pieza 50.6: soporte efectivo del VWAP de sesión en el marco activo (US: backend; AR: intradiario local). */
   readonly sessionVwapAvailable: boolean;
+  /** Pieza 50.8 B2: diarias de la semana activa para reconstruir 1W en vivo. */
+  readonly dailyBarsForWeekly: readonly MinimalOhlcvBar[];
 }
 
 /** Pieza 50.5: ancla Auto-AVWAP proyectada sobre las barras del timeframe activo. */
@@ -1253,6 +1257,8 @@ export const StockDetailView: React.FC<{
       avwapEffectiveAnchorTimeSec: bundleAvwapEffectiveAnchorTimeSec,
       avwapAnchorDateSec: bundleAvwapAnchorDateSec,
       avwapCoverage: bundleAvwapCoverage,
+      dailyBarsForWeekly:
+        effectiveChartTimeframe === '1W' ? dedupDaily : [],
       autoAvwapLines,
       isAutoAvwapMode,
       benchmarkBars1d: benchBars1d,
@@ -2145,6 +2151,8 @@ const PanoramicPriceChart: React.FC<{
     })[]
   >([]);
   const liveFrameStateRef = useRef<LiveFrameState | null>(null);
+  /** Pieza 50.8 B2: diarias reconciliadas de la semana activa (1W). */
+  const liveWeeklyDailyBarsRef = useRef<readonly LiveChartBar[]>([]);
   const tickRafIdRef = useRef<number | null>(null);
   const lastLiveQuoteVolumeRef = useRef<number | null>(null);
 
@@ -2639,23 +2647,41 @@ const PanoramicPriceChart: React.FC<{
     if (!bundle.barsAvailable) return;
 
     const lastBar = bundle.bars[bundle.bars.length - 1];
-    liveFrameStateRef.current =
-      lastBar !== undefined
-        ? createLiveFrameState({
-            timeSec: lastBar.time,
-            open: lastBar.open,
-            high: lastBar.high,
-            low: lastBar.low,
-            close: lastBar.close,
-            volume: lastBar.volume,
-          })
-        : null;
+    // Pieza 50.8 B2: en 1W la unidad viva es la rueda diaria; la vela semanal se
+    // reconstruye desde sus diarias. `? { market, timeframe }` de 50.8-A se
+    // mantiene como identidad efectiva: en 1W el calendario vivo es la rueda 1D.
+    const dailySource: readonly LiveChartBar[] = (
+      timeframe === '1W' ? bundle.dailyBarsForWeekly : []
+    ).map((bar) => ({
+      timeSec: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+    liveWeeklyDailyBarsRef.current = dailySource;
+    const frameSeed: LiveChartBar | null =
+      timeframe === '1W'
+        ? (dailySource[dailySource.length - 1] ?? null)
+        : lastBar !== undefined
+          ? {
+              timeSec: lastBar.time,
+              open: lastBar.open,
+              high: lastBar.high,
+              low: lastBar.low,
+              close: lastBar.close,
+              volume: lastBar.volume,
+            }
+          : null;
+    liveFrameStateRef.current = frameSeed !== null ? createLiveFrameState(frameSeed) : null;
 
     const tfSec = resolvePanoramicTimeframeSec(timeframe);
-    // Pieza 50.8: el calendario solo existe para marcos con identidad de período
-    // (1D/1W); intradía conserva la proyección numérica existente.
+    // Identidad viva: 1W se alimenta de ruedas diarias (Bloque A calendario 1D).
     const calendar: LiveCalendarProjection | undefined =
-      timeframe === '1D' || timeframe === '1W' ? { market, timeframe } : undefined;
+      timeframe === '1D' || timeframe === '1W'
+        ? { market, timeframe: timeframe === '1W' ? '1D' : timeframe }
+        : undefined;
 
     const paintFormingBar = (nextBar: LiveChartBar, currentForming: LiveChartBar): void => {
       const candles = candleRef.current;
@@ -2708,6 +2734,20 @@ const PanoramicPriceChart: React.FC<{
               : reduceQuoteTick(state, { price: event.price, timeSec: event.timeSec }, calendar).state;
         }
         liveFrameStateRef.current = state;
+        if (timeframe === '1W') {
+          // Pieza 50.8 B2: reemplazar primero la diaria y reagrupar SOLO la
+          // semana activa (sin sumar volumen semanal acumulado).
+          const dailySeries = upsertDailyBar(liveWeeklyDailyBarsRef.current, state.bar);
+          liveWeeklyDailyBarsRef.current = dailySeries;
+          const weekly = reconstructFormingWeeklyBar(
+            dailySeries,
+            market === 'AR' ? AR_MARKET_TIMEZONE : US_MARKET_TIMEZONE,
+          );
+          if (weekly !== null && weekly.timeSec >= currentForming.timeSec) {
+            paintFormingBar(weekly, currentForming);
+          }
+          return;
+        }
         if (state.bar.timeSec >= currentForming.timeSec) {
           paintFormingBar(state.bar, currentForming);
         }
