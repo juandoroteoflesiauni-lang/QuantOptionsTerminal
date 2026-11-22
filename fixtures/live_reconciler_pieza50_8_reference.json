@@ -1,0 +1,811 @@
+{
+ "meta": {
+  "generator": "tools/gen_live_reconciler_pieza50_8.py",
+  "timezones": {
+   "US": "America/New_York",
+   "AR": "America/Argentina/Buenos_Aires"
+  }
+ },
+ "cases": [
+  {
+   "name": "dos_maximos",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 106,
+      "low": 100,
+      "close": 105,
+      "volume": 10
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951460,
+      "open": 105,
+      "high": 108,
+      "low": 104,
+      "close": 107,
+      "volume": 20
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 108,
+    "low": 99.0,
+    "close": 107,
+    "volume": 1020.0
+   }
+  },
+  {
+   "name": "dos_minimos",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736953200,
+      "open": 105,
+      "high": 106,
+      "low": 95,
+      "close": 96,
+      "volume": 5
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736953260,
+      "open": 96,
+      "high": 97,
+      "low": 93,
+      "close": 94,
+      "volume": 8
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 106,
+    "low": 93,
+    "close": 94,
+    "volume": 1008.0
+   }
+  },
+  {
+   "name": "duplicado",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 106,
+      "low": 100,
+      "close": 105,
+      "volume": 10
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 106,
+      "low": 100,
+      "close": 105,
+      "volume": 10
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "duplicate"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 106,
+    "low": 99.0,
+    "close": 105,
+    "volume": 1000.0
+   }
+  },
+  {
+   "name": "atrasado",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951460,
+      "open": 105,
+      "high": 108,
+      "low": 104,
+      "close": 107,
+      "volume": 20
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 130,
+      "low": 90,
+      "close": 129,
+      "volume": 10
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "stale"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 108,
+    "low": 99.0,
+    "close": 107,
+    "volume": 1000.0
+   }
+  },
+  {
+   "name": "revision",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 106,
+      "low": 100,
+      "close": 105,
+      "volume": 10
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 107,
+      "low": 100,
+      "close": 106,
+      "volume": 25
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "revision"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 107,
+    "low": 99.0,
+    "close": 106,
+    "volume": 1000.0
+   }
+  },
+  {
+   "name": "contador_quote_us",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "quote",
+     "price": 103.0,
+     "timeSec": 1736951700
+    }
+   ],
+   "expectedOutcomes": [
+    "deferred"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   }
+  },
+  {
+   "name": "solapamiento",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 106,
+      "low": 100,
+      "close": 105,
+      "volume": 10
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951460,
+      "open": 105,
+      "high": 108,
+      "low": 104,
+      "close": 107,
+      "volume": 20
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 108,
+    "low": 99.0,
+    "close": 107,
+    "volume": 1020.0
+   }
+  },
+  {
+   "name": "reconexion",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736953800,
+      "open": 103,
+      "high": 109,
+      "low": 102,
+      "close": 108,
+      "volume": 12
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 109,
+    "low": 99.0,
+    "close": 108,
+    "volume": 1000.0
+   }
+  },
+  {
+   "name": "cambio_sesion",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736946000,
+      "open": 103,
+      "high": 104,
+      "low": 102,
+      "close": 103.5,
+      "volume": 5
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1737037800,
+      "open": 110,
+      "high": 112,
+      "low": 109,
+      "close": 111,
+      "volume": 30
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "out-of-session",
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1737003600,
+    "open": 110,
+    "high": 112,
+    "low": 109,
+    "close": 111,
+    "volume": 0
+   }
+  },
+  {
+   "name": "sin_retroceso",
+   "bar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 101.0,
+    "volume": 1000.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 106,
+      "low": 100,
+      "close": 105,
+      "volume": 10
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 107,
+      "low": 100,
+      "close": 106,
+      "volume": 25
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1736951400,
+      "open": 101,
+      "high": 90,
+      "low": 80,
+      "close": 81,
+      "volume": 5
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "revision",
+    "stale"
+   ],
+   "expectedBar": {
+    "timeSec": 1736917200,
+    "open": 100.0,
+    "high": 107,
+    "low": 99.0,
+    "close": 106,
+    "volume": 1000.0
+   }
+  },
+  {
+   "name": "ar_minuto_deferred",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1741640400,
+      "open": 302,
+      "high": 303,
+      "low": 301,
+      "close": 302,
+      "volume": 10
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "deferred"
+   ],
+   "expectedBar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   }
+  },
+  {
+   "name": "ar_quote_misma_rueda",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "quote",
+     "price": 302.0,
+     "timeSec": 1741640400
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 302.0,
+    "volume": 800.0
+   }
+  },
+  {
+   "name": "ar_quote_rueda_nueva",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "quote",
+     "price": 305.0,
+     "timeSec": 1741694400
+    }
+   ],
+   "expectedOutcomes": [
+    "deferred"
+   ],
+   "expectedBar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   }
+  },
+  {
+   "name": "ar_quote_anterior",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D"
+   },
+   "events": [
+    {
+     "kind": "quote",
+     "price": 297.0,
+     "timeSec": 1741554000
+    }
+   ],
+   "expectedOutcomes": [
+    "stale"
+   ],
+   "expectedBar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   }
+  },
+  {
+   "name": "ar_rueda_nueva_etiqueta_deferred",
+   "bar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1D",
+    "nextPeriodOpeningTimeSec": 1741723200
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1741694400,
+      "open": 305,
+      "high": 306,
+      "low": 304,
+      "close": 305.5,
+      "volume": 12
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "deferred"
+   ],
+   "expectedBar": {
+    "timeSec": 1741636800,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   }
+  },
+  {
+   "name": "ar_semana_minuto_deferred",
+   "bar": {
+    "timeSec": 1741575600,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   },
+   "calendar": {
+    "market": "AR",
+    "timeframe": "1W"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1741701600,
+      "open": 302,
+      "high": 303,
+      "low": 301,
+      "close": 302,
+      "volume": 10
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "deferred"
+   ],
+   "expectedBar": {
+    "timeSec": 1741575600,
+    "open": 300.0,
+    "high": 305.0,
+    "low": 299.0,
+    "close": 301.0,
+    "volume": 800.0
+   }
+  },
+  {
+   "name": "us_1w_lunes_feriado",
+   "bar": {
+    "timeSec": 1737435600,
+    "open": 410.0,
+    "high": 415.0,
+    "low": 409.0,
+    "close": 411.0,
+    "volume": 2100.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W"
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1737558000,
+      "open": 412,
+      "high": 416,
+      "low": 411,
+      "close": 415,
+      "volume": 25
+     }
+    },
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1737385200,
+      "open": 410,
+      "high": 500,
+      "low": 400,
+      "close": 499,
+      "volume": 5
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted",
+    "stale"
+   ],
+   "expectedBar": {
+    "timeSec": 1737435600,
+    "open": 410.0,
+    "high": 416,
+    "low": 409.0,
+    "close": 415,
+    "volume": 2100.0
+   }
+  },
+  {
+   "name": "us_1w_semana_nueva_fuente",
+   "bar": {
+    "timeSec": 1736744400,
+    "open": 420.0,
+    "high": 425.0,
+    "low": 419.0,
+    "close": 421.0,
+    "volume": 2200.0
+   },
+   "calendar": {
+    "market": "US",
+    "timeframe": "1W",
+    "nextPeriodOpeningTimeSec": 1737349200
+   },
+   "events": [
+    {
+     "kind": "minute",
+     "snapshot": {
+      "timeSec": 1737471600,
+      "open": 422,
+      "high": 426,
+      "low": 421,
+      "close": 425,
+      "volume": 15
+     }
+    }
+   ],
+   "expectedOutcomes": [
+    "accepted"
+   ],
+   "expectedBar": {
+    "timeSec": 1737349200,
+    "open": 422,
+    "high": 426,
+    "low": 421,
+    "close": 425,
+    "volume": 0
+   }
+  }
+ ]
+}

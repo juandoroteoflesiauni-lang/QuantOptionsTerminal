@@ -50,7 +50,14 @@ import { GexStrikeProfileChart } from './stock-detail/GexStrikeProfileChart';
 import { SyncedLowerPaneChart } from './stock-detail/SyncedLowerPaneChart';
 import { CompanyLogo } from './common/CompanyLogo';
 import { projectLiveEma } from '../../../src/core/ema';
-import { projectLiveCandle } from '../../../src/core/realtimePropagation';
+import { projectLiveCandle, type LiveCalendarProjection, type LiveChartBar } from '../../../src/core/realtimePropagation';
+import {
+  createLiveFrameState,
+  reduceMinuteSnapshot,
+  reduceQuoteTick,
+  type LiveFrameState,
+  type LiveMinuteSnapshot,
+} from '../../../src/core/liveBarReconciler';
 import {
   formatHeaderSideQuote,
   normalizeStockDetailHeaderQuotes,
@@ -2126,12 +2133,18 @@ const PanoramicPriceChart: React.FC<{
     50: number | null;
     200: number | null;
   }>({ 9: null, 21: null, 50: null, 200: null });
-  const pendingLiveTickRef = useRef<{
-    readonly price: number;
-    readonly timeSec: number;
-    readonly volumeDelta: number | null;
-    readonly exactBar: LiveBarUpdateEvent['formingBar'];
-  } | null>(null);
+  const pendingLiveEventsRef = useRef<
+    readonly ({
+      readonly kind: 'quote';
+      readonly price: number;
+      readonly timeSec: number;
+      readonly volumeDelta: number | null;
+    } | {
+      readonly kind: 'minute';
+      readonly snapshot: LiveMinuteSnapshot;
+    })[]
+  >([]);
+  const liveFrameStateRef = useRef<LiveFrameState | null>(null);
   const tickRafIdRef = useRef<number | null>(null);
   const lastLiveQuoteVolumeRef = useRef<number | null>(null);
 
@@ -2618,50 +2631,38 @@ const PanoramicPriceChart: React.FC<{
     updateSlot(slots.zeroGamma, hasBars && overlays.optionWalls, keyLevels.zeroGamma, `ZERO-GAMMA ${prefix}${fmtNum(keyLevels.zeroGamma, 2)}`, highlightedLevel === 'ZERO_GAMMA');
   }, [bundle.barsAvailable, currencySymbol, highlightedLevel, keyLevels, overlays.optionWalls, overlays.volumeProfile]);
 
-  // Bus imperativo 60 FPS en rAF: coalescing de ticks en ref y series.update() sin setState ni setData().
+  // Bus imperativo 60 FPS en rAF: TODOS los eventos aceptados se encolan y un
+  // reductor determinista los procesa en orden; el rAF solo pinta.
   useEffect(() => {
-    pendingLiveTickRef.current = null;
+    pendingLiveEventsRef.current = [];
     lastLiveQuoteVolumeRef.current = null;
     if (!bundle.barsAvailable) return;
 
+    const lastBar = bundle.bars[bundle.bars.length - 1];
+    liveFrameStateRef.current =
+      lastBar !== undefined
+        ? createLiveFrameState({
+            timeSec: lastBar.time,
+            open: lastBar.open,
+            high: lastBar.high,
+            low: lastBar.low,
+            close: lastBar.close,
+            volume: lastBar.volume,
+          })
+        : null;
+
     const tfSec = resolvePanoramicTimeframeSec(timeframe);
-    const flushLiveTick = (): void => {
-      tickRafIdRef.current = null;
-      const pending = pendingLiveTickRef.current;
-      pendingLiveTickRef.current = null;
-      const currentForming = formingBarRef.current;
+    // Pieza 50.8: el calendario solo existe para marcos con identidad de período
+    // (1D/1W); intradía conserva la proyección numérica existente.
+    const calendar: LiveCalendarProjection | undefined =
+      timeframe === '1D' || timeframe === '1W' ? { market, timeframe } : undefined;
+
+    const paintFormingBar = (nextBar: LiveChartBar, currentForming: LiveChartBar): void => {
       const candles = candleRef.current;
-      if (pending === null || currentForming === null || candles === null) return;
-
-      let nextBar = currentForming;
-      if (timeframe === '1m' && pending.exactBar !== null && pending.exactBar.time >= currentForming.timeSec) {
-        if (pending.exactBar.time > currentForming.timeSec) {
-          emaBaseBeforeFormingRef.current = { ...emaEndOfFormingRef.current };
-        }
-        nextBar = {
-          timeSec: pending.exactBar.time,
-          open: pending.exactBar.open,
-          high: pending.exactBar.high,
-          low: pending.exactBar.low,
-          close: pending.exactBar.close,
-          volume: pending.exactBar.volume,
-        };
-      } else {
-        const projected = projectLiveCandle(
-          currentForming,
-          { price: pending.price, timeSec: pending.timeSec, volumeDelta: pending.volumeDelta },
-          tfSec,
-          timeframe === '1D' || timeframe === '1W'
-            ? { market, timeframe }
-            : undefined,
-        );
-        if (projected === null || projected.timeSec < currentForming.timeSec) return;
-        if (projected.timeSec > currentForming.timeSec) {
-          emaBaseBeforeFormingRef.current = { ...emaEndOfFormingRef.current };
-        }
-        nextBar = projected;
+      if (candles === null) return;
+      if (nextBar.timeSec > currentForming.timeSec) {
+        emaBaseBeforeFormingRef.current = { ...emaEndOfFormingRef.current };
       }
-
       formingBarRef.current = nextBar;
       candles.update({
         time: nextBar.timeSec as UTCTimestamp,
@@ -2687,6 +2688,62 @@ const PanoramicPriceChart: React.FC<{
       emaEndOfFormingRef.current = nextEnd;
     };
 
+    const flushLiveTick = (): void => {
+      tickRafIdRef.current = null;
+      const queue = pendingLiveEventsRef.current;
+      pendingLiveEventsRef.current = [];
+      const currentForming = formingBarRef.current;
+      if (queue.length === 0 || currentForming === null || candleRef.current === null) return;
+
+      if (timeframe === '1D' || timeframe === '1W') {
+        // Ruta calendario (Bloque A + B1): snapshots autoritativos por minuto
+        // (US) y ticks calificados (AR) pasan por el reductor en orden.
+        const initial = liveFrameStateRef.current;
+        if (initial === null || calendar === undefined) return;
+        let state = initial;
+        for (const event of queue) {
+          state =
+            event.kind === 'minute'
+              ? reduceMinuteSnapshot(state, event.snapshot, calendar).state
+              : reduceQuoteTick(state, { price: event.price, timeSec: event.timeSec }, calendar).state;
+        }
+        liveFrameStateRef.current = state;
+        if (state.bar.timeSec >= currentForming.timeSec) {
+          paintFormingBar(state.bar, currentForming);
+        }
+        return;
+      }
+
+      let nextBar = currentForming;
+      let minuteApplied = false;
+      for (const event of queue) {
+        if (event.kind === 'minute') {
+          if (timeframe === '1m' && event.snapshot.timeSec >= nextBar.timeSec) {
+            nextBar = {
+              timeSec: event.snapshot.timeSec,
+              open: event.snapshot.open,
+              high: event.snapshot.high,
+              low: event.snapshot.low,
+              close: event.snapshot.close,
+              volume: event.snapshot.volume,
+            };
+            minuteApplied = true;
+          }
+          continue;
+        }
+        if (timeframe === '1m' && minuteApplied) continue;
+        const projected = projectLiveCandle(
+          nextBar,
+          { price: event.price, timeSec: event.timeSec, volumeDelta: event.volumeDelta },
+          tfSec,
+        );
+        if (projected === null) continue;
+        nextBar = projected;
+      }
+      if (nextBar.timeSec < currentForming.timeSec) return;
+      paintFormingBar(nextBar, currentForming);
+    };
+
     const scheduleFlush = (): void => {
       if (tickRafIdRef.current !== null) return;
       tickRafIdRef.current = window.requestAnimationFrame(flushLiveTick);
@@ -2702,24 +2759,32 @@ const PanoramicPriceChart: React.FC<{
         quote.asOfUtcSec !== null && Number.isInteger(quote.asOfUtcSec)
           ? quote.asOfUtcSec
           : Math.floor(Date.now() / 1_000);
-      pendingLiveTickRef.current = {
-        price: quote.price,
-        timeSec,
-        volumeDelta,
-        exactBar: pendingLiveTickRef.current?.exactBar ?? null,
-      };
+      pendingLiveEventsRef.current = [
+        ...pendingLiveEventsRef.current,
+        { kind: 'quote', price: quote.price, timeSec, volumeDelta },
+      ];
       scheduleFlush();
     });
 
     const unsubBar = subscribeLiveBarUpdate(providerSymbol, (ev) => {
+      // Identidad BYMA calificada: AR nunca consume el canal US por símbolo.
+      if (market !== 'US') return;
       const fb = ev.formingBar;
       if (fb === null || !Number.isFinite(fb.close) || fb.close <= 0) return;
-      pendingLiveTickRef.current = {
-        price: fb.close,
-        timeSec: fb.time,
-        volumeDelta: null,
-        exactBar: timeframe === '1m' ? fb : null,
-      };
+      pendingLiveEventsRef.current = [
+        ...pendingLiveEventsRef.current,
+        {
+          kind: 'minute',
+          snapshot: {
+            timeSec: fb.time,
+            open: fb.open,
+            high: fb.high,
+            low: fb.low,
+            close: fb.close,
+            volume: fb.volume,
+          },
+        },
+      ];
       scheduleFlush();
     });
 
