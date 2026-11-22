@@ -1,0 +1,1087 @@
+{
+ "meta": {
+  "generator": "tools/gen_snapshot_publication_pieza50_9.py"
+ },
+ "decisionCases": [
+  {
+   "name": "primer_resultado",
+   "current": null,
+   "incoming": {
+    "revision": 1,
+    "evaluationSec": 1000
+   },
+   "expected": "accept"
+  },
+  {
+   "name": "revision_mayor_manda_aunque_evaluacion_anterior",
+   "current": {
+    "revision": 2,
+    "evaluationSec": 1000
+   },
+   "incoming": {
+    "revision": 3,
+    "evaluationSec": 900
+   },
+   "expected": "accept"
+  },
+  {
+   "name": "misma_revision_misma_hora",
+   "current": {
+    "revision": 2,
+    "evaluationSec": 1000
+   },
+   "incoming": {
+    "revision": 2,
+    "evaluationSec": 1000
+   },
+   "expected": "accept"
+  },
+  {
+   "name": "misma_revision_hora_mayor",
+   "current": {
+    "revision": 2,
+    "evaluationSec": 1000
+   },
+   "incoming": {
+    "revision": 2,
+    "evaluationSec": 1001
+   },
+   "expected": "accept"
+  },
+  {
+   "name": "misma_revision_hora_menor",
+   "current": {
+    "revision": 2,
+    "evaluationSec": 1000
+   },
+   "incoming": {
+    "revision": 2,
+    "evaluationSec": 999
+   },
+   "expected": "stale"
+  },
+  {
+   "name": "revision_menor",
+   "current": {
+    "revision": 3,
+    "evaluationSec": 1000
+   },
+   "incoming": {
+    "revision": 2,
+    "evaluationSec": 9999
+   },
+   "expected": "stale"
+  },
+  {
+   "name": "revision_cero",
+   "current": null,
+   "incoming": {
+    "revision": 0,
+    "evaluationSec": 1000
+   },
+   "expected": "stale"
+  },
+  {
+   "name": "revision_no_entera",
+   "current": null,
+   "incoming": {
+    "revision": 1.5,
+    "evaluationSec": 1000
+   },
+   "expected": "stale"
+  },
+  {
+   "name": "evaluacion_ausente",
+   "current": null,
+   "incoming": {
+    "revision": 1,
+    "evaluationSec": null
+   },
+   "expected": "stale"
+  },
+  {
+   "name": "evaluacion_booleana",
+   "current": null,
+   "incoming": {
+    "revision": 1,
+    "evaluationSec": true
+   },
+   "expected": "stale"
+  },
+  {
+   "name": "sello_previo_con_evaluacion_rota_no_bloquea",
+   "current": {
+    "revision": 1,
+    "evaluationSec": null
+   },
+   "incoming": {
+    "revision": 1,
+    "evaluationSec": 1000
+   },
+   "expected": "accept"
+  }
+ ],
+ "mergeCases": [
+  {
+   "name": "mejora_fecha_cargada_y_conserva_agregado",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2000,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.99
+       }
+      }
+     }
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "une_fechas_ausentes_ordenadas",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       }
+      }
+     }
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2100,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-12-18",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-12-18",
+       "daysToExpiry": 140,
+       "loaded": true,
+       "validCallCount": 30,
+       "validPutCount": 35,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-10-16",
+       "daysToExpiry": 77,
+       "loaded": true,
+       "validCallCount": 60,
+       "validPutCount": 70,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": true
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-10-16": {
+        "expiryCode": "2026-10-16",
+        "daysToExpiry": 77,
+        "ivAtm": 0.6
+       },
+       "2026-12-18": {
+        "expiryCode": "2026-12-18",
+        "daysToExpiry": 140,
+        "ivAtm": 0.7
+       }
+      }
+     }
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-10-16",
+       "daysToExpiry": 77,
+       "loaded": true,
+       "validCallCount": 60,
+       "validPutCount": 70,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-12-18",
+       "daysToExpiry": 140,
+       "loaded": true,
+       "validCallCount": 30,
+       "validPutCount": 35,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": true
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-10-16": {
+        "expiryCode": "2026-10-16",
+        "daysToExpiry": 77,
+        "ivAtm": 0.6
+       },
+       "2026-12-18": {
+        "expiryCode": "2026-12-18",
+        "daysToExpiry": 140,
+        "ivAtm": 0.7
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "scope_sin_fechas_cargadas_no_cambia",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2000,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       }
+      }
+     }
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "scope_nulo_no_cambia",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   },
+   "scope": null,
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "conflicto_por_fecha_gana_el_scope_vigente",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 10,
+       "validPutCount": 12,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.3
+       }
+      }
+     }
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2000,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.99
+       }
+      }
+     }
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "scope_sin_suite_conserva_la_suite_de_la_base",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2000,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      }
+     ]
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.42
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "base_sin_suite_no_crea_suite",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2000,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.99
+       }
+      }
+     }
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "base_sin_options_chain_conserva_estructura",
+   "base": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.4
+       }
+      }
+     }
+    }
+   },
+   "scope": {
+    "asOfUtcSec": 2000,
+    "marketContext": {
+     "spot": 99.9,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "optionsChain": {
+     "selectedExpirationDate": "2026-08-21",
+     "availableExpirations": [
+      {
+       "expirationDate": "2026-08-21",
+       "daysToExpiry": 21,
+       "loaded": true,
+       "validCallCount": 120,
+       "validPutCount": 140,
+       "nearAtmLiquidity": 88000,
+       "inDefaultWindow": true,
+       "hasCompleteAtmChain": true
+      },
+      {
+       "expirationDate": "2026-09-18",
+       "daysToExpiry": 49,
+       "loaded": false,
+       "validCallCount": 0,
+       "validPutCount": 0,
+       "nearAtmLiquidity": 0.5,
+       "inDefaultWindow": false,
+       "hasCompleteAtmChain": false
+      }
+     ]
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       },
+       "2026-09-18": {
+        "expiryCode": "2026-09-18",
+        "daysToExpiry": 49,
+        "ivAtm": 0.99
+       }
+      }
+     }
+    }
+   },
+   "expected": {
+    "asOfUtcSec": 1000,
+    "marketContext": {
+     "spot": 62.5,
+     "quoteMode": "LIVE_NBBO"
+    },
+    "terminalEngines": {
+     "volAnalyticsSuite": {
+      "expiriesByCode": {
+       "2026-08-21": {
+        "expiryCode": "2026-08-21",
+        "daysToExpiry": 21,
+        "ivAtm": 0.55
+       }
+      }
+     }
+    }
+   }
+  }
+ ]
+}

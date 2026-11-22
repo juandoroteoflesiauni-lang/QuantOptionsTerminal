@@ -797,9 +797,13 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         const symbol = params.get('symbol') ?? 'SPY';
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const expiration = params.get('expiration')?.trim() || undefined;
+        // Pieza 50.9 (Bloque B): `prefetch=0` evita lanzar los snapshots adicionales
+        // por fecha; ausente o cualquier otro valor conserva el prefetch habilitado.
+        // La clave de caché, el TTL y SingleFlight de `getSnapshot` no cambian.
+        const prefetch = params.get('prefetch')?.trim() === '0' ? false : true;
         const snapshot = await runtime.getSnapshot(symbol, {
           forceRefresh,
-          prefetch: true,
+          prefetch,
           ...(expiration === undefined ? {} : { expiration }),
         });
         sendJson(res, 200, snapshot);

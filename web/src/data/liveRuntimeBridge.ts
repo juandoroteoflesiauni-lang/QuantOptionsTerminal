@@ -23,6 +23,11 @@ import {
   mergeUsExpiryChainIntoOptions,
 } from './expiryChainMerge';
 import {
+  mergeLoadedExpiriesIntoBaseSnapshot,
+  resolvePublicationDecision,
+  type PublicationStamp,
+} from './snapshotPublication';
+import {
   AR_STOCKS,
   GLOBAL_INDICATORS,
   US_MARKET_DATA,
@@ -137,6 +142,82 @@ const inFlightByKey = new Map<
 >();
 const lastKnownPriceBySymbol = new Map<string, number>();
 let flashClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Pieza 50.9 (Bloque B): publicación ordenada por símbolo canónico y alcance.
+// `base:US:SYM` para el snapshot base; `point:US:SYM:FECHA` para cargas puntuales.
+const publicationRevisions = new Map<string, number>();
+const basePublicationStamps = new Map<string, PublicationStamp>();
+const pointPublicationStamps = new Map<string, PublicationStamp>();
+// Hechos de vencimiento puntuales aceptados, por símbolo y fecha: el más
+// reciente aceptado manda. Se aplican al publicar cada base (también cuando el
+// símbolo ya tenía base, para conservarlos ante una base nueva).
+type PendingPointFact =
+  | { readonly kind: 'snapshot'; readonly snapshot: UsSnapshotResponseDto }
+  | { readonly kind: 'chain'; readonly chain: UsOptionExpiryChainResponseDto };
+const pendingPointFactsBySymbol = new Map<string, Map<string, PendingPointFact>>();
+
+function beginPublication(scopeKey: string): number {
+  const next = (publicationRevisions.get(scopeKey) ?? 0) + 1;
+  publicationRevisions.set(scopeKey, next);
+  return next;
+}
+
+function acceptPublication(
+  stamps: Map<string, PublicationStamp>,
+  scopeKey: string,
+  revision: number,
+  evaluationSec: number,
+): boolean {
+  const decision = resolvePublicationDecision(stamps.get(scopeKey) ?? null, {
+    revision,
+    evaluationSec,
+  });
+  if (decision === 'stale') return false;
+  stamps.set(scopeKey, { revision, evaluationSec });
+  return true;
+}
+
+/** Aplica al snapshot base los hechos puntuales aceptados (vigente por vencimiento). */
+function applyPendingPointScopes(
+  clean: string,
+  base: UsSnapshotResponseDto,
+): UsSnapshotResponseDto {
+  const facts = pendingPointFactsBySymbol.get(clean);
+  if (facts === undefined) return base;
+  let merged = base;
+  for (const date of [...facts.keys()].sort((a, b) => a.localeCompare(b))) {
+    const fact = facts.get(date);
+    if (fact === undefined) continue;
+    merged =
+      fact.kind === 'snapshot'
+        ? mergeLoadedExpiriesIntoBaseSnapshot(merged, fact.snapshot)
+        : applyUsExpiryChainToSnapshot(merged, fact.chain);
+  }
+  return merged;
+}
+
+function stashPointSnapshot(clean: string, expirationDate: string, snapshot: UsSnapshotResponseDto): void {
+  const facts = pendingPointFactsBySymbol.get(clean) ?? new Map<string, PendingPointFact>();
+  facts.set(expirationDate, { kind: 'snapshot', snapshot });
+  pendingPointFactsBySymbol.set(clean, facts);
+}
+
+function stashExpiryChain(clean: string, expirationDate: string, response: UsOptionExpiryChainResponseDto): void {
+  const facts = pendingPointFactsBySymbol.get(clean) ?? new Map<string, PendingPointFact>();
+  facts.set(expirationDate, { kind: 'chain', chain: response });
+  pendingPointFactsBySymbol.set(clean, facts);
+}
+
+/** Publica la base conservando vencimientos puntuales vigentes (agregado de la base). */
+function publishBaseSnapshot(
+  clean: string,
+  base: UsSnapshotResponseDto,
+  previous: UsSnapshotResponseDto | undefined,
+): UsSnapshotResponseDto {
+  const withPrevious =
+    previous === undefined ? base : mergeLoadedExpiriesIntoBaseSnapshot(base, previous);
+  return applyPendingPointScopes(clean, withPrevious);
+}
 
 const DEFAULT_FETCH_TIMEOUT_MS = 25_000;
 
@@ -550,12 +631,17 @@ export async function requestOptionsChain(
   const clean = selection.symbol;
   if (!clean) return;
   if (selection.market === 'US') {
+    const isPointScope = expiration !== undefined && expiration !== '';
+    const scopeKey = isPointScope ? `point:US:${clean}:${expiration}` : `base:US:${clean}`;
+    const revision = beginPublication(scopeKey);
     const snap = await fetchJsonGuarded<UsSnapshotResponseDto>(
       `us:opt:${selection.key}${expiration ? `:${expiration}` : ''}`,
       `/api/snapshot?symbol=${encodeURIComponent(clean)}${expiration ? `&expiration=${encodeURIComponent(expiration)}` : ''}`
     );
     if (!snap) return;
-    hydrateFromUsSnapshot(snap);
+    const stamps = isPointScope ? pointPublicationStamps : basePublicationStamps;
+    // Comprobación antes de mutar estado o hidratar consumidores.
+    if (!acceptPublication(stamps, scopeKey, revision, snap.asOfUtcSec)) return;
     const mapped = mapUsSnapshotToArOptions(clean, snap);
     // Pieza 50.1: fusionar el vencimiento recién cargado sin borrar los otros ya hidratados.
     const merged = mergeArOptionsWithHydratedExpiry(state.optionsByUnderlying[canonicalKey], mapped);
@@ -563,10 +649,23 @@ export async function requestOptionsChain(
     if (activeOptionsCanonicalKey === canonicalKey) {
       syncOptionEngineMarket(merged);
     }
+    const previousSnap = state.usSnapshotsBySymbol[clean];
+    let publishedSnap: UsSnapshotResponseDto | null = null;
+    if (isPointScope) {
+      // Alcance puntual: se registra el hecho y se publica sobre la base vigente
+      // (el agregado expuesto/traza/spot/asOf se conserva de la base).
+      stashPointSnapshot(clean, expiration, snap);
+      publishedSnap = previousSnap === undefined ? null : mergeLoadedExpiriesIntoBaseSnapshot(previousSnap, snap);
+    } else {
+      publishedSnap = publishBaseSnapshot(clean, snap, previousSnap);
+    }
+    hydrateFromUsSnapshot(publishedSnap ?? snap);
     state = {
       ...state,
       isBackendConnected: true,
-      usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: snap },
+      ...(publishedSnap !== null
+        ? { usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: publishedSnap } }
+        : {}),
       optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
       optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       ...(snap.catalysts
@@ -632,12 +731,17 @@ export async function requestUsOptionExpiry(
   };
   notify();
   try {
+    const scopeKey = `point:US:${clean}:${expiration}`;
+    const revision = beginPublication(scopeKey);
     const resp = await fetchJsonGuarded<UsOptionExpiryChainResponseDto>(
       `us:opt-expiry:${loadKey}${force ? ':force' : ''}`,
       `/api/options/expiry?symbol=${encodeURIComponent(clean)}&expiration=${encodeURIComponent(expiration)}${force ? '&refresh=1' : ''}`,
       { force },
     );
     if (!resp) return;
+    // Comprobación antes de mutar estado o hidratar consumidores.
+    if (!acceptPublication(pointPublicationStamps, scopeKey, revision, resp.asOfUtcSec)) return;
+    stashExpiryChain(clean, expiration, resp);
     const canonicalKey = selection.canonicalKey;
     const previous = state.optionsByUnderlying[canonicalKey];
     const merged = mergeUsExpiryChainIntoOptions(previous, resp);
@@ -651,6 +755,9 @@ export async function requestUsOptionExpiry(
       isBackendConnected: true,
       optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
       optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
+      // Alcance puntual: actualiza los hechos de SU vencimiento sobre la base
+      // vigente; exposición agregada, traza, spot de valuación y asOf de la base
+      // no se tocan. Sin base, el hecho queda pendiente hasta que llegue.
       ...(previousSnap !== undefined
         ? {
             usSnapshotsBySymbol: {
@@ -781,27 +888,37 @@ export async function requestOptionsCatalysts(
 
 export async function requestUsSnapshot(
   symbol: string,
-  options?: { readonly force?: boolean; readonly signal?: AbortSignal },
+  options?: {
+    readonly force?: boolean;
+    readonly signal?: AbortSignal;
+    /** Pieza 50.9 B: explícito `false` añade `prefetch=0`; por defecto no cambia la URL. */
+    readonly prefetch?: boolean;
+  },
 ): Promise<UsSnapshotResponseDto | null> {
   const clean = symbol.trim().toUpperCase();
   if (!clean) return null;
+  const scopeKey = `base:US:${clean}`;
+  const revision = beginPublication(scopeKey);
   const res = await fetchJsonGuarded<UsSnapshotResponseDto>(
     `us:${clean}`,
-    `/api/snapshot?symbol=${encodeURIComponent(clean)}&timeframe=5m${options?.force ? '&refresh=1' : ''}`,
+    `/api/snapshot?symbol=${encodeURIComponent(clean)}&timeframe=5m${options?.force ? '&refresh=1' : ''}${options?.prefetch === false ? '&prefetch=0' : ''}`,
     { force: options?.force === true, signal: options?.signal },
   );
   if (!res || !res.marketContext) return null;
-  hydrateFromUsSnapshot(res);
+  // Comprobación antes de mutar estado o hidratar consumidores.
+  if (!acceptPublication(basePublicationStamps, scopeKey, revision, res.asOfUtcSec)) return null;
+  const published = publishBaseSnapshot(clean, res, state.usSnapshotsBySymbol[clean]);
+  hydrateFromUsSnapshot(published);
   state = {
     ...state,
     isBackendConnected: true,
-    usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: res },
+    usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: published },
     ...(res.feedMode ? { feedStatus: combineFeedStatus(state.feedStatus, res.feedMode) } : {}),
-    lastSyncUtcSec: res.asOfUtcSec,
+    lastSyncUtcSec: published.asOfUtcSec,
   };
   publishTickerUpdatesFromMemory();
   notify();
-  return res;
+  return published;
 }
 
 export function startLiveRuntimePolling(enabled: boolean): () => void {
