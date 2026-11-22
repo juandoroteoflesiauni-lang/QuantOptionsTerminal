@@ -1,0 +1,39 @@
+{
+  "put": {
+    "strike": 100,
+    "premium": 5,
+    "qty": 1,
+    "fee": 1.21,
+    "loss": 9501.21
+  },
+  "atmGamma": [
+    {
+      "seconds": 300,
+      "gamma": 6.4672958078069
+    },
+    {
+      "seconds": 3600,
+      "gamma": 1.8669465109748598
+    }
+  ],
+  "expiry": 1797627600,
+  "ticks": [
+    {
+      "timeSec": 1794927600,
+      "price": 50,
+      "size": 3
+    },
+    {
+      "timeSec": 1794927540,
+      "price": 40,
+      "size": 8
+    }
+  ],
+  "currentClose": 50,
+  "currentVolume": 3,
+  "ars": 6000,
+  "ratio": 10,
+  "simultaneousCcl": 1200.0,
+  "anexoText": "GFGC6000DI 100 200 0 0\nGFGC6000FE 400 800 0 0",
+  "decemberUncovered": 200
+}

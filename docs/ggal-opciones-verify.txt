@@ -1,0 +1,360 @@
+
+> quant-options-terminal@0.1.0 verify
+> npm run typecheck && npm run lint && npm run test
+
+
+> quant-options-terminal@0.1.0 typecheck
+> tsc --noEmit
+
+
+> quant-options-terminal@0.1.0 lint
+> eslint .
+
+
+> quant-options-terminal@0.1.0 test
+> vitest run --testTimeout=15000
+
+
+ RUN  v3.2.7 C:/dev/QuantOptionsTerminal
+
+stdout | tests/sessions.test.ts > Gestor de sesiones (SPEC punto 3) > Barrido de 5 minutos (2025-01-01 a 2026-12-31) > coincide con Python en los 5000 puntos muestreados
+[Sessions Sweep] 5000 puntos de 210240 verificados contra Python (2025-01-01T00:00:00Z a 2026-12-31T23:55:00Z)
+
+stderr | tests/restHistoricalWindow.test.ts
+◇ injected env (37) from .env
+
+stdout | tests/sessions.test.ts > Gestor de sesiones (SPEC punto 3) > Caché de Intl.DateTimeFormat > 10.000 llamadas no crean 10.000 formateadores
+[Sessions Formatter Cache] formateadores antes=2, después=2
+
+stdout | tests/sessions.test.ts > Gestor de sesiones (SPEC punto 3) > Rendimiento > mide 10.000 llamadas a getMarketParts y reporta el tiempo
+[Sessions Performance Benchmark] 10.000 llamadas a getMarketParts en 58.005 ms
+
+ ✓ tests/sessions.test.ts (36 tests) 732ms
+   ✓ Gestor de sesiones (SPEC punto 3) > Barrido de 5 minutos (2025-01-01 a 2026-12-31) > coincide con Python en los 5000 puntos muestreados  565ms
+stderr | tests/optionsPieza50_3Integrity.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/optionsPieza50_2AllExpiries.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/serverRuntime.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/optionsPieza50_1Fixes.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/primaryBmbServer.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/optionsUsdScaleAndFlow.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/argentinaServer.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/ggalSpecialistServer.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/snapshotPublicationPieza50_9.test.ts
+◇ injected env (37) from .env
+
+stdout | tests/avwap.test.ts > AVWAP anclado (SPEC puntos 5 y 9) > Referencia independiente (fixtures) > reporta la máxima diferencia relativa observada contra el fixture
+[AVWAP Fixture Reference] Max relative difference -> vwap: 1.8163e-15, stdDev: 1.4661e-11, cumVolume: 0.0000e+0, bands: 2.7397e-15
+
+stdout | tests/avwap.test.ts > AVWAP anclado (SPEC puntos 5 y 9) > Rendimiento > mide 4.000 barras y una proyección en vivo con 500 y 5.000 barras previas
+[AVWAP Performance] 4.000 barras en 31.484 ms; proyección en vivo: 0.4378 µs/call con 500 barras y 0.0734 µs/call con 5.000 barras
+
+ ✓ tests/avwap.test.ts (33 tests) 1930ms
+   ✓ AVWAP anclado (SPEC puntos 5 y 9) > Referencia independiente (fixtures) > verifica contra fixture independiente: e_large_5000_bars FULL_HISTORY visibleStart=0  632ms
+ ❯ tests/snapshotPublicationPieza50_9.test.ts (20 tests | 1 failed) 390ms
+   × Pieza 50.9 Bloque B — referencia independiente: decisión de publicación > coincide con la referencia en revisión, evaluación y sello previo roto 15ms
+     → revision_mayor_manda_aunque_evaluacion_anterior: expected 'stale' to be 'accept' // Object.is equality
+   ✓ Pieza 50.9 Bloque B — referencia independiente: decisión de publicación > una revisión mayor manda aunque su evaluación sea anterior y la misma revisión exige evaluación no anterior 1ms
+   ✓ Pieza 50.9 Bloque B — referencia independiente: fusión base + vencimiento > coincide con la referencia en loaded, unión ordenada y expiriesByCode 5ms
+   ✓ Pieza 50.9 Bloque B — referencia independiente: fusión base + vencimiento > conserva el agregado de la base y descarta los hechos no cargados del scope 1ms
+   ✓ Pieza 50.9 Bloque B — referencia independiente: fusión base + vencimiento > añade las fechas cargadas ausentes en orden y sin duplicar 0ms
+   ✓ Pieza 50.9 Bloque B — referencia independiente: fusión base + vencimiento > restringe la publicación puntual a su fecha solicitada sin pisar anclas 0ms
+   ✓ Pieza 50.9 Bloque B — referencia independiente: hecho puntual por vencimiento > coincide con la referencia: sin datos cargados publica y con datos cargados gana el estrictamente más nuevo 0ms
+   ✓ Pieza 50.9 Bloque B — referencia independiente: hecho puntual por vencimiento > un hecho sin datos o con evaluación inválida nunca publica; la omisión de la base siempre publica 0ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > resuelve base y vencimiento en ambos órdenes sin perder hechos ni el agregado 9ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > descarta una base tardía del mismo alcance y nunca muta el estado con ella 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > una cancelación conserva el último snapshot válido 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > un fallo de transporte conserva el último snapshot válido 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > un puntual obsoleto no pisa la cadena vigente y su hecho pendiente alimenta la base 3ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > aísla símbolos distintos y respeta la separación US/AR 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > requestUsSnapshot: prefetch explícito y URL por defecto intacta 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > una solicitud nueva con evaluación anterior no retrocede la valuación ni la traza 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > en alcance puntual, una evaluación anterior no reemplaza la cadena vigente retenida 1ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > publica solo la fecha solicitada aunque la respuesta puntual traiga otras cargadas 3ms
+   ✓ Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance > una base nueva con datos más recientes de A no es sobrescrita por el hecho puntual retenido 3ms
+   ✓ Pieza 50.9 Bloque B — GET /api/snapshot?prefetch=0 > conserva clave, cuerpo y TTL: sin cargas adicionales en frío ni en caliente, y omisión con el contrato previo  340ms
+ ✓ tests/optionsPieza50_3Integrity.test.ts (13 tests) 1058ms
+   ✓ Pieza 50.3 — American deep ITM/OTM exacto, dS adaptativo corto y cap IV > integración MarketRuntime: Put deep ITM con IV explosiva jamás devuelve Delta -0.66 ni IV 1.000%  634ms
+   ✓ Pieza 50.3 — Buy-Write y Cobertura Sintética con gate DTE < 3 > integración MarketRuntime: /api/options/expiry 30 DTE con Buy-Write/Cobertura propios aunque el front sea 0DTE  346ms
+ ✓ tests/optionsUsdScaleAndFlow.test.ts (7 tests) 1217ms
+   ✓ Pieza 36 — /api/snapshot QQQ sin ORATS y /api/us/vol-surface on-demand > sirve QQQ en escala USD 1x, no llama ORATS y expone vol surface solo on-demand  1200ms
+stderr | tests/autoAvwap.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/perfPhase1WsScopeAndBackpressure.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/ggalMotor6.test.ts
+◇ injected env (37) from .env
+
+stdout | tests/sessionVwap.test.ts > VWAP de sesión (SPEC punto 4) > Referencia independiente (fixtures) > reporta la máxima diferencia relativa observada contra el fixture
+[Session VWAP Fixture Reference] Max relative difference -> vwap: 6.9949e-16, cumVolume: 0.0000e+0
+
+stdout | tests/sessionVwap.test.ts > VWAP de sesión (SPEC punto 4) > Rendimiento > mide 4.000 barras y una proyección en vivo sin aserción de tiempo
+[Session VWAP Performance] 4.000 barras en 47.910 ms; proyección en vivo en 0.0167 ms
+
+ ✓ tests/sessionVwap.test.ts (35 tests) 844ms
+ ✓ tests/autoAvwap.test.ts (52 tests) 1531ms
+ ✓ tests/ggalMotor6.test.ts (8 tests) 654ms
+   ✓ Motor 6 GGAL Specialist — Integración HTTP Offline (/api/ar/ggal-specialist/margin-risk) > sirve GET /api/ar/ggal-specialist/margin-risk, degrada L1_ONLY/MISSING_AFORO sin fallbacks y valida 400/405  566ms
+ ✓ tests/perfPhase1WsScopeAndBackpressure.test.ts (10 tests) 1333ms
+   ✓ Pieza 48 — servidor WS view-scoped, diff real, backpressure y heartbeat > set_view_scope filtra option_quotes_batch (0 en stock_detail/ggal_specialist, solo focusSymbol sin duplicados en options) y acota L2  467ms
+   ✓ Pieza 48 — servidor WS view-scoped, diff real, backpressure y heartbeat > coalesce quotes bajo contrapresión (>256 KB con histéresis 64 KB) y cierra con 1013 sobre 4 MB  647ms
+ ✓ tests/restHistoricalWindow.test.ts (20 tests) 4334ms
+   ✓ Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP > 5m extendido usa el paginador FMP dentro del rango planificado y conserva Pre/After  462ms
+   ✓ Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP > 5m RTH no pide `extended=true`, filtra RTH y la ventana escala por densidad (30 vs 18 días)  922ms
+   ✓ Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP > 1h RTH usa 7 ventanas por sesión y 1h extendido 16, manteniendo el rango suficiente  540ms
+   ✓ Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP > ordena y deduplica la combinación de ventanas solapadas del paginador FMP  442ms
+   ✓ Pieza 50.5 — Runtime REST: intradía RTH/extendido y paginación FMP > ante 5xx stable cae a legacy sin rango y el merge acota al rango planificado  632ms
+stderr | tests/pieza44GgalDlrFixes.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/wsCoalescerAndStability.test.ts
+◇ injected env (37) from .env
+
+stdout | tests/welford.test.ts > Welford ponderado (AVWAP y bandas) > Referencia independiente (fixtures) > reporta la máxima diferencia relativa observada contra el fixture
+[Fixture Reference Report] Max relative difference -> vwap: 1.4488e-15, stdDev: 3.7973e-13
+
+stdout | tests/welford.test.ts > Welford ponderado (AVWAP y bandas) > Rendimiento (5.000 barras en menos de 50 ms) > procesa 5.000 barras midiendo el tiempo de ejecución
+[Performance Benchmark] 5.000 barras procesadas en 3.949 ms (límite orientativo: 50 ms)
+
+ ✓ tests/welford.test.ts (16 tests) 677ms
+   ✓ Welford ponderado (AVWAP y bandas) > Referencia independiente (fixtures) > verifica contra fixture independiente: case_a_large_prices_large_volumes (5.000 barras con precios ~60.000 y volúmenes grandes (semilla fija))  638ms
+stderr | tests/stockDetailUnified.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/dataNormalize.test.ts (44 tests) 546ms
+ ✓ tests/wsCoalescerAndStability.test.ts (9 tests) 768ms
+   ✓ Pieza 40 — batching 10 Hz / foco 20 Hz sobre /ws > emite market_batch general a ~10 Hz y eventos enfocados a ~20 Hz  644ms
+ ✓ tests/pieza44GgalDlrFixes.test.ts (8 tests) 890ms
+   ✓ Pieza 44 — Paridad matemática exacta (< 1e-9) contra fixtures/pieza44_ggal_dlr_reference.json > integración E2E GgalSpecialistRuntime: repricing individual GFGC* no plano y niveles clave en USD y ARS  763ms
+ ✓ tests/stockDetailUnified.test.ts (21 tests) 922ms
+stderr | tests/realtimePropagation.test.ts
+◇ injected env (37) from .env
+
+stdout | tests/ema.test.ts > EMA (SPEC punto 2) > Referencia independiente (fixtures) > reporta la máxima diferencia relativa observada contra el fixture
+[EMA Fixture Reference Report] Max relative difference: 5.6762e-15
+
+stderr | tests/optionsPieza46_1ZeroDteFixes.test.ts
+◇ injected env (37) from .env
+
+stdout | tests/ema.test.ts > EMA (SPEC punto 2) > Comprobación cruzada con pandas (segundo fixture) > coincide con pandas.ewm(span=N, adjust=False) desde la barra 1000
+[EMA pandas Cross-Check Report] pandas 3.0.2, desde índice 1000: max relative difference 1.0432e-7
+
+stdout | tests/ema.test.ts > EMA (SPEC punto 2) > projectLiveEma > encadenar la EMA del tick anterior NO da el mismo resultado (error que se evita)
+[projectLiveEma] directo=119.800000, encadenado=195.000000, diferencia=75.200000
+
+stdout | tests/ema.test.ts > EMA (SPEC punto 2) > emaWarmupWeight > emaWarmupWeight(200, 1000) es aproximadamente 4.54e-5
+[emaWarmupWeight] (199/201)^1000 = 4.539615e-5
+
+ ✓ tests/dataLoader.test.ts (89 tests) 334ms
+stdout | tests/ema.test.ts > EMA (SPEC punto 2) > Rendimiento > procesa 5.000 cierres para los 4 periodos y reporta el tiempo medido
+[EMA Performance Benchmark] 5.000 cierres x 4 periodos (9, 21, 50, 200) en 0.485 ms
+
+ ✓ tests/ema.test.ts (34 tests) 466ms
+ ✓ tests/realtimePropagation.test.ts (2 tests) 421ms
+   ✓ WebSocket tick propagation > propagates AR/US ticks and recomputes FX in under 300 ms  406ms
+ ✓ tests/optionsPieza46_1ZeroDteFixes.test.ts (8 tests) 292ms
+ ✓ tests/serverRuntime.test.ts (8 tests) 5534ms
+   ✓ serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offline) > serves /api/health, /api/snapshot, /api/bars, /api/unusual cleanly without NaN or secrets  2582ms
+   ✓ serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offline) > computes Piezas 15-18 terminalEngines, supports EOD_CIERRE when closed, warmup() & /api/health warmupStatus (Pieza 19)  2187ms
+   ✓ serverRuntime — cache, ET TTL, redaction & HTTP/WS integration (offline) > serializes NaN callVolume/putVolume in exposureSummary.byStrike as null without crashing snapshot  441ms
+stderr | tests/exposureTracePieza50_9.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/fmpEnterpriseAndArgyStream.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/chartPieza50_4Structural.test.ts (5 tests) 255ms
+ ✓ tests/ggalSpecialist.test.ts (13 tests) 303ms
+stderr | tests/massiveStocksStream.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/exposureTracePieza50_9.test.ts (14 tests) 544ms
+   ✓ Pieza 50.9 Bloque A — representación en Stock Detail > computeSnapshot REST expone la cobertura de las ramas GGAL y de respaldo inyectadas  514ms
+stderr | tests/stockDetailAndFeedStability.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/massiveStocksStream.test.ts (10 tests) 318ms
+stderr | tests/fmpEnterpriseAndArgyStream.test.ts > Pieza 41.2 — bootstrap explícito del .env raíz > aplica override:true aunque process.env tenga la variable vacía
+◇ injected env (1) from ..\..\Users\flesi\AppData\Local\Packages\openai.codex_2p2nqsd0c76g0\AC\#!sandbox.{199683c7-fd92-4bd2-8462-616d15027d05}\Temp\qot-env-bootstrap-T2FlVG\.env
+
+stderr | tests/fmpEnterpriseAndArgyStream.test.ts > Pieza 41.2 — bootstrap explícito del .env raíz > carga .env.local después de .env con override:true
+◇ injected env (2) from ..\..\Users\flesi\AppData\Local\Packages\openai.codex_2p2nqsd0c76g0\AC\#!sandbox.{199683c7-fd92-4bd2-8462-616d15027d05}\Temp\qot-env-local-G9flUE\.env
+◇ injected env (1) from ..\..\Users\flesi\AppData\Local\Packages\openai.codex_2p2nqsd0c76g0\AC\#!sandbox.{199683c7-fd92-4bd2-8462-616d15027d05}\Temp\qot-env-local-G9flUE\.env.local
+
+ ✓ tests/fmpEnterpriseAndArgyStream.test.ts (38 tests) 182ms
+ ✓ tests/stockDetailAndFeedStability.test.ts (9 tests) 268ms
+ ✓ tests/optionsPieza50_1Fixes.test.ts (7 tests) 8826ms
+   ✓ Pieza 50.1 — Fixes US/OPRA: vencimientos, escalera EOD, spot alineado y var% (referencia Python <= 1e-9) > 6. Integración offline: multi-vencimiento, ?expiration=, spot alineado y var% (MarketRuntime) > carga los vencimientos curados (no solo los 2 primeros) y ?expiration= devuelve el pedido  8780ms
+stdout | tests/structureOptimizer.test.ts > Pieza 18 (Motores 4 y 10): Spatial Confluence, RS/Catalysts & Option Structure Optimizer
+[structureOptimizer.test] Fixture precision summary: 1887 scalars checked, maxRelDiff(|x|>=1e-6)=1.368e-15, maxNearZeroAbsDiff=0.000e+0, maxAbsDiff=7.276e-12 (limit < 1e-11)
+
+ ✓ tests/structureOptimizer.test.ts (9 tests) 148ms
+stdout | tests/terminalConfluence.test.ts > Pieza 12 — Intraday Realized Vol (5m RTH), VRP, Terminal Confluence & JSON-Safe Serializer > matches all 5 independent Python confluence + serialization scenarios (< 1e-12) with deepFreeze
+[terminalConfluence.test] Fixture precision summary: 478 scalars checked, maxAbsDiff=1.388e-16, maxRelDiff=3.433e-14 (limit <= 1e-12)
+
+stdout | tests/optionsExposure.test.ts > Dealer Exposure Engine (Pieza 6)
+[optionsExposure.test] maxRelDiff=2.279e-12, maxNearZeroAbsDiff=1.756e-15
+
+ ✓ tests/optionsExposure.test.ts (5 tests) 127ms
+ ✓ tests/terminalConfluence.test.ts (7 tests) 158ms
+stdout | tests/mtfCvd.test.ts > Pieza 10 — Multi-Timeframe Cascade Structure & CVD Passive Absorption
+[mtfCvd.test] Fixture precision summary: 913 scalars checked, maxAbsDiff=5.684e-13, maxRelDiff=1.137e-13 (limit < 1e-11)
+
+ ✓ tests/mtfCvd.test.ts (14 tests) 119ms
+stdout | tests/optionsData.test.ts > Capa de datos de Opciones (Pieza 1) > Referencia independiente: normalizeOptionContracts > reporta diferencia numérica máxima <= 1e-12 en contratos
+[Options Contracts Fixture] Max numeric difference: 0.0000e+0
+
+stdout | tests/optionsData.test.ts > Capa de datos de Opciones (Pieza 1) > Referencia independiente: normalizeOptionChainSnapshot > reporta diferencia numérica máxima <= 1e-12 en snapshots
+[Options Snapshot Fixture] Max numeric difference: 0.0000e+0
+
+ ✓ tests/optionsData.test.ts (20 tests) 108ms
+ ✓ tests/primaryBmbServer.test.ts (7 tests) 9660ms
+   ✓ Primary ROFEX / BMB HomeBroker Connectors & Pure Math Parity > degrada explícitamente BMB Bridge y herramientas Python cuando falta pyhomebroker o BMB_PASSWORD, y usa curva BMB cuando está READY  9538ms
+stderr | tests/optionsPieza46Execution.test.ts
+◇ injected env (37) from .env
+
+stderr | tests/extendedHoursFmpTradier.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/iolFeedAdapter.test.ts (4 tests) 109ms
+stdout | tests/macroData.test.ts
+[Pieza 4 macroData] 218 numeric comparisons vs Python reference: maxAbsDiff=2.255e-15, maxRelDiff=2.255e-15
+
+ ✓ tests/macroData.test.ts (15 tests) 108ms
+ ✓ tests/optionsPieza50QuantSuite.test.ts (10 tests) 111ms
+ ✓ tests/optionsPieza46Execution.test.ts (8 tests) 127ms
+stdout | tests/openingAuction.test.ts > Pieza 9 — Opening Auction & Pre-Market Microstructure (04:00 - 10:30 ET)
+[openingAuction.test] Fixture precision summary: 271 scalars checked, maxAbsDiff=5.821e-11, maxRelDiff=1.303e-16 (limit <= 1e-9)
+
+ ✓ tests/openingAuction.test.ts (16 tests) 82ms
+ ✓ tests/extendedHoursFmpTradier.test.ts (6 tests) 123ms
+stdout | tests/amtFvgLeeReady.test.ts > Pieza 15 — AMT Volume Profile / Naked POCs, Quantitative FVG / FOB & Lee-Ready / L1 Book
+[amtFvgLeeReady.test] Fixture precision summary: 281 scalars checked, maxAbsDiff=1.421e-14, maxRelDiff=3.221e-16 (limit < 1e-11)
+
+ ✓ tests/amtFvgLeeReady.test.ts (6 tests) 69ms
+ ✓ tests/volAnalyticsSuite.test.ts (11 tests) 83ms
+ ✓ tests/primaryEcoL2.test.ts (7 tests) 79ms
+stdout | tests/liveWs.test.ts > liveBarConsolidator — pure forming-bar and rebroadcast state machine > matches Python fixture scenario 5: pure live indicator projections (EMA, Session VWAP, AVWAP)
+[liveWs.test] maxAbsDiff vs Python fixture = 1.860e-14
+
+ ✓ tests/liveWs.test.ts (12 tests) 71ms
+ ✓ tests/perfPhase2WorkerSoaAndDomRegistry.test.ts (9 tests) 80ms
+stdout | tests/optionsFlowPin.test.ts > Pieza 16: OPRA Options Order Flow, MAD Anomalies & GEX/Charm Pin Tracker
+[optionsFlowPin.test] Fixture precision summary: 292 scalars checked, maxRelDiff(|x|>=1e-6)=9.499e-13, maxNearZeroAbsDiff=2.645e-17, maxAbsDiff=2.042e-5 (limit < 1e-11)
+
+ ✓ tests/optionsFlowPin.test.ts (9 tests) 78ms
+ ✓ tests/argentinaServer.test.ts (15 tests) 11268ms
+   ✓ Argentina server math, BYMA options, /api/ar/* routes & US options upgrades > serves all /api/ar/* HTTP endpoints cleanly from offline Data912 + OpenBYMA + BCRA + ArgentinaDatos mocks  732ms
+   ✓ Argentina server math, BYMA options, /api/ar/* routes & US options upgrades > degrades feedStatus honestly across DIFERIDO_20M, PARTIAL (OpenBYMA fallback) and NO_DATA without silent fallbacks  315ms
+   ✓ Argentina server math, BYMA options, /api/ar/* routes & US options upgrades > computes analytical forward fallback (< 3 parity pairs) and ±25% deep Put Wall in US MarketRuntime  350ms
+   ✓ Argentina server math, BYMA options, /api/ar/* routes & US options upgrades > activates 24/7 EOD_CIERRE fallback on empty live feeds, expands 20/14/13 universe & wires Piezas 15-18 engines (Pieza 19)  2522ms
+   ✓ Universo EE.UU. (~73 acciones), 6 paneles analíticos AR/US y Radar CEDEARs/ADRs > loads expanded ~73-stock US universe across 8 sectors via Massive snapshot + 1D bars with SPY beta and 40D analytics  667ms
+   ✓ Universo EE.UU. (~73 acciones), 6 paneles analíticos AR/US y Radar CEDEARs/ADRs > enriches Monitoreo Acciones AR 6 panels and CEDEARs/ADRs with Vol. Relativo, VI 30d (OPRA/RV30), Desfase ARS vs. CCL & honest null degradation  1427ms
+   ✓ Cascada MEP/CCL/Canje, Curva Tasas + SPY EOD_CLOSE_REF, Batch 73 US y Analítica 260D > comparte cascada MEP, CCL Mediano y Canje entre /api/ar/overview y /api/ar/macro (Data912 -> AL30/GD30 EOD -> ArgentinaDatos)  883ms
+   ✓ Cascada MEP/CCL/Canje, Curva Tasas + SPY EOD_CLOSE_REF, Batch 73 US y Analítica 260D > resuelve NY Fed SOFR + FRED UST 2Y/10Y + I:SKEW 1D + OPRA SPY EOD_CLOSE_REF en fin de semana  442ms
+   ✓ Cascada MEP/CCL/Canje, Curva Tasas + SPY EOD_CLOSE_REF, Batch 73 US y Analítica 260D > sirve /api/us/panel-analytics y /api/ar/monitoring?panel=acciones con batch 73 US, fallback 1D, tradedVolumeUsd y series 260D/40R/60R  3533ms
+stdout | tests/optionsAmerican.test.ts > Pieza 3: Bivariate Normal, Put-Call Forward Parity, Bjerksund-Stensland 2002 & Discrete CRR
+[optionsAmerican] comparisons=159 maxForwardDiff=0.000e+0 maxBs02VsPyDiff=4.405e-13 max1stOrderGreekRelDiff=4.606e-10 max2ndOrderFdAbsDiff=8.242e-7 maxCrrDiscreteVsPyDiff=3.553e-15 maxIvDiff=1.926e-12 maxBs02VsCrrRichardsonDiff=1.588e-1 (0.0326% of K)
+
+ ✓ tests/optionsAmerican.test.ts (12 tests) 55ms
+ ✓ tests/ggalSpecialistServer.test.ts (8 tests) 11440ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > sirve los 7 endpoints HTTP LIVE con cálculos puros reales, ingesta Anexo B IAMC y grabador 20s sin NaN ni fugas  2709ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > opera 24/7 en modo explícito EOD_CIERRE los fines de semana sin STALE_DATA_LOCK ni mocks  574ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > dispara STALE_DATA_LOCK cuando los feeds en vivo superan la tolerancia, rechaza métodos 405 y oculta secretos  730ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > resuelve CER dinámico BCRA, suprime 502 BYMA en cierre y habilita proxy Structure + StrategySelector default 0  1754ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > expone atmIvPct en /api/ar/overview, agresionTicks y Gamma/IV finita en Puts ITM sin NaN  448ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > unwraps nested BCRA v4.0 detalle CER, extrapola alas OPRA z<-1/z>+1 en VIOLATION_BYMA_COMPRESSED y calcula flujo EOD rueda previa  2956ms
+   ✓ GGAL Specialist Backend Integration (Pieza 21) > sirve dual-chart con SWR 15s, cold start no bloqueante y revalidación single-flight  1921ms
+ ✓ tests/optionsPieza45Sanitization.test.ts (8 tests) 55ms
+ ✓ tests/feedsHealthMonitor.test.ts (54 tests) 52ms
+ ✓ tests/ggalSpecialistLiveStream.test.ts (14 tests) 59ms
+stdout | tests/divergencesBreadth.test.ts > Pieza 11 — RSI/SMT Divergences & Market Breadth / VIX-SKEW Regime
+[divergencesBreadth.test] Fixture precision summary: 411 scalars checked, maxAbsDiff=0.000e+0, maxRelDiff=0.000e+0 (limit < 1e-11)
+
+ ✓ tests/divergencesBreadth.test.ts (18 tests) 51ms
+ ✓ tests/dataRetry.test.ts (9 tests) 47ms
+ ✓ tests/bmbInversionesSignalR.test.ts (11 tests) 45ms
+ ✓ tests/avwapAnchorsPieza50_7.test.ts (8 tests) 46ms
+stderr | tests/ggalInstitutionalEngines.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/ggalInstitutionalEngines.test.ts (7 tests) 47ms
+stdout | tests/optionsBsm.test.ts > Black-Scholes-Merton (BSM) engine vs Python reference > matches price, all 1st/2nd-order Greeks, arbitrage bounds, and IV round-trips within 1e-9
+[BSM Fixture Report] Max relative diff: 1.4844e-11, Max near-zero abs diff: 1.5526e-24
+
+stdout | tests/volSurface.test.ts > volSurface & volMetrics (Pieza 5)
+[volSurface.test] maxAbsDiff vs Python fixture = 9.004e-11
+
+ ✓ tests/volSurface.test.ts (6 tests) 39ms
+stdout | tests/optionsBsm.test.ts > Black-76 futures/VIX engine vs Python reference > matches price, all Greeks (positive gamma/vega on deep ITM VIX), and IV round-trips within 1e-9
+[Black-76 Fixture Report] Max relative diff: 1.1211e-11
+
+ ✓ tests/optionsBsm.test.ts (9 tests) 37ms
+stdout | tests/probDivergenceSynth.test.ts > Pieza 17 — Divergencia Probabilística (P vs Q), Colas >3σ, Cono y Tasas Implícitas del Sintético
+[probDivergenceSynth.test] Fixture precision summary: 366 scalars checked, maxAbsDiff=1.327e-8, maxRelDiff=4.255e-14 (limit <= 1e-11)
+
+ ✓ tests/probDivergenceSynth.test.ts (5 tests) 37ms
+ ✓ tests/ggalTechnicalIndicators.test.ts (5 tests) 37ms
+stderr | tests/bmbFeedAdapter.test.ts
+◇ injected env (37) from .env
+
+ ✓ tests/dataAlignment.test.ts (13 tests) 36ms
+ ✓ tests/avwapPieza50_7Structural.test.ts (7 tests) 24ms
+ ✓ tests/bmbFeedAdapter.test.ts (6 tests) 49ms
+stdout | tests/unusualTrades.test.ts > normalizeUnusualTrades & loadUnusualTrades (Pieza 8) > matches Python fixture across paginated load, ns->s conversion, SPXW/GME1 roots, and NaN adjusted multiplier hygiene
+[unusualTrades.test] maxAbsDiff vs Python fixture = 0.000e+0
+
+ ✓ tests/unusualTrades.test.ts (4 tests) 26ms
+ ✓ tests/liveReconcilerPieza50_8.test.ts (8 tests) 22ms
+ ✓ tests/liveCalendarPieza50_8.test.ts (7 tests) 17ms
+ ✓ tests/stockDetailChartNavigation.test.ts (6 tests) 11ms
+ ✓ tests/liveWeeklyEmaPieza50_8.test.ts (6 tests) 14ms
+ ✓ tests/retry.test.ts (28 tests) 8ms
+ ✓ tests/setup.test.ts (1 test) 3ms
+ ✓ tests/dlrForwardToForward.test.ts (2 tests) 6ms
+ ✓ tests/optionsPieza50_2AllExpiries.test.ts (8 tests) 42536ms
+   ✓ Pieza 50.2 — Catálogo 100 % de vencimientos US/OPRA con anclas y caché TTL 12 min > expone 32 vencimientos (0DTE→LEAPS 746 DTE) con 6 anclas loaded:true y sirve el catálogo desde caché  21611ms
+   ✓ Pieza 50.2 — Carga on-demand por vencimiento (`/api/options/expiry`) > carga LEAPS 2028-01-21 sin recalcular barras/MTF/macro, cachea 15s y acota Tradier a esa fecha  9036ms
+   ✓ Pieza 50.2 — Tope estricto de 1.000 suscripciones WS con evicción LRU > navega 30 vencimientos (30×40 contratos) sin superar 1.000 y suscribe los 40 ATM del activo  11811ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/snapshotPublicationPieza50_9.test.ts > Pieza 50.9 Bloque B — referencia independiente: decisión de publicación > coincide con la referencia en revisión, evaluación y sello previo roto
+AssertionError: revision_mayor_manda_aunque_evaluacion_anterior: expected 'stale' to be 'accept' // Object.is equality
+
+Expected: "accept"
+Received: "stale"
+
+ ❯ tests/snapshotPublicationPieza50_9.test.ts:92:33
+     90|     for (const item of fixture.decisionCases) {
+     91|       const actual = publication.resolvePublicationDecision(item.curre…
+     92|       expect(actual, item.name).toBe(item.expected);
+       |                                 ^
+     93|     }
+     94|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 71 passed (72)
+      Tests  1 failed | 1028 passed (1029)
+   Start at  10:27:33
+   Duration  46.03s (transform 6.78s, setup 0ms, collect 41.71s, tests 113.07s, environment 20ms, prepare 21.25s)
+
