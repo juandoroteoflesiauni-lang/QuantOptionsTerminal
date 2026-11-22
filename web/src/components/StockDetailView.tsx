@@ -1286,7 +1286,11 @@ export const StockDetailView: React.FC<{
         ),
         callWall: normalizeFiniteOrNull(exposure?.callWallStrike),
         putWall: normalizeFiniteOrNull(exposure?.putWallStrike),
-        zeroGamma: normalizeFiniteOrNull(exposure?.gammaFlipSpot),
+        // Pieza 50.9: solo un cruce único y finito se dibuja como línea.
+        zeroGamma:
+          exposure?.gammaFlipStatus === 'unique'
+            ? normalizeFiniteOrNull(exposure?.gammaFlipSpot)
+            : null,
         atr14: normalizeFiniteOrNull(engines?.atr14) ?? fallbackAtr,
         nakedPocs: (engines?.nakedPocs?.activeNakedPocs ?? [])
           .filter((poc): poc is { readonly sessionDate: string; readonly sessionPoc: number } => poc.sessionPoc !== null)
@@ -1307,7 +1311,11 @@ export const StockDetailView: React.FC<{
       ),
       callWall: normalizeFiniteOrNull(exposure?.callWallStrike),
       putWall: normalizeFiniteOrNull(exposure?.putWallStrike),
-      zeroGamma: normalizeFiniteOrNull(exposure?.gammaFlipSpot),
+      // Pieza 50.9: solo un cruce único y finito se dibuja como línea.
+      zeroGamma:
+        exposure?.gammaFlipStatus === 'unique'
+          ? normalizeFiniteOrNull(exposure?.gammaFlipSpot)
+          : null,
       atr14: normalizeFiniteOrNull(engines?.atr14d) ?? fallbackAtr,
       nakedPocs: (engines?.nakedPocs?.activeNakedPocs ?? [])
         .filter((poc): poc is { readonly sessionDate: string; readonly sessionPoc: number } => poc.sessionPoc !== null)
@@ -1316,6 +1324,54 @@ export const StockDetailView: React.FC<{
       orderBlocks: engines?.orderBlocks?.freshOrderBlocks ?? [],
     };
   }, [arOptions, chartBundle.bars, isArMarket, stockDetail, usSnap]);
+
+  // Pieza 50.9: trazabilidad del insumo de exposición. Hora de evaluación ≠ hora de
+  // cotización ≠ precio live; un tick del subyacente no mueve niveles ni spot.
+  const exposureTraceInfo = useMemo(() => {
+    const exposure = isArMarket ? arOptions?.exposureSummary : usSnap?.exposureSummary;
+    const trace = exposure?.trace;
+    const coverage = trace?.coverage ?? 'unknown';
+    const coverageLabel =
+      coverage === 'complete'
+        ? 'cobertura completa'
+        : coverage === 'partial'
+          ? 'cobertura parcial'
+          : 'cobertura desconocida';
+    const spot =
+      trace !== undefined && trace.valuationSpot !== null && Number.isFinite(trace.valuationSpot)
+        ? `${trace.valuationSpot.toFixed(2)}${
+            'valuationSpotSource' in trace && trace.valuationSpotSource !== null
+              ? ` · ${String(trace.valuationSpotSource)}`
+              : ''
+          }`
+        : '— (sin traza)';
+    const quoteTimes = trace?.quoteTimes ?? null;
+    const quoteLabel =
+      quoteTimes === null || quoteTimes.knownCount === 0
+        ? `sin hora verificable (${String(quoteTimes?.unknownCount ?? 0)} sin hora)`
+        : `${String(quoteTimes.knownCount)} con hora · ${String(quoteTimes.unknownCount)} sin hora · edad ${String(Math.round(quoteTimes.newestAgeSec ?? 0))}–${String(Math.round(quoteTimes.oldestAgeSec ?? 0))}s`;
+    const mode = trace?.quoteMode ?? null;
+    const modeLabel =
+      mode === 'EOD_CLOSE_REF' ? ' · referencia EOD' : mode === 'LIVE_NBBO' ? ' · NBBO live' : '';
+    const status = exposure?.gammaFlipStatus ?? null;
+    const candidates = exposure?.gammaFlipCandidates ?? [];
+    const zeroGammaLabel =
+      status === 'unique'
+        ? 'cruce único'
+        : status === 'multiple_crossings'
+          ? `cruces múltiples (${String(candidates.length)} candidatos; REST elige el más cercano)`
+          : status === 'no_crossing'
+            ? 'sin cruce en el rango'
+            : status === 'indeterminate'
+              ? 'cruce indeterminado'
+              : '—';
+    return [
+      { label: 'GEX spot', text: `${spot} · ${coverageLabel}` },
+      { label: 'Cotizaciones', text: `${quoteLabel}${modeLabel}` },
+      { label: 'Zero-γ', text: zeroGammaLabel },
+      { label: 'Supuesto', text: 'calls +1 · puts −1 (modelo teórico)' },
+    ];
+  }, [arOptions?.exposureSummary, isArMarket, usSnap?.exposureSummary]);
 
   // Pieza 50.4: etiqueta determinista de la ventana del Volume Profile (ancho reservado,
   // sin CLS). Si el backend no informa la ventana, explicita el contrato 1Y · 252R.
@@ -1813,6 +1869,13 @@ export const StockDetailView: React.FC<{
             >
               {level.label}: {level.value !== null ? fmtNum(level.value, 2) : '—'}
             </button>
+          ))}
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#141419] pt-1.5 font-mono-num text-[10px] text-[#7C8398]">
+          {exposureTraceInfo.map((item) => (
+            <span key={item.label}>
+              <span className="text-[#565D75]">{item.label}:</span> {item.text}
+            </span>
           ))}
         </div>
       </section>

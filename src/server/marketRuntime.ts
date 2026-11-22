@@ -79,6 +79,12 @@ import {
 } from '../core/options/american.js';
 import { greeksBsm, timeToExpiryYears } from '../core/options/blackScholes.js';
 import {
+  buildExposureTraceMetadata,
+  resolveExposureCoverage,
+  summarizeQuoteTimes,
+  type ExposureTraceMetadata,
+} from '../core/exposureTrace.js';
+import {
   computeDealerExposure,
   type DealerExposureResult,
   type ExposureContractInput,
@@ -612,6 +618,10 @@ export interface SerializedExposureSummary {
   readonly putWallStrike: number | null;
   readonly gammaFlipSpot: number | null;
   readonly gammaFlipStatus: GammaFlipStatus;
+  /** Pieza 50.9: candidatos de cruce de gamma (REST selecciona el más cercano). */
+  readonly gammaFlipCandidates: readonly number[];
+  /** Pieza 50.9: trazabilidad opcional del insumo que produjo los niveles. */
+  readonly trace?: ExposureTraceMetadata;
   readonly expectedMove: {
     readonly expiryUtcSec: number | null;
     readonly formulaMove: number | null;
@@ -2915,7 +2925,10 @@ function serializeSlice(pkg: SlicePackage): SerializedVolSliceSummary {
   };
 }
 
-function serializeExposure(exposure: DealerExposureResult): SerializedExposureSummary {
+function serializeExposure(
+  exposure: DealerExposureResult,
+  trace?: ExposureTraceMetadata,
+): SerializedExposureSummary {
   return {
     netGex: sanitizeFinite(exposure.netGex),
     callGex: sanitizeFinite(exposure.callGex),
@@ -2932,6 +2945,8 @@ function serializeExposure(exposure: DealerExposureResult): SerializedExposureSu
     putWallStrike: sanitizeFinite(exposure.putWallStrike),
     gammaFlipSpot: sanitizeFinite(exposure.gammaFlipSpot),
     gammaFlipStatus: exposure.gammaFlipStatus,
+    gammaFlipCandidates: exposure.gammaFlipCandidates.filter((value) => Number.isFinite(value)),
+    ...(trace !== undefined ? { trace } : {}),
     expectedMove: {
       expiryUtcSec: sanitizeFinite(exposure.expectedMove.expiryUtcSec),
       formulaMove: sanitizeFinite(exposure.expectedMove.formulaMove),
@@ -3930,6 +3945,8 @@ interface EffectiveOpraContractsResult {
   readonly contracts: readonly OptionSnapshotContract[];
   readonly usedEodCloseRef: boolean;
   readonly liveNbboCount: number;
+  /** Pieza 50.9: tickers con punta sustituida por referencia EOD (sin cotización nueva). */
+  readonly eodFixedTickers: ReadonlySet<string>;
 }
 
 function applyEodCloseRefQuotes(
@@ -3963,10 +3980,11 @@ function applyEodCloseRefQuotes(
     (liveNbboCount < 4 || (params.marketIsClosed && liveNbboCount < eodFixableCount));
 
   if (!shouldUseEodRef) {
-    return { contracts, usedEodCloseRef: false, liveNbboCount };
+    return { contracts, usedEodCloseRef: false, liveNbboCount, eodFixedTickers: new Set<string>() };
   }
 
   let modified = false;
+  const eodFixedTickers = new Set<string>();
   const mapped = contracts.map((c) => {
     const { bid, ask, bidSize, askSize } = c.lastQuote;
     if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
@@ -3982,6 +4000,7 @@ function applyEodCloseRefQuotes(
       return c;
     }
     modified = true;
+    eodFixedTickers.add(c.ticker);
     return {
       ...c,
       lastQuote: {
@@ -3999,6 +4018,7 @@ function applyEodCloseRefQuotes(
     contracts: mapped,
     usedEodCloseRef: modified,
     liveNbboCount,
+    eodFixedTickers,
   };
 }
 
@@ -8492,6 +8512,10 @@ export class MarketRuntime {
       unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed') ||
       [...v2StocksRes.map.values()].some((q) => q.marketStatus?.toLowerCase() === 'closed');
 
+    // Pieza 50.9: procedencia previa al overlay Tradier (hora de cotización Massive).
+    const preOverlayQuoteTimes = new Map<string, number>(
+      contracts.map((c) => [c.ticker, c.lastQuote.updatedAt] as const),
+    );
     const tradierOverlay = await this.tryTradierChainOverlay(canonicalSymbol, isIndex, contracts, nowSec, warnings);
     contracts = tradierOverlay.contracts;
 
@@ -8624,6 +8648,7 @@ export class MarketRuntime {
     let terminalExposureInputs: ExposureContractInput[] = [];
     let volSurfaceSummary: SerializedVolSurfaceSummary | null = null;
     let iv30d = Number.NaN;
+    let exposureTrace: ExposureTraceMetadata | undefined;
 
     if (activeFrontParity !== undefined && Number.isFinite(spot) && spot > 0 && contracts.length > 0) {
       const surfaceSlices = validSlices.slice(0, 12);
@@ -8732,6 +8757,38 @@ export class MarketRuntime {
         selectedForSerialization.push(...list.slice(0, take));
         serializationBudget -= take;
       }
+
+      // Pieza 50.9: la traza se captura junto con la exposición que produjo los
+      // niveles. Los tiempos de cotización son los inputs reales del motor y las
+      // referencias EOD quedan fuera del rango verificable.
+      const exposureQuoteTimes = summarizeQuoteTimes(
+        contracts.map((c) => ({
+          updatedAtSec: c.lastQuote.updatedAt,
+          fromOverlay: preOverlayQuoteTimes.get(c.ticker) !== c.lastQuote.updatedAt,
+          eodReference: eodQuotesRes.eodFixedTickers.has(c.ticker),
+        })),
+        nowSec,
+      );
+      exposureTrace = buildExposureTraceMetadata({
+        evaluationSec: nowSec,
+        valuationSpot: alignedSpot.valuationSpot,
+        valuationSpotSource: alignedSpot.source,
+        headerSpot: alignedSpot.headerSpot,
+        spotDivergenceBps: alignedSpot.divergenceBps,
+        quoteMode,
+        coverage: resolveExposureCoverage({
+          evidenced: true,
+          engineInputs: terminalExposureInputs.length,
+          skippedContracts: exposureResult.quality.skippedContracts,
+          chainTruncated: warnings.some((w) => w.includes('options chain error')),
+        }),
+        engineStrikes: terminalExposureInputs.map((input) => input.strike),
+        engineExpirations: [...new Set(terminalExposureInputs.map((input) => input.expiryUtcSec))],
+        byStrike: exposureResult.byStrike.map((s) => s.strike),
+        catalogExpirationsCount: mergedAvailableExpirations.length,
+        payloadContractCount: selectedForSerialization.length,
+        quoteTimes: exposureQuoteTimes,
+      });
 
       const serializedContracts: SerializedOptionContractRow[] = this.serializeExpiryContractRows({
         selected: selectedForSerialization.sort(
@@ -9813,7 +9870,7 @@ export class MarketRuntime {
       isIndex,
       asOfUtcSec: nowSec,
       envelope,
-      exposureSummary: exposureResult === undefined ? null : serializeExposure(exposureResult),
+      exposureSummary: exposureResult === undefined ? null : serializeExposure(exposureResult, exposureTrace),
       volSurfaceSummary,
       openingAuction: serializeOpeningAuction(openingAuction, atr14d),
       microstructure: serializeMicrostructure({

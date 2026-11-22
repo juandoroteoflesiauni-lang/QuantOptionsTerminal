@@ -844,6 +844,20 @@ export interface ArOptionsResponse {
     readonly expectedMoveExpirySec?: number | null;
     readonly expectedMoveExpiryCode?: string | null;
     readonly expectedMoveDays?: number | null;
+    /** Pieza 50.9: candidatos de cruce (REST selecciona el más cercano). */
+    readonly gammaFlipCandidates?: readonly number[];
+    /** Pieza 50.9: traza honesta AR (BMB acredita último trade, no puntas). */
+    readonly trace?: {
+      readonly evaluationSec: number;
+      readonly valuationSpot: number | null;
+      readonly valuationSpotSource: null;
+      readonly quoteMode: null;
+      readonly coverage: 'complete' | 'partial' | 'unknown';
+      readonly quoteTimes: null;
+      readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
+      readonly byStrikeCount: number;
+      readonly oiProxy: boolean | null;
+    };
     readonly quality?: {
       readonly usableContracts: number;
       readonly usableOpenInterest: number;
@@ -1155,6 +1169,35 @@ export interface UsSnapshotResponseDto {
     readonly putWallStrike: number | null;
     readonly gammaFlipSpot: number | null;
     readonly gammaFlipStatus: string;
+    /** Pieza 50.9: candidatos de cruce (REST selecciona el más cercano). */
+    readonly gammaFlipCandidates?: readonly number[];
+    /** Pieza 50.9: traza del insumo que produjo los niveles. */
+    readonly trace?: {
+      readonly evaluationSec: number;
+      readonly valuationSpot: number | null;
+      readonly valuationSpotSource: string | null;
+      readonly headerSpot: number | null;
+      readonly spotDivergenceBps: number | null;
+      readonly quoteMode: 'LIVE_NBBO' | 'EOD_CLOSE_REF' | null;
+      readonly coverage: 'complete' | 'partial' | 'unknown';
+      readonly engineExpirationsCount: number;
+      readonly engineStrikeRange: { readonly min: number | null; readonly max: number | null };
+      readonly engineStrikeCount: number;
+      readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
+      readonly byStrikeCount: number;
+      readonly catalogExpirationsCount: number | null;
+      readonly payloadContractCount: number;
+      readonly quoteTimes: {
+        readonly knownCount: number;
+        readonly unknownCount: number;
+        readonly minUpdatedAtSec: number | null;
+        readonly maxUpdatedAtSec: number | null;
+        readonly newestAgeSec: number | null;
+        readonly oldestAgeSec: number | null;
+        readonly overlayQuoteCount: number;
+        readonly eodReferenceCount: number;
+      } | null;
+    };
     readonly expectedMove?: {
       readonly expiryUtcSec: number | null;
       readonly formulaMove: number | null;

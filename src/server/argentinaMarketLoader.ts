@@ -933,6 +933,20 @@ export interface ArOptionsResponse {
     readonly putWallStrike: number | null;
     readonly gammaFlipSpot: number | null;
     readonly gammaFlipStatus: string;
+    /** Pieza 50.9: candidatos de cruce (REST selecciona el más cercano). */
+    readonly gammaFlipCandidates?: readonly number[];
+    /** Pieza 50.9: trazabilidad honesta (la hora BMB acredita último trade, no puntas). */
+    readonly trace?: {
+      readonly evaluationSec: number;
+      readonly valuationSpot: number | null;
+      readonly valuationSpotSource: null;
+      readonly quoteMode: null;
+      readonly coverage: 'unknown';
+      readonly quoteTimes: null;
+      readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
+      readonly byStrikeCount: number;
+      readonly oiProxy: boolean | null;
+    };
     readonly expectedMoveAbs: number | null;
     readonly expectedMovePct: number | null;
     readonly expectedMoveExpirySec?: number | null;
@@ -8281,6 +8295,9 @@ export class ArgentinaMarketRuntime {
             },
           );
 
+          const arExposureStrikes = expResult.byStrike
+            .map((s) => s.strike)
+            .filter((value) => Number.isFinite(value));
           exposureSummary = {
             netGex: sanitizeFinite(expResult.netGex),
             netDex: sanitizeFinite(expResult.netDex),
@@ -8292,6 +8309,21 @@ export class ArgentinaMarketRuntime {
             putWallStrike: sanitizeFinite(expResult.putWallStrike),
             gammaFlipSpot: sanitizeFinite(expResult.gammaFlipSpot),
             gammaFlipStatus: expResult.gammaFlipStatus,
+            gammaFlipCandidates: expResult.gammaFlipCandidates.filter((value) => Number.isFinite(value)),
+            trace: {
+              evaluationSec: nowSec,
+              valuationSpot: Number.isFinite(spot) && spot > 0 ? spot : null,
+              valuationSpotSource: null,
+              quoteMode: null,
+              coverage: 'unknown',
+              quoteTimes: null,
+              byStrikeRange: {
+                min: arExposureStrikes.length > 0 ? Math.min(...arExposureStrikes) : null,
+                max: arExposureStrikes.length > 0 ? Math.max(...arExposureStrikes) : null,
+              },
+              byStrikeCount: expResult.byStrike.length,
+              oiProxy: null,
+            },
             expectedMoveAbs: sanitizeFinite(expResult.expectedMove.formulaMove),
             expectedMovePct: sanitizeFinite(expResult.expectedMove.formulaMovePct),
             expectedMoveExpirySec: frontExp?.expiryUtcSec ?? null,

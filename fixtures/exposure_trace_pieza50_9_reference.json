@@ -1,0 +1,312 @@
+{
+ "meta": {
+  "generator": "tools/gen_exposure_trace_pieza50_9.py"
+ },
+ "quoteCases": [
+  {
+   "name": "mixtos",
+   "entries": [
+    {
+     "updatedAtSec": 1699999985
+    },
+    {
+     "updatedAtSec": 1699999700,
+     "fromOverlay": true
+    },
+    {
+     "updatedAtSec": null
+    },
+    {
+     "updatedAtSec": 1699999955
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 3,
+    "unknownCount": 1,
+    "minUpdatedAtSec": 1699999700,
+    "maxUpdatedAtSec": 1699999985,
+    "newestAgeSec": 15,
+    "oldestAgeSec": 300,
+    "overlayQuoteCount": 1,
+    "eodReferenceCount": 0
+   }
+  },
+  {
+   "name": "faltante",
+   "entries": [
+    {
+     "updatedAtSec": null
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 0,
+    "unknownCount": 1,
+    "minUpdatedAtSec": null,
+    "maxUpdatedAtSec": null,
+    "newestAgeSec": null,
+    "oldestAgeSec": null,
+    "overlayQuoteCount": 0,
+    "eodReferenceCount": 0
+   }
+  },
+  {
+   "name": "invalido",
+   "entries": [
+    {
+     "updatedAtSec": 0
+    },
+    {
+     "updatedAtSec": -5
+    },
+    {
+     "updatedAtSec": 12.5
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 0,
+    "unknownCount": 3,
+    "minUpdatedAtSec": null,
+    "maxUpdatedAtSec": null,
+    "newestAgeSec": null,
+    "oldestAgeSec": null,
+    "overlayQuoteCount": 0,
+    "eodReferenceCount": 0
+   }
+  },
+  {
+   "name": "futuro",
+   "entries": [
+    {
+     "updatedAtSec": 1700000060
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 0,
+    "unknownCount": 1,
+    "minUpdatedAtSec": null,
+    "maxUpdatedAtSec": null,
+    "newestAgeSec": null,
+    "oldestAgeSec": null,
+    "overlayQuoteCount": 0,
+    "eodReferenceCount": 0
+   }
+  },
+  {
+   "name": "borde_evaluacion",
+   "entries": [
+    {
+     "updatedAtSec": 1700000000
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 1,
+    "unknownCount": 0,
+    "minUpdatedAtSec": 1700000000,
+    "maxUpdatedAtSec": 1700000000,
+    "newestAgeSec": 0,
+    "oldestAgeSec": 0,
+    "overlayQuoteCount": 0,
+    "eodReferenceCount": 0
+   }
+  },
+  {
+   "name": "eod_referencia",
+   "entries": [
+    {
+     "updatedAtSec": 1699999980
+    },
+    {
+     "updatedAtSec": 1699999990,
+     "eodReference": true
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 1,
+    "unknownCount": 1,
+    "minUpdatedAtSec": 1699999980,
+    "maxUpdatedAtSec": 1699999980,
+    "newestAgeSec": 20,
+    "oldestAgeSec": 20,
+    "overlayQuoteCount": 0,
+    "eodReferenceCount": 1
+   }
+  },
+  {
+   "name": "overlay_parcial",
+   "entries": [
+    {
+     "updatedAtSec": 1699999995,
+     "fromOverlay": true
+    },
+    {
+     "updatedAtSec": 1699999991
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 2,
+    "unknownCount": 0,
+    "minUpdatedAtSec": 1699999991,
+    "maxUpdatedAtSec": 1699999995,
+    "newestAgeSec": 5,
+    "oldestAgeSec": 9,
+    "overlayQuoteCount": 1,
+    "eodReferenceCount": 0
+   }
+  },
+  {
+   "name": "todo_desconocido",
+   "entries": [
+    {
+     "updatedAtSec": null
+    },
+    {
+     "updatedAtSec": 1700000001
+    }
+   ],
+   "asOfUtcSec": 1700000000,
+   "expected": {
+    "knownCount": 0,
+    "unknownCount": 2,
+    "minUpdatedAtSec": null,
+    "maxUpdatedAtSec": null,
+    "newestAgeSec": null,
+    "oldestAgeSec": null,
+    "overlayQuoteCount": 0,
+    "eodReferenceCount": 0
+   }
+  }
+ ],
+ "coverageCases": [
+  {
+   "name": "completa",
+   "evidence": {
+    "evidenced": true,
+    "engineInputs": 40,
+    "skippedContracts": 0,
+    "chainTruncated": false
+   },
+   "expected": "complete"
+  },
+  {
+   "name": "parcial_descartes",
+   "evidence": {
+    "evidenced": true,
+    "engineInputs": 40,
+    "skippedContracts": 5,
+    "chainTruncated": false
+   },
+   "expected": "partial"
+  },
+  {
+   "name": "parcial_recorte",
+   "evidence": {
+    "evidenced": true,
+    "engineInputs": 40,
+    "skippedContracts": 0,
+    "chainTruncated": true
+   },
+   "expected": "partial"
+  },
+  {
+   "name": "sin_evidencia",
+   "evidence": {
+    "evidenced": false,
+    "engineInputs": 0,
+    "skippedContracts": 0,
+    "chainTruncated": false
+   },
+   "expected": "unknown"
+  },
+  {
+   "name": "sin_inputs",
+   "evidence": {
+    "evidenced": true,
+    "engineInputs": 0,
+    "skippedContracts": 0,
+    "chainTruncated": false
+   },
+   "expected": "unknown"
+  }
+ ],
+ "metadataCases": [
+  {
+   "name": "metadatos_mixtos",
+   "input": {
+    "evaluationSec": 1700000000,
+    "valuationSpot": 123.456,
+    "valuationSpotSource": "PARITY_IMPLIED",
+    "headerSpot": 123.9,
+    "spotDivergenceBps": 36.1,
+    "quoteMode": "EOD_CLOSE_REF",
+    "coverage": "partial",
+    "engineStrikes": [
+     90,
+     100,
+     110,
+     null
+    ],
+    "engineExpirations": [
+     1,
+     2,
+     2,
+     3
+    ],
+    "byStrike": [
+     95,
+     105
+    ],
+    "catalogExpirationsCount": 32,
+    "payloadContractCount": 120,
+    "quoteTimes": {
+     "knownCount": 3,
+     "unknownCount": 1,
+     "minUpdatedAtSec": 1699999700,
+     "maxUpdatedAtSec": 1699999985,
+     "newestAgeSec": 15,
+     "oldestAgeSec": 300,
+     "overlayQuoteCount": 1,
+     "eodReferenceCount": 0
+    }
+   },
+   "expected": {
+    "evaluationSec": 1700000000,
+    "valuationSpot": 123.456,
+    "valuationSpotSource": "PARITY_IMPLIED",
+    "headerSpot": 123.9,
+    "spotDivergenceBps": 36.1,
+    "quoteMode": "EOD_CLOSE_REF",
+    "coverage": "partial",
+    "engineExpirationsCount": 4,
+    "engineStrikeRange": {
+     "min": 90,
+     "max": 110
+    },
+    "engineStrikeCount": 4,
+    "byStrikeRange": {
+     "min": 95,
+     "max": 105
+    },
+    "byStrikeCount": 2,
+    "catalogExpirationsCount": 32,
+    "payloadContractCount": 120,
+    "quoteTimes": {
+     "knownCount": 3,
+     "unknownCount": 1,
+     "minUpdatedAtSec": 1699999700,
+     "maxUpdatedAtSec": 1699999985,
+     "newestAgeSec": 15,
+     "oldestAgeSec": 300,
+     "overlayQuoteCount": 1,
+     "eodReferenceCount": 0
+    }
+   }
+  }
+ ]
+}

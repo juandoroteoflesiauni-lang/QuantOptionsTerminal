@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Referencia independiente Pieza 50.9 Bloque A — trazabilidad de exposición.
+
+Implementacion explicita (sin copiar la logica TypeScript):
+
+  - Tiempo de cotizacion verificable: entero > 0 y <= evaluacion; faltante,
+    invalido o futuro es desconocido; una punta sustituida por referencia EOD
+    no aporta tiempo y queda fuera del rango aunque su precio coincida.
+  - Rango = min/max sobre tiempos verificables; edades = evaluacion - extremo.
+  - Cobertura: desconocida sin evidencia o sin inputs; parcial con contratos
+    descartados o cadena recortada comprobable; completa en el resto.
+  - Metadatos: rangos y recuentos de strikes del motor y de byStrike; nulos para
+    valores no finitos.
+
+Genera fixtures/exposure_trace_pieza50_9_reference.json.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+
+OUT = os.path.join(
+    os.path.dirname(__file__), "..", "fixtures", "exposure_trace_pieza50_9_reference.json"
+)
+
+
+def summarize(entries, as_of):
+    eval_sec = math.floor(as_of) if isinstance(as_of, (int, float)) and math.isfinite(as_of) else None
+    known = unknown = overlay = eod = 0
+    min_ts = max_ts = None
+    for entry in entries:
+        if entry.get("fromOverlay") is True:
+            overlay += 1
+        if entry.get("eodReference") is True:
+            eod += 1
+            unknown += 1
+            continue
+        ts = entry.get("updatedAtSec")
+        verifiable = (
+            isinstance(ts, int)
+            and not isinstance(ts, bool)
+            and ts > 0
+            and eval_sec is not None
+            and ts <= eval_sec
+        )
+        if not verifiable:
+            unknown += 1
+            continue
+        known += 1
+        min_ts = ts if min_ts is None or ts < min_ts else min_ts
+        max_ts = ts if max_ts is None or ts > max_ts else max_ts
+    return {
+        "knownCount": known,
+        "unknownCount": unknown,
+        "minUpdatedAtSec": min_ts,
+        "maxUpdatedAtSec": max_ts,
+        "newestAgeSec": None if max_ts is None or eval_sec is None else eval_sec - max_ts,
+        "oldestAgeSec": None if min_ts is None or eval_sec is None else eval_sec - min_ts,
+        "overlayQuoteCount": overlay,
+        "eodReferenceCount": eod,
+    }
+
+
+def coverage(evidence):
+    if not evidence.get("evidenced"):
+        return "unknown"
+    inputs = evidence.get("engineInputs")
+    skipped = evidence.get("skippedContracts")
+    if not isinstance(inputs, (int, float)) or not math.isfinite(inputs) or inputs <= 0:
+        return "unknown"
+    if not isinstance(skipped, (int, float)) or not math.isfinite(skipped):
+        return "unknown"
+    if skipped > 0 or evidence.get("chainTruncated") is True:
+        return "partial"
+    return "complete"
+
+
+def finite_or_null(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+def strike_range(values):
+    finite = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)]
+    return {"min": min(finite) if finite else None, "max": max(finite) if finite else None}
+
+
+def metadata(inp):
+    return {
+        "evaluationSec": math.floor(inp["evaluationSec"]) if math.isfinite(inp["evaluationSec"]) else None,
+        "valuationSpot": finite_or_null(inp.get("valuationSpot")),
+        "valuationSpotSource": inp.get("valuationSpotSource"),
+        "headerSpot": finite_or_null(inp.get("headerSpot")),
+        "spotDivergenceBps": finite_or_null(inp.get("spotDivergenceBps")),
+        "quoteMode": inp.get("quoteMode"),
+        "coverage": inp.get("coverage"),
+        "engineExpirationsCount": len(inp["engineExpirations"]),
+        "engineStrikeRange": strike_range(inp["engineStrikes"]),
+        "engineStrikeCount": len(inp["engineStrikes"]),
+        "byStrikeRange": strike_range(inp["byStrike"]),
+        "byStrikeCount": len(inp["byStrike"]),
+        "catalogExpirationsCount": inp.get("catalogExpirationsCount"),
+        "payloadContractCount": inp.get("payloadContractCount", 0),
+        "quoteTimes": inp.get("quoteTimes"),
+    }
+
+
+def build():
+    as_of = 1_700_000_000
+    quote_cases = []
+
+    def add_quotes(name, entries, expected=None):
+        quote_cases.append(
+            {
+                "name": name,
+                "entries": entries,
+                "asOfUtcSec": as_of,
+                "expected": expected if expected is not None else summarize(entries, as_of),
+            }
+        )
+
+    add_quotes(
+        "mixtos",
+        [
+            {"updatedAtSec": as_of - 15},
+            {"updatedAtSec": as_of - 300, "fromOverlay": True},
+            {"updatedAtSec": None},
+            {"updatedAtSec": as_of - 45},
+        ],
+    )
+    add_quotes("faltante", [{"updatedAtSec": None}])
+    add_quotes("invalido", [{"updatedAtSec": 0}, {"updatedAtSec": -5}, {"updatedAtSec": 12.5}])
+    add_quotes("futuro", [{"updatedAtSec": as_of + 60}])
+    add_quotes("borde_evaluacion", [{"updatedAtSec": as_of}])
+    add_quotes(
+        "eod_referencia",
+        [{"updatedAtSec": as_of - 20}, {"updatedAtSec": as_of - 10, "eodReference": True}],
+    )
+    add_quotes("overlay_parcial", [{"updatedAtSec": as_of - 5, "fromOverlay": True}, {"updatedAtSec": as_of - 9}])
+    add_quotes("todo_desconocido", [{"updatedAtSec": None}, {"updatedAtSec": as_of + 1}])
+
+    coverage_cases = [
+        {"name": "completa", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False}, "expected": coverage({"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False})},
+        {"name": "parcial_descartes", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 5, "chainTruncated": False}, "expected": "partial"},
+        {"name": "parcial_recorte", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": True}, "expected": "partial"},
+        {"name": "sin_evidencia", "evidence": {"evidenced": False, "engineInputs": 0, "skippedContracts": 0, "chainTruncated": False}, "expected": "unknown"},
+        {"name": "sin_inputs", "evidence": {"evidenced": True, "engineInputs": 0, "skippedContracts": 0, "chainTruncated": False}, "expected": "unknown"},
+    ]
+
+    metadata_input = {
+        "evaluationSec": as_of,
+        "valuationSpot": 123.456,
+        "valuationSpotSource": "PARITY_IMPLIED",
+        "headerSpot": 123.9,
+        "spotDivergenceBps": 36.1,
+        "quoteMode": "EOD_CLOSE_REF",
+        "coverage": "partial",
+        "engineStrikes": [90, 100, 110, None],
+        "engineExpirations": [1, 2, 2, 3],
+        "byStrike": [95, 105],
+        "catalogExpirationsCount": 32,
+        "payloadContractCount": 120,
+        "quoteTimes": summarize(quote_cases[0]["entries"], as_of),
+    }
+    metadata_case = {"name": "metadatos_mixtos", "input": metadata_input, "expected": metadata(metadata_input)}
+
+    return {
+        "meta": {"generator": "tools/gen_exposure_trace_pieza50_9.py"},
+        "quoteCases": quote_cases,
+        "coverageCases": coverage_cases,
+        "metadataCases": [metadata_case],
+    }
+
+
+def main():
+    fixture = build()
+    with open(OUT, "w", encoding="utf-8") as handle:
+        json.dump(fixture, handle, indent=1)
+        handle.write("\n")
+    print(
+        f"OK -> {os.path.relpath(OUT)} ({len(fixture['quoteCases'])} tiempos, "
+        f"{len(fixture['coverageCases'])} coberturas, {len(fixture['metadataCases'])} metadatos)"
+    )
+
+
+if __name__ == "__main__":
+    main()
