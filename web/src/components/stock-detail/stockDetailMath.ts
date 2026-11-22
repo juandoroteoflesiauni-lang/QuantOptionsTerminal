@@ -7,7 +7,9 @@
  * - Política Zero Silent Fallbacks: valores no calculables devuelven `NaN`.
  */
 
+import { calculateAnchoredVwap, type AvwapPoint } from '../../../../src/core/avwap.js';
 import { resolveEffectiveAvwapAnchorIndex } from '../../../../src/core/stockDetailChartNavigation.js';
+import type { Bar } from '../../../../src/core/types.js';
 
 export type AvwapAnchorMode =
   | 'MONTH_START'
@@ -384,6 +386,68 @@ export function computeAnchoredVwapWithAnchor(
     effectiveAnchorIndex >= 0 ? (bars[effectiveAnchorIndex]?.time ?? null) : null;
   const series = computeAnchoredVwapPure(bars, effectiveAnchorIndex);
   return { series, requestedAnchorIndex, effectiveAnchorIndex, effectiveAnchorTime };
+}
+
+/** Resultado del AVWAP de ancla única alimentado por `calculateAnchoredVwap` (Pieza 50.7). */
+export interface SingleAnchorAvwapOverlay {
+  /** Longitud = `bars.length`; `NaN` antes del primer punto efectivo. */
+  readonly vwap: readonly number[];
+  readonly upper1: readonly number[];
+  readonly lower1: readonly number[];
+  readonly upper2: readonly number[];
+  readonly lower2: readonly number[];
+  /** Primer punto efectivo (Welford acumuló volumen > 0 desde el ancla). */
+  readonly anchorTimeSec: number | null;
+  /** Índice del primer punto efectivo en `bars`, o `-1` si no hay ancla. */
+  readonly anchorIndex: number;
+}
+
+/**
+ * Pieza 50.7 (Bloque A): AVWAP de ancla única con HLC3 y bandas ±1σ/±2σ desde el
+ * MISMO estado Welford (`calculateAnchoredVwap`, SPEC punto 5), alineado por
+ * `time` a las barras renderizadas con política de última ocurrencia. `vw` no
+ * participa del precio; los estados `NaN`/huecos se preservan.
+ */
+export function computeSingleAnchorAvwapOverlayPure(
+  bars: readonly MinimalOhlcvBar[],
+  requestedAnchorIndex: number,
+): SingleAnchorAvwapOverlay {
+  const vwap = new Array<number>(bars.length).fill(Number.NaN);
+  const upper1 = new Array<number>(bars.length).fill(Number.NaN);
+  const lower1 = new Array<number>(bars.length).fill(Number.NaN);
+  const upper2 = new Array<number>(bars.length).fill(Number.NaN);
+  const lower2 = new Array<number>(bars.length).fill(Number.NaN);
+
+  const coreBars: Bar[] = bars.map((bar) => ({
+    time: bar.time,
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+  }));
+  const points = calculateAnchoredVwap(coreBars, requestedAnchorIndex);
+  const byTime = new Map<number, AvwapPoint>();
+  for (const point of points) {
+    byTime.set(point.time, point);
+  }
+  for (let index = 0; index < bars.length; index += 1) {
+    const bar = bars[index];
+    if (bar === undefined || !Number.isFinite(bar.time)) continue;
+    const point = byTime.get(bar.time);
+    if (point === undefined) continue;
+    vwap[index] = point.vwap;
+    upper1[index] = point.upper1;
+    lower1[index] = point.lower1;
+    upper2[index] = point.upper2;
+    lower2[index] = point.lower2;
+  }
+
+  const firstPoint = points[0];
+  const anchorTimeSec = firstPoint !== undefined ? firstPoint.time : null;
+  const anchorIndex =
+    anchorTimeSec !== null ? bars.findIndex((bar) => bar.time === anchorTimeSec) : -1;
+  return { vwap, upper1, lower1, upper2, lower2, anchorTimeSec, anchorIndex };
 }
 
 /**

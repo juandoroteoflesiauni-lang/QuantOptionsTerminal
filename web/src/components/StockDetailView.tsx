@@ -71,10 +71,6 @@ import {
   resampleDailyToWeekly,
 } from '../../../src/core/resampleWeekly';
 import {
-  computeAnchoredVwapSeries,
-} from '../../../src/core/ggal/technicalIndicators';
-import type { GgalChartBarPoint } from '../../../src/core/ggal/institutionalContracts';
-import {
   type AvwapAnchorMode,
   type MinimalOhlcvBar,
   alignSessionVwapOverlayByTime,
@@ -82,6 +78,7 @@ import {
   computeEmaSeriesPure,
   computeExpectedMoveBounds,
   computeSessionVwapPure,
+  computeSingleAnchorAvwapOverlayPure,
   computeWilderAtrPure,
   resolveAvwapAnchorIndex,
 } from './stock-detail/stockDetailMath';
@@ -253,37 +250,6 @@ function dedupAndSortBars(rawBars: readonly MinimalOhlcvBar[]): readonly Minimal
     byTime.set(bar.time, bar);
   }
   return [...byTime.values()].sort((a, b) => a.time - b.time);
-}
-
-function barsToGgalChartPoints(bars: readonly MinimalOhlcvBar[]): readonly GgalChartBarPoint[] {
-  return bars.map((bar) => ({
-    timeSec: bar.time,
-    open: bar.open,
-    high: bar.high,
-    low: bar.low,
-    close: bar.close,
-    volume: bar.volume,
-  }));
-}
-
-function alignVwapPointsToBars(
-  bars: readonly MinimalOhlcvBar[],
-  points: readonly { readonly timeSec: number; readonly avwap: number; readonly plus1Sigma: number; readonly minus1Sigma: number; readonly plus2Sigma: number; readonly minus2Sigma: number }[],
-): {
-  readonly avwap: readonly (number | null)[];
-  readonly upper1: readonly (number | null)[];
-  readonly lower1: readonly (number | null)[];
-  readonly upper2: readonly (number | null)[];
-  readonly lower2: readonly (number | null)[];
-} {
-  const byTime = new Map(points.map((point) => [point.timeSec, point] as const));
-  return {
-    avwap: bars.map((bar) => normalizeFiniteOrNull(byTime.get(bar.time)?.avwap)),
-    upper1: bars.map((bar) => normalizeFiniteOrNull(byTime.get(bar.time)?.plus1Sigma)),
-    lower1: bars.map((bar) => normalizeFiniteOrNull(byTime.get(bar.time)?.minus1Sigma)),
-    upper2: bars.map((bar) => normalizeFiniteOrNull(byTime.get(bar.time)?.plus2Sigma)),
-    lower2: bars.map((bar) => normalizeFiniteOrNull(byTime.get(bar.time)?.minus2Sigma)),
-  };
 }
 
 function resolvePanoramicAnchorTime(
@@ -1218,17 +1184,21 @@ export const StockDetailView: React.FC<{
       isArMarket ? 'AR' : 'US',
       effectiveClickedAnchorTimeSec,
     );
-    // Pieza 50.4: ancla efectiva (avanza a la primera vela con volumen y precio típico)
-    // para que fecha declarada, marcador y primer punto de la curva coincidan exactamente.
-    const avwapCalc = computeAnchoredVwapWithAnchor(
+    // Pieza 50.7 (Bloque A): ancla única desde `calculateAnchoredVwap` (HLC3 +
+    // Welford, SPEC punto 5): centro y bandas ±1σ/±2σ del mismo estado, alineados
+    // por `time`. El primer punto efectivo fija ancla, fecha y marcador; antes
+    // de él no hay línea (NaN → null).
+    const singleAvwap = computeSingleAnchorAvwapOverlayPure(
       bars,
       anchorTimeSec !== null ? findNearestBarIndex(bars, anchorTimeSec) : -1,
     );
-    const avwapSeries = avwapCalc.series.map(normalizeFiniteOrNull);
-    const avwapBands = alignVwapPointsToBars(
-      bars,
-      computeAnchoredVwapSeries(barsToGgalChartPoints(bars), avwapCalc.effectiveAnchorTime ?? Number.NaN),
-    );
+    const avwapSeries = singleAvwap.vwap.map(normalizeFiniteOrNull);
+    const avwapUpper1 = singleAvwap.upper1.map(normalizeFiniteOrNull);
+    const avwapLower1 = singleAvwap.lower1.map(normalizeFiniteOrNull);
+    const avwapUpper2 = singleAvwap.upper2.map(normalizeFiniteOrNull);
+    const avwapLower2 = singleAvwap.lower2.map(normalizeFiniteOrNull);
+    const avwapAnchorAvailable = singleAvwap.anchorIndex >= 0;
+    const avwapEffectiveAnchorTimeSec = singleAvwap.anchorTimeSec;
 
     const rv30Decimal = isArMarket
       ? stockDetail?.realizedVol20d ?? null
@@ -1273,13 +1243,13 @@ export const StockDetailView: React.FC<{
       sessionVwapAvailable,
       avwapMode: 'MONTH_START',
       avwapSeries,
-      avwapUpper1: avwapBands.upper1,
-      avwapLower1: avwapBands.lower1,
-      avwapUpper2: avwapBands.upper2,
-      avwapLower2: avwapBands.lower2,
-      avwapAnchorAvailable: avwapCalc.effectiveAnchorIndex >= 0,
+      avwapUpper1,
+      avwapLower1,
+      avwapUpper2,
+      avwapLower2,
+      avwapAnchorAvailable,
       avwapAnchorModeLabel: modeLabel,
-      avwapEffectiveAnchorTimeSec: avwapCalc.effectiveAnchorTime,
+      avwapEffectiveAnchorTimeSec,
       autoAvwapLines,
       isAutoAvwapMode,
       benchmarkBars1d: benchBars1d,
