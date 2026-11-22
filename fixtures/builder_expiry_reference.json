@@ -1,0 +1,166 @@
+[
+  {
+    "name": "put vendida",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Venta",
+        "type": "Put",
+        "strike": 100,
+        "qty": 1,
+        "premium": 5
+      }
+    ],
+    "maxGain": 498.79,
+    "maxLoss": 9501.21,
+    "unlimitedGain": false,
+    "unlimitedLoss": false
+  },
+  {
+    "name": "put comprada",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Compra",
+        "type": "Put",
+        "strike": 100,
+        "qty": 1,
+        "premium": 5
+      }
+    ],
+    "maxGain": 9498.79,
+    "maxLoss": 501.21,
+    "unlimitedGain": false,
+    "unlimitedLoss": false
+  },
+  {
+    "name": "mariposa con centro fuera de la grilla",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Compra",
+        "type": "Call",
+        "strike": 210,
+        "qty": 1,
+        "premium": 6
+      },
+      {
+        "side": "Venta",
+        "type": "Call",
+        "strike": 220.13,
+        "qty": 2,
+        "premium": 3
+      },
+      {
+        "side": "Compra",
+        "type": "Call",
+        "strike": 230.26,
+        "qty": 1,
+        "premium": 1
+      }
+    ],
+    "maxGain": 909.854,
+    "maxLoss": 103.146,
+    "unlimitedGain": false,
+    "unlimitedLoss": false
+  },
+  {
+    "name": "call lejana comprada",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Compra",
+        "type": "Call",
+        "strike": 400,
+        "qty": 1,
+        "premium": 2
+      }
+    ],
+    "maxGain": null,
+    "maxLoss": 200.484,
+    "unlimitedGain": true,
+    "unlimitedLoss": false
+  },
+  {
+    "name": "call lejana vendida",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Venta",
+        "type": "Call",
+        "strike": 400,
+        "qty": 1,
+        "premium": 2
+      }
+    ],
+    "maxGain": 199.516,
+    "maxLoss": null,
+    "unlimitedGain": false,
+    "unlimitedLoss": true
+  },
+  {
+    "name": "call cubierta",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Compra",
+        "type": "Subyacente",
+        "strike": 0,
+        "qty": 100,
+        "premium": 100
+      },
+      {
+        "side": "Venta",
+        "type": "Call",
+        "strike": 110,
+        "qty": 1,
+        "premium": 3
+      }
+    ],
+    "maxGain": 1289.594,
+    "maxLoss": 9710.406,
+    "unlimitedGain": false,
+    "unlimitedLoss": false
+  },
+  {
+    "name": "spread de puts",
+    "spot": 100,
+    "legs": [
+      {
+        "side": "Venta",
+        "type": "Put",
+        "strike": 100,
+        "qty": 2,
+        "premium": 5
+      },
+      {
+        "side": "Compra",
+        "type": "Put",
+        "strike": 90,
+        "qty": 2,
+        "premium": 2
+      }
+    ],
+    "maxGain": 596.612,
+    "maxLoss": 1403.388,
+    "unlimitedGain": false,
+    "unlimitedLoss": false
+  },
+  {
+    "name": "una acción corta",
+    "spot": 1,
+    "legs": [
+      {
+        "side": "Venta",
+        "type": "Subyacente",
+        "strike": 0,
+        "qty": 1,
+        "premium": 1
+      }
+    ],
+    "maxGain": 0.999032,
+    "maxLoss": null,
+    "unlimitedGain": false,
+    "unlimitedLoss": true
+  }
+]

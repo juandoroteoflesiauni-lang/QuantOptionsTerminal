@@ -938,20 +938,38 @@ export function computeBuilderAnalytics(
     };
   });
 
-  // Escaneo fino para maxGain, maxLoss, breakevens y PoP
+  // Al vencimiento la pendiente solo cambia en los strikes.
+  const expirySpots = new Set([0]);
+  let tailSlope = 0;
+  for (const leg of legs) {
+    if (leg.type !== 'Subyacente') expirySpots.add(leg.strike);
+    if (leg.type !== 'Put') {
+      const shares = leg.type === 'Call' ? leg.qty * LOT : leg.qty;
+      tailSlope += leg.side === 'Compra' ? shares : -shares;
+    }
+  }
+  let maxGain = -Infinity;
+  let maxLoss = Infinity;
+  for (const spot of expirySpots) {
+    const pnl = pnlFinishAt(spot);
+    maxGain = Math.max(maxGain, pnl);
+    maxLoss = Math.min(maxLoss, pnl);
+  }
+  const hasExpiryPayoff = legs.length > 0 &&
+    Number.isFinite(maxGain) && Number.isFinite(maxLoss) && Number.isFinite(tailSlope);
+  const unlimitedGain = hasExpiryPayoff && tailSlope > 0;
+  const unlimitedLoss = hasExpiryPayoff && tailSlope < 0;
+
+  // Escaneo para breakevens y PoP.
   const scanLo = safeSpot * 0.35;
   const scanHi = safeSpot * 1.85;
   const scanN = 300;
-  let maxGain = -Infinity;
-  let maxLoss = Infinity;
   const breakevens: number[] = [];
   let prevS = scanLo;
   let prevP = pnlFinishAt(scanLo);
   for (let i = 1; i <= scanN; i += 1) {
     const s = scanLo + ((scanHi - scanLo) * i) / scanN;
     const p = pnlFinishAt(s);
-    if (p > maxGain) maxGain = p;
-    if (p < maxLoss) maxLoss = p;
     if ((prevP <= 0 && p > 0) || (prevP >= 0 && p < 0)) {
       const frac = Math.abs(prevP) / Math.max(1e-9, Math.abs(p - prevP));
       breakevens.push(prevS + frac * (s - prevS));
@@ -959,10 +977,6 @@ export function computeBuilderAnalytics(
     prevS = s;
     prevP = p;
   }
-
-  const farUpSlope = pnlFinishAt(safeSpot * 3) - pnlFinishAt(safeSpot * 2.5);
-  const unlimitedGain = farUpSlope > 1;
-  const unlimitedLoss = farUpSlope < -1;
 
   const avgIvPct =
     legs.filter((l) => l.type !== 'Subyacente' && l.iv > 0).length > 0
@@ -1024,8 +1038,8 @@ export function computeBuilderAnalytics(
     oiByGridSpot,
     netCash,
     totalCommission,
-    maxGain: legs.length > 0 && Number.isFinite(maxGain) ? maxGain : Number.NaN,
-    maxLoss: legs.length > 0 && Number.isFinite(maxLoss) ? Math.abs(Math.min(0, maxLoss)) : Number.NaN,
+    maxGain: hasExpiryPayoff && !unlimitedGain ? maxGain : Number.NaN,
+    maxLoss: hasExpiryPayoff && !unlimitedLoss ? Math.max(0, -maxLoss) : Number.NaN,
     unlimitedGain,
     unlimitedLoss,
     breakevens,
