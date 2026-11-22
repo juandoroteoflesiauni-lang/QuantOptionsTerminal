@@ -71,10 +71,13 @@ def coverage(evidence):
         return "unknown"
     if not isinstance(skipped, (int, float)) or not math.isfinite(skipped):
         return "unknown"
+    if evidence.get("loadEvidenced") is not True:
+        return "unknown"
     if (
         skipped > 0
         or evidence.get("chainTruncated") is True
         or evidence.get("chainErrors") is True
+        or evidence.get("malformedResponse") is True
         or (evidence.get("missingDatesCount") or 0) > 0
     ):
         return "partial"
@@ -87,18 +90,26 @@ def chain_coverage(reports, requested_dates):
         if date != "" and date not in requested:
             requested.append(date)
     delivered = []
-    truncated = errors = False
+    truncated = errors = malformed = False
+    range_loads = 0
     for report in reports:
         if report.get("stoppedReason") == "maxPages":
             truncated = True
+        if report.get("stoppedReason") == "malformedResponse":
+            malformed = True
         if report.get("providerError") is True:
             errors = True
+        if report.get("kind") == "DTE_RANGE":
+            range_loads += 1
+            continue
+        date_key = report.get("dateKey")
         if (
-            report.get("contractCount", 0) > 0
-            and report.get("dateKey") in requested
-            and report.get("dateKey") not in delivered
+            date_key is not None
+            and report.get("contractCount", 0) > 0
+            and date_key in requested
+            and date_key not in delivered
         ):
-            delivered.append(report.get("dateKey"))
+            delivered.append(date_key)
     missing = [date for date in requested if date not in delivered]
     return {
         "requestedDates": requested,
@@ -106,6 +117,8 @@ def chain_coverage(reports, requested_dates):
         "missingDates": missing,
         "chainTruncated": truncated,
         "chainErrors": errors,
+        "malformedResponse": malformed,
+        "rangeLoadCount": range_loads,
     }
 
 
@@ -187,11 +200,13 @@ def build():
     add_quotes("todo_desconocido", [{"updatedAtSec": None}, {"updatedAtSec": as_of + 1}])
 
     coverage_cases = [
-        {"name": "completa", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False}, "expected": coverage({"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False})},
-        {"name": "parcial_descartes", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 5, "chainTruncated": False}, "expected": "partial"},
-        {"name": "parcial_recorte", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": True}, "expected": "partial"},
+        {"name": "completa", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False, "loadEvidenced": True}, "expected": coverage({"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False, "loadEvidenced": True})},
+        {"name": "parcial_descartes", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 5, "chainTruncated": False, "loadEvidenced": True}, "expected": "partial"},
+        {"name": "parcial_recorte", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": True, "loadEvidenced": True}, "expected": "partial"},
+        {"name": "parcial_malformed_sin_provider_error", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False, "chainErrors": False, "malformedResponse": True, "loadEvidenced": True}, "expected": "partial"},
+        {"name": "sin_evidencia_carga", "evidence": {"evidenced": True, "engineInputs": 40, "skippedContracts": 0, "chainTruncated": False, "loadEvidenced": False}, "expected": "unknown"},
         {"name": "sin_evidencia", "evidence": {"evidenced": False, "engineInputs": 0, "skippedContracts": 0, "chainTruncated": False}, "expected": "unknown"},
-        {"name": "sin_inputs", "evidence": {"evidenced": True, "engineInputs": 0, "skippedContracts": 0, "chainTruncated": False}, "expected": "unknown"},
+        {"name": "sin_inputs", "evidence": {"evidenced": True, "engineInputs": 0, "skippedContracts": 0, "chainTruncated": False, "loadEvidenced": True}, "expected": "unknown"},
     ]
 
     metadata_input = {
@@ -212,8 +227,9 @@ def build():
         "quoteTimes": summarize(quote_cases[0]["entries"], as_of),
         "chainCoverage": chain_coverage(
             [
-                {"dateKey": "2025-01-17", "stoppedReason": "maxPages", "providerError": False, "contractCount": 5},
-                {"dateKey": "2025-02-21", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 3},
+                {"dateKey": "2025-01-17", "kind": "DATE", "stoppedReason": "maxPages", "providerError": False, "contractCount": 5},
+                {"dateKey": "2025-02-21", "kind": "DATE", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 3},
+                {"dateKey": None, "kind": "DTE_RANGE", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 4},
             ],
             ["2025-01-17", "2025-02-21", "2025-06-20"],
         ),
@@ -224,22 +240,37 @@ def build():
     for name, reports, requested in [
         (
             "maxpages",
-            [{"dateKey": "2025-01-17", "stoppedReason": "maxPages", "providerError": False, "contractCount": 5}],
+            [{"dateKey": "2025-01-17", "kind": "DATE", "stoppedReason": "maxPages", "providerError": False, "contractCount": 5}],
             ["2025-01-17"],
         ),
         (
             "fecha_ausente",
-            [{"dateKey": "2025-01-17", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 5}],
+            [{"dateKey": "2025-01-17", "kind": "DATE", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 5}],
             ["2025-01-17", "2025-02-21"],
         ),
         (
             "error_proveedor",
-            [{"dateKey": "2025-01-17", "stoppedReason": "providerError", "providerError": True, "contractCount": 0}],
+            [{"dateKey": "2025-01-17", "kind": "DATE", "stoppedReason": "providerError", "providerError": True, "contractCount": 0}],
             ["2025-01-17"],
         ),
         (
-            "completa",
-            [{"dateKey": "2025-01-17", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 5}],
+            "malformed_sin_provider_error",
+            [{"dateKey": "2025-01-17", "kind": "DATE", "stoppedReason": "malformedResponse", "providerError": False, "contractCount": 0}],
+            ["2025-01-17"],
+        ),
+        (
+            "rango_dte_sin_fechas",
+            [{"dateKey": None, "kind": "DTE_RANGE", "stoppedReason": "maxPages", "providerError": False, "contractCount": 4}],
+            [],
+        ),
+        (
+            "completa_acotada",
+            [{"dateKey": "2025-01-17", "kind": "DATE", "stoppedReason": "noMorePages", "providerError": False, "contractCount": 5}],
+            ["2025-01-17"],
+        ),
+        (
+            "sin_informes",
+            [],
             ["2025-01-17"],
         ),
     ]:

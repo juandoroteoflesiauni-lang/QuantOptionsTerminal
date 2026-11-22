@@ -1351,20 +1351,41 @@ export const StockDetailView: React.FC<{
           ? 'origen sin hora de puntas acreditada'
           : quoteTimes.knownCount === 0
             ? `sin hora verificable (${String(quoteTimes.unknownCount)} sin hora)`
-            : `${String(quoteTimes.knownCount)} con hora · ${String(quoteTimes.unknownCount)} sin hora · edad ${String(Math.round(quoteTimes.newestAgeSec ?? 0))}–${String(Math.round(quoteTimes.oldestAgeSec ?? 0))}s`;
+            : `${String(quoteTimes.knownCount)} con hora · ${String(quoteTimes.unknownCount)} sin hora · edad al evaluar ${String(Math.round(quoteTimes.newestAgeSec ?? 0))}–${String(Math.round(quoteTimes.oldestAgeSec ?? 0))}s`;
     const mode = trace?.quoteMode ?? null;
     const modeLabel =
       mode === 'EOD_CLOSE_REF' ? ' · modo EOD' : mode === 'LIVE_NBBO' ? ' · modo NBBO' : '';
     const engineDates = trace?.engineExpirationDates ?? [];
     const strikeRange = trace?.engineStrikeRange;
+    const evaluationSec = trace?.evaluationSec ?? null;
+    const evaluationLabel =
+      evaluationSec !== null && Number.isFinite(evaluationSec)
+        ? formatAvwapAnchorLabel(
+            evaluationSec,
+            isArMarket ? AR_MARKET_TIMEZONE : US_MARKET_TIMEZONE,
+            true,
+          )
+        : null;
+    const evaluationIso =
+      evaluationSec !== null && Number.isFinite(evaluationSec)
+        ? new Date(evaluationSec * 1_000).toISOString()
+        : null;
+    const scopeRangeText =
+      strikeRange?.min !== null && strikeRange?.min !== undefined && strikeRange?.max !== null && strikeRange?.max !== undefined
+        ? `${strikeRange.min.toFixed(2)}–${strikeRange.max.toFixed(2)}`
+        : '—';
     const scopeLabel =
       trace === undefined || engineDates.length === 0
         ? '—'
-        : `${String(engineDates.length)} venc. motor · strikes ${
-            strikeRange?.min !== null && strikeRange?.min !== undefined && strikeRange?.max !== null && strikeRange?.max !== undefined
-              ? `${strikeRange.min.toFixed(2)}–${strikeRange.max.toFixed(2)}`
-              : '—'
+        : `${String(engineDates.length)} venc. motor · strikes ${scopeRangeText}${
+            evaluationLabel !== null ? ` · eval ${evaluationLabel}` : ''
           }${'payloadContractCount' in trace ? ` · payload ${String(trace.payloadContractCount)}` : ''}`;
+    const scopeTitle =
+      trace === undefined
+        ? undefined
+        : `Vencimientos evaluados: ${engineDates.join(', ') || '—'}${
+            evaluationIso !== null ? ` · evaluación ${evaluationIso}` : ''
+          }${'payloadExpirationDates' in trace ? ` · payload ${trace.payloadExpirationDates.join(', ') || '—'}` : ''}`;
     const status = exposure?.gammaFlipStatus ?? null;
     const candidates = exposure?.gammaFlipCandidates ?? [];
     const candidateText =
@@ -1380,11 +1401,11 @@ export const StockDetailView: React.FC<{
               ? 'cruce indeterminado'
               : '—';
     return [
-      { label: 'GEX spot', text: `${spot} · ${coverageLabel}` },
-      { label: 'Cotizaciones', text: `${quoteLabel}${modeLabel}` },
-      { label: 'Alcance', text: scopeLabel },
-      { label: 'Zero-γ', text: zeroGammaLabel },
-      { label: 'Supuesto', text: 'calls +1 · puts −1 (modelo teórico)' },
+      { label: 'GEX spot', text: `${spot} · ${coverageLabel}`, title: undefined },
+      { label: 'Cotizaciones', text: `${quoteLabel}${modeLabel}`, title: scopeTitle },
+      { label: 'Alcance', text: scopeLabel, title: scopeTitle },
+      { label: 'Zero-γ', text: zeroGammaLabel, title: undefined },
+      { label: 'Supuesto', text: 'calls +1 · puts −1 (modelo teórico)', title: undefined },
     ];
   }, [arOptions?.exposureSummary, isArMarket, usSnap?.exposureSummary]);
 
@@ -1888,7 +1909,7 @@ export const StockDetailView: React.FC<{
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#141419] pt-1.5 font-mono-num text-[10px] text-[#7C8398]">
           {exposureTraceInfo.map((item) => (
-            <span key={item.label}>
+            <span key={item.label} title={item.title}>
               <span className="text-[#565D75]">{item.label}:</span> {item.text}
             </span>
           ))}
@@ -2054,6 +2075,13 @@ export const StockDetailView: React.FC<{
           onGoToOptions={onGoToOptions}
         />
         <div className="rounded-[12px] border border-[#1C1C24] bg-[#111116] p-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1.5 font-mono-num text-[10px] text-[#7C8398]">
+            {exposureTraceInfo.map((item) => (
+              <span key={`gex-${item.label}`} title={item.title}>
+                <span className="text-[#565D75]">{item.label}:</span> {item.text}
+              </span>
+            ))}
+          </div>
           <GexStrikeProfileChart
             ticker={cleanTicker}
             spot={contextInfo.spot}

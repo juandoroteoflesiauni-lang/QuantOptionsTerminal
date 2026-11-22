@@ -19,11 +19,14 @@ import {
   resolveExposureCoverage,
   summarizeChainCoverage,
   summarizeQuoteTimes,
-  type ChainDateReport,
   type ExposureCoverageEvidence,
   type QuoteTimeEntry,
 } from '../src/core/exposureTrace.js';
 import { overlayTradierChainOnCanonicalContracts } from '../src/server/tradierAdapter.js';
+import {
+  MarketRuntime,
+  type TerminalSnapshotResponse,
+} from '../src/server/marketRuntime.js';
 import type {
   OptionDaySummary,
   OptionGreeks,
@@ -57,7 +60,13 @@ interface Fixture {
   readonly metadataCases: readonly MetadataCase[];
   readonly chainCoverageCases: readonly {
     readonly name: string;
-    readonly reports: readonly ChainDateReport[];
+    readonly reports: readonly {
+      readonly dateKey: string | null;
+      readonly kind: 'DATE' | 'DTE_RANGE';
+      readonly stoppedReason: string | null;
+      readonly providerError: boolean;
+      readonly contractCount: number;
+    }[];
     readonly requestedDates: readonly string[];
     readonly expected: ReturnType<typeof summarizeChainCoverage>;
   }[];
@@ -130,18 +139,47 @@ describe('Pieza 50.9 Bloque A — cobertura y metadatos', () => {
     });
   });
 
-  it('corte por maxPages, error o fecha sin resultado impiden la cobertura completa', () => {
+  it('corte por maxPages, malformed, error, fecha sin resultado o falta de informes impiden completar', () => {
     for (const item of fixture.chainCoverageCases) {
       expect(summarizeChainCoverage(item.reports, item.requestedDates), item.name).toEqual(
         item.expected,
       );
     }
+    const malformed = fixture.chainCoverageCases.find((c) => c.name === 'malformed_sin_provider_error');
+    expect(malformed?.expected.malformedResponse).toBe(true);
+    expect(malformed?.expected.chainErrors).toBe(false);
+    expect(
+      resolveExposureCoverage({
+        evidenced: true,
+        engineInputs: 10,
+        skippedContracts: 0,
+        chainTruncated: false,
+        malformedResponse: true,
+        loadEvidenced: true,
+      }),
+    ).toBe('partial');
+    const rangeLoad = fixture.chainCoverageCases.find((c) => c.name === 'rango_dte_sin_fechas');
+    expect(rangeLoad?.expected.rangeLoadCount).toBe(1);
+    expect(rangeLoad?.expected.requestedDates).toEqual([]);
+    expect(rangeLoad?.expected.missingDates).toEqual([]);
+    const noReports = fixture.chainCoverageCases.find((c) => c.name === 'sin_informes');
+    expect(noReports?.expected.missingDates).toEqual(['2025-01-17']);
+    expect(
+      resolveExposureCoverage({
+        evidenced: true,
+        engineInputs: 10,
+        skippedContracts: 0,
+        chainTruncated: false,
+        loadEvidenced: false,
+      }),
+    ).toBe('unknown');
     const partialEvidence: ExposureCoverageEvidence = {
       evidenced: true,
       engineInputs: 10,
       skippedContracts: 0,
       chainTruncated: false,
       chainErrors: true,
+      loadEvidenced: true,
     };
     expect(resolveExposureCoverage(partialEvidence)).toBe('partial');
     expect(
@@ -263,6 +301,9 @@ describe('Pieza 50.9 Bloque A — representación en Stock Detail', () => {
     expect(server).toContain('tradierOverlay.quoteSubstitutedTickers.has(c.ticker)');
     expect(server).toContain('chainRes.report.stoppedReason');
     expect(server).not.toContain("w.includes('options chain error')");
+    // Las ramas GGAL y de respaldo sin loadDates también capturan su informe.
+    expect(server.split("kind: 'DTE_RANGE'").length - 1).toBe(2);
+    expect(server).toContain('loadEvidenced: chainDateReports.length > 0');
     const tradier = readFileSync(
       new URL('../src/server/tradierAdapter.ts', import.meta.url),
       'utf-8',
@@ -275,6 +316,44 @@ describe('Pieza 50.9 Bloque A — representación en Stock Detail', () => {
     expect(ar).toContain('resolveArOiProvenance(arOiProvenance)');
     expect(ar).toContain("'OVERVIEW'");
     expect(ar).toContain("'HISTORICAL_CLOSE'");
+  });
+
+  it('computeSnapshot REST expone la cobertura de las ramas GGAL y de respaldo inyectadas', async () => {
+    const maxPages = await runSnapshotWithChainReport({
+      symbol: 'GGAL',
+      stoppedReason: 'maxPages',
+      providerError: null,
+    });
+    expect(maxPages.exposureSummary, 'GGAL maxPages').not.toBeNull();
+    expect(maxPages.exposureSummary?.trace?.coverage).toBe('partial');
+    expect(maxPages.exposureSummary?.trace?.chainCoverage?.rangeLoadCount).toBe(1);
+    expect(maxPages.exposureSummary?.trace?.chainCoverage?.requestedDates).toEqual([]);
+
+    const malformed = await runSnapshotWithChainReport({
+      symbol: 'GGAL',
+      stoppedReason: 'malformedResponse',
+      providerError: null,
+    });
+    expect(malformed.exposureSummary?.trace?.coverage).toBe('partial');
+    expect(malformed.exposureSummary?.trace?.chainCoverage?.malformedResponse).toBe(true);
+    expect(malformed.exposureSummary?.trace?.chainCoverage?.chainErrors).toBe(false);
+
+    const clean = await runSnapshotWithChainReport({
+      symbol: 'GGAL',
+      stoppedReason: 'noMorePages',
+      providerError: null,
+    });
+    expect(clean.exposureSummary?.trace?.coverage).toBe('complete');
+    expect(clean.exposureSummary?.trace?.chainCoverage?.rangeLoadCount).toBe(1);
+
+    // Rama de respaldo sin loadDates (símbolo no-GGAL con catálogo vacío).
+    const fallback = await runSnapshotWithChainReport({
+      symbol: 'AMD',
+      stoppedReason: 'maxPages',
+      providerError: null,
+    });
+    expect(fallback.exposureSummary?.trace?.coverage).toBe('partial');
+    expect(fallback.exposureSummary?.trace?.chainCoverage?.rangeLoadCount).toBe(1);
   });
 });
 
@@ -398,5 +477,187 @@ function makeTradierMatch(overrides: {
     asOfUtcSec: overrides.asOfUtcSec ?? 1_700_000_000,
     provider: 'TRADIER',
     sharesPerContract: 100,
+  };
+}
+
+async function runSnapshotWithChainReport(input: {
+  readonly symbol: string;
+  readonly stoppedReason: string;
+  readonly providerError: { readonly message: string } | null;
+}): Promise<TerminalSnapshotResponse> {
+  type Deps = NonNullable<ConstructorParameters<typeof MarketRuntime>[0]>;
+  const nowMs = Date.UTC(2026, 6, 15, 14, 30, 0); // miércoles 10:30 ET (RTH)
+  const nowSec = Math.floor(nowMs / 1_000);
+  const expirationDate = '2026-08-07';
+  const expirationTime = Date.UTC(2026, 7, 7, 20, 0, 0) / 1_000;
+  const chain: OptionSnapshotContract[] = [
+    makeChainContract(input.symbol, 'call', 62, expirationDate, expirationTime),
+    makeChainContract(input.symbol, 'put', 62, expirationDate, expirationTime),
+  ];
+  const dailyBars = Array.from({ length: 30 }, (_, index) => ({
+    time: nowSec - (29 - index) * 86_400,
+    open: 60 + index * 0.1,
+    high: 60.5 + index * 0.1,
+    low: 59.5 + index * 0.1,
+    close: 60 + index * 0.1,
+    volume: 10_000,
+  }));
+  const intradayBars = Array.from({ length: 40 }, (_, index) => ({
+    time: nowSec - (39 - index) * 300,
+    open: 62,
+    high: 62.2,
+    low: 61.8,
+    close: 62,
+    volume: 500,
+  }));
+  const treasuryObs = {
+    date: '2026-07-14',
+    dateTime: nowSec - 86_400,
+    yield1Month: 0.05,
+    yield3Month: 0.05,
+    yield6Month: 0.05,
+    yield1Year: 0.05,
+    yield2Year: 0.05,
+    yield3Year: 0.05,
+    yield5Year: 0.05,
+    yield7Year: 0.05,
+    yield10Year: 0.05,
+    yield20Year: 0.05,
+    yield30Year: 0.05,
+    finiteTenors: 11,
+  };
+  const runtime = new MarketRuntime({
+    apiKey: 'pieza509-chain-key',
+    enableWs: false,
+    nowMsFn: () => nowMs,
+    loadBarsFn: ((req: { readonly timeframe?: string }) =>
+      Promise.resolve({
+        bars: req.timeframe === '1D' ? dailyBars : intradayBars,
+        visibleStart: 0,
+        report: { provider: 'massive', fetchedPages: 1, barsCount: 30, providerError: null },
+      })) as unknown as NonNullable<Deps['loadBarsFn']>,
+    loadUnifiedSnapshotFn: (() =>
+      Promise.resolve({
+        stocks: [
+          {
+            ticker: input.symbol,
+            marketStatus: 'open',
+            session: {
+              open: 61,
+              high: 63,
+              low: 60,
+              close: 62,
+              previousClose: 61,
+              change: 1,
+              changePercent: 1.6,
+              volume: 1_000_000,
+              vwap: 62,
+            },
+            lastQuote: { bid: 61.9, ask: 62.1, midpoint: 62, bidSize: 100, askSize: 100 },
+            lastTrade: { price: 62, size: 100, timeSec: nowSec },
+          },
+        ],
+        indices: [],
+        options: [],
+        other: [],
+        tickerErrors: [],
+        report: { providerError: null },
+      })) as unknown as NonNullable<Deps['loadUnifiedSnapshotFn']>,
+    loadOptionChainFn: ((req: { readonly minDte?: number }) =>
+      Promise.resolve({
+        contracts: req.minDte !== undefined ? chain : [],
+        underlying: null,
+        report: {
+          provider: 'massive',
+          fetchedPages: 1,
+          providerError: input.providerError,
+          stoppedReason: input.stoppedReason,
+        },
+      })) as unknown as NonNullable<Deps['loadOptionChainFn']>,
+    loadOptionContractsFn: (() =>
+      Promise.resolve({
+        // GGAL conserva su índice legacy; el resto queda sin catálogo para forzar
+        // la rama de respaldo sin loadDates.
+        contracts: input.symbol === 'GGAL' ? chain : [],
+        report: { providerError: null, stoppedReason: 'noMorePages' },
+      })) as unknown as NonNullable<Deps['loadOptionContractsFn']>,
+    loadTreasuryYieldsFn: (() =>
+      Promise.resolve({
+        observations: [treasuryObs],
+        report: { providerError: null },
+      })) as unknown as NonNullable<Deps['loadTreasuryYieldsFn']>,
+    loadFundingConditionsFn: (() =>
+      Promise.resolve({ observations: [], report: { providerError: null } })) as unknown as NonNullable<
+      Deps['loadFundingConditionsFn']
+    >,
+    loadDividendsFn: (() =>
+      Promise.resolve({ dividends: [], report: { providerError: null } })) as unknown as NonNullable<
+      Deps['loadDividendsFn']
+    >,
+  });
+  return runtime.getSnapshot(input.symbol);
+}
+
+function makeChainContract(
+  symbol: string,
+  contractType: 'call' | 'put',
+  strike: number,
+  expirationDate: string,
+  expirationTime: number,
+): OptionSnapshotContract {
+  const mid = contractType === 'call' ? 1.8 : 1.7;
+  const day: OptionDaySummary = {
+    open: mid,
+    high: mid + 0.1,
+    low: mid - 0.1,
+    close: mid,
+    volume: 800,
+    vwap: mid,
+    previousClose: mid,
+    change: 0,
+    changePercent: 0,
+    updatedAt: 1_784_000_000,
+  };
+  const quote: OptionLastQuote = {
+    bid: mid - 0.05,
+    ask: mid + 0.05,
+    midpoint: mid,
+    bidSize: 50,
+    askSize: 60,
+    bidExchange: null,
+    askExchange: null,
+    updatedAt: 1_784_000_000,
+    timeframe: null,
+  };
+  const trade: OptionLastTrade = {
+    price: mid,
+    size: 5,
+    exchange: null,
+    conditions: [],
+    sipTimestamp: 1_784_000_000 * 1_000_000_000,
+    timeframe: null,
+  };
+  const greeks: OptionGreeks = { delta: 0.52, gamma: 0.02, theta: -0.03, vega: 0.09 };
+  return {
+    ticker: `O:${symbol}260807${contractType === 'call' ? 'C' : 'P'}00062000`,
+    contractType,
+    exerciseStyle: 'american',
+    expirationDate,
+    expirationTime,
+    strikePrice: strike,
+    sharesPerContract: 100,
+    breakEvenPrice: Number.NaN,
+    impliedVolatility: 0.35,
+    openInterest: 2_000,
+    greeks,
+    greeksMissing: false,
+    day,
+    lastQuote: quote,
+    lastTrade: trade,
+    underlyingAsset: null,
+    additionalUnderlyings: [],
+    isBinary: false,
+    isAdjusted: false,
+    isNonStandard: false,
   };
 }

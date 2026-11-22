@@ -8337,6 +8337,14 @@ export class MarketRuntime {
           });
           contracts = chainRes.contracts;
           chainUnderlying = chainRes.underlying;
+          // Pieza 50.9: evidencia de la carga por rango DTE (no equivale a fechas pedidas).
+          chainDateReports.push({
+            dateKey: null,
+            kind: 'DTE_RANGE',
+            stoppedReason: chainRes.report.stoppedReason,
+            providerError: chainRes.report.providerError !== null,
+            contractCount: chainRes.contracts.length,
+          });
           if (chainRes.report.providerError !== null) {
             warnings.push(
               `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
@@ -8444,6 +8452,7 @@ export class MarketRuntime {
               // Pieza 50.9: evidencia real de corte/error/faltante por fecha.
               chainDateReports.push({
                 dateKey: expirationDate,
+                kind: 'DATE',
                 stoppedReason: chainRes.report.stoppedReason,
                 providerError: chainRes.report.providerError !== null,
                 contractCount: filteredContracts.length,
@@ -8488,6 +8497,14 @@ export class MarketRuntime {
             });
             contracts = chainRes.contracts;
             chainUnderlying = chainRes.underlying;
+            // Pieza 50.9: evidencia de la carga por rango DTE sin lista de fechas.
+            chainDateReports.push({
+              dateKey: null,
+              kind: 'DTE_RANGE',
+              stoppedReason: chainRes.report.stoppedReason,
+              providerError: chainRes.report.providerError !== null,
+              contractCount: chainRes.contracts.length,
+            });
             if (chainRes.report.providerError !== null) {
               warnings.push(
                 `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
@@ -8801,7 +8818,9 @@ export class MarketRuntime {
           skippedContracts: exposureResult.quality.skippedContracts,
           chainTruncated: chainCoverage.chainTruncated,
           chainErrors: chainCoverage.chainErrors,
+          malformedResponse: chainCoverage.malformedResponse,
           missingDatesCount: chainCoverage.missingDates.length,
+          loadEvidenced: chainDateReports.length > 0,
         }),
         engineStrikes: terminalExposureInputs.map((input) => input.strike),
         engineExpirationDates: [

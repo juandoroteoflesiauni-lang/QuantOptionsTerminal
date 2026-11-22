@@ -190,7 +190,8 @@
     "evidenced": true,
     "engineInputs": 40,
     "skippedContracts": 0,
-    "chainTruncated": false
+    "chainTruncated": false,
+    "loadEvidenced": true
    },
    "expected": "complete"
   },
@@ -200,7 +201,8 @@
     "evidenced": true,
     "engineInputs": 40,
     "skippedContracts": 5,
-    "chainTruncated": false
+    "chainTruncated": false,
+    "loadEvidenced": true
    },
    "expected": "partial"
   },
@@ -210,9 +212,34 @@
     "evidenced": true,
     "engineInputs": 40,
     "skippedContracts": 0,
-    "chainTruncated": true
+    "chainTruncated": true,
+    "loadEvidenced": true
    },
    "expected": "partial"
+  },
+  {
+   "name": "parcial_malformed_sin_provider_error",
+   "evidence": {
+    "evidenced": true,
+    "engineInputs": 40,
+    "skippedContracts": 0,
+    "chainTruncated": false,
+    "chainErrors": false,
+    "malformedResponse": true,
+    "loadEvidenced": true
+   },
+   "expected": "partial"
+  },
+  {
+   "name": "sin_evidencia_carga",
+   "evidence": {
+    "evidenced": true,
+    "engineInputs": 40,
+    "skippedContracts": 0,
+    "chainTruncated": false,
+    "loadEvidenced": false
+   },
+   "expected": "unknown"
   },
   {
    "name": "sin_evidencia",
@@ -230,7 +257,8 @@
     "evidenced": true,
     "engineInputs": 0,
     "skippedContracts": 0,
-    "chainTruncated": false
+    "chainTruncated": false,
+    "loadEvidenced": true
    },
    "expected": "unknown"
   }
@@ -294,7 +322,9 @@
       "2025-06-20"
      ],
      "chainTruncated": true,
-     "chainErrors": false
+     "chainErrors": false,
+     "malformedResponse": false,
+     "rangeLoadCount": 1
     }
    },
    "expected": {
@@ -354,7 +384,9 @@
       "2025-06-20"
      ],
      "chainTruncated": true,
-     "chainErrors": false
+     "chainErrors": false,
+     "malformedResponse": false,
+     "rangeLoadCount": 1
     }
    }
   }
@@ -365,6 +397,7 @@
    "reports": [
     {
      "dateKey": "2025-01-17",
+     "kind": "DATE",
      "stoppedReason": "maxPages",
      "providerError": false,
      "contractCount": 5
@@ -382,7 +415,9 @@
     ],
     "missingDates": [],
     "chainTruncated": true,
-    "chainErrors": false
+    "chainErrors": false,
+    "malformedResponse": false,
+    "rangeLoadCount": 0
    }
   },
   {
@@ -390,6 +425,7 @@
    "reports": [
     {
      "dateKey": "2025-01-17",
+     "kind": "DATE",
      "stoppedReason": "noMorePages",
      "providerError": false,
      "contractCount": 5
@@ -411,7 +447,9 @@
      "2025-02-21"
     ],
     "chainTruncated": false,
-    "chainErrors": false
+    "chainErrors": false,
+    "malformedResponse": false,
+    "rangeLoadCount": 0
    }
   },
   {
@@ -419,6 +457,7 @@
    "reports": [
     {
      "dateKey": "2025-01-17",
+     "kind": "DATE",
      "stoppedReason": "providerError",
      "providerError": true,
      "contractCount": 0
@@ -436,14 +475,67 @@
      "2025-01-17"
     ],
     "chainTruncated": false,
-    "chainErrors": true
+    "chainErrors": true,
+    "malformedResponse": false,
+    "rangeLoadCount": 0
    }
   },
   {
-   "name": "completa",
+   "name": "malformed_sin_provider_error",
    "reports": [
     {
      "dateKey": "2025-01-17",
+     "kind": "DATE",
+     "stoppedReason": "malformedResponse",
+     "providerError": false,
+     "contractCount": 0
+    }
+   ],
+   "requestedDates": [
+    "2025-01-17"
+   ],
+   "expected": {
+    "requestedDates": [
+     "2025-01-17"
+    ],
+    "deliveredDates": [],
+    "missingDates": [
+     "2025-01-17"
+    ],
+    "chainTruncated": false,
+    "chainErrors": false,
+    "malformedResponse": true,
+    "rangeLoadCount": 0
+   }
+  },
+  {
+   "name": "rango_dte_sin_fechas",
+   "reports": [
+    {
+     "dateKey": null,
+     "kind": "DTE_RANGE",
+     "stoppedReason": "maxPages",
+     "providerError": false,
+     "contractCount": 4
+    }
+   ],
+   "requestedDates": [],
+   "expected": {
+    "requestedDates": [],
+    "deliveredDates": [],
+    "missingDates": [],
+    "chainTruncated": true,
+    "chainErrors": false,
+    "malformedResponse": false,
+    "rangeLoadCount": 1
+   }
+  },
+  {
+   "name": "completa_acotada",
+   "reports": [
+    {
+     "dateKey": "2025-01-17",
+     "kind": "DATE",
      "stoppedReason": "noMorePages",
      "providerError": false,
      "contractCount": 5
@@ -461,7 +553,29 @@
     ],
     "missingDates": [],
     "chainTruncated": false,
-    "chainErrors": false
+    "chainErrors": false,
+    "malformedResponse": false,
+    "rangeLoadCount": 0
+   }
+  },
+  {
+   "name": "sin_informes",
+   "reports": [],
+   "requestedDates": [
+    "2025-01-17"
+   ],
+   "expected": {
+    "requestedDates": [
+     "2025-01-17"
+    ],
+    "deliveredDates": [],
+    "missingDates": [
+     "2025-01-17"
+    ],
+    "chainTruncated": false,
+    "chainErrors": false,
+    "malformedResponse": false,
+    "rangeLoadCount": 0
    }
   }
  ],

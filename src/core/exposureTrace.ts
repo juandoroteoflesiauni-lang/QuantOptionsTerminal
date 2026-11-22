@@ -80,7 +80,10 @@ export function summarizeQuoteTimes(
 }
 
 export interface ChainDateReport {
-  readonly dateKey: string;
+  /** Fecha solicitada; `null` en una carga por rango DTE (sin lista de fechas). */
+  readonly dateKey: string | null;
+  /** Distingue carga puntual por fecha de carga por rango DTE consultado. */
+  readonly kind: 'DATE' | 'DTE_RANGE';
   readonly stoppedReason: string | null;
   readonly providerError: boolean;
   readonly contractCount: number;
@@ -93,6 +96,10 @@ export interface ChainCoverageSummary {
   /** Corte comprobable del paginador (`maxPages`). */
   readonly chainTruncated: boolean;
   readonly chainErrors: boolean;
+  /** Respuesta malformada comprobable, aunque `providerError` sea null. */
+  readonly malformedResponse: boolean;
+  /** Cargas por rango DTE capturadas (no equivalen a fechas solicitadas). */
+  readonly rangeLoadCount: number;
 }
 
 /** Evidencia de cobertura de la carga de cadena por fecha (informe real). */
@@ -104,11 +111,25 @@ export function summarizeChainCoverage(
   const delivered: string[] = [];
   let chainTruncated = false;
   let chainErrors = false;
+  let malformedResponse = false;
+  let rangeLoadCount = 0;
   for (const report of reports) {
     if (report.stoppedReason === 'maxPages') chainTruncated = true;
+    if (report.stoppedReason === 'malformedResponse') malformedResponse = true;
     if (report.providerError) chainErrors = true;
-    if (report.contractCount > 0 && requested.includes(report.dateKey) && !delivered.includes(report.dateKey)) {
-      delivered.push(report.dateKey);
+    if (report.kind === 'DTE_RANGE') {
+      // Una carga por rango DTE no acredita fechas pedidas: se conserva aparte.
+      rangeLoadCount += 1;
+      continue;
+    }
+    const dateKey = report.dateKey;
+    if (
+      dateKey !== null &&
+      report.contractCount > 0 &&
+      requested.includes(dateKey) &&
+      !delivered.includes(dateKey)
+    ) {
+      delivered.push(dateKey);
     }
   }
   const missingDates = requested.filter((date) => !delivered.includes(date));
@@ -118,6 +139,8 @@ export function summarizeChainCoverage(
     missingDates,
     chainTruncated,
     chainErrors,
+    malformedResponse,
+    rangeLoadCount,
   };
 }
 
@@ -131,6 +154,10 @@ export interface ExposureCoverageEvidence {
   readonly chainErrors?: boolean;
   /** Fechas solicitadas sin resultado entregado. */
   readonly missingDatesCount?: number;
+  /** `false` cuando no se capturó ningún informe de carga: cobertura desconocida. */
+  readonly loadEvidenced?: boolean;
+  /** Respuesta malformada comprobable (aunque no haya `providerError`). */
+  readonly malformedResponse?: boolean;
 }
 
 export type ExposureCoverageStatus = 'complete' | 'partial' | 'unknown';
@@ -145,14 +172,18 @@ export function resolveExposureCoverage(evidence: ExposureCoverageEvidence): Exp
   ) {
     return 'unknown';
   }
+  // Sin informe de carga no hay evidencia de cobertura, aunque haya inputs.
+  if (evidence.loadEvidenced !== true) return 'unknown';
   if (
     evidence.skippedContracts > 0 ||
     evidence.chainTruncated ||
     evidence.chainErrors === true ||
+    evidence.malformedResponse === true ||
     (evidence.missingDatesCount ?? 0) > 0
   ) {
     return 'partial';
   }
+  // Carga íntegra: acredita cobertura solo dentro del alcance consultado.
   return 'complete';
 }
 
