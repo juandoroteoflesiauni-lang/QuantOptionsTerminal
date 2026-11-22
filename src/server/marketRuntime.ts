@@ -77,7 +77,8 @@ import {
   greeksAmericanFiniteDiffOrAnalytical,
   solveImpliedVolAmerican,
 } from '../core/options/american.js';
-import { greeksBsm, timeToExpiryYears } from '../core/options/blackScholes.js';
+import type { OptionGreeksResult } from '../core/options/types.js';
+import { evaluateOptionAtExpiry, greeksBsm, MIN_CONTRACTUAL_EXPIRY_SEC, resolveContractualTimeToExpiryYears, timeToExpiryYears } from '../core/options/blackScholes.js';
 import {
   buildExposureTraceMetadata,
   resolveExposureCoverage,
@@ -177,7 +178,6 @@ import {
   IV_CAP_DECIMAL,
   MIN_EXPECTED_MOVE_T_YEARS,
   calendarDteEt,
-  computeFallbackGreeks,
   etExpiryUtcSecFromDate,
   expectedMoveSigma,
   extrinsicValue,
@@ -1266,6 +1266,28 @@ interface ParsedSymbol {
   readonly isIndex: boolean;
 }
 
+interface UsContractValuationParams {
+  readonly spot: number;
+  readonly nowSec: number;
+  readonly isIndex: boolean;
+  readonly expiryParityMap: ReadonlyMap<number, ExpiryParityEvaluation>;
+  readonly fallbackParity: ExpiryParityEvaluation;
+  readonly contractOwnIvMap: ReadonlyMap<string, number>;
+  readonly expiryAtmIvMap: ReadonlyMap<number, number>;
+  readonly otmIvByExpiryStrike: ReadonlyMap<string, number>;
+}
+
+interface UsContractValuation {
+  readonly parity: ExpiryParityEvaluation;
+  readonly timeToExpiry: number;
+  readonly mid: number;
+  readonly cleanOwnIv: number;
+  readonly cleanProvIv: number;
+  readonly ivSource: SerializedOptionContractRow['ivSource'];
+  readonly exposureIv: number;
+  readonly greeks: OptionGreeksResult | null;
+}
+
 interface ExpiryParityEvaluation {
   readonly expirySec: number;
   readonly expirationDate: string;
@@ -1724,7 +1746,7 @@ export function selectUsOptionExpirations(
 ): UsOptionExpirySelection {
   const byDate = new Map<string, OptionSnapshotContract[]>();
   for (const contract of contracts) {
-    if (!(contract.expirationTime > nowSec + 60)) continue;
+    if (!(contract.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(contract.expirationDate)) continue;
     const list = byDate.get(contract.expirationDate) ?? [];
     list.push(contract);
@@ -1842,7 +1864,7 @@ export function selectCuratedUsExpirations(
   const byDate = new Map<string, DateInfo>();
   for (const contract of contracts) {
     const date = contract.expirationDate;
-    if (!(contract.expirationTime > nowSec + 60)) continue;
+    if (!(contract.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
     const existing = byDate.get(date);
     if (existing !== undefined) {
@@ -1945,7 +1967,7 @@ export function selectCuratedUsExpirations(
 /**
  * Pieza 50.2: extrae el catálogo 100 % de vencimientos a partir de los contratos de
  * referencia (calls, banda ATM angosta) SIN truncar por cantidad ni horizonte:
- * deduplica fechas `YYYY-MM-DD` válidas con `expirationTime > nowSec + 60` (o DTE ET
+ * deduplica fechas `YYYY-MM-DD` válidas con `expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC` (o DTE ET
  * >= 0), calcula el DTE calendario ET exacto y contabiliza contratos dentro de ±15 %
  * del spot como liquidez estructural. Orden ascendente determinista por fecha.
  */
@@ -1962,7 +1984,7 @@ export function extractUsExpiryCatalog(
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
     const dteEt = calendarDteEt(date, nowSec * 1_000);
     const dteKnown = Number.isFinite(dteEt) && dteEt >= 0;
-    if (!(contract.expirationTime > nowSec + 60) && !dteKnown) continue;
+    if (!(contract.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC) && !dteKnown) continue;
     const existing = byDate.get(date);
     if (existing !== undefined) {
       if (isNearAtm(contract.strikePrice)) {
@@ -2738,7 +2760,7 @@ function evaluateParityForExpiry(
   if (first === undefined || !Number.isFinite(spot) || spot <= 0) {
     return null;
   }
-  const timeToExpiry = timeToExpiryYears(nowSec, expirySec);
+  const timeToExpiry = resolveContractualTimeToExpiryYears(nowSec, expirySec, MIN_CONTRACTUAL_EXPIRY_SEC);
   if (!Number.isFinite(timeToExpiry) || timeToExpiry <= 0) {
     return null;
   }
@@ -4745,7 +4767,7 @@ export class MarketRuntime {
     // Agrupar contratos por fecha de vencimiento (top 10 futuros)
     const contractsByDate = new Map<string, OptionSnapshotContract[]>();
     for (const c of contracts) {
-      if (c.expirationTime <= nowSec + 60) continue;
+      if (c.expirationTime <= nowSec + MIN_CONTRACTUAL_EXPIRY_SEC) continue;
       const list = contractsByDate.get(c.expirationDate) ?? [];
       list.push(c);
       contractsByDate.set(c.expirationDate, list);
@@ -7626,7 +7648,7 @@ export class MarketRuntime {
   ): Map<string, number> {
     const otmIvByExpiryStrike = new Map<string, number>();
     for (const c of contracts) {
-      if (!(c.expirationTime > nowSec + 60)) continue;
+      if (!(c.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)) continue;
       const isOtm =
         c.contractType === 'call'
           ? c.strikePrice >= spot - 1e-6
@@ -7654,198 +7676,13 @@ export class MarketRuntime {
    * paridad o IV ATM, y griegas BSM (índices) / Americanas (acciones y ADR). Cero
    * fallbacks silenciosos: lo no calculable viaja como `null` y la UI muestra `—`.
    */
-  private serializeExpiryContractRows(params: {
+  private serializeExpiryContractRows(params: UsContractValuationParams & {
     readonly selected: readonly OptionSnapshotContract[];
-    readonly spot: number;
-    readonly nowSec: number;
-    readonly isIndex: boolean;
-    readonly expiryParityMap: ReadonlyMap<number, ExpiryParityEvaluation>;
-    readonly fallbackParity: ExpiryParityEvaluation;
-    readonly contractOwnIvMap: ReadonlyMap<string, number>;
-    readonly expiryAtmIvMap: ReadonlyMap<number, number>;
-    readonly otmIvByExpiryStrike: ReadonlyMap<string, number>;
+    readonly valuationsByTicker?: ReadonlyMap<string, UsContractValuation>;
   }): SerializedOptionContractRow[] {
-    const {
-      selected,
-      spot,
-      nowSec,
-      isIndex,
-      expiryParityMap,
-      fallbackParity,
-      contractOwnIvMap,
-      expiryAtmIvMap,
-      otmIvByExpiryStrike,
-    } = params;
-    return selected.map((c) => {
-      const parity = expiryParityMap.get(c.expirationTime) ?? fallbackParity;
-      const tExp = timeToExpiryYears(nowSec, c.expirationTime);
-      const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
-      const provIv = c.impliedVolatility;
-      const mid = resolveQuoteMid(c);
-      const rawExt = extrinsicValue(c.contractType, spot, c.strikePrice, mid);
-      const effTExp = Number.isFinite(tExp) && tExp > 0 ? Math.max(tExp, 1e-4) : Number.NaN;
-      const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
-      const itmContract =
-        c.contractType === 'call' ? c.strikePrice < spot - 1e-6 : c.strikePrice > spot - 1e-6;
-      const moneynessAbs = Number.isFinite(spot) && spot > 0
-        ? Math.abs(c.strikePrice - spot) / spot
-        : Number.NaN;
-      const rawUsedIv =
-        Number.isFinite(ownIv) && ownIv > 0
-          ? ownIv
-          : Number.isFinite(provIv) && provIv > 0
-            ? provIv
-            : Number.NaN;
-      // Pieza 50.3: extrínseco agotado = `rawExt <= EXTRINSIC_EPS` (incluye mid por debajo
-      // del intrínseco por spread/tick de spot). Antes se anulaba a NaN y desactivaba el
-      // colapso DEEP_ITM_INTRINSIC, dejando pasar una IV ruidosa (Delta -0.66/-0.70).
-      const extrinsicExhausted = Number.isFinite(rawExt) && rawExt <= EXTRINSIC_EPS;
-      const isDeep4SigmaByAtm =
-        Number.isFinite(fallbackAtmIv) &&
-        fallbackAtmIv > 0 &&
-        Number.isFinite(effTExp) &&
-        Math.abs(spot - c.strikePrice) > 4 * spot * fallbackAtmIv * Math.sqrt(effTExp);
-      const blownProviderDeepItm =
-        itmContract &&
-        isDeep4SigmaByAtm &&
-        Number.isFinite(rawUsedIv) &&
-        rawUsedIv > Math.max(3.0, fallbackAtmIv * 4);
-      const unreliableIv =
-        extrinsicExhausted ||
-        blownProviderDeepItm ||
-        (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, rawExt));
-      const cleanOwnIv =
-        !unreliableIv && Number.isFinite(ownIv) && ownIv > 0 && ownIv < IV_CAP_DECIMAL
-          ? ownIv
-          : Number.NaN;
-      const cleanProvIv =
-        !unreliableIv && Number.isFinite(provIv) && provIv > 0 && provIv < IV_CAP_DECIMAL
-          ? provIv
-          : Number.NaN;
-      const usedIv = Number.isFinite(cleanOwnIv)
-        ? cleanOwnIv
-        : Number.isFinite(cleanProvIv)
-          ? cleanProvIv
-          : Number.NaN;
-
-      const effUsedIv = Number.isFinite(usedIv) && usedIv > 0 ? Math.max(usedIv, 1e-4) : Number.NaN;
-
-      // Pieza 50.1: rescate ITM vía contraparte OTM del mismo strike (paridad Put-Call)
-      // o IV ATM (±15 % moneyness) antes de colapsar a DEEP_ITM_INTRINSIC. Pieza 50.3:
-      // la cola deep 4σ por IV ATM NO se rescata (el colapso honesto es ±1 / 0).
-      const counterpartOtmIv =
-        otmIvByExpiryStrike.get(`${String(c.expirationTime)}|${String(c.strikePrice)}`) ??
-        Number.NaN;
-      const itmRescue: ParityItmRescueResult =
-        unreliableIv && itmContract && !isDeep4SigmaByAtm
-          ? resolveParityItmRescueIv({
-              counterpartOtmIv,
-              atmIv: fallbackAtmIv,
-              moneynessAbs,
-            })
-          : { iv: null, source: null };
-      const rescuedEngineIv =
-        itmRescue.iv !== null && Number.isFinite(effTExp)
-          ? Math.max(itmRescue.iv, 1e-4)
-          : Number.NaN;
-      const engineIv = Number.isFinite(rescuedEngineIv) ? rescuedEngineIv : effUsedIv;
-      const ivSource: SerializedOptionContractRow['ivSource'] = Number.isFinite(rescuedEngineIv)
-        ? itmRescue.source === 'ATM_RESCUE'
-          ? 'ATM_FALLBACK'
-          : 'PARITY_OTM'
-        : Number.isFinite(cleanOwnIv)
-          ? 'OWN'
-          : Number.isFinite(cleanProvIv)
-            ? 'PROVIDER'
-            : 'NONE';
-
-      const fallbackGreeks =
-        itmRescue.iv === null && unreliableIv && Number.isFinite(effTExp)
-          ? computeFallbackGreeks({
-              side: c.contractType,
-              spot,
-              strike: c.strikePrice,
-              timeToExpiry: effTExp,
-              rate: parity.rate,
-              dividendYield: parity.dividendYield,
-              contractIv: null,
-              // Pieza 50.3: el extrínseco real finito (no NaN) dispara DEEP_ITM_INTRINSIC.
-              extrinsic: rawExt,
-              ivAtm: fallbackAtmIv,
-            })
-          : null;
-      const rawGreeks =
-        fallbackGreeks !== null
-          ? fallbackGreeks.source === 'NO_DATA'
-            ? null
-            : {
-                delta: fallbackGreeks.delta,
-                gamma: fallbackGreeks.gamma,
-                thetaDaily: fallbackGreeks.theta / 365,
-                vegaPer1Pct: fallbackGreeks.vega / 100,
-                rho: 0,
-                vanna: 0,
-                charm: 0,
-              }
-          : Number.isFinite(engineIv) && Number.isFinite(effTExp)
-          ? isIndex
-            ? greeksBsm({
-                spot,
-                strike: c.strikePrice,
-                timeToExpiry: effTExp,
-                rate: parity.rate,
-                dividendYield: parity.dividendYield,
-                volatility: engineIv,
-                contractType: c.contractType,
-              })
-            : greeksAmericanFiniteDiffOrAnalytical({
-                spot,
-                strike: c.strikePrice,
-                timeToExpiry: effTExp,
-                rate: parity.rate,
-                dividendYield: parity.dividendYield,
-                volatility: engineIv,
-                contractType: c.contractType,
-              })
-          : null;
-      const needUsBsmFallback =
-        fallbackGreeks === null &&
-        rawGreeks !== null &&
-        (!Number.isFinite(rawGreeks.gamma) ||
-          !Number.isFinite(rawGreeks.delta) ||
-          !Number.isFinite(rawGreeks.thetaDaily) ||
-          !Number.isFinite(rawGreeks.vegaPer1Pct));
-      const bsmUsFallback =
-        needUsBsmFallback && Number.isFinite(engineIv) && Number.isFinite(effTExp)
-          ? greeksBsm({
-              spot,
-              strike: c.strikePrice,
-              timeToExpiry: effTExp,
-              rate: parity.rate,
-              dividendYield: parity.dividendYield,
-              volatility: engineIv,
-              contractType: c.contractType,
-            })
-          : null;
-      const greeks =
-        rawGreeks === null
-          ? null
-          : bsmUsFallback === null
-            ? rawGreeks
-            : {
-                delta: Number.isFinite(rawGreeks.delta) ? rawGreeks.delta : bsmUsFallback.delta,
-                gamma: Number.isFinite(rawGreeks.gamma) ? rawGreeks.gamma : bsmUsFallback.gamma,
-                thetaDaily: Number.isFinite(rawGreeks.thetaDaily)
-                  ? rawGreeks.thetaDaily
-                  : bsmUsFallback.thetaDaily,
-                vegaPer1Pct: Number.isFinite(rawGreeks.vegaPer1Pct)
-                  ? rawGreeks.vegaPer1Pct
-                  : bsmUsFallback.vegaPer1Pct,
-                rho: Number.isFinite(rawGreeks.rho) ? rawGreeks.rho : bsmUsFallback.rho,
-                vanna: Number.isFinite(rawGreeks.vanna) ? rawGreeks.vanna : bsmUsFallback.vanna,
-                charm: Number.isFinite(rawGreeks.charm) ? rawGreeks.charm : bsmUsFallback.charm,
-              };
-
+    return params.selected.map((c) => {
+      const valuation = params.valuationsByTicker?.get(c.ticker) ?? MarketRuntime.evaluateUsContractValuation(c, params);
+      const { mid, cleanOwnIv, cleanProvIv, ivSource, greeks } = valuation;
       const changePct = resolveContractChangePct(
         c.day.changePercent,
         c.day.previousClose,
@@ -7879,6 +7716,140 @@ export class MarketRuntime {
     });
   }
 
+  private static evaluateUsContractValuation(
+    c: OptionSnapshotContract,
+    params: UsContractValuationParams,
+  ): UsContractValuation {
+    const {
+      spot,
+      nowSec,
+      isIndex,
+      expiryParityMap,
+      fallbackParity,
+      contractOwnIvMap,
+      expiryAtmIvMap,
+      otmIvByExpiryStrike,
+    } = params;
+    const parity = expiryParityMap.get(c.expirationTime) ?? fallbackParity;
+    const timeToExpiry = resolveContractualTimeToExpiryYears(nowSec, c.expirationTime, MIN_CONTRACTUAL_EXPIRY_SEC);
+    const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
+    const provIv = c.impliedVolatility;
+    const mid = resolveQuoteMid(c);
+    const rawExt = extrinsicValue(c.contractType, spot, c.strikePrice, mid);
+    const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
+    const itmContract =
+      c.contractType === 'call' ? c.strikePrice < spot - 1e-6 : c.strikePrice > spot - 1e-6;
+    const moneynessAbs = Number.isFinite(spot) && spot > 0
+      ? Math.abs(c.strikePrice - spot) / spot
+      : Number.NaN;
+    const rawUsedIv =
+      Number.isFinite(ownIv) && ownIv > 0
+        ? ownIv
+        : Number.isFinite(provIv) && provIv > 0
+          ? provIv
+          : Number.NaN;
+    // Pieza 50.3: extrínseco agotado = `rawExt <= EXTRINSIC_EPS` (incluye mid por debajo
+    // del intrínseco por spread/tick de spot). Antes se anulaba a NaN y desactivaba el
+    // colapso DEEP_ITM_INTRINSIC, dejando pasar una IV ruidosa (Delta -0.66/-0.70).
+    const extrinsicExhausted = Number.isFinite(rawExt) && rawExt <= EXTRINSIC_EPS;
+    const isDeep4SigmaByAtm =
+      Number.isFinite(fallbackAtmIv) &&
+      fallbackAtmIv > 0 &&
+      Number.isFinite(timeToExpiry) &&
+      Math.abs(spot - c.strikePrice) > 4 * spot * fallbackAtmIv * Math.sqrt(timeToExpiry);
+    const blownProviderDeepItm =
+      itmContract &&
+      isDeep4SigmaByAtm &&
+      Number.isFinite(rawUsedIv) &&
+      rawUsedIv > Math.max(3.0, fallbackAtmIv * 4);
+    const unreliableIv =
+      extrinsicExhausted ||
+      blownProviderDeepItm ||
+      (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, rawExt));
+    const cleanOwnIv =
+      !unreliableIv && Number.isFinite(ownIv) && ownIv > 0 && ownIv < IV_CAP_DECIMAL
+        ? ownIv
+        : Number.NaN;
+    const cleanProvIv =
+      !unreliableIv && Number.isFinite(provIv) && provIv > 0 && provIv < IV_CAP_DECIMAL
+        ? provIv
+        : Number.NaN;
+    const usedIv = Number.isFinite(cleanOwnIv)
+      ? cleanOwnIv
+      : Number.isFinite(cleanProvIv)
+        ? cleanProvIv
+        : Number.NaN;
+
+    const effUsedIv = Number.isFinite(usedIv) && usedIv > 0 ? Math.max(usedIv, 1e-4) : Number.NaN;
+
+    // Pieza 50.1: rescate ITM vía contraparte OTM del mismo strike (paridad Put-Call)
+    // o IV ATM (±15 % moneyness) antes de colapsar a DEEP_ITM_INTRINSIC. Pieza 50.3:
+    // la cola deep 4σ por IV ATM NO se rescata (el colapso honesto es ±1 / 0).
+    const counterpartOtmIv =
+      otmIvByExpiryStrike.get(`${String(c.expirationTime)}|${String(c.strikePrice)}`) ??
+      Number.NaN;
+    const itmRescue: ParityItmRescueResult =
+      unreliableIv && itmContract && !isDeep4SigmaByAtm
+        ? resolveParityItmRescueIv({
+            counterpartOtmIv,
+            atmIv: fallbackAtmIv,
+            moneynessAbs,
+          })
+        : { iv: null, source: null };
+    const rescuedEngineIv =
+      itmRescue.iv !== null && Number.isFinite(timeToExpiry)
+        ? Math.max(itmRescue.iv, 1e-4)
+        : Number.NaN;
+    const engineIv = Number.isFinite(rescuedEngineIv) ? rescuedEngineIv : effUsedIv;
+    let ivSource: SerializedOptionContractRow['ivSource'] = Number.isFinite(rescuedEngineIv)
+      ? itmRescue.source === 'ATM_RESCUE' ? 'ATM_FALLBACK' : 'PARITY_OTM'
+      : Number.isFinite(cleanOwnIv) ? 'OWN' : Number.isFinite(cleanProvIv) ? 'PROVIDER' : 'NONE';
+
+    let greeks: OptionGreeksResult | null = null;
+    let exposureIv = Number.NaN;
+    if (Number.isFinite(timeToExpiry)) {
+      const intrinsic = evaluateOptionAtExpiry(spot, c.strikePrice, c.contractType);
+      const useFallback = itmRescue.iv === null && unreliableIv;
+      if (useFallback && extrinsicExhausted && intrinsic > 0) {
+        greeks = {
+          price: intrinsic, delta: c.contractType === 'call' ? 1 : -1, gamma: 0,
+          theta: 0, thetaDaily: 0, vega: 0, vegaPer1Pct: 0, rho: 0, vanna: 0, charm: 0,
+        };
+      } else {
+        const vol = useFallback ? fallbackAtmIv : engineIv;
+        if (Number.isFinite(vol) && vol > 0 && vol < IV_CAP_DECIMAL) {
+          const modelInput = {
+            spot, strike: c.strikePrice, timeToExpiry, rate: parity.rate,
+            dividendYield: parity.dividendYield, volatility: vol, contractType: c.contractType,
+          };
+          exposureIv = vol;
+          if (useFallback) ivSource = 'ATM_FALLBACK';
+          greeks = isIndex || useFallback
+            ? greeksBsm(modelInput)
+            : greeksAmericanFiniteDiffOrAnalytical(modelInput);
+          if (!isIndex && !useFallback &&
+              ![greeks.gamma, greeks.delta, greeks.thetaDaily, greeks.vegaPer1Pct].every(Number.isFinite)) {
+            const bsm = greeksBsm(modelInput);
+            const american = greeks;
+            greeks = {
+              price: Number.isFinite(american.price) ? american.price : bsm.price,
+              delta: Number.isFinite(american.delta) ? american.delta : bsm.delta,
+              gamma: Number.isFinite(american.gamma) ? american.gamma : bsm.gamma,
+              theta: Number.isFinite(american.theta) ? american.theta : bsm.theta,
+              thetaDaily: Number.isFinite(american.thetaDaily) ? american.thetaDaily : bsm.thetaDaily,
+              vega: Number.isFinite(american.vega) ? american.vega : bsm.vega,
+              vegaPer1Pct: Number.isFinite(american.vegaPer1Pct) ? american.vegaPer1Pct : bsm.vegaPer1Pct,
+              rho: Number.isFinite(american.rho) ? american.rho : bsm.rho,
+              vanna: Number.isFinite(american.vanna) ? american.vanna : bsm.vanna,
+              charm: Number.isFinite(american.charm) ? american.charm : bsm.charm,
+            };
+          }
+        }
+      }
+    }
+    return { parity, timeToExpiry, mid, cleanOwnIv, cleanProvIv, ivSource, exposureIv, greeks };
+  }
+
   /**
    * Pieza 50.2: insumos de exposición de dealers por contrato (IV propia resuelta con
    * conteo explícito de fallback al proveedor) reutilizados por snapshot y cadena
@@ -7886,31 +7857,25 @@ export class MarketRuntime {
    */
   private buildExposureInputs(params: {
     readonly contracts: readonly OptionSnapshotContract[];
-    readonly expiryParityMap: ReadonlyMap<number, ExpiryParityEvaluation>;
-    readonly fallbackParity: ExpiryParityEvaluation;
-    readonly contractOwnIvMap: ReadonlyMap<string, number>;
-    readonly spot: number;
+    readonly valuationParams: UsContractValuationParams;
   }): {
+    readonly valuationsByTicker: ReadonlyMap<string, UsContractValuation>;
     readonly inputs: ExposureContractInput[];
     readonly ownSolvedIvContracts: number;
     readonly providerFallbackIvContracts: number;
   } {
-    const { contracts, expiryParityMap, fallbackParity, contractOwnIvMap, spot } = params;
+    const { contracts, valuationParams } = params;
+    const valuationsByTicker = new Map<string, UsContractValuation>();
     const inputs: ExposureContractInput[] = [];
     let ownSolvedIvContracts = 0;
     let providerFallbackIvContracts = 0;
     for (const c of contracts) {
-      const expParity = expiryParityMap.get(c.expirationTime) ?? fallbackParity;
-      const ownIv = contractOwnIvMap.get(c.ticker);
-      let ivToUse = Number.NaN;
-      if (ownIv !== undefined && Number.isFinite(ownIv) && ownIv > 0) {
-        ivToUse = ownIv;
-        ownSolvedIvContracts += 1;
-      } else if (Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0) {
-        ivToUse = c.impliedVolatility;
-        providerFallbackIvContracts += 1;
-      }
-      const mid = resolveQuoteMid(c);
+      const valuation = MarketRuntime.evaluateUsContractValuation(c, valuationParams);
+      valuationsByTicker.set(c.ticker, valuation);
+      if (!Number.isFinite(valuation.timeToExpiry)) continue;
+      const { parity: expParity, exposureIv, greeks, ivSource, mid } = valuation;
+      if (ivSource === 'OWN') ownSolvedIvContracts += 1;
+      if (ivSource === 'PROVIDER') providerFallbackIvContracts += 1;
       const { bid, ask } = c.lastQuote;
       inputs.push({
         contractType: c.contractType,
@@ -7919,17 +7884,17 @@ export class MarketRuntime {
         openInterest: c.openInterest,
         ...(Number.isFinite(c.day.volume) && c.day.volume >= 0 ? { volume: c.day.volume } : {}),
         sharesPerContract: c.sharesPerContract,
-        spot,
+        spot: valuationParams.spot,
         forward: expParity.forward,
         rate: expParity.rate,
         dividendYield: expParity.dividendYield,
-        ...(Number.isFinite(ivToUse) && ivToUse > 0 ? { iv: ivToUse } : {}),
+        ...(Number.isFinite(exposureIv) && greeks !== null ? { iv: exposureIv, precomputedGreeks: greeks } : {}),
         ...(Number.isFinite(mid) && mid > 0 ? { midPrice: mid } : {}),
         ...(Number.isFinite(bid) && bid >= 0 ? { bid } : {}),
         ...(Number.isFinite(ask) && ask > 0 ? { ask } : {}),
       });
     }
-    return { inputs, ownSolvedIvContracts, providerFallbackIvContracts };
+    return { inputs, valuationsByTicker, ownSolvedIvContracts, providerFallbackIvContracts };
   }
 
   /**
@@ -8580,7 +8545,7 @@ export class MarketRuntime {
     // Put-Call mediana ATM, se valúa la cadena contra el cierre RTH o el spot implícito
     // por paridad; el precio extendido queda solo como dato informativo de encabezado.
     const frontAlignmentSec = contracts
-      .filter((c) => c.expirationTime > nowSec + 60)
+      .filter((c) => c.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)
       .reduce<number | null>(
         (min, c) => (min === null || c.expirationTime < min ? c.expirationTime : min),
         null,
@@ -8627,7 +8592,7 @@ export class MarketRuntime {
 
     const byExpiry = new Map<number, OptionSnapshotContract[]>();
     for (const c of contracts) {
-      if (c.expirationTime <= nowSec + 60) {
+      if (c.expirationTime <= nowSec + MIN_CONTRACTUAL_EXPIRY_SEC) {
         continue;
       }
       const list = byExpiry.get(c.expirationTime);
@@ -8713,13 +8678,13 @@ export class MarketRuntime {
         iv30d = frontSlicePkg.metrics.ivAtm;
       }
 
-      const exposureBuild = this.buildExposureInputs({
-        contracts,
-        expiryParityMap,
-        fallbackParity: activeFrontParity,
-        contractOwnIvMap,
-        spot,
-      });
+      const expiryAtmIvMap = this.buildExpiryAtmIvMap(validSlices, contracts, contractOwnIvMap, spot);
+      const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(contracts, contractOwnIvMap, spot, nowSec);
+      const valuationParams = {
+        spot, nowSec, isIndex, expiryParityMap, fallbackParity: activeFrontParity,
+        contractOwnIvMap, expiryAtmIvMap, otmIvByExpiryStrike,
+      };
+      const exposureBuild = this.buildExposureInputs({ contracts, valuationParams });
       terminalExposureInputs = exposureBuild.inputs;
       ownSolvedIvContracts += exposureBuild.ownSolvedIvContracts;
       providerFallbackIvContracts += exposureBuild.providerFallbackIvContracts;
@@ -8740,7 +8705,8 @@ export class MarketRuntime {
           gammaFlipHalfWidth: 0.2,
           gammaFlipGridSteps: 80,
           gammaFlipMultiRootPolicy: 'nearestSpot',
-          ivResolutionMode: 'ivThenMidPrice',
+          ivResolutionMode: 'ivOnly',
+          minTimeToExpirySec: MIN_CONTRACTUAL_EXPIRY_SEC,
           expectedMoveExpirySec: activeFrontParity.expirySec,
           ...(frontSlicePkg !== undefined
             ? { expectedMoveIvAtmOverride: frontSlicePkg.metrics.ivAtm }
@@ -8748,17 +8714,10 @@ export class MarketRuntime {
         },
       );
 
-      const expiryAtmIvMap = this.buildExpiryAtmIvMap(validSlices, contracts, contractOwnIvMap, spot);
-      const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(
-        contracts,
-        contractOwnIvMap,
-        spot,
-        nowSec,
-      );
 
       // Pieza 50.1: cuota balanceada por vencimiento (front 120 + 48 por curado adicional)
       // para que todos los vencimientos lleguen al selector y a la estructura temporal.
-      const serializableContracts = [...contracts].filter((c) => c.expirationTime > nowSec + 60);
+      const serializableContracts = [...contracts].filter((c) => c.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC);
       const serializableByDate = new Map<string, OptionSnapshotContract[]>();
       for (const c of serializableContracts) {
         const list = serializableByDate.get(c.expirationDate) ?? [];
@@ -8841,14 +8800,8 @@ export class MarketRuntime {
             a.expirationTime - b.expirationTime ||
             Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot),
         ),
-        spot,
-        nowSec,
-        isIndex,
-        expiryParityMap,
-        fallbackParity: activeFrontParity,
-        contractOwnIvMap,
-        expiryAtmIvMap,
-        otmIvByExpiryStrike,
+        ...valuationParams,
+        valuationsByTicker: exposureBuild.valuationsByTicker,
       });
 
       const butterflyReports = surface?.butterflyReports ?? [];
@@ -10287,15 +10240,17 @@ export class MarketRuntime {
       }
     }
 
+    const expiryAtmIvMap = this.buildExpiryAtmIvMap(validSlices, contracts, contractOwnIvMap, spot);
+    const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(contracts, contractOwnIvMap, spot, nowSec);
+    const valuationParams = expiryParity === null ? null : {
+      spot, nowSec, isIndex, expiryParityMap, fallbackParity: expiryParity,
+      contractOwnIvMap, expiryAtmIvMap, otmIvByExpiryStrike,
+    };
+    let valuationsByTicker: ReadonlyMap<string, UsContractValuation> = new Map();
     let exposureResult: DealerExposureResult | undefined;
-    if (expiryParity !== null && Number.isFinite(spot) && spot > 0) {
-      const exposureBuild = this.buildExposureInputs({
-        contracts,
-        expiryParityMap,
-        fallbackParity: expiryParity,
-        contractOwnIvMap,
-        spot,
-      });
+    if (expiryParity !== null && valuationParams !== null && Number.isFinite(spot) && spot > 0) {
+      const exposureBuild = this.buildExposureInputs({ contracts, valuationParams });
+      valuationsByTicker = exposureBuild.valuationsByTicker;
       ownSolvedIvContracts = exposureBuild.ownSolvedIvContracts;
       providerFallbackIvContracts = exposureBuild.providerFallbackIvContracts;
       exposureResult = computeDealerExposure(
@@ -10314,7 +10269,8 @@ export class MarketRuntime {
           gammaFlipHalfWidth: 0.2,
           gammaFlipGridSteps: 80,
           gammaFlipMultiRootPolicy: 'nearestSpot',
-          ivResolutionMode: 'ivThenMidPrice',
+          ivResolutionMode: 'ivOnly',
+          minTimeToExpirySec: MIN_CONTRACTUAL_EXPIRY_SEC,
           expectedMoveExpirySec: expirySec,
           ...(slicePkg !== null ? { expectedMoveIvAtmOverride: slicePkg.metrics.ivAtm } : {}),
         },
@@ -10322,32 +10278,19 @@ export class MarketRuntime {
     }
 
     // Contratos serializados: vecinos al spot hasta la cuota primaria (sin fabricar).
-    const expiryAtmIvMap = this.buildExpiryAtmIvMap(validSlices, contracts, contractOwnIvMap, spot);
-    const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(
-      contracts,
-      contractOwnIvMap,
-      spot,
-      nowSec,
-    );
     const selectedForSerialization =
       expiryParity !== null
         ? [...contracts]
-            .filter((c) => c.expirationTime > nowSec + 60)
+            .filter((c) => c.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)
             .sort((a, b) => Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot))
             .slice(0, MAX_SERIALIZED_PRIMARY_CONTRACTS)
         : [];
     const serializedContracts =
-      expiryParity !== null
+      valuationParams !== null
         ? this.serializeExpiryContractRows({
             selected: selectedForSerialization,
-            spot,
-            nowSec,
-            isIndex,
-            expiryParityMap,
-            fallbackParity: expiryParity,
-            contractOwnIvMap,
-            expiryAtmIvMap,
-            otmIvByExpiryStrike,
+            ...valuationParams,
+            valuationsByTicker,
           })
         : [];
 
@@ -10517,7 +10460,7 @@ export class MarketRuntime {
 
     // Streaming WS: hasta 40 contratos ATM más líquidos de esta fecha priorizados.
     const activeExpiryWsTickers = [...contracts]
-      .filter((c) => c.expirationTime > nowSec + 60)
+      .filter((c) => c.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)
       .sort((a, b) => {
         const dist = Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot);
         if (dist !== 0) return dist;

@@ -8,7 +8,7 @@ import {
   greeksBlack76,
   greeksBsm,
   SECONDS_PER_YEAR_365,
-  timeToExpiryYears,
+  resolveContractualTimeToExpiryYears,
 } from './blackScholes.js';
 import { impliedDividendYieldFromForward } from './forward.js';
 import { solveImpliedVolBlack76, solveImpliedVolBsm } from './impliedVol.js';
@@ -61,6 +61,7 @@ export interface DealerSignConfig {
 }
 
 export interface ExposureContractInput {
+  readonly precomputedGreeks?: OptionGreeksResult;
   readonly contractType: OptionContractType;
   readonly strike: number;
   readonly expiryUtcSec: number;
@@ -96,6 +97,7 @@ export interface ExposureOptions {
   readonly gammaFlipMaxIterations?: number;
   readonly gammaFlipMultiRootPolicy?: GammaFlipMultiRootPolicy;
   readonly secondsPerYear?: number;
+  readonly minTimeToExpirySec?: number;
   readonly ivResolutionMode?: IvResolutionMode;
   readonly ivSolverOptions?: ImpliedVolSolverOptions;
   readonly expectedMoveExpirySec?: number;
@@ -256,6 +258,7 @@ interface NormalizedExposureOptions {
   readonly gammaFlipMaxIterations: number;
   readonly gammaFlipMultiRootPolicy: GammaFlipMultiRootPolicy;
   readonly secondsPerYear: number;
+  readonly minTimeToExpirySec: number;
   readonly daysPerYear: number;
   readonly ivResolutionMode: IvResolutionMode;
   readonly ivSolverOptions: ImpliedVolSolverOptions | undefined;
@@ -398,6 +401,8 @@ function normalizeOptions(options?: ExposureOptions): NormalizedExposureOptions 
     return null;
   }
 
+  const minTimeToExpirySec = options?.minTimeToExpirySec ?? 0;
+  if (!isNonNegativeFinite(minTimeToExpirySec)) return null;
   const secondsPerYear = options?.secondsPerYear ?? SECONDS_PER_YEAR_365;
   if (!isPositiveFinite(secondsPerYear)) {
     return null;
@@ -456,6 +461,7 @@ function normalizeOptions(options?: ExposureOptions): NormalizedExposureOptions 
     gammaFlipMaxIterations,
     gammaFlipMultiRootPolicy,
     secondsPerYear,
+    minTimeToExpirySec,
     daysPerYear,
     ivResolutionMode,
     ivSolverOptions: options?.ivSolverOptions,
@@ -695,9 +701,10 @@ function evaluateContractForChain(
     return { active: true, prepared: null, skipReason: 'invalidExpiry' };
   }
 
-  const timeToExpiry = timeToExpiryYears(
+  const timeToExpiry = resolveContractualTimeToExpiryYears(
     market.nowUtcSec,
     contract.expiryUtcSec,
+    opts.minTimeToExpirySec,
     opts.secondsPerYear,
   );
   if (!isPositiveFinite(timeToExpiry)) {
@@ -769,7 +776,7 @@ function evaluateContractForChain(
     };
   }
 
-  const greeks = evaluateModelGreeks(
+  const greeks = contract.precomputedGreeks ?? evaluateModelGreeks(
     opts.model,
     underlier,
     contract.strike,

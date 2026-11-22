@@ -10,6 +10,7 @@ import type {
 
 /** Number of seconds in an exact 365-day calendar year (ACT/365). */
 export const SECONDS_PER_YEAR_365 = 365 * 86_400;
+export const MIN_CONTRACTUAL_EXPIRY_SEC = 60;
 
 type OptionModelKind = 'bsm' | 'black76';
 
@@ -352,6 +353,18 @@ export function timeToExpiryYears(
     return 0;
   }
   return (expiryUtcSec - nowUtcSec) / secondsPerYear;
+}
+
+/** Tiempo ACT/365 sin piso para valoración continua. El límite es exclusivo. */
+export function resolveContractualTimeToExpiryYears(
+  nowUtcSec: number,
+  expiryUtcSec: number,
+  minRemainingSec = 0,
+  secondsPerYear = SECONDS_PER_YEAR_365,
+): number {
+  if (!Number.isFinite(minRemainingSec) || minRemainingSec < 0 ||
+      expiryUtcSec - nowUtcSec <= minRemainingSec) return Number.NaN;
+  return timeToExpiryYears(nowUtcSec, expiryUtcSec, secondsPerYear);
 }
 
 /**
