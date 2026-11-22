@@ -1,11 +1,13 @@
 /**
  * Pieza 50.9 (Bloque B) — publicación coherente de snapshots US por símbolo y alcance.
  *
- * Funciones puras: orden de publicación por revisión de solicitud y hora de
- * evaluación, y fusión de la base nueva con los vencimientos puntuales ya
- * cargados. El agregado (exposición, traza, spot de valuación, asOfUtcSec)
- * proviene SIEMPRE de la base; un alcance puntual solo aporta sus hechos de
- * vencimiento (`availableExpirations[*].loaded` y `expiriesByCode[D]`).
+ * Funciones puras: orden de publicación por alcance (revisión y hora de
+ * evaluación no retroceden), decisión por vencimiento entre un hecho puntual y
+ * los datos vigentes (gana el estrictamente más nuevo; sin datos cargados el
+ * hecho se conserva/anexa) y fusión de la base con los hechos puntuales de la
+ * fecha solicitada. El agregado (exposición, traza, spot de valuación,
+ * asOfUtcSec) proviene SIEMPRE de la base; un alcance puntual solo aporta sus
+ * hechos de vencimiento.
  */
 
 import type { UsSnapshotResponseDto } from './liveTypes.js';
@@ -20,10 +22,9 @@ export interface PublicationStamp {
 export type PublicationDecision = 'accept' | 'stale';
 
 /**
- * Decide si una respuesta debe publicarse. Una revisión mayor siempre manda;
- * con la misma revisión solo se acepta evaluación no anterior. Sin sello previo
- * (primer resultado del alcance) se acepta. Revisión o evaluación no válidas se
- * descartan.
+ * Decide si una respuesta debe publicarse. La frescura de datos determina el
+ * orden; la revisión local de solicitud desempata evaluaciones iguales. Sin
+ * sello previo se acepta; sellos inválidos se descartan.
  */
 export function resolvePublicationDecision(
   current: PublicationStamp | null,
@@ -33,33 +34,67 @@ export function resolvePublicationDecision(
   if (!Number.isFinite(incoming.evaluationSec)) return 'stale';
   if (current === null) return 'accept';
   if (!Number.isFinite(current.evaluationSec)) return 'accept';
-  if (incoming.revision > current.revision) return 'accept';
-  if (incoming.revision === current.revision && incoming.evaluationSec >= current.evaluationSec) {
-    return 'accept';
+  if (incoming.evaluationSec < current.evaluationSec) return 'stale';
+  const currentRevisionValid = Number.isInteger(current.revision) && current.revision > 0;
+  if (currentRevisionValid && incoming.revision !== current.revision) {
+    return incoming.revision > current.revision ? 'accept' : 'stale';
   }
-  return 'stale';
+  return 'accept';
 }
 
-function loadedDates(snap: UsSnapshotResponseDto): ReadonlySet<string> {
+export interface ExpiryFactState {
+  /** La respuesta trae datos cargados para su fecha. */
+  readonly loaded: boolean;
+  /** Hora de evaluación de esos datos (asOfUtcSec); null si no es finita. */
+  readonly evaluationSec: number | null;
+}
+
+export type ExpiryFactDecision = 'publish' | 'keep';
+
+/**
+ * Decide si el hecho puntual de UN vencimiento reemplaza los datos vigentes de
+ * la MISMA fecha. Sin datos cargados vigentes (la base la omite o trae stub) el
+ * hecho se publica/anexa; con datos cargados solo gana el hecho estrictamente
+ * más nuevo, de modo que ni la base ni un hecho más reciente retrocedan. Un
+ * hecho sin datos o con evaluación inválida nunca publica.
+ */
+export function resolveExpiryFactDecision(
+  fact: ExpiryFactState,
+  current: ExpiryFactState | null,
+): ExpiryFactDecision {
+  if (!fact.loaded) return 'keep';
+  if (fact.evaluationSec === null || !Number.isFinite(fact.evaluationSec)) return 'keep';
+  if (current === null) return 'publish';
+  if (!current.loaded) return 'publish';
+  if (current.evaluationSec === null || !Number.isFinite(current.evaluationSec)) return 'publish';
+  return fact.evaluationSec > current.evaluationSec ? 'publish' : 'keep';
+}
+
+function loadedDates(snap: UsSnapshotResponseDto, onlyDate?: string): ReadonlySet<string> {
   const dates = new Set<string>();
   for (const candidate of snap.optionsChain?.availableExpirations ?? []) {
-    if (candidate.loaded === true) dates.add(candidate.expirationDate);
+    if (candidate.loaded !== true) continue;
+    if (onlyDate !== undefined && candidate.expirationDate !== onlyDate) continue;
+    dates.add(candidate.expirationDate);
   }
   return dates;
 }
 
 /**
- * Publica `base` conservando los vencimientos puntuales ya cargados de
- * `scope` (el snapshot vigente o la respuesta puntual): las entradas con
- * `loaded: true` y sus `expiriesByCode` vigentes. En conflicto por vencimiento
- * gana la versión vigente de `scope`; el resto del agregado es de `base`.
+ * Publica `base` conservando los hechos puntuales cargados de `scope`
+ * (el snapshot vigente o la respuesta puntual): las entradas con `loaded: true`
+ * y sus `expiriesByCode` vigentes. Con `onlyDate`, una publicación puntual solo
+ * puede aportar SU fecha solicitada (la respuesta puede traer anclas o fechas
+ * curadas cargadas de más). En conflicto por vencimiento gana la versión
+ * vigente de `scope`; el resto del agregado es de `base`.
  */
 export function mergeLoadedExpiriesIntoBaseSnapshot(
   base: UsSnapshotResponseDto,
   scope: UsSnapshotResponseDto | null | undefined,
+  onlyDate?: string,
 ): UsSnapshotResponseDto {
   if (scope === null || scope === undefined) return base;
-  const loaded = loadedDates(scope);
+  const loaded = loadedDates(scope, onlyDate);
   if (loaded.size === 0) return base;
 
   const scopeEntries = new Map(

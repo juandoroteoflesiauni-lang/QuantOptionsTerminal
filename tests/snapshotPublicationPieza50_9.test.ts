@@ -34,11 +34,20 @@ interface MergeCase {
   readonly name: string;
   readonly base: Record<string, unknown>;
   readonly scope: Record<string, unknown> | null;
+  readonly onlyDate?: string | null;
   readonly expected: Record<string, unknown>;
+}
+
+interface ExpiryFactCase {
+  readonly name: string;
+  readonly fact: Record<string, unknown>;
+  readonly current: Record<string, unknown> | null;
+  readonly expected: string;
 }
 
 interface Fixture {
   readonly decisionCases: readonly DecisionCase[];
+  readonly pointFactCases: readonly ExpiryFactCase[];
   readonly mergeCases: readonly MergeCase[];
 }
 
@@ -55,7 +64,12 @@ const fixture = JSON.parse(
  */
 interface PublicationApi {
   resolvePublicationDecision(current: unknown, incoming: unknown): string;
-  mergeLoadedExpiriesIntoBaseSnapshot(base: unknown, scope: unknown): Record<string, unknown>;
+  resolveExpiryFactDecision(fact: unknown, current: unknown): string;
+  mergeLoadedExpiriesIntoBaseSnapshot(
+    base: unknown,
+    scope: unknown,
+    onlyDate?: string,
+  ): Record<string, unknown>;
 }
 
 const publicationSpecifier = '../web/src/data/snapshotPublication';
@@ -79,11 +93,11 @@ describe('Pieza 50.9 Bloque B — referencia independiente: decisión de publica
     }
   });
 
-  it('una revisión mayor manda aunque su evaluación sea anterior y la misma revisión exige evaluación no anterior', () => {
+  it('la evaluación más nueva manda y la revisión desempata cuando coincide', () => {
     const greater = fixture.decisionCases.find(
       (c) => c.name === 'revision_mayor_manda_aunque_evaluacion_anterior',
     );
-    expect(greater?.expected).toBe('accept');
+    expect(greater?.expected).toBe('stale');
     const lower = fixture.decisionCases.find((c) => c.name === 'misma_revision_hora_menor');
     expect(lower?.expected).toBe('stale');
     const invalid = fixture.decisionCases.find((c) => c.name === 'revision_no_entera');
@@ -98,7 +112,11 @@ describe('Pieza 50.9 Bloque B — referencia independiente: decisión de publica
 describe('Pieza 50.9 Bloque B — referencia independiente: fusión base + vencimiento', () => {
   it('coincide con la referencia en loaded, unión ordenada y expiriesByCode', () => {
     for (const item of fixture.mergeCases) {
-      const actual = publication.mergeLoadedExpiriesIntoBaseSnapshot(item.base, item.scope);
+      const actual = publication.mergeLoadedExpiriesIntoBaseSnapshot(
+        item.base,
+        item.scope,
+        item.onlyDate ?? undefined,
+      );
       expect(actual, item.name).toEqual(item.expected);
     }
   });
@@ -134,6 +152,47 @@ describe('Pieza 50.9 Bloque B — referencia independiente: fusión base + venci
       String(e['expirationDate']),
     );
     expect(dates).toEqual(['2026-08-21', '2026-10-16', '2026-12-18']);
+  });
+
+  it('restringe la publicación puntual a su fecha solicitada sin pisar anclas', () => {
+    const item = fixture.mergeCases.find((c) => c.name === 'restringe_publicacion_puntual_a_su_fecha');
+    expect(item).toBeDefined();
+    if (item === undefined) return;
+    const actual = publication.mergeLoadedExpiriesIntoBaseSnapshot(
+      item.base,
+      item.scope,
+      item.onlyDate ?? undefined,
+    );
+    const entries = recArray(rec(actual['optionsChain'])['availableExpirations']);
+    const requested = entries.find((e) => e['expirationDate'] === '2026-08-21');
+    expect(requested?.['loaded']).toBe(true);
+    expect(requested?.['validCallCount']).toBe(120);
+    const anchor = entries.find((e) => e['expirationDate'] === '2026-10-16');
+    expect(anchor?.['loaded']).toBe(false);
+    expect(anchor?.['validCallCount']).toBe(0);
+    const codes = rec(rec(rec(actual['terminalEngines'])['volAnalyticsSuite'])['expiriesByCode']);
+    expect(rec(codes['2026-08-21'])['ivAtm']).toBe(0.55);
+    expect(rec(codes['2026-10-16'])['ivAtm']).toBe(0.41);
+  });
+});
+
+describe('Pieza 50.9 Bloque B — referencia independiente: hecho puntual por vencimiento', () => {
+  it('coincide con la referencia: sin datos cargados publica y con datos cargados gana el estrictamente más nuevo', () => {
+    for (const item of fixture.pointFactCases) {
+      const actual = publication.resolveExpiryFactDecision(item.fact, item.current);
+      expect(actual, item.name).toBe(item.expected);
+    }
+  });
+
+  it('un hecho sin datos o con evaluación inválida nunca publica; la omisión de la base siempre publica', () => {
+    const notLoaded = fixture.pointFactCases.find((c) => c.name === 'hecho_sin_cargar_no_publica');
+    expect(notLoaded?.expected).toBe('keep');
+    const invalid = fixture.pointFactCases.find(
+      (c) => c.name === 'hecho_con_evaluacion_invalida_no_publica',
+    );
+    expect(invalid?.expected).toBe('keep');
+    const omission = fixture.pointFactCases.find((c) => c.name === 'base_omite_la_fecha_publica');
+    expect(omission?.expected).toBe('publish');
   });
 });
 
@@ -636,6 +695,243 @@ describe('Pieza 50.9 Bloque B — publicación del puente por símbolo y alcance
     fetchAt(2).resolveJson(basePayload('ZQPJ'));
     await on;
     expect(fetchAt(2).url).toBe('/api/snapshot?symbol=ZQPJ&timeframe=5m');
+  });
+
+  it('una solicitud nueva con evaluación anterior no retrocede la valuación ni la traza', async () => {
+    const fresh = bridge.requestUsSnapshot('ZQRA');
+    await waitForFetchCount(1);
+    fetchAt(0).resolveJson(basePayload('ZQRA'));
+    await fresh;
+
+    const retrograde = bridge.requestUsSnapshot('ZQRA', { force: true });
+    await waitForFetchCount(2);
+    fetchAt(1).resolveJson(
+      usSnapshotPayload({
+        symbol: 'ZQRA',
+        asOfUtcSec: 900,
+        spot: 42,
+        aggregateGex: 777,
+        traceSpot: 41.5,
+        entries: [expiryFact(POINT_DATE, { loaded: true, calls: 7, puts: 9 })],
+        codes: { [POINT_DATE]: analyticsCode(POINT_DATE, 0.11) },
+      }),
+    );
+    await retrograde;
+
+    const snap = bridge.getLiveMarketStateSnapshot().usSnapshotsBySymbol['ZQRA'];
+    expect(snap?.['asOfUtcSec']).toBe(1_000);
+    expect(rec(snap?.['exposureSummary'])['netGex']).toBe(111.5);
+    expect(rec(rec(snap?.['exposureSummary'])['trace'])['valuationSpot']).toBe(61.2);
+    const entry = recArray(rec(snap?.['optionsChain'])['availableExpirations']).find(
+      (e) => e['expirationDate'] === POINT_DATE,
+    );
+    expect(entry?.['validCallCount']).toBe(0);
+  });
+
+  it('en alcance puntual, una evaluación anterior no reemplaza la cadena vigente retenida', async () => {
+    const DATE = '2026-10-16';
+    const first = bridge.requestUsOptionExpiry('US:ZQRB', DATE);
+    await waitForFetchCount(1);
+    fetchAt(0).resolveJson(
+      expiryChainPayload({
+        symbol: 'ZQRB',
+        expirationDate: DATE,
+        asOfUtcSec: 2_000,
+        calls: 120,
+        puts: 140,
+        ivAtm: 0.55,
+      }),
+    );
+    await first;
+
+    const retrograde = bridge.requestUsOptionExpiry('US:ZQRB', DATE, true);
+    await waitForFetchCount(2);
+    fetchAt(1).resolveJson(
+      expiryChainPayload({
+        symbol: 'ZQRB',
+        expirationDate: DATE,
+        asOfUtcSec: 1_900,
+        calls: 7,
+        puts: 9,
+        ivAtm: 0.11,
+      }),
+    );
+    await retrograde;
+
+    const base = bridge.requestUsSnapshot('ZQRB');
+    await waitForFetchCount(3);
+    fetchAt(2).resolveJson(
+      usSnapshotPayload({
+        symbol: 'ZQRB',
+        asOfUtcSec: 1_000,
+        spot: 61.5,
+        aggregateGex: 111.5,
+        traceSpot: 61.2,
+        entries: [expiryFact(DATE, { loaded: false, calls: 0, puts: 0 })],
+        codes: {},
+      }),
+    );
+    await base;
+
+    const snap = bridge.getLiveMarketStateSnapshot().usSnapshotsBySymbol['ZQRB'];
+    const entry = recArray(rec(snap?.['optionsChain'])['availableExpirations']).find(
+      (e) => e['expirationDate'] === DATE,
+    );
+    expect(entry?.['loaded']).toBe(true);
+    expect(entry?.['validCallCount']).toBe(120);
+    expect(entry?.['validPutCount']).toBe(140);
+    const codes = rec(rec(rec(snap?.['terminalEngines'])['volAnalyticsSuite'])['expiriesByCode']);
+    expect(rec(codes[DATE])['ivAtm']).toBe(0.55);
+  });
+
+  it('publica solo la fecha solicitada aunque la respuesta puntual traiga otras cargadas', async () => {
+    const A = POINT_DATE;
+    const B = '2026-09-18';
+    const pointWithAnchors = (symbol: string): Record<string, unknown> =>
+      usSnapshotPayload({
+        symbol,
+        asOfUtcSec: 2_000,
+        spot: 99.9,
+        aggregateGex: 999,
+        traceSpot: 99.1,
+        entries: [
+          expiryFact(A, { loaded: true, calls: 111, puts: 112 }),
+          expiryFact(B, { loaded: true, calls: 222, puts: 223 }),
+        ],
+        codes: { [A]: analyticsCode(A, 0.11), [B]: analyticsCode(B, 0.22) },
+      });
+
+    // Con base previa: el puntual de A no debe tocar B.
+    const base1 = bridge.requestUsSnapshot('ZQRC');
+    await waitForFetchCount(1);
+    fetchAt(0).resolveJson(basePayload('ZQRC'));
+    await base1;
+    const point1 = bridge.requestOptionsChain('US:ZQRC', false, A);
+    await waitForFetchCount(2);
+    fetchAt(1).resolveJson(pointWithAnchors('ZQRC'));
+    await point1;
+
+    // Sin base inicial: el hecho retenido de A tampoco toca B al llegar la base.
+    const point2 = bridge.requestOptionsChain('US:ZQRD', false, A);
+    await waitForFetchCount(3);
+    fetchAt(2).resolveJson(pointWithAnchors('ZQRD'));
+    await point2;
+    const base2 = bridge.requestUsSnapshot('ZQRD');
+    await waitForFetchCount(4);
+    fetchAt(3).resolveJson(basePayload('ZQRD'));
+    await base2;
+
+    for (const symbol of ['ZQRC', 'ZQRD']) {
+      const snap = bridge.getLiveMarketStateSnapshot().usSnapshotsBySymbol[symbol];
+      expect(snap, symbol).toBeDefined();
+      const entries = recArray(rec(snap?.['optionsChain'])['availableExpirations']);
+      const requested = entries.find((e) => e['expirationDate'] === A);
+      expect(requested?.['loaded'], symbol).toBe(true);
+      expect(requested?.['validCallCount'], symbol).toBe(111);
+      const anchor = entries.find((e) => e['expirationDate'] === B);
+      expect(anchor?.['loaded'], symbol).toBe(false);
+      expect(anchor?.['validCallCount'], symbol).toBe(0);
+      const codes = rec(rec(rec(snap?.['terminalEngines'])['volAnalyticsSuite'])['expiriesByCode']);
+      expect(rec(codes[A])['ivAtm'], symbol).toBe(0.11);
+      expect(rec(codes[B])['ivAtm'], symbol).toBe(0.42);
+    }
+  });
+
+  it('una base nueva con datos más recientes de A no es sobrescrita por el hecho puntual retenido', async () => {
+    const A = POINT_DATE;
+
+    // Visible: el puntual de A queda publicado y retenido; la base nueva lo supera.
+    const base1 = bridge.requestUsSnapshot('ZQRE');
+    await waitForFetchCount(1);
+    fetchAt(0).resolveJson(basePayload('ZQRE'));
+    await base1;
+    const point = bridge.requestOptionsChain('US:ZQRE', false, A);
+    await waitForFetchCount(2);
+    fetchAt(1).resolveJson(pointPayload('ZQRE'));
+    await point;
+
+    const newerBase = bridge.requestUsSnapshot('ZQRE');
+    await waitForFetchCount(3);
+    fetchAt(2).resolveJson(
+      usSnapshotPayload({
+        symbol: 'ZQRE',
+        asOfUtcSec: 3_000,
+        spot: 61.5,
+        aggregateGex: 333,
+        traceSpot: 61.4,
+        entries: [
+          expiryFact(A, { loaded: true, calls: 300, puts: 301 }),
+          expiryFact('2026-09-18', { loaded: false, calls: 0, puts: 0 }),
+        ],
+        codes: { [A]: analyticsCode(A, 0.33), '2026-09-18': analyticsCode('2026-09-18', 0.42) },
+      }),
+    );
+    await newerBase;
+
+    const afterNewer = bridge.getLiveMarketStateSnapshot().usSnapshotsBySymbol['ZQRE'];
+    expect(afterNewer?.['asOfUtcSec']).toBe(3_000);
+    const newerEntry = recArray(rec(afterNewer?.['optionsChain'])['availableExpirations']).find(
+      (e) => e['expirationDate'] === A,
+    );
+    expect(newerEntry?.['validCallCount']).toBe(300);
+    const newerCodes = rec(
+      rec(rec(afterNewer?.['terminalEngines'])['volAnalyticsSuite'])['expiriesByCode'],
+    );
+    expect(rec(newerCodes[A])['ivAtm']).toBe(0.33);
+
+    // Una base posterior que omite A conserva la información vigente de A.
+    const omittingBase = bridge.requestUsSnapshot('ZQRE');
+    await waitForFetchCount(4);
+    fetchAt(3).resolveJson(
+      usSnapshotPayload({
+        symbol: 'ZQRE',
+        asOfUtcSec: 4_000,
+        spot: 61.5,
+        aggregateGex: 444,
+        traceSpot: 61.45,
+        entries: [expiryFact('2026-09-18', { loaded: false, calls: 0, puts: 0 })],
+        codes: { '2026-09-18': analyticsCode('2026-09-18', 0.42) },
+      }),
+    );
+    await omittingBase;
+
+    const afterOmit = bridge.getLiveMarketStateSnapshot().usSnapshotsBySymbol['ZQRE'];
+    expect(afterOmit?.['asOfUtcSec']).toBe(4_000);
+    const keptEntry = recArray(rec(afterOmit?.['optionsChain'])['availableExpirations']).find(
+      (e) => e['expirationDate'] === A,
+    );
+    expect(keptEntry?.['loaded']).toBe(true);
+    expect(keptEntry?.['validCallCount']).toBe(300);
+
+    // Pendiente: si la base nueva trae A más nueva, el hecho retenido no revive.
+    const pendingPoint = bridge.requestOptionsChain('US:ZQRF', false, A);
+    await waitForFetchCount(5);
+    fetchAt(4).resolveJson(pointPayload('ZQRF'));
+    await pendingPoint;
+    const pendingBase = bridge.requestUsSnapshot('ZQRF');
+    await waitForFetchCount(6);
+    fetchAt(5).resolveJson(
+      usSnapshotPayload({
+        symbol: 'ZQRF',
+        asOfUtcSec: 3_000,
+        spot: 61.5,
+        aggregateGex: 333,
+        traceSpot: 61.4,
+        entries: [expiryFact(A, { loaded: true, calls: 300, puts: 301 })],
+        codes: { [A]: analyticsCode(A, 0.33) },
+      }),
+    );
+    await pendingBase;
+
+    const pendingSnap = bridge.getLiveMarketStateSnapshot().usSnapshotsBySymbol['ZQRF'];
+    const pendingEntry = recArray(rec(pendingSnap?.['optionsChain'])['availableExpirations']).find(
+      (e) => e['expirationDate'] === A,
+    );
+    expect(pendingEntry?.['validCallCount']).toBe(300);
+    const pendingCodes = rec(
+      rec(rec(pendingSnap?.['terminalEngines'])['volAnalyticsSuite'])['expiriesByCode'],
+    );
+    expect(rec(pendingCodes[A])['ivAtm']).toBe(0.33);
   });
 });
 

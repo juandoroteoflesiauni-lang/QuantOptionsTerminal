@@ -4,16 +4,22 @@
 Implementacion explicita (sin copiar la logica TypeScript):
 
   - Decision de publicacion por alcance: la revision entrante debe ser entera
-    positiva y su evaluacion finita; sin sello previo se acepta; una revision
-    mayor siempre manda; con la misma revision solo se acepta evaluacion no
-    anterior; un sello previo con evaluacion no finita no bloquea.
+    positiva y su evaluacion finita; sin sello previo se acepta; revision y
+    evaluacion no retroceden dentro del alcance (una revision mayor con
+    evaluacion anterior queda obsoleta); un sello previo con evaluacion no
+    finita no bloquea.
+
+  - Decision por vencimiento: un hecho puntual sin datos cargados o con
+    evaluacion invalida nunca publica; sin datos vigentes para esa fecha (la
+    base la omite o trae stub) el hecho se publica/anexa; con datos vigentes
+    solo gana el hecho estrictamente mas nuevo.
 
   - Fusion base + vencimientos puntuales: TODO el agregado (asOf, spot,
     contexto, calidad) proviene de la base; de la respuesta puntual solo cuentan
-    las fechas con loaded=true. Cada fecha cargada reemplaza la entrada homonima
-    de la base (la version puntual vigente gana), se anade ordenada si falta, y
-    actualiza expiriesByCode unicamente para esas fechas. Sin fechas cargadas la
-    base queda intacta.
+    las fechas con loaded=true (con only_date, SOLO esa fecha). Cada fecha
+    cargada reemplaza la entrada homonima de la base (la version puntual vigente
+    gana), se anade ordenada si falta, y actualiza expiriesByCode unicamente
+    para esas fechas. Sin fechas cargadas la base queda intacta.
 
 Genera fixtures/snapshot_publication_pieza50_9_reference.json.
 """
@@ -44,11 +50,30 @@ def decide(current, incoming):
     current_evaluation = current.get("evaluationSec")
     if not is_finite_number(current_evaluation):
         return "accept"
-    if revision > current.get("revision"):
-        return "accept"
-    if revision == current.get("revision") and evaluation >= current_evaluation:
-        return "accept"
-    return "stale"
+    # revision es secuencia local de solicitudes (beginPublication), mientras
+    # evaluationSec es asOfUtcSec del servidor y gobierna la frescura de datos.
+    if evaluation < current_evaluation:
+        return "stale"
+    current_revision = current.get("revision")
+    if isinstance(current_revision, int) and not isinstance(current_revision, bool) and current_revision > 0:
+        return "accept" if revision >= current_revision else "stale"
+    return "accept"
+
+
+def point_fact_decision(fact, current):
+    if fact.get("loaded") is not True:
+        return "keep"
+    fact_evaluation = fact.get("evaluationSec")
+    if not is_finite_number(fact_evaluation):
+        return "keep"
+    if current is None:
+        return "publish"
+    if current.get("loaded") is not True:
+        return "publish"
+    current_evaluation = current.get("evaluationSec")
+    if not is_finite_number(current_evaluation):
+        return "publish"
+    return "publish" if fact_evaluation > current_evaluation else "keep"
 
 
 def chain_entries(snap):
@@ -74,10 +99,12 @@ def vol_suite(snap):
     return suite if isinstance(suite, dict) else None
 
 
-def merge(base, scope):
+def merge(base, scope, only_date=None):
     if scope is None:
         return base
     loaded = loaded_dates(scope)
+    if only_date is not None:
+        loaded = {date for date in loaded if date == only_date}
     if not loaded:
         return base
     scope_entries = {}
@@ -161,6 +188,12 @@ def build():
             "name": "revision_mayor_manda_aunque_evaluacion_anterior",
             "current": {"revision": 2, "evaluationSec": 1000},
             "incoming": {"revision": 3, "evaluationSec": 900},
+            "expected": "stale",
+        },
+        {
+            "name": "revision_mayor_con_evaluacion_igual",
+            "current": {"revision": 2, "evaluationSec": 1000},
+            "incoming": {"revision": 3, "evaluationSec": 1000},
             "expected": "accept",
         },
         {
@@ -244,6 +277,18 @@ def build():
         [expiry_entry("2026-08-21", loaded=False, days=21)],
         {"2026-08-21": analytics("2026-08-21", 0.4)},
     )
+    base_with_anchors = snapshot(
+        1000,
+        62.5,
+        [
+            expiry_entry("2026-08-21", loaded=False, days=21),
+            expiry_entry("2026-10-16", loaded=False, days=77, window=False),
+        ],
+        {
+            "2026-08-21": analytics("2026-08-21", 0.4),
+            "2026-10-16": analytics("2026-10-16", 0.41, 77),
+        },
+    )
     scope_union = snapshot(
         2100,
         99.9,
@@ -295,6 +340,57 @@ def build():
         with_chain=False,
     )
 
+    point_fact_cases = [
+        {
+            "name": "sin_datos_vigentes_publica",
+            "fact": {"loaded": True, "evaluationSec": 1000},
+            "current": None,
+            "expected": "publish",
+        },
+        {
+            "name": "base_omite_la_fecha_publica",
+            "fact": {"loaded": True, "evaluationSec": 1000},
+            "current": {"loaded": False, "evaluationSec": 2000},
+            "expected": "publish",
+        },
+        {
+            "name": "hecho_estrictamente_mas_nuevo_publica",
+            "fact": {"loaded": True, "evaluationSec": 2000},
+            "current": {"loaded": True, "evaluationSec": 1000},
+            "expected": "publish",
+        },
+        {
+            "name": "hecho_mas_viejo_conserva",
+            "fact": {"loaded": True, "evaluationSec": 1000},
+            "current": {"loaded": True, "evaluationSec": 2000},
+            "expected": "keep",
+        },
+        {
+            "name": "misma_evaluacion_conserva",
+            "fact": {"loaded": True, "evaluationSec": 1000},
+            "current": {"loaded": True, "evaluationSec": 1000},
+            "expected": "keep",
+        },
+        {
+            "name": "evaluacion_actual_desconocida_publica",
+            "fact": {"loaded": True, "evaluationSec": 1000},
+            "current": {"loaded": True, "evaluationSec": None},
+            "expected": "publish",
+        },
+        {
+            "name": "hecho_sin_cargar_no_publica",
+            "fact": {"loaded": False, "evaluationSec": 1000},
+            "current": None,
+            "expected": "keep",
+        },
+        {
+            "name": "hecho_con_evaluacion_invalida_no_publica",
+            "fact": {"loaded": True, "evaluationSec": None},
+            "current": {"loaded": True, "evaluationSec": 1000},
+            "expected": "keep",
+        },
+    ]
+
     merge_cases = [
         {
             "name": "mejora_fecha_cargada_y_conserva_agregado",
@@ -307,6 +403,27 @@ def build():
             "base": base_single,
             "scope": scope_union,
             "expected": merge(base_single, scope_union),
+        },
+        {
+            "name": "restringe_publicacion_puntual_a_su_fecha",
+            "base": base_with_anchors,
+            "scope": scope_union,
+            "onlyDate": "2026-08-21",
+            "expected": merge(base_with_anchors, scope_union, "2026-08-21"),
+        },
+        {
+            "name": "restringe_y_anexa_solo_la_fecha_solicitada",
+            "base": base_single,
+            "scope": scope_union,
+            "onlyDate": "2026-12-18",
+            "expected": merge(base_single, scope_union, "2026-12-18"),
+        },
+        {
+            "name": "restringe_a_fecha_no_cargada_no_cambia",
+            "base": base_with_anchors,
+            "scope": scope_union,
+            "onlyDate": "2026-09-18",
+            "expected": merge(base_with_anchors, scope_union, "2026-09-18"),
         },
         {
             "name": "scope_sin_fechas_cargadas_no_cambia",
@@ -349,6 +466,7 @@ def build():
     return {
         "meta": {"generator": "tools/gen_snapshot_publication_pieza50_9.py"},
         "decisionCases": decision_cases,
+        "pointFactCases": point_fact_cases,
         "mergeCases": merge_cases,
     }
 
@@ -360,7 +478,9 @@ def main():
         handle.write("\n")
     print(
         f"OK -> {os.path.relpath(OUT)} "
-        f"({len(fixture['decisionCases'])} decisiones, {len(fixture['mergeCases'])} fusiones)"
+        f"({len(fixture['decisionCases'])} decisiones, "
+        f"{len(fixture['pointFactCases'])} hechos por vencimiento, "
+        f"{len(fixture['mergeCases'])} fusiones)"
     )
 
 
