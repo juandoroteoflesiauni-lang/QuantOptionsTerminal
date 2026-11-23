@@ -37,9 +37,13 @@ export interface VolQuoteInput {
   readonly openInterest: number;
 }
 
+export type TriValuedCheckStatus = 'PASS' | 'FAIL' | 'NOT_EVALUATED';
+
 export interface VolSurfaceFilterOptions {
   readonly minBid?: number;
   readonly requirePositiveBid?: boolean;
+  /** Solo modo EOD referencial: acepta `mid > 0` observado sin BBO bilateral (`bid/ask` quedan `NaN`). */
+  readonly allowReferenceMidWithoutBbo?: boolean;
   readonly maxSpreadRatio?: number;
   readonly minOpenInterest?: number;
   readonly maxIv?: number;
@@ -51,6 +55,7 @@ export interface VolSurfaceFilterOptions {
 export interface NormalizedVolSurfaceFilterOptions {
   readonly minBid: number;
   readonly requirePositiveBid: boolean;
+  readonly allowReferenceMidWithoutBbo: boolean;
   readonly maxSpreadRatio: number;
   readonly minOpenInterest: number;
   readonly maxIv: number;
@@ -153,6 +158,7 @@ export interface ButterflyViolation {
 }
 
 export interface ButterflyArbitrageReport {
+  readonly status: TriValuedCheckStatus;
   readonly isArbitrageFree: boolean;
   readonly checkedPointsCount: number;
   readonly minDensity: number;
@@ -176,6 +182,7 @@ export interface CalendarViolation {
 }
 
 export interface CalendarArbitrageReport {
+  readonly status: TriValuedCheckStatus;
   readonly isArbitrageFree: boolean;
   readonly checkedComparisons: number;
   readonly minVarianceDiff: number;
@@ -193,6 +200,9 @@ export interface VolSurface {
   readonly validSlicesCount: number;
   readonly invalidSlicesCount: number;
   readonly butterflyReports: readonly ButterflyArbitrageReport[];
+  readonly butterflyCheckStatus: TriValuedCheckStatus;
+  readonly calendarCheckStatus: TriValuedCheckStatus;
+  readonly arbitrageCheckStatus: TriValuedCheckStatus;
   readonly butterflyArbitrageFree: boolean;
   readonly calendarArbitrageFree: boolean;
   readonly isArbitrageFree: boolean;
@@ -229,6 +239,7 @@ function normalizeFilterOptions(
 ): NormalizedVolSurfaceFilterOptions | null {
   const minBid = options?.minBid ?? 0;
   const requirePositiveBid = options?.requirePositiveBid ?? true;
+  const allowReferenceMidWithoutBbo = options?.allowReferenceMidWithoutBbo === true;
   const maxSpreadRatio = options?.maxSpreadRatio ?? DEFAULT_MAX_SPREAD_RATIO;
   const minOpenInterest = options?.minOpenInterest ?? 0;
   const maxIv = options?.maxIv ?? DEFAULT_MAX_IV;
@@ -263,6 +274,7 @@ function normalizeFilterOptions(
   return {
     minBid,
     requirePositiveBid,
+    allowReferenceMidWithoutBbo,
     maxSpreadRatio,
     minOpenInterest,
     maxIv,
@@ -284,20 +296,29 @@ function aggregateStrikeQuotes(
   let weightSum = 0;
   let varianceWeightedSum = 0;
   let spreadWeightedSum = 0;
-  let bidSum = 0;
-  let askSum = 0;
+  let spreadWeightSum = 0;
+  let bidWeightedSum = 0;
+  let askWeightedSum = 0;
+  let bboWeightSum = 0;
+  let midWeightedSum = 0;
   let oiSum = 0;
   let chosenType: OptionContractType = preferredType ?? 'call';
   let bestWeight = -1;
 
   for (const item of items) {
     const q = item.quote;
-    const w = 1 / (SPREAD_WEIGHT_EPS + q.spreadRatio);
+    const hasValidSpread = Number.isFinite(q.spreadRatio) && q.spreadRatio >= 0;
+    const w = hasValidSpread ? 1 / (SPREAD_WEIGHT_EPS + q.spreadRatio) : 1;
     weightSum += w;
     varianceWeightedSum += w * q.iv * q.iv;
-    spreadWeightedSum += w * q.spreadRatio;
-    bidSum += w * q.bid;
-    askSum += w * q.ask;
+    midWeightedSum += w * q.mid;
+    if (hasValidSpread && isFiniteNonNegative(q.bid) && isFinitePositive(q.ask)) {
+      spreadWeightSum += w;
+      spreadWeightedSum += w * q.spreadRatio;
+      bboWeightSum += w;
+      bidWeightedSum += w * q.bid;
+      askWeightedSum += w * q.ask;
+    }
     oiSum += q.openInterest;
     if (preferredType === undefined && w > bestWeight) {
       bestWeight = w;
@@ -308,8 +329,16 @@ function aggregateStrikeQuotes(
   const first = items[0];
   const strike = first !== undefined ? first.quote.strike : Number.NaN;
   const aggregatedIv = Math.sqrt(varianceWeightedSum / weightSum);
-  const aggregatedBid = bidSum / weightSum;
-  const aggregatedAsk = askSum / weightSum;
+  const hasAllBbo = bboWeightSum > 0 && bboWeightSum === weightSum;
+  const aggregatedBid = hasAllBbo ? bidWeightedSum / bboWeightSum : Number.NaN;
+  const aggregatedAsk = hasAllBbo ? askWeightedSum / bboWeightSum : Number.NaN;
+  const aggregatedMid = hasAllBbo
+    ? 0.5 * (aggregatedBid + aggregatedAsk)
+    : midWeightedSum / weightSum;
+  const aggregatedSpread =
+    spreadWeightSum > 0 && spreadWeightSum === weightSum
+      ? spreadWeightedSum / spreadWeightSum
+      : Number.NaN;
 
   return {
     strike,
@@ -317,8 +346,8 @@ function aggregateStrikeQuotes(
     iv: aggregatedIv,
     bid: aggregatedBid,
     ask: aggregatedAsk,
-    mid: 0.5 * (aggregatedBid + aggregatedAsk),
-    spreadRatio: spreadWeightedSum / weightSum,
+    mid: aggregatedMid,
+    spreadRatio: aggregatedSpread,
     openInterest: oiSum,
   };
 }
@@ -386,54 +415,93 @@ export function filterVolQuotes(
       continue;
     }
 
+    const hasPositiveBid = isFinitePositive(raw.bid);
+    const hasPositiveAsk = isFinitePositive(raw.ask);
+    const crossed = hasPositiveBid && hasPositiveAsk && raw.ask < raw.bid;
+
+    let effectiveBid = raw.bid;
+    let effectiveAsk = raw.ask;
+    let mid: number;
+    let spreadRatio: number;
+
     if (
-      !isFiniteNonNegative(raw.bid) ||
-      !isFinitePositive(raw.ask) ||
-      raw.ask < raw.bid
+      normalized.allowReferenceMidWithoutBbo &&
+      !crossed &&
+      !(Number.isFinite(raw.bid) && raw.bid < 0) &&
+      !(Number.isFinite(raw.ask) && raw.ask < 0) &&
+      (!hasPositiveBid || !hasPositiveAsk)
     ) {
-      counts.invalidBidAsk += 1;
-      discarded.push({
-        index: i,
-        strike: raw.strike,
-        contractType: contractStr,
-        reason: 'invalidBidAsk',
-      });
-      continue;
-    }
+      if (hasPositiveBid && !hasPositiveAsk) {
+        counts.invalidBidAsk += 1;
+        discarded.push({
+          index: i,
+          strike: raw.strike,
+          contractType: contractStr,
+          reason: 'invalidBidAsk',
+        });
+        continue;
+      }
+      const refMid = raw.mid ?? Number.NaN;
+      if (!isFinitePositive(refMid)) {
+        counts.invalidBidAsk += 1;
+        discarded.push({
+          index: i,
+          strike: raw.strike,
+          contractType: contractStr,
+          reason: 'invalidBidAsk',
+        });
+        continue;
+      }
+      effectiveBid = Number.NaN;
+      effectiveAsk = Number.NaN;
+      mid = refMid;
+      spreadRatio = Number.NaN;
+    } else {
+      if (!isFiniteNonNegative(raw.bid) || !hasPositiveAsk || crossed) {
+        counts.invalidBidAsk += 1;
+        discarded.push({
+          index: i,
+          strike: raw.strike,
+          contractType: contractStr,
+          reason: 'invalidBidAsk',
+        });
+        continue;
+      }
 
-    const mid = raw.mid ?? 0.5 * (raw.bid + raw.ask);
-    if (!isFinitePositive(mid)) {
-      counts.invalidBidAsk += 1;
-      discarded.push({
-        index: i,
-        strike: raw.strike,
-        contractType: contractStr,
-        reason: 'invalidBidAsk',
-      });
-      continue;
-    }
+      mid = raw.mid ?? 0.5 * (raw.bid + raw.ask);
+      if (!isFinitePositive(mid)) {
+        counts.invalidBidAsk += 1;
+        discarded.push({
+          index: i,
+          strike: raw.strike,
+          contractType: contractStr,
+          reason: 'invalidBidAsk',
+        });
+        continue;
+      }
 
-    if ((normalized.requirePositiveBid && raw.bid <= 0) || raw.bid < normalized.minBid) {
-      counts.belowMinBid += 1;
-      discarded.push({
-        index: i,
-        strike: raw.strike,
-        contractType: contractStr,
-        reason: 'belowMinBid',
-      });
-      continue;
-    }
+      if ((normalized.requirePositiveBid && raw.bid <= 0) || raw.bid < normalized.minBid) {
+        counts.belowMinBid += 1;
+        discarded.push({
+          index: i,
+          strike: raw.strike,
+          contractType: contractStr,
+          reason: 'belowMinBid',
+        });
+        continue;
+      }
 
-    const spreadRatio = (raw.ask - raw.bid) / mid;
-    if (!Number.isFinite(spreadRatio) || spreadRatio > normalized.maxSpreadRatio) {
-      counts.spreadTooWide += 1;
-      discarded.push({
-        index: i,
-        strike: raw.strike,
-        contractType: contractStr,
-        reason: 'spreadTooWide',
-      });
-      continue;
+      spreadRatio = (raw.ask - raw.bid) / mid;
+      if (!Number.isFinite(spreadRatio) || spreadRatio > normalized.maxSpreadRatio) {
+        counts.spreadTooWide += 1;
+        discarded.push({
+          index: i,
+          strike: raw.strike,
+          contractType: contractStr,
+          reason: 'spreadTooWide',
+        });
+        continue;
+      }
     }
 
     if (!isFiniteNonNegative(raw.openInterest) || raw.openInterest < normalized.minOpenInterest) {
@@ -453,8 +521,8 @@ export function filterVolQuotes(
         strike: raw.strike,
         contractType: contractStr,
         iv: raw.iv,
-        bid: raw.bid,
-        ask: raw.ask,
+        bid: effectiveBid,
+        ask: effectiveAsk,
         mid,
         spreadRatio,
         openInterest: raw.openInterest,
@@ -1108,14 +1176,25 @@ export function validateSliceButterflyArbitrage(
   const samples = options?.samplesPerSegment ?? DEFAULT_BUTTERFLY_SAMPLES;
   const tolerance = options?.tolerance ?? DEFAULT_ARBITRAGE_TOLERANCE;
 
+  if (!slice.isValid || slice.nodes.length < 2) {
+    return {
+      status: 'NOT_EVALUATED',
+      isArbitrageFree: false,
+      checkedPointsCount: 0,
+      minDensity: Number.NaN,
+      worstLogMoneyness: Number.NaN,
+      worstStrike: Number.NaN,
+      violations: [],
+    };
+  }
+
   if (
-    !slice.isValid ||
-    slice.nodes.length < 2 ||
     !Number.isInteger(samples) ||
     samples < 1 ||
     !isFiniteNonNegative(tolerance)
   ) {
     return {
+      status: 'FAIL',
       isArbitrageFree: false,
       checkedPointsCount: 0,
       minDensity: Number.NaN,
@@ -1167,8 +1246,16 @@ export function validateSliceButterflyArbitrage(
     }
   }
 
+  const status: TriValuedCheckStatus =
+    checkedPointsCount === 0
+      ? 'NOT_EVALUATED'
+      : violations.length === 0
+        ? 'PASS'
+        : 'FAIL';
+
   return {
-    isArbitrageFree: violations.length === 0 && checkedPointsCount > 0,
+    status,
+    isArbitrageFree: status === 'PASS',
     checkedPointsCount,
     minDensity,
     worstLogMoneyness: worstK,
@@ -1241,6 +1328,7 @@ export function validateSurfaceCalendarArbitrage(
 
   if (!isFiniteNonNegative(tolerance)) {
     return {
+      status: 'FAIL',
       isArbitrageFree: false,
       checkedComparisons: 0,
       minVarianceDiff: Number.NaN,
@@ -1255,7 +1343,8 @@ export function validateSurfaceCalendarArbitrage(
 
   if (validSlices.length < 2) {
     return {
-      isArbitrageFree: true,
+      status: 'NOT_EVALUATED',
+      isArbitrageFree: false,
       checkedComparisons: 0,
       minVarianceDiff: Number.NaN,
       violations: [],
@@ -1296,8 +1385,16 @@ export function validateSurfaceCalendarArbitrage(
     }
   }
 
+  const status: TriValuedCheckStatus =
+    checkedComparisons === 0
+      ? 'NOT_EVALUATED'
+      : violations.length === 0
+        ? 'PASS'
+        : 'FAIL';
+
   return {
-    isArbitrageFree: violations.length === 0,
+    status,
+    isArbitrageFree: status === 'PASS',
     checkedComparisons,
     minVarianceDiff: checkedComparisons > 0 ? minVarianceDiff : Number.NaN,
     violations,
@@ -1332,33 +1429,56 @@ export function buildVolSurface(
   let validSlicesCount = 0;
   let invalidSlicesCount = 0;
   const butterflyReports: ButterflyArbitrageReport[] = [];
-  let butterflyArbitrageFree = true;
+  let hasButterflyFail = false;
+  let hasButterflyNotEvaluated = false;
 
   for (const slice of sorted) {
     const bfReport = validateSliceButterflyArbitrage(slice, options?.butterfly);
     butterflyReports.push(bfReport);
     if (slice.isValid) {
       validSlicesCount += 1;
-      if (!bfReport.isArbitrageFree) {
-        butterflyArbitrageFree = false;
+      if (bfReport.status === 'FAIL') {
+        hasButterflyFail = true;
+      } else if (bfReport.status === 'NOT_EVALUATED') {
+        hasButterflyNotEvaluated = true;
       }
     } else {
       invalidSlicesCount += 1;
     }
   }
 
+  const butterflyCheckStatus: TriValuedCheckStatus =
+    validSlicesCount === 0
+      ? 'NOT_EVALUATED'
+      : hasButterflyFail
+        ? 'FAIL'
+        : hasButterflyNotEvaluated
+          ? 'NOT_EVALUATED'
+          : 'PASS';
+
   const calendarCheck = validateSurfaceCalendarArbitrage(sorted, options?.calendar);
-  const calendarArbitrageFree = calendarCheck.isArbitrageFree;
+  const calendarCheckStatus = calendarCheck.status;
+  const arbitrageCheckStatus: TriValuedCheckStatus =
+    butterflyCheckStatus === 'FAIL' || calendarCheckStatus === 'FAIL'
+      ? 'FAIL'
+      : validSlicesCount >= 2 &&
+          invalidSlicesCount === 0 &&
+          butterflyCheckStatus === 'PASS' &&
+          calendarCheckStatus === 'PASS'
+        ? 'PASS'
+        : 'NOT_EVALUATED';
 
   return {
     slices: sorted,
     validSlicesCount,
     invalidSlicesCount,
     butterflyReports,
-    butterflyArbitrageFree: validSlicesCount > 0 && butterflyArbitrageFree,
-    calendarArbitrageFree,
-    isArbitrageFree:
-      validSlicesCount > 0 && butterflyArbitrageFree && calendarArbitrageFree,
+    butterflyCheckStatus,
+    calendarCheckStatus,
+    arbitrageCheckStatus,
+    butterflyArbitrageFree: butterflyCheckStatus === 'PASS' && invalidSlicesCount === 0,
+    calendarArbitrageFree: calendarCheckStatus === 'PASS',
+    isArbitrageFree: arbitrageCheckStatus === 'PASS',
     calendarCheck,
   };
 }

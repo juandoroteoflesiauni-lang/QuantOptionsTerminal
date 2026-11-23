@@ -62,6 +62,7 @@ export interface DealerSignConfig {
 
 export interface ExposureContractInput {
   readonly precomputedGreeks?: OptionGreeksResult;
+  readonly model?: ExposureModel;
   readonly contractType: OptionContractType;
   readonly strike: number;
   readonly expiryUtcSec: number;
@@ -270,6 +271,7 @@ interface NormalizedExposureOptions {
 
 interface PreparedContract {
   readonly index: number;
+  readonly model: ExposureModel;
   readonly contractType: OptionContractType;
   readonly strike: number;
   readonly expiryUtcSec: number;
@@ -711,6 +713,16 @@ function evaluateContractForChain(
     return { active: true, prepared: null, skipReason: 'expired' };
   }
 
+  const rawContractModel: string = contract.model ?? opts.model;
+  if (
+    rawContractModel !== 'bsm' &&
+    rawContractModel !== 'black76' &&
+    rawContractModel !== 'american'
+  ) {
+    return { active: true, prepared: null, skipReason: 'invalidRates' };
+  }
+  const contractModel: ExposureModel = rawContractModel;
+
   const rate = contract.rate ?? market.rate;
   if (!Number.isFinite(rate)) {
     return { active: true, prepared: null, skipReason: 'invalidRates' };
@@ -719,7 +731,7 @@ function evaluateContractForChain(
   let underlier: number;
   let dividendYield = Number.NaN;
 
-  if (opts.model === 'black76') {
+  if (contractModel === 'black76') {
     const fwd = contract.forward ?? market.forward;
     if (fwd === undefined || !isPositiveFinite(fwd)) {
       return { active: true, prepared: null, skipReason: 'invalidUnderlier' };
@@ -757,7 +769,7 @@ function evaluateContractForChain(
   const marketMid = resolveContractMarketMid(contract);
   const ivRes = resolveContractIv(
     contract,
-    opts.model,
+    contractModel,
     underlier,
     timeToExpiry,
     rate,
@@ -777,7 +789,7 @@ function evaluateContractForChain(
   }
 
   const greeks = contract.precomputedGreeks ?? evaluateModelGreeks(
-    opts.model,
+    contractModel,
     underlier,
     contract.strike,
     timeToExpiry,
@@ -810,6 +822,7 @@ function evaluateContractForChain(
     active: true,
     prepared: {
       index,
+      model: contractModel,
       contractType,
       strike: contract.strike,
       expiryUtcSec: contract.expiryUtcSec,
@@ -997,7 +1010,6 @@ function evaluatePreparedNetGexAtSpot(
   preparedList: readonly PreparedContract[],
   baseSpot: number,
   candidateSpot: number,
-  model: ExposureModel,
 ): number {
   if (!isPositiveFinite(candidateSpot) || !isPositiveFinite(baseSpot)) {
     return Number.NaN;
@@ -1007,7 +1019,7 @@ function evaluatePreparedNetGexAtSpot(
   for (const p of preparedList) {
     const evalUnderlier = p.underlier * scaleRatio;
     const gamma = evaluateModelGamma(
-      model,
+      p.model,
       evalUnderlier,
       p.strike,
       p.timeToExpiry,
@@ -1086,7 +1098,7 @@ function computeGammaFlipFromPrepared(
 
   for (let i = 0; i <= steps; i += 1) {
     const s = sMin + ((sMax - sMin) * i) / steps;
-    const val = evaluatePreparedNetGexAtSpot(preparedList, spot, s, opts.model);
+    const val = evaluatePreparedNetGexAtSpot(preparedList, spot, s);
     if (!Number.isFinite(val)) {
       return {
         gammaFlipSpot: Number.NaN,
@@ -1099,7 +1111,7 @@ function computeGammaFlipFromPrepared(
   }
 
   const evalFn = (s: number): number =>
-    evaluatePreparedNetGexAtSpot(preparedList, spot, s, opts.model);
+    evaluatePreparedNetGexAtSpot(preparedList, spot, s);
   const tolAbs = opts.gammaFlipToleranceRel * spot;
   const candidates: number[] = [];
 
@@ -1207,7 +1219,7 @@ export function evaluateNetGexAtSpot(
   if (preparedList.length === 0) {
     return Number.NaN;
   }
-  return evaluatePreparedNetGexAtSpot(preparedList, market.spot, candidateSpot, opts.model);
+  return evaluatePreparedNetGexAtSpot(preparedList, market.spot, candidateSpot);
 }
 
 /**

@@ -89,11 +89,19 @@ export interface OptionDaySummary {
 }
 
 export interface OptionLastQuote {
-  readonly source?: 'MASSIVE' | 'TRADIER' | 'EOD_CLOSE_REF';
+  readonly source?: 'MASSIVE' | 'TRADIER' | 'EOD_CLOSE_REF' | 'MASSIVE_EOD_REF';
   readonly bidTimeUtcSec?: number;
   readonly askTimeUtcSec?: number;
   readonly receivedAtUtcSec?: number;
-  readonly quoteQuality?: 'LIVE_ATOMIC' | 'EOD_CLOSE_REF' | 'STALE' | 'INVALID';
+  readonly quoteQuality?:
+    | 'LIVE_ATOMIC'
+    | 'LIVE_VALID'
+    | 'EOD_CLOSE_REF'
+    | 'STALE'
+    | 'STALE_QUOTE'
+    | 'INVALID'
+    | 'INVALID_BBO'
+    | 'MISSING_BBO';
   readonly bid: number;
   readonly ask: number;
   readonly midpoint: number;

@@ -77,10 +77,21 @@ import type {
 } from '../core/microstructure/types.js';
 import {
   greeksAmericanFiniteDiffOrAnalytical,
-  solveImpliedVolAmerican,
+  priceAmericanBjerksund2002,
 } from '../core/options/american.js';
+import { solveImpliedVolAmericanDetailed } from '../core/options/americanIvDiagnostics.js';
+import type { AmericanIvStatus } from '../core/options/ivContract.js';
+import {
+  resolveUsOptionContractIdentity,
+  type ContractualExerciseStyle,
+  type ContractualSettlementType,
+  type ExerciseStyleConflictCode,
+  type ExerciseStyleResolutionSource,
+  type ResolvedUsOptionContractIdentity,
+  type UsUnderlyingAssetClass,
+} from '../core/options/contractStyle.js';
 import type { OptionGreeksResult } from '../core/options/types.js';
-import { evaluateOptionAtExpiry, greeksBsm, MIN_CONTRACTUAL_EXPIRY_SEC, resolveContractualTimeToExpiryYears, timeToExpiryYears } from '../core/options/blackScholes.js';
+import { bsmArbitrageBounds, evaluateOptionAtExpiry, greeksBsm, MIN_CONTRACTUAL_EXPIRY_SEC, resolveContractualTimeToExpiryYears, timeToExpiryYears } from '../core/options/blackScholes.js';
 import {
   buildExposureTraceMetadata,
   resolveExposureCoverage,
@@ -151,7 +162,9 @@ import {
   buildVolSlice,
   buildVolSurface,
   computeForwardIvTermStructure,
+  validateSliceButterflyArbitrage,
   type ForwardIvStatus,
+  type TriValuedCheckStatus,
   type VolQuoteInput,
   type VolSlice,
 } from '../core/options/volSurface.js';
@@ -686,6 +699,36 @@ export interface SerializedVolSliceNode {
   readonly openInterest: number;
 }
 
+export type UsSurfaceQuotePolicy = 'RTH_STRICT_BBO' | 'EOD_CLOSE_REF';
+export type UsSurfaceMode = 'LIVE_RTH' | 'EOD_REFERENCE' | 'DEGRADED' | 'UNAVAILABLE';
+export type UsContractQuoteQuality =
+  | 'LIVE_VALID'
+  | 'EOD_CLOSE_REF'
+  | 'MISSING_BBO'
+  | 'STALE_QUOTE'
+  | 'INVALID_BBO'
+  | 'NOT_EVALUATED';
+export type UsSurfaceQualityStatus =
+  | 'LIVE_VALID'
+  | 'PARTIAL'
+  | 'EOD_CLOSE_REF'
+  | 'INSUFFICIENT_STRIKES'
+  | 'MISSING_BBO'
+  | 'STALE_QUOTE'
+  | 'INVALID_BBO'
+  | 'ARBITRAGE_VIOLATION'
+  | 'NOT_EVALUATED';
+export type UsOptionIvQualityStatus =
+  | AmericanIvStatus
+  | 'SOLVED_EUROPEAN'
+  | 'BLOCKED_UNKNOWN_STYLE'
+  | 'MISSING_QUOTE';
+export type UsContractValuationModel =
+  | 'AMERICAN_BS2002'
+  | 'EUROPEAN_BSM'
+  | 'DEEP_ITM_INTRINSIC'
+  | 'NONE';
+
 export interface SerializedVolSliceSummary {
   readonly expirySec: number;
   readonly expirationDate: string;
@@ -701,6 +744,10 @@ export interface SerializedVolSliceSummary {
   readonly butterfly25: number | null;
   readonly isButterflyArbitrageFree: boolean;
   readonly butterflyMinDensity: number | null;
+  readonly butterflyCheckStatus?: TriValuedCheckStatus;
+  readonly sliceMode?: 'LIVE_RTH' | 'PARTIAL_RTH' | 'EOD_REFERENCE';
+  readonly sliceQuality?: UsSurfaceQualityStatus;
+  readonly quotePolicy?: UsSurfaceQuotePolicy;
   readonly nodes: readonly SerializedVolSliceNode[];
 }
 
@@ -727,6 +774,17 @@ export interface SerializedOptionContractRow {
   readonly vegaPer1Pct: number | null;
   readonly vanna: number | null;
   readonly charm: number | null;
+  readonly contractRoot?: string;
+  readonly underlyingType?: UsUnderlyingAssetClass;
+  readonly exerciseStyle?: ContractualExerciseStyle;
+  readonly settlementType?: ContractualSettlementType;
+  readonly exerciseStyleSource?: ExerciseStyleResolutionSource;
+  readonly exerciseStyleConflict?: ExerciseStyleConflictCode;
+  readonly valuationModel?: UsContractValuationModel;
+  readonly ivQualityStatus?: UsOptionIvQualityStatus;
+  readonly quoteQuality?: UsContractQuoteQuality;
+  readonly quoteSource?: string | null;
+  readonly quoteTimestampUtcSec?: number | null;
 }
 
 export interface SerializedVolSurfaceSummary {
@@ -734,6 +792,15 @@ export interface SerializedVolSurfaceSummary {
   readonly butterflyArbitrageFree: boolean;
   readonly calendarArbitrageFree: boolean;
   readonly isArbitrageFree: boolean;
+  readonly surfaceQuotePolicy?: UsSurfaceQuotePolicy;
+  readonly surfaceMode?: UsSurfaceMode;
+  readonly surfaceQuality?: UsSurfaceQualityStatus;
+  readonly rejectionReason?: string | null;
+  readonly butterflyCheckStatus?: TriValuedCheckStatus;
+  readonly calendarCheckStatus?: TriValuedCheckStatus;
+  readonly arbitrageCheckStatus?: TriValuedCheckStatus;
+  readonly validSlicesCount?: number;
+  readonly rejectedSlicesCount?: number;
   readonly frontSlice: SerializedVolSliceSummary | null;
   readonly slices: readonly SerializedVolSliceSummary[];
   readonly forwardIvSegments?: readonly SerializedForwardIvSegment[];
@@ -1250,12 +1317,15 @@ interface ParsedSymbol {
 }
 
 interface UsContractValuationParams {
+  readonly canonicalSymbol?: string;
   readonly spot: number;
   readonly nowSec: number;
   readonly isIndex: boolean;
+  readonly quotePolicy?: UsSurfaceQuotePolicy;
   readonly expiryParityMap: ReadonlyMap<number, ExpiryParityEvaluation>;
   readonly fallbackParity: ExpiryParityEvaluation;
   readonly contractOwnIvMap: ReadonlyMap<string, number>;
+  readonly contractOwnIvStatusMap?: ReadonlyMap<string, UsOptionIvQualityStatus>;
   readonly expiryAtmIvMap: ReadonlyMap<number, number>;
   readonly otmIvByExpiryStrike: ReadonlyMap<string, number>;
 }
@@ -1269,6 +1339,12 @@ interface UsContractValuation {
   readonly ivSource: SerializedOptionContractRow['ivSource'];
   readonly exposureIv: number;
   readonly greeks: OptionGreeksResult | null;
+  readonly identity: ResolvedUsOptionContractIdentity;
+  readonly valuationModel: UsContractValuationModel;
+  readonly ivQualityStatus: UsOptionIvQualityStatus;
+  readonly quoteQuality: UsContractQuoteQuality;
+  readonly quoteSource: string | null;
+  readonly quoteTimestampUtcSec: number | null;
 }
 
 interface ExpiryParityEvaluation {
@@ -1284,8 +1360,13 @@ interface SlicePackage {
   readonly parity: ExpiryParityEvaluation;
   readonly slice: VolSlice;
   readonly metrics: VolSliceMetrics;
+  readonly butterflyCheckStatus: TriValuedCheckStatus;
   readonly isButterflyArbitrageFree: boolean;
   readonly butterflyMinDensity: number;
+  readonly sliceMode: 'LIVE_RTH' | 'PARTIAL_RTH' | 'EOD_REFERENCE';
+  readonly sliceQuality: UsSurfaceQualityStatus;
+  readonly quotePolicy: UsSurfaceQuotePolicy;
+  readonly sourceQuotes: readonly VolQuoteInput[];
 }
 
 export const DEFAULT_RELATIONS_US_TICKERS = [
@@ -1699,8 +1780,21 @@ export interface UsOptionExpirySelection {
 }
 
 function isValidOptionQuote(contract: OptionSnapshotContract): boolean {
-  const { bid, ask } = contract.lastQuote;
-  if (Number.isFinite(bid) && bid >= 0 && Number.isFinite(ask) && ask > 0) return true;
+  const { bid, ask, midpoint, quoteQuality } = contract.lastQuote;
+  if (
+    quoteQuality === 'INVALID' ||
+    quoteQuality === 'INVALID_BBO' ||
+    quoteQuality === 'STALE' ||
+    quoteQuality === 'STALE_QUOTE'
+  ) {
+    return false;
+  }
+  if (Number.isFinite(bid) && bid >= 0 && Number.isFinite(ask) && ask > 0 && ask >= bid) {
+    return true;
+  }
+  if (quoteQuality === 'EOD_CLOSE_REF' && Number.isFinite(midpoint) && midpoint > 0) {
+    return true;
+  }
   return Number.isFinite(contract.lastTrade.price) && contract.lastTrade.price > 0;
 }
 
@@ -2689,23 +2783,137 @@ function resolveRthCloseSpot(
   return Number.NaN;
 }
 
+export interface UsOptionsSessionPolicyResult {
+  readonly sessionPhase: ReturnType<typeof getUsEquitySessionPhase>;
+  readonly isWeekendEt: boolean;
+  readonly marketIsClosed: boolean;
+  readonly surfaceQuotePolicy: UsSurfaceQuotePolicy;
+}
+
+export function resolveUsOptionsSessionPolicy(
+  nowSec: number,
+  anyExplicitlyClosedFeed: boolean,
+): UsOptionsSessionPolicyResult {
+  const marketPartsEt = getMarketParts(nowSec, 'EQUITY');
+  const isWeekendEt = marketPartsEt.weekday === 6 || marketPartsEt.weekday === 7;
+  const sessionPhase = getUsEquitySessionPhase(nowSec);
+  const marketIsClosed = isWeekendEt || anyExplicitlyClosedFeed || sessionPhase !== 'RTH';
+  return {
+    sessionPhase,
+    isWeekendEt,
+    marketIsClosed,
+    surfaceQuotePolicy: marketIsClosed ? 'EOD_CLOSE_REF' : 'RTH_STRICT_BBO',
+  };
+}
+
+export interface ResolvedOptionQuoteForPolicy {
+  readonly mid: number;
+  readonly quoteQuality: UsContractQuoteQuality;
+  readonly quoteSource: string;
+  readonly quoteTimestamp: number | null;
+}
+
+export function resolveQuoteMidForPolicy(
+  contract: OptionSnapshotContract,
+  policy: UsSurfaceQuotePolicy,
+  nowSec?: number,
+  maxQuoteAgeSec?: number,
+): ResolvedOptionQuoteForPolicy {
+  const { bid, ask, midpoint, source, quoteQuality, updatedAt } = contract.lastQuote;
+  const bboTimestamp = Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : null;
+  const eodTimestamp =
+    Number.isFinite(contract.day.updatedAt) && contract.day.updatedAt > 0
+      ? contract.day.updatedAt
+      : bboTimestamp;
+
+  const rawInvalidFlag = quoteQuality === 'INVALID' || quoteQuality === 'INVALID_BBO';
+  const hasFiniteBid = Number.isFinite(bid);
+  const hasFiniteAsk = Number.isFinite(ask);
+  const hasPositiveBid = hasFiniteBid && bid > 0;
+  const hasPositiveAsk = hasFiniteAsk && ask > 0;
+  const crossedOrNegative =
+    (hasFiniteBid && bid < 0) ||
+    (hasFiniteAsk && ask < 0) ||
+    (hasFiniteBid && hasFiniteAsk && bid > ask) ||
+    (hasPositiveBid && !hasPositiveAsk);
+
+  if (rawInvalidFlag || crossedOrNegative) {
+    return {
+      mid: Number.NaN,
+      quoteQuality: 'INVALID_BBO',
+      quoteSource: 'NONE',
+      quoteTimestamp: bboTimestamp ?? eodTimestamp,
+    };
+  }
+
+  if (hasPositiveBid && hasPositiveAsk && ask >= bid) {
+    const explicitStale = quoteQuality === 'STALE' || quoteQuality === 'STALE_QUOTE';
+    const ageExceeded =
+      maxQuoteAgeSec !== undefined &&
+      nowSec !== undefined &&
+      bboTimestamp !== null &&
+      nowSec - bboTimestamp > maxQuoteAgeSec;
+    if (explicitStale || ageExceeded) {
+      return {
+        mid: Number.NaN,
+        quoteQuality: 'STALE_QUOTE',
+        quoteSource: source ?? 'OPRA_NBBO',
+        quoteTimestamp: bboTimestamp ?? eodTimestamp,
+      };
+    }
+    return {
+      mid: 0.5 * (bid + ask),
+      quoteQuality: 'LIVE_VALID',
+      quoteSource: source ?? 'OPRA_NBBO',
+      quoteTimestamp: bboTimestamp ?? eodTimestamp,
+    };
+  }
+
+  if (policy === 'RTH_STRICT_BBO') {
+    if (quoteQuality === 'STALE' || quoteQuality === 'STALE_QUOTE') {
+      return {
+        mid: Number.NaN,
+        quoteQuality: 'STALE_QUOTE',
+        quoteSource: source ?? 'NONE',
+        quoteTimestamp: bboTimestamp ?? eodTimestamp,
+      };
+    }
+    return {
+      mid: Number.NaN,
+      quoteQuality: 'MISSING_BBO',
+      quoteSource: 'NONE',
+      quoteTimestamp: null,
+    };
+  }
+
+  const ref =
+    quoteQuality === 'EOD_CLOSE_REF' && Number.isFinite(midpoint) && midpoint > 0
+      ? midpoint
+      : firstPositiveFinite([
+          contract.day.close,
+          contract.lastTrade.price,
+          contract.day.vwap,
+          contract.day.previousClose,
+        ]);
+  if (Number.isFinite(ref) && ref > 0) {
+    return {
+      mid: ref,
+      quoteQuality: 'EOD_CLOSE_REF',
+      quoteSource: source ?? 'MASSIVE_EOD_REF',
+      quoteTimestamp: eodTimestamp,
+    };
+  }
+
+  return {
+    mid: Number.NaN,
+    quoteQuality: 'MISSING_BBO',
+    quoteSource: 'NONE',
+    quoteTimestamp: null,
+  };
+}
+
 export function resolveQuoteMid(contract: OptionSnapshotContract): number {
-  const { bid, ask, midpoint } = contract.lastQuote;
-  if (Number.isFinite(bid) && Number.isFinite(ask)) {
-    if (bid > ask || ask <= 0 || bid < 0) return Number.NaN;
-    if (bid > 0) return (bid + ask) / 2;
-    if (Number.isFinite(midpoint) && midpoint > 0 && midpoint <= ask) return midpoint;
-  } else if (Number.isFinite(midpoint) && midpoint > 0) {
-    return midpoint;
-  }
-  const lastPx = contract.lastTrade.price;
-  if (Number.isFinite(lastPx) && lastPx > 0) {
-    return lastPx;
-  }
-  if (Number.isFinite(bid) && Number.isFinite(ask) && bid === 0 && ask > 0) {
-    return 0.5 * ask;
-  }
-  return Number.NaN;
+  return resolveQuoteMidForPolicy(contract, 'RTH_STRICT_BBO').mid;
 }
 
 function interpolateLiveRate(
@@ -2732,6 +2940,7 @@ function evaluateParityForExpiry(
   spot: number,
   treasuryObs: TreasuryYieldObservation | undefined,
   sofrRate: number,
+  quotePolicy: UsSurfaceQuotePolicy = 'RTH_STRICT_BBO',
 ): ExpiryParityEvaluation | null {
   const first = expiryContracts[0];
   if (first === undefined || !Number.isFinite(spot) || spot <= 0) {
@@ -2769,9 +2978,9 @@ function evaluateParityForExpiry(
     if (slot.call === undefined || slot.put === undefined) {
       continue;
     }
-    const callMid = resolveQuoteMid(slot.call);
-    const putMid = resolveQuoteMid(slot.put);
-    if (!Number.isFinite(callMid) || !Number.isFinite(putMid)) {
+    const callQuote = resolveQuoteMidForPolicy(slot.call, quotePolicy, nowSec);
+    const putQuote = resolveQuoteMidForPolicy(slot.put, quotePolicy, nowSec);
+    if (!Number.isFinite(callQuote.mid) || !Number.isFinite(putQuote.mid)) {
       continue;
     }
     const callOi = slot.call.openInterest;
@@ -2782,12 +2991,14 @@ function evaluateParityForExpiry(
         : 1;
     pairs.push({
       strike,
-      callMid,
-      putMid,
-      ...(Number.isFinite(slot.call.lastQuote.bid) ? { callBid: slot.call.lastQuote.bid } : {}),
-      ...(Number.isFinite(slot.call.lastQuote.ask) ? { callAsk: slot.call.lastQuote.ask } : {}),
-      ...(Number.isFinite(slot.put.lastQuote.bid) ? { putBid: slot.put.lastQuote.bid } : {}),
-      ...(Number.isFinite(slot.put.lastQuote.ask) ? { putAsk: slot.put.lastQuote.ask } : {}),
+      callMid: callQuote.mid,
+      putMid: putQuote.mid,
+      ...(callQuote.quoteQuality === 'LIVE_VALID'
+        ? { callBid: slot.call.lastQuote.bid, callAsk: slot.call.lastQuote.ask }
+        : {}),
+      ...(putQuote.quoteQuality === 'LIVE_VALID'
+        ? { putBid: slot.put.lastQuote.bid, putAsk: slot.put.lastQuote.ask }
+        : {}),
       liquidityWeight: liqWeight,
     });
   }
@@ -2806,7 +3017,7 @@ function evaluateParityForExpiry(
     method: 'median',
     nearAtmCount: 5,
     maxRelativeSpread: 0.35,
-    requirePositiveBid: true,
+    requirePositiveBid: quotePolicy === 'RTH_STRICT_BBO',
     minValidPairs: 3,
   });
   if (!Number.isFinite(parity.forward) || parity.forward <= 0) {
@@ -2849,53 +3060,170 @@ function evaluateParityForExpiry(
   };
 }
 
-function solveContractOwnIv(
-  contract: OptionSnapshotContract,
-  spot: number,
-  timeToExpiry: number,
-  rate: number,
-  dividendYield: number,
-  isIndex: boolean,
-): number {
-  const mid = resolveQuoteMid(contract);
-  if (!Number.isFinite(mid) || mid <= 0) {
-    return Number.NaN;
+export interface SolvedContractOwnIvResult {
+  readonly impliedVol: number;
+  readonly status: UsOptionIvQualityStatus;
+  readonly model: UsContractValuationModel;
+  readonly quote: ResolvedOptionQuoteForPolicy;
+}
+
+export function solveContractOwnIvDetailed(params: {
+  readonly contract: OptionSnapshotContract;
+  readonly spot: number;
+  readonly timeToExpiry: number;
+  readonly rate: number;
+  readonly dividendYield: number;
+  readonly identity: ResolvedUsOptionContractIdentity;
+  readonly quotePolicy: UsSurfaceQuotePolicy;
+  readonly nowSec?: number;
+  readonly maxQuoteAgeSec?: number;
+}): SolvedContractOwnIvResult {
+  const {
+    contract,
+    spot,
+    timeToExpiry,
+    rate,
+    dividendYield,
+    identity,
+    quotePolicy,
+    nowSec,
+    maxQuoteAgeSec,
+  } = params;
+  const quote = resolveQuoteMidForPolicy(contract, quotePolicy, nowSec, maxQuoteAgeSec);
+
+  if (identity.exerciseStyle === 'UNKNOWN') {
+    return {
+      impliedVol: Number.NaN,
+      status: 'BLOCKED_UNKNOWN_STYLE',
+      model: 'NONE',
+      quote,
+    };
   }
+
+  if (quote.quoteQuality === 'STALE_QUOTE') {
+    return { impliedVol: Number.NaN, status: 'STALE_INPUT', model: 'NONE', quote };
+  }
+  if (quote.quoteQuality === 'INVALID_BBO') {
+    return { impliedVol: Number.NaN, status: 'INVALID_INPUT', model: 'NONE', quote };
+  }
+  const mid = quote.mid;
+  if (!Number.isFinite(mid) || mid <= 0 || quote.quoteQuality === 'MISSING_BBO') {
+    return { impliedVol: Number.NaN, status: 'MISSING_QUOTE', model: 'NONE', quote };
+  }
+
   const { bid, ask } = contract.lastQuote;
-  if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+  if (
+    quote.quoteQuality === 'LIVE_VALID' &&
+    Number.isFinite(bid) &&
+    bid > 0 &&
+    Number.isFinite(ask) &&
+    ask >= bid
+  ) {
     const spreadRatio = (ask - bid) / mid;
     if (!Number.isFinite(spreadRatio) || spreadRatio > 0.85) {
-      return Number.NaN;
+      return { impliedVol: Number.NaN, status: 'INVALID_INPUT', model: 'NONE', quote };
     }
   }
 
-  // Pieza 50.3: sin extrínseco no hay IV invertible (nunca una solución explosiva
-  // de deep ITM por encima del cap de 999 %).
-  const ext = extrinsicValue(contract.contractType, spot, contract.strikePrice, mid);
-  if (!Number.isFinite(ext) || ext <= EXTRINSIC_EPS) {
-    return Number.NaN;
+  if (
+    !Number.isFinite(spot) ||
+    spot <= 0 ||
+    !Number.isFinite(contract.strikePrice) ||
+    contract.strikePrice <= 0 ||
+    !Number.isFinite(rate) ||
+    !Number.isFinite(dividendYield) ||
+    !Number.isFinite(timeToExpiry) ||
+    timeToExpiry <= 0
+  ) {
+    return { impliedVol: Number.NaN, status: 'INVALID_INPUT', model: 'NONE', quote };
   }
 
-  const solved = isIndex
-    ? solveImpliedVolBsm({
-        spot,
-        strike: contract.strikePrice,
-        timeToExpiry,
-        rate,
-        dividendYield,
-        contractType: contract.contractType,
-        price: mid,
-      })
-    : solveImpliedVolAmerican({
-        spot,
-        strike: contract.strikePrice,
-        timeToExpiry,
-        rate,
-        dividendYield,
-        contractType: contract.contractType,
-        marketPrice: mid,
-      });
-  return Number.isFinite(solved) && solved > 0 && solved < IV_CAP_DECIMAL ? solved : Number.NaN;
+  if (identity.exerciseStyle === 'EUROPEAN') {
+    const minExpiryYears = MIN_CONTRACTUAL_EXPIRY_SEC / 31_536_000;
+    if (timeToExpiry <= minExpiryYears) {
+      return { impliedVol: Number.NaN, status: 'UNIDENTIFIABLE_AMERICAN_IV', model: 'NONE', quote };
+    }
+    const bounds = bsmArbitrageBounds({
+      spot,
+      strike: contract.strikePrice,
+      timeToExpiry,
+      rate,
+      dividendYield,
+      contractType: contract.contractType,
+    });
+    const boundEps = 1e-12 * Math.max(1, spot, contract.strikePrice);
+    if (mid < bounds.lower - boundEps) {
+      return { impliedVol: Number.NaN, status: 'BELOW_INTRINSIC', model: 'NONE', quote };
+    }
+    if (mid - bounds.lower <= EXTRINSIC_EPS) {
+      return { impliedVol: Number.NaN, status: 'UNIDENTIFIABLE_AMERICAN_IV', model: 'NONE', quote };
+    }
+    if (mid >= bounds.upper - boundEps) {
+      return { impliedVol: Number.NaN, status: 'ABOVE_UPPER_BOUND', model: 'NONE', quote };
+    }
+    const solved = solveImpliedVolBsm({
+      spot,
+      strike: contract.strikePrice,
+      timeToExpiry,
+      rate,
+      dividendYield,
+      contractType: contract.contractType,
+      price: mid,
+    });
+    if (Number.isFinite(solved) && solved > 0 && solved < IV_CAP_DECIMAL) {
+      return { impliedVol: solved, status: 'SOLVED_EUROPEAN', model: 'EUROPEAN_BSM', quote };
+    }
+    return { impliedVol: Number.NaN, status: 'SOLVER_FAILURE', model: 'NONE', quote };
+  }
+
+  const canUseExactTimestamps =
+    nowSec !== undefined &&
+    Number.isSafeInteger(nowSec) &&
+    Number.isSafeInteger(contract.expirationTime) &&
+    contract.expirationTime > nowSec &&
+    Math.abs((contract.expirationTime - nowSec) / 31_536_000 - timeToExpiry) <= 1e-9;
+  const asOfUtcSec = canUseExactTimestamps ? nowSec : 1_700_000_000;
+  const expiryUtcSec = canUseExactTimestamps
+    ? contract.expirationTime
+    : Math.max(asOfUtcSec + 1, Math.round(asOfUtcSec + timeToExpiry * 31_536_000));
+
+  const diag = solveImpliedVolAmericanDetailed({
+    instrumentId: contract.ticker,
+    asOfUtcSec,
+    expiryUtcSec,
+    spot,
+    strike: contract.strikePrice,
+    contractType: contract.contractType,
+    rate,
+    dividendYield,
+    ...(quote.quoteQuality === 'LIVE_VALID'
+      ? { bid: contract.lastQuote.bid, ask: contract.lastQuote.ask }
+      : { last: mid }),
+    currency: 'USD',
+    exerciseStyle: 'AMERICAN',
+    bypassStaleness: true,
+    maxVolatility: IV_CAP_DECIMAL,
+  });
+
+  if (
+    diag.modelStatus === 'SOLVED_AMERICAN' &&
+    Number.isFinite(diag.impliedVol) &&
+    diag.impliedVol > 0 &&
+    diag.impliedVol < IV_CAP_DECIMAL
+  ) {
+    return {
+      impliedVol: diag.impliedVol,
+      status: 'SOLVED_AMERICAN',
+      model: 'AMERICAN_BS2002',
+      quote,
+    };
+  }
+  return {
+    impliedVol: Number.NaN,
+    status: diag.modelStatus,
+    model: 'NONE',
+    quote,
+  };
 }
 
 function serializeSlice(pkg: SlicePackage): SerializedVolSliceSummary {
@@ -2914,6 +3242,10 @@ function serializeSlice(pkg: SlicePackage): SerializedVolSliceSummary {
     butterfly25: sanitizeFinite(pkg.metrics.butterfly25),
     isButterflyArbitrageFree: pkg.isButterflyArbitrageFree,
     butterflyMinDensity: sanitizeFinite(pkg.butterflyMinDensity),
+    butterflyCheckStatus: pkg.butterflyCheckStatus,
+    sliceMode: pkg.sliceMode,
+    sliceQuality: pkg.sliceQuality,
+    quotePolicy: pkg.quotePolicy,
     nodes: pkg.slice.nodes.map((node) => ({
       strike: node.strike,
       k: node.k,
@@ -3956,14 +4288,30 @@ function applyEodCloseRefQuotes(
 ): EffectiveOpraContractsResult {
   let liveNbboCount = 0;
   let eodFixableCount = 0;
+  const hasLiveBbo = (c: OptionSnapshotContract): boolean => {
+    const { bid, ask, quoteQuality } = c.lastQuote;
+    if (
+      quoteQuality === 'INVALID' ||
+      quoteQuality === 'INVALID_BBO' ||
+      quoteQuality === 'STALE' ||
+      quoteQuality === 'STALE_QUOTE'
+    ) {
+      return false;
+    }
+    return Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid;
+  };
+
   for (const c of contracts) {
     if (c.expirationTime <= params.evalSecUs) {
       continue;
     }
-    const { bid, ask } = c.lastQuote;
-    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+    if (hasLiveBbo(c)) {
       liveNbboCount += 1;
-    } else {
+    } else if (
+      params.marketIsClosed &&
+      c.lastQuote.quoteQuality !== 'INVALID' &&
+      c.lastQuote.quoteQuality !== 'INVALID_BBO'
+    ) {
       const ref = firstPositiveFinite([
         c.day.close,
         c.lastTrade.price,
@@ -3976,19 +4324,19 @@ function applyEodCloseRefQuotes(
     }
   }
 
-  const shouldUseEodRef =
-    eodFixableCount > 0 &&
-    (liveNbboCount < 4 || (params.marketIsClosed && liveNbboCount < eodFixableCount));
-
-  if (!shouldUseEodRef) {
+  // Compuerta dura Q4: durante RTH jamás se sustituyen faltantes de BBO por referencias EOD.
+  if (!params.marketIsClosed || eodFixableCount === 0 || liveNbboCount >= eodFixableCount) {
     return { contracts, usedEodCloseRef: false, liveNbboCount, eodFixedTickers: new Set<string>() };
   }
 
   let modified = false;
   const eodFixedTickers = new Set<string>();
   const mapped = contracts.map((c) => {
-    const { bid, ask, bidSize, askSize } = c.lastQuote;
-    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
+    if (
+      hasLiveBbo(c) ||
+      c.lastQuote.quoteQuality === 'INVALID' ||
+      c.lastQuote.quoteQuality === 'INVALID_BBO'
+    ) {
       return c;
     }
     const ref = firstPositiveFinite([
@@ -4002,15 +4350,21 @@ function applyEodCloseRefQuotes(
     }
     modified = true;
     eodFixedTickers.add(c.ticker);
+    const eodUpdatedAt = firstPositiveFinite([c.day.updatedAt, c.lastQuote.updatedAt]);
     return {
       ...c,
       lastQuote: {
         ...c.lastQuote,
-        bid: ref * 0.995,
-        ask: ref * 1.005,
+        source: 'MASSIVE_EOD_REF' as const,
+        quoteQuality: 'EOD_CLOSE_REF' as const,
+        bid: Number.NaN,
+        ask: Number.NaN,
         midpoint: ref,
-        bidSize: Number.isFinite(bidSize) && bidSize > 0 ? bidSize : 1,
-        askSize: Number.isFinite(askSize) && askSize > 0 ? askSize : 1,
+        bidSize: Number.NaN,
+        askSize: Number.NaN,
+        ...(Number.isFinite(eodUpdatedAt) && eodUpdatedAt > 0
+          ? { updatedAt: eodUpdatedAt }
+          : {}),
       },
     };
   });
@@ -4647,6 +5001,9 @@ export class MarketRuntime {
 
   private buildUsVolAnalyticsSuite(params: {
     readonly canonicalSymbol: string;
+    readonly isIndex?: boolean;
+    readonly quotePolicy?: UsSurfaceQuotePolicy;
+    readonly contractOwnIvStatusMap?: ReadonlyMap<string, UsOptionIvQualityStatus>;
     readonly spot: number;
     readonly spotBid: number;
     readonly spotAsk: number;
@@ -4667,6 +5024,9 @@ export class MarketRuntime {
   }): VolAnalyticsSuiteResult | null {
     const {
       canonicalSymbol,
+      isIndex = canonicalSymbol.startsWith('I:'),
+      quotePolicy = 'RTH_STRICT_BBO',
+      contractOwnIvStatusMap,
       spot,
       spotBid,
       spotAsk,
@@ -4786,29 +5146,43 @@ export class MarketRuntime {
           ? parityInfo.dividendYield
           : evalDivUs;
 
-      const smileContracts = list.map((c) => {
-        const ownIv = contractOwnIvMap.get(c.ticker);
-        const rawIv =
-          ownIv !== undefined && Number.isFinite(ownIv) && ownIv > 0
-            ? ownIv
-            : Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
-              ? c.impliedVolatility
-              : null;
-        const iv = rawIv !== null && rawIv < IV_CAP_DECIMAL ? rawIv : null;
-        const mid = resolveQuoteMid(c);
-        return {
-          strike: c.strikePrice,
-          contractType: c.contractType,
-          iv,
-          bid: Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0 ? c.lastQuote.bid : null,
-          ask: Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0 ? c.lastQuote.ask : null,
-          last: Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0 ? c.lastTrade.price : null,
-          mid: Number.isFinite(mid) && mid > 0 ? mid : null,
-          volume: Number.isFinite(c.day.volume) ? c.day.volume : null,
-          openInterest: Number.isFinite(c.openInterest) ? c.openInterest : null,
-          delta: deltaByTicker.get(c.ticker) ?? null,
-        };
-      });
+      const smileContracts = list
+        .filter(
+          (c) =>
+            MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex).exerciseStyle !==
+            'UNKNOWN',
+        )
+        .map((c) => {
+          const ownIv = contractOwnIvMap.get(c.ticker);
+          const ownStatus = contractOwnIvStatusMap?.get(c.ticker);
+          const providerAllowed =
+            ownStatus !== 'BELOW_INTRINSIC' &&
+            ownStatus !== 'ABOVE_UPPER_BOUND' &&
+            ownStatus !== 'BLOCKED_UNKNOWN_STYLE';
+          const rawIv =
+            ownIv !== undefined && Number.isFinite(ownIv) && ownIv > 0
+              ? ownIv
+              : providerAllowed &&
+                  Number.isFinite(c.impliedVolatility) &&
+                  c.impliedVolatility > 0
+                ? c.impliedVolatility
+                : null;
+          const iv = rawIv !== null && rawIv < IV_CAP_DECIMAL ? rawIv : null;
+          const quoteRes = resolveQuoteMidForPolicy(c, quotePolicy, nowSec);
+          const hasLiveBbo = quoteRes.quoteQuality === 'LIVE_VALID';
+          return {
+            strike: c.strikePrice,
+            contractType: c.contractType,
+            iv,
+            bid: hasLiveBbo && Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0 ? c.lastQuote.bid : null,
+            ask: hasLiveBbo && Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0 ? c.lastQuote.ask : null,
+            last: Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0 ? c.lastTrade.price : null,
+            mid: Number.isFinite(quoteRes.mid) && quoteRes.mid > 0 ? quoteRes.mid : null,
+            volume: Number.isFinite(c.day.volume) ? c.day.volume : null,
+            openInterest: Number.isFinite(c.openInterest) ? c.openInterest : null,
+            delta: deltaByTicker.get(c.ticker) ?? null,
+          };
+        });
 
       const smileOtmOnly = buildSeparatedOtmSmile(
         {
@@ -4923,28 +5297,41 @@ export class MarketRuntime {
 
       const contractIvPct = (c: OptionSnapshotContract | undefined): number | null => {
         if (c === undefined) return null;
-        const raw = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+        const ownStatus = contractOwnIvStatusMap?.get(c.ticker);
+        const providerAllowed =
+          ownStatus !== 'BELOW_INTRINSIC' &&
+          ownStatus !== 'ABOVE_UPPER_BOUND' &&
+          ownStatus !== 'BLOCKED_UNKNOWN_STYLE';
+        const raw =
+          contractOwnIvMap.get(c.ticker) ??
+          (providerAllowed ? c.impliedVolatility : Number.NaN);
         return Number.isFinite(raw) && raw > 0 && raw < IV_CAP_DECIMAL ? raw * 100 : null;
       };
-      const cleanQuote = (x: number): number | null => (Number.isFinite(x) && x > 0 ? x : null);
-      const contractMid = (c: OptionSnapshotContract | undefined): number | null => {
-        if (c === undefined) return null;
-        const m = resolveQuoteMid(c);
-        return Number.isFinite(m) && m > 0 ? m : null;
+      const cleanLiveBidAsk = (c: OptionSnapshotContract | undefined): { bid: number | null; ask: number | null; mid: number | null } => {
+        if (c === undefined) return { bid: null, ask: null, mid: null };
+        const q = resolveQuoteMidForPolicy(c, quotePolicy, nowSec);
+        const isLive = q.quoteQuality === 'LIVE_VALID';
+        return {
+          bid: isLive && Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0 ? c.lastQuote.bid : null,
+          ask: isLive && Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0 ? c.lastQuote.ask : null,
+          mid: Number.isFinite(q.mid) && q.mid > 0 ? q.mid : null,
+        };
       };
 
       const parityPairs = sortedK.map((k) => {
         const c = callByK.get(k);
         const p = putByK.get(k);
+        const cq = cleanLiveBidAsk(c);
+        const pq = cleanLiveBidAsk(p);
         return {
           strike: k,
-          callBid: c !== undefined ? cleanQuote(c.lastQuote.bid) : null,
-          callAsk: c !== undefined ? cleanQuote(c.lastQuote.ask) : null,
-          callMid: contractMid(c),
+          callBid: cq.bid,
+          callAsk: cq.ask,
+          callMid: cq.mid,
           callIvPct: contractIvPct(c),
-          putBid: p !== undefined ? cleanQuote(p.lastQuote.bid) : null,
-          putAsk: p !== undefined ? cleanQuote(p.lastQuote.ask) : null,
-          putMid: contractMid(p),
+          putBid: pq.bid,
+          putAsk: pq.ask,
+          putMid: pq.mid,
           putIvPct: contractIvPct(p),
           callVolume: c !== undefined && Number.isFinite(c.day.volume) ? c.day.volume : null,
           putVolume: p !== undefined && Number.isFinite(p.day.volume) ? p.day.volume : null,
@@ -4965,14 +5352,16 @@ export class MarketRuntime {
       const ratioStrikes = sortedK.map((k) => {
         const c = callByK.get(k);
         const p = putByK.get(k);
+        const cq = cleanLiveBidAsk(c);
+        const pq = cleanLiveBidAsk(p);
         return {
           strike: k,
-          callBid: c !== undefined ? cleanQuote(c.lastQuote.bid) : null,
-          callAsk: c !== undefined ? cleanQuote(c.lastQuote.ask) : null,
-          callMid: contractMid(c),
-          putBid: p !== undefined ? cleanQuote(p.lastQuote.bid) : null,
-          putAsk: p !== undefined ? cleanQuote(p.lastQuote.ask) : null,
-          putMid: contractMid(p),
+          callBid: cq.bid,
+          callAsk: cq.ask,
+          callMid: cq.mid,
+          putBid: pq.bid,
+          putAsk: pq.ask,
+          putMid: pq.mid,
         };
       });
 
@@ -7361,7 +7750,26 @@ export class MarketRuntime {
    * devuelve aunque el slice sea inválido (comportamiento Pieza 50.1 para valuar
    * contratos y exposición del front); `null` solo si la paridad no es calculable.
    */
+  private static resolveContractIdentity(
+    contract: OptionSnapshotContract,
+    canonicalSymbol: string,
+    isIndexHint: boolean,
+  ): ResolvedUsOptionContractIdentity {
+    const assetTicker = contract.underlyingAsset?.ticker.trim() ?? '';
+    const underlyingSymbol = assetTicker !== '' ? assetTicker : canonicalSymbol;
+    return resolveUsOptionContractIdentity({
+      optionSymbol: contract.ticker,
+      underlyingSymbol,
+      isIndexHint,
+      explicitExerciseStyle: contract.exerciseStyle,
+      isBinary: contract.isBinary,
+      isAdjusted: contract.isAdjusted,
+      isNonStandard: contract.isNonStandard,
+    });
+  }
+
   private buildExpiryEvaluation(params: {
+    readonly canonicalSymbol: string;
     readonly expirySec: number;
     readonly expiryContracts: readonly OptionSnapshotContract[];
     readonly spot: number;
@@ -7369,10 +7777,18 @@ export class MarketRuntime {
     readonly latestTreasury: TreasuryYieldObservation | undefined;
     readonly sofrRate: number;
     readonly isIndex: boolean;
+    readonly quotePolicy: UsSurfaceQuotePolicy;
     readonly contractOwnIvMap: Map<string, number>;
-    readonly relaxShortHorizon: boolean;
-  }): { readonly parity: ExpiryParityEvaluation; readonly pkg: SlicePackage | null } | null {
+    readonly contractOwnIvStatusMap: Map<string, UsOptionIvQualityStatus>;
+    readonly conflictWarnings?: Set<string>;
+  }): {
+    readonly parity: ExpiryParityEvaluation;
+    readonly pkg: SlicePackage | null;
+    readonly rejectionQuality: UsSurfaceQualityStatus | null;
+    readonly rejectionReason: string | null;
+  } | null {
     const {
+      canonicalSymbol,
       expirySec,
       expiryContracts,
       spot,
@@ -7380,8 +7796,10 @@ export class MarketRuntime {
       latestTreasury,
       sofrRate,
       isIndex,
+      quotePolicy,
       contractOwnIvMap,
-      relaxShortHorizon,
+      contractOwnIvStatusMap,
+      conflictWarnings,
     } = params;
     const parity = evaluateParityForExpiry(
       expirySec,
@@ -7390,99 +7808,133 @@ export class MarketRuntime {
       spot,
       latestTreasury,
       sofrRate,
+      quotePolicy,
     );
     if (parity === null) {
       return null;
     }
 
-    const quotes: VolQuoteInput[] = [];
+    const rthQuotes: VolQuoteInput[] = [];
+    const eodQuotes: VolQuoteInput[] = [];
+    let liveValidCount = 0;
+    let eodRefCount = 0;
+    let staleQuoteCount = 0;
+    let invalidBboCount = 0;
+
     for (const c of expiryContracts) {
-      const { bid, ask } = c.lastQuote;
-      const mid = resolveQuoteMid(c);
-      if (!Number.isFinite(mid) || mid <= 0) {
+      const identity = MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex);
+      if (
+        identity.conflictCode !== 'NONE' &&
+        identity.conflictDetail !== null &&
+        conflictWarnings !== undefined
+      ) {
+        conflictWarnings.add(identity.conflictDetail);
+      }
+      const solved = solveContractOwnIvDetailed({
+        contract: c,
+        spot,
+        timeToExpiry: parity.timeToExpiry,
+        rate: parity.rate,
+        dividendYield: parity.dividendYield,
+        identity,
+        quotePolicy,
+        nowSec,
+      });
+      contractOwnIvStatusMap.set(c.ticker, solved.status);
+      if (Number.isFinite(solved.impliedVol) && solved.impliedVol > 0) {
+        contractOwnIvMap.set(c.ticker, solved.impliedVol);
+      }
+
+      const { quote } = solved;
+      if (quote.quoteQuality === 'LIVE_VALID') {
+        liveValidCount += 1;
+      } else if (quote.quoteQuality === 'EOD_CLOSE_REF') {
+        eodRefCount += 1;
+      } else if (quote.quoteQuality === 'STALE_QUOTE') {
+        staleQuoteCount += 1;
+      } else if (quote.quoteQuality === 'INVALID_BBO') {
+        invalidBboCount += 1;
+      }
+
+      if (identity.exerciseStyle === 'UNKNOWN') {
         continue;
       }
-      const ownIv = solveContractOwnIv(
-        c,
-        spot,
-        parity.timeToExpiry,
-        parity.rate,
-        parity.dividendYield,
-        isIndex,
-      );
-      if (Number.isFinite(ownIv) && ownIv > 0) {
-        contractOwnIvMap.set(c.ticker, ownIv);
-      }
-      if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid) {
-        quotes.push({
+
+      if (
+        quotePolicy === 'RTH_STRICT_BBO' &&
+        quote.quoteQuality === 'LIVE_VALID' &&
+        Number.isFinite(solved.impliedVol) &&
+        solved.impliedVol > 0
+      ) {
+        rthQuotes.push({
           strike: c.strikePrice,
           contractType: c.contractType,
-          iv: ownIv,
-          bid,
-          ask,
-          mid,
+          iv: solved.impliedVol,
+          bid: c.lastQuote.bid,
+          ask: c.lastQuote.ask,
+          mid: quote.mid,
           openInterest: Number.isFinite(c.openInterest) ? c.openInterest : 0,
         });
+      }
+
+      if (
+        quotePolicy === 'EOD_CLOSE_REF' &&
+        (quote.quoteQuality === 'LIVE_VALID' || quote.quoteQuality === 'EOD_CLOSE_REF') &&
+        Number.isFinite(quote.mid) &&
+        quote.mid > 0
+      ) {
+        const providerFallbackAllowed =
+          solved.status !== 'BELOW_INTRINSIC' &&
+          solved.status !== 'ABOVE_UPPER_BOUND' &&
+          Number.isFinite(c.impliedVolatility) &&
+          c.impliedVolatility > 0 &&
+          c.impliedVolatility < IV_CAP_DECIMAL;
+        const effIv =
+          Number.isFinite(solved.impliedVol) && solved.impliedVol > 0
+            ? solved.impliedVol
+            : providerFallbackAllowed
+              ? c.impliedVolatility
+              : Number.NaN;
+        if (Number.isFinite(effIv) && effIv > 0) {
+          eodQuotes.push({
+            strike: c.strikePrice,
+            contractType: c.contractType,
+            iv: effIv,
+            bid: quote.quoteQuality === 'LIVE_VALID' ? c.lastQuote.bid : Number.NaN,
+            ask: quote.quoteQuality === 'LIVE_VALID' ? c.lastQuote.ask : Number.NaN,
+            mid: quote.mid,
+            openInterest: Number.isFinite(c.openInterest) ? c.openInterest : 0,
+          });
+        }
       }
     }
 
-    const strictSlice = buildVolSlice(
-      {
-        timeToExpiry: parity.timeToExpiry,
-        expirySec,
-        forward: parity.forward,
-        spot,
-        rate: parity.rate,
-        dividendYield: parity.dividendYield,
-        quotes,
-      },
-      {
-        requirePositiveBid: true,
-        maxSpreadRatio: 0.35,
-        minOpenInterest: 1,
-        minPoints: 6,
-        quoteSelection: 'otm',
-      },
-    );
-    let slice = strictSlice;
-    if (!slice.isValid && relaxShortHorizon) {
-      const relaxedQuotes: VolQuoteInput[] = [];
-      for (const c of expiryContracts) {
-        const midRaw = resolveQuoteMid(c);
-        const effMid =
-          Number.isFinite(midRaw) && midRaw > 0
-            ? midRaw
-            : Number.isFinite(c.day.close) && c.day.close > 0
-              ? c.day.close
-              : Number.NaN;
-        if (!Number.isFinite(effMid) || effMid <= 0) {
-          continue;
-        }
-        const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
-        const effIv =
-          Number.isFinite(ownIv) && ownIv > 0
-            ? ownIv
-            : Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
-              ? c.impliedVolatility
-              : Number.NaN;
-        if (!Number.isFinite(effIv) || effIv <= 0) {
-          continue;
-        }
-        const { bid, ask } = c.lastQuote;
-        const effBid = Number.isFinite(bid) && bid > 0 ? bid : effMid * 0.96;
-        const effAsk = Number.isFinite(ask) && ask >= effBid ? ask : effMid * 1.04;
-        relaxedQuotes.push({
-          strike: c.strikePrice,
-          contractType: c.contractType,
-          iv: effIv,
-          bid: effBid,
-          ask: effAsk,
-          mid: effMid,
-          openInterest: Number.isFinite(c.openInterest) ? c.openInterest : 0,
-        });
-      }
-      if (relaxedQuotes.length >= 3) {
-        const otmRelaxed = buildVolSlice(
+    let slice: VolSlice;
+    let sliceMode: SlicePackage['sliceMode'] = 'LIVE_RTH';
+    let sliceQuality: UsSurfaceQualityStatus = 'LIVE_VALID';
+    let usedQuotes: readonly VolQuoteInput[] = rthQuotes;
+
+    if (quotePolicy === 'RTH_STRICT_BBO') {
+      slice = buildVolSlice(
+        {
+          timeToExpiry: parity.timeToExpiry,
+          expirySec,
+          forward: parity.forward,
+          spot,
+          rate: parity.rate,
+          dividendYield: parity.dividendYield,
+          quotes: rthQuotes,
+        },
+        {
+          requirePositiveBid: true,
+          maxSpreadRatio: 0.35,
+          minOpenInterest: 1,
+          minPoints: 6,
+          quoteSelection: 'otm',
+        },
+      );
+      if (!slice.isValid && rthQuotes.length >= 4) {
+        const partialRth = buildVolSlice(
           {
             timeToExpiry: parity.timeToExpiry,
             expirySec,
@@ -7490,41 +7942,100 @@ export class MarketRuntime {
             spot,
             rate: parity.rate,
             dividendYield: parity.dividendYield,
-            quotes: relaxedQuotes,
+            quotes: rthQuotes,
           },
           {
-            requirePositiveBid: false,
-            maxSpreadRatio: 1.5,
+            requirePositiveBid: true,
+            maxSpreadRatio: 0.6,
             minOpenInterest: 0,
-            minPoints: 3,
+            minPoints: 4,
             quoteSelection: 'otm',
           },
         );
-        slice = otmRelaxed.isValid
-          ? otmRelaxed
-          : buildVolSlice(
-              {
-                timeToExpiry: parity.timeToExpiry,
-                expirySec,
-                forward: parity.forward,
-                spot,
-                rate: parity.rate,
-                dividendYield: parity.dividendYield,
-                quotes: relaxedQuotes,
-              },
-              {
-                requirePositiveBid: false,
-                maxSpreadRatio: 1.5,
-                minOpenInterest: 0,
-                minPoints: 3,
-                quoteSelection: 'spreadWeightedMean',
-              },
-            );
+        if (partialRth.isValid) {
+          slice = partialRth;
+          sliceMode = 'PARTIAL_RTH';
+          sliceQuality = 'PARTIAL';
+        }
       }
+    } else {
+      usedQuotes = eodQuotes;
+      const eodOtm = buildVolSlice(
+        {
+          timeToExpiry: parity.timeToExpiry,
+          expirySec,
+          forward: parity.forward,
+          spot,
+          rate: parity.rate,
+          dividendYield: parity.dividendYield,
+          quotes: eodQuotes,
+        },
+        {
+          requirePositiveBid: false,
+          allowReferenceMidWithoutBbo: true,
+          maxSpreadRatio: 0.85,
+          minOpenInterest: 0,
+          minPoints: 4,
+          quoteSelection: 'otm',
+        },
+      );
+      slice = eodOtm.isValid
+        ? eodOtm
+        : buildVolSlice(
+            {
+              timeToExpiry: parity.timeToExpiry,
+              expirySec,
+              forward: parity.forward,
+              spot,
+              rate: parity.rate,
+              dividendYield: parity.dividendYield,
+              quotes: eodQuotes,
+            },
+            {
+              requirePositiveBid: false,
+              allowReferenceMidWithoutBbo: true,
+              maxSpreadRatio: 0.85,
+              minOpenInterest: 0,
+              minPoints: 4,
+              quoteSelection: 'spreadWeightedMean',
+            },
+          );
+      sliceMode = 'EOD_REFERENCE';
+      sliceQuality = 'EOD_CLOSE_REF';
     }
+
     if (!slice.isValid) {
-      return { parity, pkg: null };
+      if (quotePolicy === 'RTH_STRICT_BBO' && (rthQuotes.length === 0 || liveValidCount === 0)) {
+        const rejectionQuality: UsSurfaceQualityStatus =
+          invalidBboCount > 0
+            ? 'INVALID_BBO'
+            : staleQuoteCount > 0
+              ? 'STALE_QUOTE'
+              : 'MISSING_BBO';
+        const rejectionReason =
+          rejectionQuality === 'INVALID_BBO'
+            ? 'invalid_rth_bbo'
+            : rejectionQuality === 'STALE_QUOTE'
+              ? 'stale_rth_bbo'
+              : 'missing_valid_rth_bbo';
+        return { parity, pkg: null, rejectionQuality, rejectionReason };
+      }
+      if (quotePolicy === 'EOD_CLOSE_REF' && eodRefCount + liveValidCount === 0) {
+        return {
+          parity,
+          pkg: null,
+          rejectionQuality: 'MISSING_BBO',
+          rejectionReason: 'missing_eod_reference',
+        };
+      }
+      return {
+        parity,
+        pkg: null,
+        rejectionQuality: 'INSUFFICIENT_STRIKES',
+        rejectionReason: slice.report.rejectionReason ?? 'insufficient_points',
+      };
     }
+
     const metrics = computeSliceVolMetrics(slice, {
       spot,
       rate: parity.rate,
@@ -7532,17 +8043,31 @@ export class MarketRuntime {
       deltaConvention: 'spotBsm',
     });
     if (!Number.isFinite(metrics.ivAtm)) {
-      return { parity, pkg: null };
+      return {
+        parity,
+        pkg: null,
+        rejectionQuality: 'INSUFFICIENT_STRIKES',
+        rejectionReason: 'non_finite_iv_atm',
+      };
     }
+
+    const bfReport = validateSliceButterflyArbitrage(slice);
     return {
       parity,
       pkg: {
         parity,
         slice,
         metrics,
-        isButterflyArbitrageFree: metrics.isButterflyArbitrageFree,
-        butterflyMinDensity: Number.NaN,
+        butterflyCheckStatus: bfReport.status,
+        isButterflyArbitrageFree: bfReport.status === 'PASS',
+        butterflyMinDensity: bfReport.minDensity,
+        sliceMode,
+        sliceQuality,
+        quotePolicy,
+        sourceQuotes: usedQuotes,
       },
+      rejectionQuality: null,
+      rejectionReason: null,
     };
   }
 
@@ -7552,6 +8077,11 @@ export class MarketRuntime {
     contracts: readonly OptionSnapshotContract[],
     contractOwnIvMap: ReadonlyMap<string, number>,
     spot: number,
+    canonicalSymbol: string,
+    isIndex: boolean,
+    quotePolicy: UsSurfaceQuotePolicy,
+    nowSec: number,
+    contractOwnIvStatusMap?: ReadonlyMap<string, UsOptionIvQualityStatus>,
   ): Map<number, number> {
     const expiryAtmIvMap = new Map<number, number>();
     for (const sp of validSlices) {
@@ -7566,8 +8096,14 @@ export class MarketRuntime {
         .sort((a, b) => Math.abs(a.strikePrice - spot) - Math.abs(b.strikePrice - spot));
       const nearOtmIvs: number[] = [];
       for (const row of nearContracts.slice(0, 4)) {
+        const identity = MarketRuntime.resolveContractIdentity(row, canonicalSymbol, isIndex);
+        if (identity.exerciseStyle === 'UNKNOWN') continue;
+        const quote = resolveQuoteMidForPolicy(row, quotePolicy, nowSec);
+        if (quote.quoteQuality !== 'LIVE_VALID' && quote.quoteQuality !== 'EOD_CLOSE_REF') continue;
         const isOtm = row.contractType === 'call' ? row.strikePrice >= spot - 1e-6 : row.strikePrice <= spot + 1e-6;
         if (!isOtm) continue;
+        const status = contractOwnIvStatusMap?.get(row.ticker);
+        if (status === 'BELOW_INTRINSIC' || status === 'ABOVE_UPPER_BOUND') continue;
         const ivVal = contractOwnIvMap.get(row.ticker) ?? row.impliedVolatility;
         if (Number.isFinite(ivVal) && ivVal > 0 && ivVal < IV_CAP_DECIMAL) {
           nearOtmIvs.push(ivVal);
@@ -7589,22 +8125,32 @@ export class MarketRuntime {
     contractOwnIvMap: ReadonlyMap<string, number>,
     spot: number,
     nowSec: number,
+    canonicalSymbol: string,
+    isIndex: boolean,
+    quotePolicy: UsSurfaceQuotePolicy,
+    contractOwnIvStatusMap?: ReadonlyMap<string, UsOptionIvQualityStatus>,
   ): Map<string, number> {
     const otmIvByExpiryStrike = new Map<string, number>();
     for (const c of contracts) {
       if (!(c.expirationTime > nowSec + MIN_CONTRACTUAL_EXPIRY_SEC)) continue;
+      const identity = MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex);
+      if (identity.exerciseStyle === 'UNKNOWN') continue;
+      const quote = resolveQuoteMidForPolicy(c, quotePolicy, nowSec);
+      if (quote.quoteQuality !== 'LIVE_VALID' && quote.quoteQuality !== 'EOD_CLOSE_REF') continue;
       const isOtm =
         c.contractType === 'call'
           ? c.strikePrice >= spot - 1e-6
           : c.strikePrice <= spot + 1e-6;
       if (!isOtm) continue;
+      const status = contractOwnIvStatusMap?.get(c.ticker);
+      if (status === 'BELOW_INTRINSIC' || status === 'ABOVE_UPPER_BOUND') continue;
       const ivVal = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
       if (!Number.isFinite(ivVal) || ivVal <= 0 || ivVal >= IV_CAP_DECIMAL) continue;
       const otmExtrinsic = extrinsicValue(
         c.contractType,
         spot,
         c.strikePrice,
-        resolveQuoteMid(c),
+        quote.mid,
       );
       if (!Number.isFinite(otmExtrinsic) || otmExtrinsic <= 0.01) continue;
       const key = `${String(c.expirationTime)}|${String(c.strikePrice)}`;
@@ -7616,9 +8162,9 @@ export class MarketRuntime {
   }
 
   /**
-   * Pieza 50.2: serializa filas OPRA con IV propia/proveedor saneada, rescate ITM por
-   * paridad o IV ATM, y griegas BSM (índices) / Americanas (acciones y ADR). Cero
-   * fallbacks silenciosos: lo no calculable viaja como `null` y la UI muestra `—`.
+   * Pieza 50.2 / P1 Q3+Q4: serializa filas OPRA con identidad contractual verificable,
+   * IV propia/proveedor saneada, rescate ITM por paridad o IV ATM, y griegas coherentes
+   * con `identity.exerciseStyle`. Cero cambios silenciosos a BSM ni puntas sintéticas.
    */
   private serializeExpiryContractRows(params: UsContractValuationParams & {
     readonly selected: readonly OptionSnapshotContract[];
@@ -7626,12 +8172,36 @@ export class MarketRuntime {
   }): SerializedOptionContractRow[] {
     return params.selected.map((c) => {
       const valuation = params.valuationsByTicker?.get(c.ticker) ?? MarketRuntime.evaluateUsContractValuation(c, params);
-      const { mid, cleanOwnIv, cleanProvIv, ivSource, greeks } = valuation;
+      const {
+        mid,
+        cleanOwnIv,
+        cleanProvIv,
+        ivSource,
+        greeks,
+        identity,
+        valuationModel,
+        ivQualityStatus,
+        quoteQuality,
+        quoteSource,
+        quoteTimestampUtcSec,
+      } = valuation;
       const changePct = resolveContractChangePct(
         c.day.changePercent,
         c.day.previousClose,
         firstPositiveFinite([c.day.close, c.lastTrade.price, mid]),
       );
+      const exposeBbo =
+        quoteQuality !== 'EOD_CLOSE_REF' &&
+        quoteQuality !== 'INVALID_BBO' &&
+        quoteQuality !== 'MISSING_BBO';
+      const serializedBid =
+        exposeBbo && Number.isFinite(c.lastQuote.bid) && c.lastQuote.bid > 0
+          ? c.lastQuote.bid
+          : null;
+      const serializedAsk =
+        exposeBbo && Number.isFinite(c.lastQuote.ask) && c.lastQuote.ask > 0
+          ? c.lastQuote.ask
+          : null;
 
       return {
         ticker: c.ticker,
@@ -7639,8 +8209,8 @@ export class MarketRuntime {
         strike: c.strikePrice,
         expirationDate: c.expirationDate,
         expiryUtcSec: c.expirationTime,
-        bid: sanitizeFinite(c.lastQuote.bid),
-        ask: sanitizeFinite(c.lastQuote.ask),
+        bid: serializedBid,
+        ask: serializedAsk,
         mid: sanitizeFinite(mid),
         lastPrice: sanitizeFinite(c.lastTrade.price),
         openInterest: sanitizeFinite(c.openInterest),
@@ -7656,6 +8226,17 @@ export class MarketRuntime {
         vegaPer1Pct: sanitizeFinite(greeks?.vegaPer1Pct),
         vanna: sanitizeFinite(greeks?.vanna),
         charm: sanitizeFinite(greeks?.charm),
+        contractRoot: identity.contractRoot,
+        underlyingType: identity.underlyingType,
+        exerciseStyle: identity.exerciseStyle,
+        settlementType: identity.settlementType,
+        exerciseStyleSource: identity.exerciseStyleSource,
+        exerciseStyleConflict: identity.conflictCode,
+        valuationModel,
+        ivQualityStatus,
+        quoteQuality,
+        quoteSource,
+        quoteTimestampUtcSec,
       };
     });
   }
@@ -7665,21 +8246,80 @@ export class MarketRuntime {
     params: UsContractValuationParams,
   ): UsContractValuation {
     const {
+      canonicalSymbol = '',
       spot,
       nowSec,
       isIndex,
+      quotePolicy = 'RTH_STRICT_BBO',
       expiryParityMap,
       fallbackParity,
       contractOwnIvMap,
+      contractOwnIvStatusMap,
       expiryAtmIvMap,
       otmIvByExpiryStrike,
     } = params;
+    const identity = MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex);
     const parity = expiryParityMap.get(c.expirationTime) ?? fallbackParity;
     const timeToExpiry = resolveContractualTimeToExpiryYears(nowSec, c.expirationTime, MIN_CONTRACTUAL_EXPIRY_SEC);
+
     const ownIv = contractOwnIvMap.get(c.ticker) ?? Number.NaN;
+    const quoteRes = resolveQuoteMidForPolicy(c, quotePolicy, nowSec);
+
+    if (identity.exerciseStyle === 'UNKNOWN') {
+      return {
+        parity,
+        timeToExpiry,
+        mid: Number.NaN,
+        cleanOwnIv: Number.NaN,
+        cleanProvIv: Number.NaN,
+        ivSource: 'NONE',
+        exposureIv: Number.NaN,
+        greeks: null,
+        identity,
+        valuationModel: 'NONE',
+        ivQualityStatus: 'BLOCKED_UNKNOWN_STYLE',
+        quoteQuality: quoteRes.quoteQuality,
+        quoteSource: quoteRes.quoteSource,
+        quoteTimestampUtcSec: quoteRes.quoteTimestamp,
+      };
+    }
+
+    const ownIvStatus: UsOptionIvQualityStatus =
+      contractOwnIvStatusMap?.get(c.ticker) ??
+      (Number.isFinite(ownIv) && ownIv > 0
+        ? identity.exerciseStyle === 'EUROPEAN'
+          ? 'SOLVED_EUROPEAN'
+          : 'SOLVED_AMERICAN'
+        : quoteRes.quoteQuality === 'STALE_QUOTE'
+          ? 'STALE_INPUT'
+          : quoteRes.quoteQuality === 'INVALID_BBO'
+            ? 'INVALID_INPUT'
+            : 'MISSING_QUOTE');
+
+    const mid = quoteRes.mid;
     const provIv = c.impliedVolatility;
-    const mid = resolveQuoteMid(c);
     const rawExt = extrinsicValue(c.contractType, spot, c.strikePrice, mid);
+    const effectiveExt =
+      identity.exerciseStyle === 'EUROPEAN' &&
+      Number.isFinite(mid) &&
+      mid > 0 &&
+      Number.isFinite(timeToExpiry) &&
+      timeToExpiry > 0 &&
+      Number.isFinite(spot) &&
+      spot > 0 &&
+      Number.isFinite(c.strikePrice) &&
+      c.strikePrice > 0
+        ? mid -
+          bsmArbitrageBounds({
+            spot,
+            strike: c.strikePrice,
+            timeToExpiry,
+            rate: parity.rate,
+            dividendYield: parity.dividendYield,
+            contractType: c.contractType,
+          }).lower
+        : rawExt;
+
     const fallbackAtmIv = expiryAtmIvMap.get(c.expirationTime) ?? Number.NaN;
     const itmContract =
       c.contractType === 'call' ? c.strikePrice < spot - 1e-6 : c.strikePrice > spot - 1e-6;
@@ -7692,10 +8332,15 @@ export class MarketRuntime {
         : Number.isFinite(provIv) && provIv > 0
           ? provIv
           : Number.NaN;
-    // Pieza 50.3: extrínseco agotado = `rawExt <= EXTRINSIC_EPS` (incluye mid por debajo
-    // del intrínseco por spread/tick de spot). Antes se anulaba a NaN y desactivaba el
-    // colapso DEEP_ITM_INTRINSIC, dejando pasar una IV ruidosa (Delta -0.66/-0.70).
-    const extrinsicExhausted = Number.isFinite(rawExt) && rawExt <= EXTRINSIC_EPS;
+
+    const boundRejected =
+      ownIvStatus === 'BELOW_INTRINSIC' ||
+      ownIvStatus === 'ABOVE_UPPER_BOUND' ||
+      quoteRes.quoteQuality === 'INVALID_BBO' ||
+      quoteRes.quoteQuality === 'STALE_QUOTE';
+
+    // Pieza 50.3: extrínseco agotado = `effectiveExt <= EXTRINSIC_EPS`.
+    const extrinsicExhausted = Number.isFinite(effectiveExt) && effectiveExt <= EXTRINSIC_EPS;
     const isDeep4SigmaByAtm =
       Number.isFinite(fallbackAtmIv) &&
       fallbackAtmIv > 0 &&
@@ -7707,17 +8352,44 @@ export class MarketRuntime {
       Number.isFinite(rawUsedIv) &&
       rawUsedIv > Math.max(3.0, fallbackAtmIv * 4);
     const unreliableIv =
+      boundRejected ||
       extrinsicExhausted ||
       blownProviderDeepItm ||
-      (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, rawExt));
+      (Number.isFinite(rawUsedIv) && isIvUnreliable(rawUsedIv, effectiveExt));
+
     const cleanOwnIv =
       !unreliableIv && Number.isFinite(ownIv) && ownIv > 0 && ownIv < IV_CAP_DECIMAL
         ? ownIv
         : Number.NaN;
-    const cleanProvIv =
+
+    let cleanProvIv =
       !unreliableIv && Number.isFinite(provIv) && provIv > 0 && provIv < IV_CAP_DECIMAL
         ? provIv
         : Number.NaN;
+    if (
+      Number.isFinite(cleanProvIv) &&
+      identity.exerciseStyle === 'AMERICAN' &&
+      itmContract &&
+      Number.isFinite(mid) &&
+      mid > 0 &&
+      Number.isFinite(timeToExpiry) &&
+      timeToExpiry > 0 &&
+      Number.isFinite(cleanOwnIv)
+    ) {
+      const repriced = priceAmericanBjerksund2002({
+        spot,
+        strike: c.strikePrice,
+        timeToExpiry,
+        rate: parity.rate,
+        dividendYield: parity.dividendYield,
+        volatility: cleanProvIv,
+        contractType: c.contractType,
+      });
+      if (!Number.isFinite(repriced) || Math.abs(repriced - mid) / mid > 0.05) {
+        cleanProvIv = Number.NaN;
+      }
+    }
+
     const usedIv = Number.isFinite(cleanOwnIv)
       ? cleanOwnIv
       : Number.isFinite(cleanProvIv)
@@ -7733,7 +8405,7 @@ export class MarketRuntime {
       otmIvByExpiryStrike.get(`${String(c.expirationTime)}|${String(c.strikePrice)}`) ??
       Number.NaN;
     const itmRescue: ParityItmRescueResult =
-      unreliableIv && itmContract && !isDeep4SigmaByAtm
+      unreliableIv && itmContract && !isDeep4SigmaByAtm && !boundRejected
         ? resolveParityItmRescueIv({
             counterpartOtmIv,
             atmIv: fallbackAtmIv,
@@ -7751,15 +8423,17 @@ export class MarketRuntime {
 
     let greeks: OptionGreeksResult | null = null;
     let exposureIv = Number.NaN;
+    let valuationModel: UsContractValuationModel = 'NONE';
     if (Number.isFinite(timeToExpiry)) {
       const intrinsic = evaluateOptionAtExpiry(spot, c.strikePrice, c.contractType);
       const useFallback = itmRescue.iv === null && unreliableIv;
       if (useFallback && extrinsicExhausted && intrinsic > 0) {
+        valuationModel = 'DEEP_ITM_INTRINSIC';
         greeks = {
           price: intrinsic, delta: c.contractType === 'call' ? 1 : -1, gamma: 0,
           theta: 0, thetaDaily: 0, vega: 0, vegaPer1Pct: 0, rho: 0, vanna: 0, charm: 0,
         };
-      } else {
+      } else if (!boundRejected || itmRescue.iv !== null) {
         const vol = useFallback ? fallbackAtmIv : engineIv;
         if (Number.isFinite(vol) && vol > 0 && vol < IV_CAP_DECIMAL) {
           const modelInput = {
@@ -7768,36 +8442,37 @@ export class MarketRuntime {
           };
           exposureIv = vol;
           if (useFallback) ivSource = 'ATM_FALLBACK';
-          greeks = isIndex || useFallback
-            ? greeksBsm(modelInput)
-            : greeksAmericanFiniteDiffOrAnalytical(modelInput);
-          if (!isIndex && !useFallback &&
-              ![greeks.gamma, greeks.delta, greeks.thetaDaily, greeks.vegaPer1Pct].every(Number.isFinite)) {
-            const bsm = greeksBsm(modelInput);
-            const american = greeks;
-            greeks = {
-              price: Number.isFinite(american.price) ? american.price : bsm.price,
-              delta: Number.isFinite(american.delta) ? american.delta : bsm.delta,
-              gamma: Number.isFinite(american.gamma) ? american.gamma : bsm.gamma,
-              theta: Number.isFinite(american.theta) ? american.theta : bsm.theta,
-              thetaDaily: Number.isFinite(american.thetaDaily) ? american.thetaDaily : bsm.thetaDaily,
-              vega: Number.isFinite(american.vega) ? american.vega : bsm.vega,
-              vegaPer1Pct: Number.isFinite(american.vegaPer1Pct) ? american.vegaPer1Pct : bsm.vegaPer1Pct,
-              rho: Number.isFinite(american.rho) ? american.rho : bsm.rho,
-              vanna: Number.isFinite(american.vanna) ? american.vanna : bsm.vanna,
-              charm: Number.isFinite(american.charm) ? american.charm : bsm.charm,
-            };
+          if (identity.exerciseStyle === 'EUROPEAN') {
+            valuationModel = 'EUROPEAN_BSM';
+            greeks = greeksBsm(modelInput);
+          } else {
+            valuationModel = 'AMERICAN_BS2002';
+            greeks = greeksAmericanFiniteDiffOrAnalytical(modelInput);
           }
         }
       }
     }
-    return { parity, timeToExpiry, mid, cleanOwnIv, cleanProvIv, ivSource, exposureIv, greeks };
+    return {
+      parity,
+      timeToExpiry,
+      mid,
+      cleanOwnIv,
+      cleanProvIv,
+      ivSource,
+      exposureIv,
+      greeks,
+      identity,
+      valuationModel,
+      ivQualityStatus: ownIvStatus,
+      quoteQuality: quoteRes.quoteQuality,
+      quoteSource: quoteRes.quoteSource,
+      quoteTimestampUtcSec: quoteRes.quoteTimestamp,
+    };
   }
 
   /**
-   * Pieza 50.2: insumos de exposición de dealers por contrato (IV propia resuelta con
-   * conteo explícito de fallback al proveedor) reutilizados por snapshot y cadena
-   * on-demand sin duplicar lógica.
+   * Pieza 50.2 / P1 Q3+Q4: insumos de exposición de dealers por contrato con modelo
+   * contractual explícito y exclusión fail-closed de estilos `UNKNOWN`.
    */
   private buildExposureInputs(params: {
     readonly contracts: readonly OptionSnapshotContract[];
@@ -7816,12 +8491,15 @@ export class MarketRuntime {
     for (const c of contracts) {
       const valuation = MarketRuntime.evaluateUsContractValuation(c, valuationParams);
       valuationsByTicker.set(c.ticker, valuation);
+      if (valuation.identity.exerciseStyle === 'UNKNOWN') continue;
       if (!Number.isFinite(valuation.timeToExpiry)) continue;
-      const { parity: expParity, exposureIv, greeks, ivSource, mid } = valuation;
+      const { parity: expParity, exposureIv, greeks, ivSource, mid, identity } = valuation;
       if (ivSource === 'OWN') ownSolvedIvContracts += 1;
       if (ivSource === 'PROVIDER') providerFallbackIvContracts += 1;
       const { bid, ask } = c.lastQuote;
+      const contractModel = identity.exerciseStyle === 'EUROPEAN' ? 'bsm' : 'american';
       inputs.push({
+        model: contractModel,
         contractType: c.contractType,
         strike: c.strikePrice,
         expiryUtcSec: c.expirationTime,
@@ -7834,8 +8512,7 @@ export class MarketRuntime {
         dividendYield: expParity.dividendYield,
         ...(Number.isFinite(exposureIv) && greeks !== null ? { iv: exposureIv, precomputedGreeks: greeks } : {}),
         ...(Number.isFinite(mid) && mid > 0 ? { midPrice: mid } : {}),
-        ...(Number.isFinite(bid) && bid >= 0 ? { bid } : {}),
-        ...(Number.isFinite(ask) && ask > 0 ? { ask } : {}),
+        ...(Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask >= bid ? { bid, ask } : {}),
       });
     }
     return { inputs, valuationsByTicker, ownSolvedIvContracts, providerFallbackIvContracts };
@@ -8451,12 +9128,15 @@ export class MarketRuntime {
       spot = v2Own.price;
     }
 
-    const marketPartsEt = getMarketParts(nowSec, 'EQUITY');
-    const isWeekendEt = marketPartsEt.weekday === 0 || marketPartsEt.weekday === 6;
     const anyClosedMarket =
       unifiedRes.stocks.some((s) => s.marketStatus?.toLowerCase() === 'closed') ||
       unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed') ||
       [...v2StocksRes.map.values()].some((q) => q.marketStatus?.toLowerCase() === 'closed');
+    const {
+      isWeekendEt,
+      marketIsClosed,
+      surfaceQuotePolicy,
+    } = resolveUsOptionsSessionPolicy(nowSec, anyClosedMarket);
 
     // Pieza 50.9: procedencia previa al overlay Tradier (hora de cotización Massive).
     const tradierOverlay = await this.tryTradierChainOverlay(canonicalSymbol, isIndex, contracts, nowSec, warnings);
@@ -8481,7 +9161,7 @@ export class MarketRuntime {
     const rawOptionContracts: readonly OptionSnapshotContract[] = contracts;
     const eodQuotesRes = applyEodCloseRefQuotes(rawOptionContracts, {
       evalSecUs: nowSec,
-      marketIsClosed: anyClosedMarket || isWeekendEt,
+      marketIsClosed,
     });
     contracts = eodQuotesRes.contracts;
     const usedEodCloseRef = eodQuotesRes.usedEodCloseRef;
@@ -8511,6 +9191,7 @@ export class MarketRuntime {
             spot,
             latestTreasury,
             sofrRate,
+            surfaceQuotePolicy,
           );
     const parityImpliedSpot =
       frontAlignmentParity !== null &&
@@ -8526,7 +9207,7 @@ export class MarketRuntime {
       feedSpot: spot,
       rthCloseSpot: resolveRthCloseSpot(bars5mRes.bars, bars1dRes.bars, nowSec),
       parityImpliedSpot,
-      marketClosed: anyClosedMarket || isWeekendEt || usedEodCloseRef,
+      marketClosed: marketIsClosed || usedEodCloseRef,
     });
     if (Number.isFinite(alignedSpot.valuationSpot) && alignedSpot.valuationSpot > 0) {
       spot = alignedSpot.valuationSpot;
@@ -8555,6 +9236,11 @@ export class MarketRuntime {
     let ownSolvedIvContracts = 0;
     let providerFallbackIvContracts = 0;
     const contractOwnIvMap = new Map<string, number>();
+    const contractOwnIvStatusMap = new Map<string, UsOptionIvQualityStatus>();
+    const styleConflictWarnings = new Set<string>();
+    let expiryRejectedCount = 0;
+    let dominantRejectionQuality: UsSurfaceQualityStatus | null = null;
+    let dominantRejectionReason: string | null = null;
 
     for (const expirySec of sortedExpiries) {
       const expiryContracts = byExpiry.get(expirySec);
@@ -8562,6 +9248,7 @@ export class MarketRuntime {
         continue;
       }
       const evaluation = this.buildExpiryEvaluation({
+        canonicalSymbol,
         expirySec,
         expiryContracts,
         spot,
@@ -8569,9 +9256,10 @@ export class MarketRuntime {
         latestTreasury,
         sofrRate,
         isIndex,
+        quotePolicy: surfaceQuotePolicy,
         contractOwnIvMap,
-        relaxShortHorizon:
-          canonicalSymbol === 'GGAL' || usedEodCloseRef || anyClosedMarket || isWeekendEt,
+        contractOwnIvStatusMap,
+        conflictWarnings: styleConflictWarnings,
       });
       if (evaluation === null) {
         continue;
@@ -8579,7 +9267,17 @@ export class MarketRuntime {
       expiryParityMap.set(expirySec, evaluation.parity);
       if (evaluation.pkg !== null) {
         validSlices.push(evaluation.pkg);
+      } else {
+        expiryRejectedCount += 1;
+        if (dominantRejectionQuality === null && evaluation.rejectionQuality !== null) {
+          dominantRejectionQuality = evaluation.rejectionQuality;
+          dominantRejectionReason = evaluation.rejectionReason;
+        }
       }
+    }
+
+    for (const conflictWarning of styleConflictWarnings) {
+      warnings.push(conflictWarning);
     }
 
     const frontSlicePkg = validSlices[0];
@@ -8592,10 +9290,29 @@ export class MarketRuntime {
     let volSurfaceSummary: SerializedVolSurfaceSummary | null = null;
     let iv30d = Number.NaN;
     let exposureTrace: ExposureTraceMetadata | undefined;
+    const chainFallbackModel: 'bsm' | 'american' = (() => {
+      let eur = 0;
+      let amr = 0;
+      for (const c of contracts) {
+        const st = MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex).exerciseStyle;
+        if (st === 'EUROPEAN') eur += 1;
+        else if (st === 'AMERICAN') amr += 1;
+      }
+      if (amr > 0 && amr >= eur) return 'american';
+      if (eur > 0) return 'bsm';
+      return isIndex && !canonicalSymbol.endsWith('OEX') ? 'bsm' : 'american';
+    })();
 
     if (activeFrontParity !== undefined && Number.isFinite(spot) && spot > 0 && contracts.length > 0) {
       const surfaceSlices = validSlices.slice(0, 12);
-      const surface =
+      const surfaceFilterBase = {
+        minPoints: 4,
+        minOpenInterest: 0,
+        requirePositiveBid: surfaceQuotePolicy === 'RTH_STRICT_BBO',
+        allowReferenceMidWithoutBbo: surfaceQuotePolicy === 'EOD_CLOSE_REF',
+        maxSpreadRatio: surfaceQuotePolicy === 'EOD_CLOSE_REF' ? 0.85 : 0.6,
+      };
+      let surface =
         surfaceSlices.length > 0
           ? buildVolSurface(
               surfaceSlices.map((p) => ({
@@ -8605,18 +9322,32 @@ export class MarketRuntime {
                 spot,
                 rate: p.parity.rate,
                 dividendYield: p.parity.dividendYield,
-                quotes: p.slice.nodes.map((n) => ({
-                  strike: n.strike,
-                  contractType: n.strike >= p.parity.forward ? 'call' : 'put',
-                  iv: n.iv,
-                  bid: 1,
-                  ask: 1 + n.spreadRatio,
-                  openInterest: n.openInterest,
-                })),
+                quotes: p.sourceQuotes,
               })),
-              { filter: { minPoints: 4, minOpenInterest: 1, maxSpreadRatio: 0.99 } },
+              { filter: { ...surfaceFilterBase, quoteSelection: 'otm' } },
             )
           : null;
+      if (
+        surface !== null &&
+        surfaceQuotePolicy === 'EOD_CLOSE_REF' &&
+        surface.validSlicesCount < surfaceSlices.length
+      ) {
+        const altSurface = buildVolSurface(
+          surfaceSlices.map((p) => ({
+            timeToExpiry: p.parity.timeToExpiry,
+            expirySec: p.parity.expirySec,
+            forward: p.parity.forward,
+            spot,
+            rate: p.parity.rate,
+            dividendYield: p.parity.dividendYield,
+            quotes: p.sourceQuotes,
+          })),
+          { filter: { ...surfaceFilterBase, quoteSelection: 'spreadWeightedMean' } },
+        );
+        if (altSurface.validSlicesCount > surface.validSlicesCount) {
+          surface = altSurface;
+        }
+      }
 
       if (surface !== null && surface.slices.length >= 2) {
         const term = buildVolTermStructure(surface.slices, { omitInvalid: true });
@@ -8625,11 +9356,39 @@ export class MarketRuntime {
         iv30d = frontSlicePkg.metrics.ivAtm;
       }
 
-      const expiryAtmIvMap = this.buildExpiryAtmIvMap(validSlices, contracts, contractOwnIvMap, spot);
-      const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(contracts, contractOwnIvMap, spot, nowSec);
-      const valuationParams = {
-        spot, nowSec, isIndex, expiryParityMap, fallbackParity: activeFrontParity,
-        contractOwnIvMap, expiryAtmIvMap, otmIvByExpiryStrike,
+      const expiryAtmIvMap = this.buildExpiryAtmIvMap(
+        validSlices,
+        contracts,
+        contractOwnIvMap,
+        spot,
+        canonicalSymbol,
+        isIndex,
+        surfaceQuotePolicy,
+        nowSec,
+        contractOwnIvStatusMap,
+      );
+      const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(
+        contracts,
+        contractOwnIvMap,
+        spot,
+        nowSec,
+        canonicalSymbol,
+        isIndex,
+        surfaceQuotePolicy,
+        contractOwnIvStatusMap,
+      );
+      const valuationParams: UsContractValuationParams = {
+        canonicalSymbol,
+        spot,
+        nowSec,
+        isIndex,
+        quotePolicy: surfaceQuotePolicy,
+        expiryParityMap,
+        fallbackParity: activeFrontParity,
+        contractOwnIvMap,
+        contractOwnIvStatusMap,
+        expiryAtmIvMap,
+        otmIvByExpiryStrike,
       };
       const exposureBuild = this.buildExposureInputs({ contracts, valuationParams });
       terminalExposureInputs = exposureBuild.inputs;
@@ -8646,7 +9405,7 @@ export class MarketRuntime {
           forward: activeFrontParity.forward,
         },
         {
-          model: isIndex ? 'bsm' : 'american',
+          model: chainFallbackModel,
           wallCriterion: 'gex',
           wallScope: 'all',
           gammaFlipHalfWidth: 0.2,
@@ -8752,14 +9511,21 @@ export class MarketRuntime {
       });
 
       const butterflyReports = surface?.butterflyReports ?? [];
-      const serializedSlices = surfaceSlices.map((pkg, idx) => {
-        const bf = butterflyReports[idx];
-        return serializeSlice({
-          ...pkg,
-          isButterflyArbitrageFree: bf?.isArbitrageFree ?? pkg.isButterflyArbitrageFree,
-          butterflyMinDensity: bf?.minDensity ?? Number.NaN,
-        });
-      });
+      const serializedSlices = surfaceSlices
+        .map((pkg, idx) => {
+          const surfaceSlice = surface?.slices[idx];
+          if (surfaceSlice !== undefined && !surfaceSlice.isValid) {
+            return null;
+          }
+          const bf = butterflyReports[idx];
+          return serializeSlice({
+            ...pkg,
+            butterflyCheckStatus: bf?.status ?? pkg.butterflyCheckStatus,
+            isButterflyArbitrageFree: (bf?.status ?? pkg.butterflyCheckStatus) === 'PASS',
+            butterflyMinDensity: bf?.minDensity ?? pkg.butterflyMinDensity,
+          });
+        })
+        .filter((s): s is SerializedVolSliceSummary => s !== null);
 
       const forwardIvSegments = computeForwardIvTermStructure(
         serializedSlices.map((s) => ({
@@ -8786,11 +9552,63 @@ export class MarketRuntime {
         status: seg.status,
       }));
 
+      const validSlicesCount = surface?.validSlicesCount ?? serializedSlices.length;
+      const rejectedSlicesCount = (surface?.invalidSlicesCount ?? 0) + expiryRejectedCount;
+      const butterflyCheckStatus: TriValuedCheckStatus =
+        surface?.butterflyCheckStatus ?? 'NOT_EVALUATED';
+      const calendarCheckStatus: TriValuedCheckStatus =
+        surface?.calendarCheckStatus ?? 'NOT_EVALUATED';
+      const arbitrageCheckStatus: TriValuedCheckStatus =
+        butterflyCheckStatus === 'FAIL' || calendarCheckStatus === 'FAIL'
+          ? 'FAIL'
+          : validSlicesCount >= 2 &&
+              rejectedSlicesCount === 0 &&
+              butterflyCheckStatus === 'PASS' &&
+              calendarCheckStatus === 'PASS'
+            ? 'PASS'
+            : 'NOT_EVALUATED';
+      const butterflyArbitrageFree =
+        butterflyCheckStatus === 'PASS' && (surface?.invalidSlicesCount ?? 0) === 0 && validSlicesCount > 0;
+      const calendarArbitrageFree = calendarCheckStatus === 'PASS';
+      const isArbitrageFree = arbitrageCheckStatus === 'PASS';
+      const hasPartialRthSlice = surfaceSlices.some((s) => s.sliceMode === 'PARTIAL_RTH');
+      const surfaceMode: UsSurfaceMode =
+        validSlicesCount === 0
+          ? 'UNAVAILABLE'
+          : arbitrageCheckStatus === 'FAIL'
+            ? 'DEGRADED'
+            : hasPartialRthSlice || validSlicesCount < 2 || rejectedSlicesCount > 0
+              ? 'DEGRADED'
+              : surfaceQuotePolicy === 'EOD_CLOSE_REF'
+                ? 'EOD_REFERENCE'
+                : 'LIVE_RTH';
+      const surfaceQuality: UsSurfaceQualityStatus =
+        validSlicesCount === 0
+          ? (dominantRejectionQuality ?? 'INSUFFICIENT_STRIKES')
+          : arbitrageCheckStatus === 'FAIL'
+            ? 'ARBITRAGE_VIOLATION'
+            : hasPartialRthSlice || validSlicesCount < 2 || rejectedSlicesCount > 0
+              ? 'PARTIAL'
+              : surfaceQuotePolicy === 'EOD_CLOSE_REF'
+                ? 'EOD_CLOSE_REF'
+                : 'LIVE_VALID';
+      const rejectionReason =
+        validSlicesCount === 0 ? (dominantRejectionReason ?? 'insufficient_points') : null;
+
       volSurfaceSummary = {
         iv30d: sanitizeFinite(iv30d),
-        butterflyArbitrageFree: surface?.butterflyArbitrageFree ?? true,
-        calendarArbitrageFree: surface?.calendarArbitrageFree ?? true,
-        isArbitrageFree: surface?.isArbitrageFree ?? true,
+        butterflyArbitrageFree,
+        calendarArbitrageFree,
+        isArbitrageFree,
+        surfaceQuotePolicy,
+        surfaceMode,
+        surfaceQuality,
+        rejectionReason,
+        butterflyCheckStatus,
+        calendarCheckStatus,
+        arbitrageCheckStatus,
+        validSlicesCount,
+        rejectedSlicesCount,
         frontSlice: serializedSlices[0] ?? null,
         slices: serializedSlices,
         forwardIvSegments,
@@ -9116,10 +9934,17 @@ export class MarketRuntime {
         if (c.expirationTime <= evalSecUs) {
           continue;
         }
+        const identity = MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex);
+        if (identity.exerciseStyle === 'UNKNOWN') {
+          continue;
+        }
+        const contractFlowModel =
+          identity.exerciseStyle === 'EUROPEAN' ? ('bsm' as const) : ('american' as const);
+        const quoteRes = resolveQuoteMidForPolicy(c, surfaceQuotePolicy, nowSec);
         const tradePx =
           Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0
             ? c.lastTrade.price
-            : resolveQuoteMid(c);
+            : quoteRes.mid;
         const printVolume =
           Number.isFinite(c.day.volume) && c.day.volume > 0
             ? c.day.volume
@@ -9128,32 +9953,42 @@ export class MarketRuntime {
                 c.lastTrade.size > 0
               ? c.lastTrade.size
               : 0;
+        const hasLiveBbo = quoteRes.quoteQuality === 'LIVE_VALID';
+        const hasEodRef =
+          surfaceQuotePolicy === 'EOD_CLOSE_REF' &&
+          quoteRes.quoteQuality === 'EOD_CLOSE_REF' &&
+          Number.isFinite(quoteRes.mid) &&
+          quoteRes.mid > 0;
         if (
           printVolume > 0 &&
           Number.isFinite(tradePx) &&
           tradePx > 0 &&
-          Number.isFinite(c.lastQuote.bid) &&
-          c.lastQuote.bid >= 0 &&
-          Number.isFinite(c.lastQuote.ask) &&
-          c.lastQuote.ask > 0
+          (hasLiveBbo || hasEodRef)
         ) {
+          const ownStatus = contractOwnIvStatusMap.get(c.ticker);
+          const ownOrProvPrintIv =
+            contractOwnIvMap.get(c.ticker) ??
+            (ownStatus !== 'BELOW_INTRINSIC' && ownStatus !== 'ABOVE_UPPER_BOUND'
+              ? c.impliedVolatility
+              : Number.NaN);
           printsUs.push({
             contractTicker: c.ticker,
             underlyingTicker: canonicalSymbol,
             strike: c.strikePrice,
             expiryUtcSec: Math.floor(c.expirationTime),
             contractType: c.contractType,
+            model: contractFlowModel,
             price: tradePx,
             size: printVolume,
-            bid: c.lastQuote.bid,
-            ask: c.lastQuote.ask,
+            bid: hasLiveBbo ? c.lastQuote.bid : quoteRes.mid,
+            ask: hasLiveBbo ? c.lastQuote.ask : quoteRes.mid,
             ...(Number.isFinite(c.day.previousClose) && c.day.previousClose > 0
               ? { prevPrice: c.day.previousClose }
               : Number.isFinite(c.day.change) && c.day.change !== 0
-                ? { prevPrice: Math.max(0.0001, (Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0 ? c.lastTrade.price : resolveQuoteMid(c)) - c.day.change) }
+                ? { prevPrice: Math.max(0.0001, (Number.isFinite(c.lastTrade.price) && c.lastTrade.price > 0 ? c.lastTrade.price : quoteRes.mid) - c.day.change) }
                 : {}),
-            ...(Number.isFinite(c.impliedVolatility) && c.impliedVolatility > 0
-              ? { impliedVolatility: c.impliedVolatility }
+            ...(Number.isFinite(ownOrProvPrintIv) && ownOrProvPrintIv > 0
+              ? { impliedVolatility: ownOrProvPrintIv }
               : {}),
             timestampUtcSec: evalSecUs,
             sharesPerContract: c.sharesPerContract,
@@ -9165,13 +10000,19 @@ export class MarketRuntime {
           Number.isFinite(c.openInterest) &&
           c.openInterest > 0
         ) {
-          const ownOrProvIv = contractOwnIvMap.get(c.ticker) ?? c.impliedVolatility;
+          const ownStatus = contractOwnIvStatusMap.get(c.ticker);
+          const ownOrProvIv =
+            contractOwnIvMap.get(c.ticker) ??
+            (ownStatus !== 'BELOW_INTRINSIC' && ownStatus !== 'ABOVE_UPPER_BOUND'
+              ? c.impliedVolatility
+              : Number.NaN);
           if (Number.isFinite(ownOrProvIv) && ownOrProvIv > 0) {
             volOiInputsUs.push({
               contractTicker: c.ticker,
               strike: c.strikePrice,
               expiryUtcSec: Math.floor(c.expirationTime),
               contractType: c.contractType,
+              model: contractFlowModel,
               dayVolume: c.day.volume,
               openInterest: c.openInterest,
               impliedVolatility: ownOrProvIv,
@@ -9186,7 +10027,7 @@ export class MarketRuntime {
         spot,
         rate: evalRateUs,
         dividendYield: evalDivUs,
-        model: isIndex ? ('bsm' as const) : ('american' as const),
+        model: chainFallbackModel,
       };
 
       if (printsUs.length > 0) {
@@ -9369,8 +10210,8 @@ export class MarketRuntime {
         for (const [k, cRow] of callMap.entries()) {
           const pRow = putMap.get(k);
           if (pRow !== undefined) {
-            const cM = resolveQuoteMid(cRow);
-            const pM = resolveQuoteMid(pRow);
+            const cM = resolveQuoteMidForPolicy(cRow, surfaceQuotePolicy, nowSec).mid;
+            const pM = resolveQuoteMidForPolicy(pRow, surfaceQuotePolicy, nowSec).mid;
             if (Number.isFinite(cM) && cM > 0 && Number.isFinite(pM) && pM > 0) {
               synthPairs.push({ strike: k, callMid: cM, putMid: pM });
             }
@@ -9717,6 +10558,9 @@ export class MarketRuntime {
     );
     volAnalyticsSuiteUs = this.buildUsVolAnalyticsSuite({
       canonicalSymbol,
+      isIndex,
+      quotePolicy: surfaceQuotePolicy,
+      contractOwnIvStatusMap,
       spot,
       spotBid: underlyingBidUs,
       spotAsk: underlyingAskUs,
@@ -9773,7 +10617,7 @@ export class MarketRuntime {
     });
 
     const feedMode: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA' =
-      anyClosedMarket ||
+      marketIsClosed ||
       usedEodCloseRef ||
       isWeekendEt ||
       (bars1dRes.bars.length > 0 && unifiedRes.stocks.length === 0 && unifiedRes.indices.length === 0 && v2StocksRes.map.size === 0)
@@ -10091,11 +10935,14 @@ export class MarketRuntime {
       );
     }
 
-    const marketPartsEt = getMarketParts(nowSec, 'EQUITY');
-    const isWeekendEt = marketPartsEt.weekday === 0 || marketPartsEt.weekday === 6;
     const anyClosedMarket =
       unifiedRes.stocks.some((s) => s.marketStatus?.toLowerCase() === 'closed') ||
       unifiedRes.indices.some((idx) => idx.marketStatus?.toLowerCase() === 'closed');
+    const {
+      isWeekendEt,
+      marketIsClosed,
+      surfaceQuotePolicy,
+    } = resolveUsOptionsSessionPolicy(nowSec, anyClosedMarket);
 
     // Overlay Tradier acotado exclusivamente a `expiryContracts` (una sola fecha) y
     // sin pisar volumen/OI canónicos de Massive.
@@ -10110,7 +10957,7 @@ export class MarketRuntime {
 
     const eodQuotesRes = applyEodCloseRefQuotes(contracts, {
       evalSecUs: nowSec,
-      marketIsClosed: anyClosedMarket || isWeekendEt,
+      marketIsClosed,
     });
     contracts = eodQuotesRes.contracts;
     const usedEodCloseRef = eodQuotesRes.usedEodCloseRef;
@@ -10130,7 +10977,15 @@ export class MarketRuntime {
     const expirySec = contracts[0]?.expirationTime ?? etExpiryUtcSecFromDate(expirationDate);
     const alignmentParity =
       contracts.length > 0
-        ? evaluateParityForExpiry(expirySec, contracts, nowSec, spot, latestTreasury, sofrRate)
+        ? evaluateParityForExpiry(
+            expirySec,
+            contracts,
+            nowSec,
+            spot,
+            latestTreasury,
+            sofrRate,
+            surfaceQuotePolicy,
+          )
         : null;
     const parityImpliedSpot =
       alignmentParity !== null &&
@@ -10145,7 +11000,7 @@ export class MarketRuntime {
       feedSpot: spot,
       rthCloseSpot: resolveRthCloseSpot([], bars1dRes.bars, nowSec),
       parityImpliedSpot,
-      marketClosed: anyClosedMarket || isWeekendEt || usedEodCloseRef,
+      marketClosed: marketIsClosed || usedEodCloseRef,
     });
     if (Number.isFinite(alignedSpot.valuationSpot) && alignedSpot.valuationSpot > 0) {
       spot = alignedSpot.valuationSpot;
@@ -10158,6 +11013,8 @@ export class MarketRuntime {
 
     // Cuantitativo completo SOLO para esa fecha.
     const contractOwnIvMap = new Map<string, number>();
+    const contractOwnIvStatusMap = new Map<string, UsOptionIvQualityStatus>();
+    const styleConflictWarnings = new Set<string>();
     const expiryParityMap = new Map<number, ExpiryParityEvaluation>();
     const validSlices: SlicePackage[] = [];
     let ownSolvedIvContracts = 0;
@@ -10165,6 +11022,7 @@ export class MarketRuntime {
     const evaluation =
       contracts.length > 0
         ? this.buildExpiryEvaluation({
+            canonicalSymbol,
             expirySec,
             expiryContracts: contracts,
             spot,
@@ -10172,10 +11030,15 @@ export class MarketRuntime {
             latestTreasury,
             sofrRate,
             isIndex,
+            quotePolicy: surfaceQuotePolicy,
             contractOwnIvMap,
-            relaxShortHorizon: usedEodCloseRef || anyClosedMarket || isWeekendEt,
+            contractOwnIvStatusMap,
+            conflictWarnings: styleConflictWarnings,
           })
         : null;
+    for (const conflictWarning of styleConflictWarnings) {
+      warnings.push(conflictWarning);
+    }
     const expiryParity = evaluation?.parity ?? null;
     const slicePkg = evaluation?.pkg ?? null;
     if (evaluation !== null) {
@@ -10185,12 +11048,52 @@ export class MarketRuntime {
       }
     }
 
-    const expiryAtmIvMap = this.buildExpiryAtmIvMap(validSlices, contracts, contractOwnIvMap, spot);
-    const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(contracts, contractOwnIvMap, spot, nowSec);
-    const valuationParams = expiryParity === null ? null : {
-      spot, nowSec, isIndex, expiryParityMap, fallbackParity: expiryParity,
-      contractOwnIvMap, expiryAtmIvMap, otmIvByExpiryStrike,
+    const expiryAtmIvMap = this.buildExpiryAtmIvMap(
+      validSlices,
+      contracts,
+      contractOwnIvMap,
+      spot,
+      canonicalSymbol,
+      isIndex,
+      surfaceQuotePolicy,
+      nowSec,
+      contractOwnIvStatusMap,
+    );
+    const otmIvByExpiryStrike = this.buildOtmIvByExpiryStrike(
+      contracts,
+      contractOwnIvMap,
+      spot,
+      nowSec,
+      canonicalSymbol,
+      isIndex,
+      surfaceQuotePolicy,
+      contractOwnIvStatusMap,
+    );
+    const valuationParams: UsContractValuationParams | null = expiryParity === null ? null : {
+      canonicalSymbol,
+      spot,
+      nowSec,
+      isIndex,
+      quotePolicy: surfaceQuotePolicy,
+      expiryParityMap,
+      fallbackParity: expiryParity,
+      contractOwnIvMap,
+      contractOwnIvStatusMap,
+      expiryAtmIvMap,
+      otmIvByExpiryStrike,
     };
+    const chainFallbackModel: 'bsm' | 'american' = (() => {
+      let eur = 0;
+      let amr = 0;
+      for (const c of contracts) {
+        const st = MarketRuntime.resolveContractIdentity(c, canonicalSymbol, isIndex).exerciseStyle;
+        if (st === 'EUROPEAN') eur += 1;
+        else if (st === 'AMERICAN') amr += 1;
+      }
+      if (amr > 0 && amr >= eur) return 'american';
+      if (eur > 0) return 'bsm';
+      return isIndex && !canonicalSymbol.endsWith('OEX') ? 'bsm' : 'american';
+    })();
     let valuationsByTicker: ReadonlyMap<string, UsContractValuation> = new Map();
     let exposureResult: DealerExposureResult | undefined;
     if (expiryParity !== null && valuationParams !== null && Number.isFinite(spot) && spot > 0) {
@@ -10208,7 +11111,7 @@ export class MarketRuntime {
           forward: expiryParity.forward,
         },
         {
-          model: isIndex ? 'bsm' : 'american',
+          model: chainFallbackModel,
           wallCriterion: 'gex',
           wallScope: 'all',
           gammaFlipHalfWidth: 0.2,
@@ -10254,8 +11157,8 @@ export class MarketRuntime {
       for (const [strike, callRow] of callMap.entries()) {
         const putRow = putMap.get(strike);
         if (putRow === undefined) continue;
-        const callMid = resolveQuoteMid(callRow);
-        const putMid = resolveQuoteMid(putRow);
+        const callMid = resolveQuoteMidForPolicy(callRow, surfaceQuotePolicy, nowSec).mid;
+        const putMid = resolveQuoteMidForPolicy(putRow, surfaceQuotePolicy, nowSec).mid;
         if (Number.isFinite(callMid) && callMid > 0 && Number.isFinite(putMid) && putMid > 0) {
           synthPairs.push({ strike, callMid, putMid });
         }
@@ -10345,6 +11248,9 @@ export class MarketRuntime {
           : spot;
       const suite = this.buildUsVolAnalyticsSuite({
         canonicalSymbol,
+        isIndex,
+        quotePolicy: surfaceQuotePolicy,
+        contractOwnIvStatusMap,
         spot,
         spotBid: underlyingBidUs,
         spotAsk: underlyingAskUs,
@@ -10369,7 +11275,7 @@ export class MarketRuntime {
     const feedMode: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA' =
       contracts.length === 0
         ? 'NO_DATA'
-        : anyClosedMarket || usedEodCloseRef || isWeekendEt
+        : marketIsClosed || usedEodCloseRef || isWeekendEt
           ? 'EOD_CIERRE'
           : warnings.length === 0
             ? 'LIVE'

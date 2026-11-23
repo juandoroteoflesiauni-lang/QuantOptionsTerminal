@@ -47,6 +47,7 @@ export interface OpraTradePrintInput {
   readonly strike: number;
   readonly expiryUtcSec: number;
   readonly contractType: OptionContractType;
+  readonly model?: 'bsm' | 'american';
   readonly price: number;
   readonly size: number;
   readonly bid: number;
@@ -107,6 +108,7 @@ export interface VolOiAnomalyContractInput {
   readonly strike: number;
   readonly expiryUtcSec: number;
   readonly contractType: OptionContractType;
+  readonly model?: 'bsm' | 'american';
   readonly dayVolume: number;
   readonly openInterest: number;
   readonly impliedVolatility: number;
@@ -228,20 +230,37 @@ export function classifyOpraTradePrint(
 
   const midpoint = 0.5 * (bid + ask);
 
-  if (price >= ask - QUOTE_EPSILON || price > midpoint + QUOTE_EPSILON) {
-    return {
-      side: 'ASK_SIDE_BUY',
-      aggressorSign: 1,
-      midpoint,
-    };
-  }
+  if (ask - bid <= QUOTE_EPSILON) {
+    if (price > midpoint + QUOTE_EPSILON) {
+      return {
+        side: 'ASK_SIDE_BUY',
+        aggressorSign: 1,
+        midpoint,
+      };
+    }
+    if (price < midpoint - QUOTE_EPSILON) {
+      return {
+        side: 'BID_SIDE_SELL',
+        aggressorSign: -1,
+        midpoint,
+      };
+    }
+  } else {
+    if (price >= ask - QUOTE_EPSILON || price > midpoint + QUOTE_EPSILON) {
+      return {
+        side: 'ASK_SIDE_BUY',
+        aggressorSign: 1,
+        midpoint,
+      };
+    }
 
-  if (price <= bid + QUOTE_EPSILON || price < midpoint - QUOTE_EPSILON) {
-    return {
-      side: 'BID_SIDE_SELL',
-      aggressorSign: -1,
-      midpoint,
-    };
+    if (price <= bid + QUOTE_EPSILON || price < midpoint - QUOTE_EPSILON) {
+      return {
+        side: 'BID_SIDE_SELL',
+        aggressorSign: -1,
+        midpoint,
+      };
+    }
   }
 
   if (prevPrice !== undefined && isPositiveFinite(prevPrice)) {
@@ -389,7 +408,7 @@ export function computeSignedOptionsOrderFlow(
       const tauYears = (print.expiryUtcSec - print.timestampUtcSec) / secondsPerYear;
       if (isPositiveFinite(tauYears)) {
         const greeks = evaluateGreeks(
-          model,
+          print.model ?? model,
           context.spot,
           print.strike,
           tauYears,
@@ -656,7 +675,7 @@ export function detectVolOiAnomaliesMad(
     const remainingSec = contract.expiryUtcSec - context.asOfUtcSec;
     const tauYears = remainingSec / secondsPerYear;
     const greeks = evaluateGreeks(
-      model,
+      contract.model ?? model,
       context.spot,
       contract.strike,
       tauYears,

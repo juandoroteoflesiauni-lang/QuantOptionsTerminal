@@ -1150,6 +1150,42 @@ export interface UsOptionContractRowDto {
   readonly vegaPer1Pct: number | null;
   readonly vanna: number | null;
   readonly charm: number | null;
+  readonly contractRoot?: string;
+  readonly underlyingType?: 'EQUITY' | 'ETF' | 'INDEX' | 'ADR' | 'UNKNOWN';
+  readonly exerciseStyle?: 'AMERICAN' | 'EUROPEAN' | 'UNKNOWN';
+  readonly settlementType?: 'CASH' | 'PHYSICAL' | 'UNKNOWN';
+  readonly exerciseStyleSource?:
+    | 'CONTRACT_EXPLICIT'
+    | 'OPRA_ROOT_TABLE'
+    | 'STANDARD_EQUITY_ETF_DEFAULT'
+    | 'CONFLICT_CONTRACT_OVERRIDES_TABLE'
+    | 'UNRESOLVED_INDEX_UNKNOWN'
+    | 'UNRESOLVED_CONTRACT_UNKNOWN';
+  readonly exerciseStyleConflict?:
+    | 'NONE'
+    | 'EXPLICIT_CONFLICTS_WITH_CANONICAL_ROOT'
+    | 'UNSUPPORTED_BERMUDAN_STYLE';
+  readonly valuationModel?: 'AMERICAN_BS2002' | 'EUROPEAN_BSM' | 'DEEP_ITM_INTRINSIC' | 'NONE';
+  readonly ivQualityStatus?:
+    | 'SOLVED_AMERICAN'
+    | 'BELOW_INTRINSIC'
+    | 'ABOVE_UPPER_BOUND'
+    | 'UNIDENTIFIABLE_AMERICAN_IV'
+    | 'SOLVER_FAILURE'
+    | 'INVALID_INPUT'
+    | 'STALE_INPUT'
+    | 'SOLVED_EUROPEAN'
+    | 'BLOCKED_UNKNOWN_STYLE'
+    | 'MISSING_QUOTE';
+  readonly quoteQuality?:
+    | 'LIVE_VALID'
+    | 'EOD_CLOSE_REF'
+    | 'MISSING_BBO'
+    | 'STALE_QUOTE'
+    | 'INVALID_BBO'
+    | 'NOT_EVALUATED';
+  readonly quoteSource?: string | null;
+  readonly quoteTimestampUtcSec?: number | null;
 }
 
 export interface UsVolSliceSummaryDto {
@@ -1164,6 +1200,19 @@ export interface UsVolSliceSummaryDto {
   readonly riskReversal25: number | null;
   readonly butterfly25: number | null;
   readonly isButterflyArbitrageFree: boolean;
+  readonly butterflyCheckStatus?: 'PASS' | 'FAIL' | 'NOT_EVALUATED';
+  readonly sliceMode?: 'LIVE_RTH' | 'PARTIAL_RTH' | 'EOD_REFERENCE';
+  readonly sliceQuality?:
+    | 'LIVE_VALID'
+    | 'PARTIAL'
+    | 'EOD_CLOSE_REF'
+    | 'INSUFFICIENT_STRIKES'
+    | 'MISSING_BBO'
+    | 'STALE_QUOTE'
+    | 'INVALID_BBO'
+    | 'ARBITRAGE_VIOLATION'
+    | 'NOT_EVALUATED';
+  readonly quotePolicy?: 'RTH_STRICT_BBO' | 'EOD_CLOSE_REF';
 }
 
 export interface UsSnapshotResponseDto {
@@ -1265,6 +1314,24 @@ export interface UsSnapshotResponseDto {
     readonly butterflyArbitrageFree?: boolean;
     readonly calendarArbitrageFree?: boolean;
     readonly isArbitrageFree?: boolean;
+    readonly surfaceQuotePolicy?: 'RTH_STRICT_BBO' | 'EOD_CLOSE_REF';
+    readonly surfaceMode?: 'LIVE_RTH' | 'EOD_REFERENCE' | 'DEGRADED' | 'UNAVAILABLE';
+    readonly surfaceQuality?:
+      | 'LIVE_VALID'
+      | 'PARTIAL'
+      | 'EOD_CLOSE_REF'
+      | 'INSUFFICIENT_STRIKES'
+      | 'MISSING_BBO'
+      | 'STALE_QUOTE'
+      | 'INVALID_BBO'
+      | 'ARBITRAGE_VIOLATION'
+      | 'NOT_EVALUATED';
+    readonly rejectionReason?: string | null;
+    readonly butterflyCheckStatus?: 'PASS' | 'FAIL' | 'NOT_EVALUATED';
+    readonly calendarCheckStatus?: 'PASS' | 'FAIL' | 'NOT_EVALUATED';
+    readonly arbitrageCheckStatus?: 'PASS' | 'FAIL' | 'NOT_EVALUATED';
+    readonly validSlicesCount?: number;
+    readonly rejectedSlicesCount?: number;
     readonly frontSlice?: UsVolSliceSummaryDto | null;
     readonly slices?: readonly UsVolSliceSummaryDto[];
     readonly forwardIvSegments?: readonly ForwardIvSegmentDto[];

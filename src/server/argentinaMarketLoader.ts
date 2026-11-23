@@ -8033,7 +8033,7 @@ export class ArgentinaMarketRuntime {
           let ivAtm = Number.NaN;
           let riskReversal25 = Number.NaN;
           let butterfly25 = Number.NaN;
-          let butterflyArbitrageFree = true;
+          let butterflyArbitrageFree = false;
           let validSlice: ReturnType<typeof buildVolSlice> | null = null;
 
           const computeNearAtmFallbackIv = (spotPx: number): number => {

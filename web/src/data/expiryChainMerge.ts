@@ -401,7 +401,7 @@ export function mapUsSnapshotToArOptions(clean: string, snap: UsSnapshotResponse
         ivAtm: resolvedIvAtmDec,
         riskReversal25: slice?.riskReversal25 ?? null,
         butterfly25: slice?.butterfly25 ?? null,
-        butterflyArbitrageFree: slice?.isButterflyArbitrageFree ?? true,
+        butterflyArbitrageFree: slice?.isButterflyArbitrageFree === true,
         strikes,
         calls,
         puts,
