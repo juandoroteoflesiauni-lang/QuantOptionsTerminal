@@ -752,6 +752,8 @@ export async function requestOptionsChain(
     }
     const previousSnap = state.usSnapshotsBySymbol[clean];
     let publishedSnap: UsSnapshotResponseDto | null = null;
+    // Un snapshot puntual rechazado jamás hidrata consumidores si no hay base previa.
+    let allowRejectedSnapHydration = true;
     if (isPointScope) {
       // Alcance puntual: SOLO se publica la fecha solicitada (la respuesta puede
       // traer anclas o curadas cargadas de más) y solo si aporta datos más
@@ -769,11 +771,15 @@ export async function requestOptionsChain(
         }
       } else {
         publishedSnap = previousSnap ?? null;
+        allowRejectedSnapHydration = false;
       }
     } else {
       publishedSnap = publishBaseSnapshot(clean, snap, previousSnap);
     }
-    hydrateFromUsSnapshot(publishedSnap ?? previousSnap ?? snap);
+    const hydrationSnap = publishedSnap ?? previousSnap ?? (allowRejectedSnapHydration ? snap : undefined);
+    if (hydrationSnap !== undefined) {
+      hydrateFromUsSnapshot(hydrationSnap);
+    }
     state = {
       ...state,
       isBackendConnected: true,
@@ -856,25 +862,25 @@ export async function requestUsOptionExpiry(
     // Comprobación antes de mutar estado o hidratar consumidores.
     if (!acceptPublication(pointPublicationStamps, scopeKey, revision, resp.asOfUtcSec)) return;
     const canonicalKey = selection.canonicalKey;
-    const previous = state.optionsByUnderlying[canonicalKey];
-    const merged = mergeUsExpiryChainIntoOptions(previous, resp);
-    const groups = buildOptionExpiryGroupsFromArOptions(merged);
-    if (activeOptionsCanonicalKey === canonicalKey) {
-      syncOptionEngineMarket(merged);
-    }
     const previousSnap = state.usSnapshotsBySymbol[clean];
     const fact = chainFactState(resp);
     const decision = resolveExpiryFactDecision(
       fact,
       currentFactState(clean, previousSnap, expiration),
     );
+    // Hecho no más nuevo que el vigente: no se muta estado, cadena ni motor.
+    if (decision !== 'publish') return;
+    const previous = state.optionsByUnderlying[canonicalKey];
+    const merged = mergeUsExpiryChainIntoOptions(previous, resp);
+    const groups = buildOptionExpiryGroupsFromArOptions(merged);
+    if (activeOptionsCanonicalKey === canonicalKey) {
+      syncOptionEngineMarket(merged);
+    }
     let nextSnap = previousSnap;
-    if (decision === 'publish') {
-      stashExpiryChain(clean, expiration, resp);
-      if (previousSnap !== undefined) {
-        nextSnap = applyUsExpiryChainToSnapshot(previousSnap, resp);
-        setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
-      }
+    stashExpiryChain(clean, expiration, resp);
+    if (previousSnap !== undefined) {
+      nextSnap = applyUsExpiryChainToSnapshot(previousSnap, resp);
+      setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
     }
     state = {
       ...state,
