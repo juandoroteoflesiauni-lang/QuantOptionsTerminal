@@ -1,0 +1,156 @@
+{
+  "asOfUtcSec": 1794844800,
+  "a1ExpiryIsolation": {
+    "rawText": "GFGC6000DI 100 200 0 0\nGFGC6000FE 400 800 0 0",
+    "reportDate": "2026-11-16",
+    "byExpiry": {
+      "2026-12-18": 200,
+      "2027-02-19": 800
+    },
+    "totalNominalByExpiry": {
+      "2026-12-18": 300,
+      "2027-02-19": 1200
+    }
+  },
+  "a1CallPutSameStrikeAndExpiry": {
+    "rawText": "GFGC6000DI 100 200 0 0\nGFGC6000FE 400 800 0 0\nGFGV6000DI 0 300 0 0\nGFGV6000FE 0 900 0 0",
+    "uncoveredByExpiry": {
+      "2026-12-18": [
+        200,
+        300
+      ],
+      "2027-02-19": [
+        800,
+        900
+      ]
+    }
+  },
+  "a1MultiDateAndSeries": {
+    "reportDates": [
+      "2026-11-16",
+      "2026-11-17"
+    ],
+    "canonicalKeys": [
+      "BYMA_AR|GGAL|2026-12-18|call|60000000|2026-11-16",
+      "BYMA_AR|GGAL|2026-12-18|call|60000000|2026-11-17"
+    ],
+    "foreignLine": "YPFC40000DI 0 50 0 0",
+    "errors": [
+      "WRONG_REPORT_DATE",
+      "WRONG_UNDERLYING"
+    ]
+  },
+  "a1MissingOrAmbiguousExpiry": {
+    "rawText": "GFGC6000DI 100 200 0 0\nGFGC6000 0 9 0 0\nGFGC6000ZZ 0 9 0 0\nGFGC6000DICA 0 9 0 0\nCALL 6000 0 9 0 0",
+    "errors": [
+      "MISSING_EXPIRY_SUFFIX",
+      "AMBIGUOUS_EXPIRY_SUFFIX",
+      "AMBIGUOUS_EXPIRY_SUFFIX",
+      "MISSING_EXPIRY_CONTEXT"
+    ],
+    "unknownTarget": "AB"
+  },
+  "a1Duplicates": {
+    "identical": "GFGC6000DI 100 200 0 0\nGFGC6000DI 100 200 0 0",
+    "conflicting": "GFGC6000DI 100 200 0 0\nGFGC6000DI 100 350 0 0",
+    "nominal": 200,
+    "duplicateCount": 1,
+    "conflictCode": "DUPLICATE_CONFLICTING_SERIES"
+  },
+  "a1IamcSharesUnitNoDoubleMult": {
+    "count": 200,
+    "multiplier": 1,
+    "nominalShares": 200,
+    "side": "call",
+    "spot": 6000,
+    "strike": 6000,
+    "volatility": 0.44,
+    "years": 0.25,
+    "gamma": 0.0003004060348830953,
+    "gex": 21629.23451158286,
+    "americanCallPrice": 525.5437505078016
+  },
+  "a2DirectContractOiMultiplier": [
+    {
+      "count": 250,
+      "multiplier": 100,
+      "nominalShares": 25000,
+      "side": "call",
+      "spot": 6000,
+      "strike": 6000,
+      "volatility": 0.44,
+      "years": 0.25,
+      "gamma": 0.0003004060348830953,
+      "gex": 2703654.313947858,
+      "americanCallPrice": 525.5437505078016
+    },
+    {
+      "count": 250,
+      "multiplier": 10,
+      "nominalShares": 2500,
+      "side": "put",
+      "spot": 6000,
+      "strike": 6000,
+      "volatility": 0.44,
+      "years": 0.25,
+      "gamma": 0.0003004060348830953,
+      "gex": -270365.43139478576,
+      "americanCallPrice": 525.5437505078016
+    }
+  ],
+  "a2ObservedZeroOiVsMissing": [
+    {
+      "value": 0,
+      "status": "DIRECT_CONTRACT_OI",
+      "netGex": 0,
+      "gexStatus": "VALID_CONTRACT_OI",
+      "direct": 1,
+      "zero": 1,
+      "missing": 0
+    },
+    {
+      "value": null,
+      "status": "MISSING_OI",
+      "netGex": null,
+      "gexStatus": "UNAVAILABLE_MISSING_OI",
+      "direct": 0,
+      "zero": 0,
+      "missing": 1
+    }
+  ],
+  "a2BmbL1MergeNoContamination": {
+    "feedVolume": 250,
+    "overlayVolume": 5,
+    "openInterest": null,
+    "netGex": null,
+    "gexStatus": "UNAVAILABLE_MISSING_OI",
+    "direct": 0,
+    "proxy": 0,
+    "oiProxy": null
+  },
+  "a2ExplicitProxyOptIn": {
+    "gexStatus": "ESTIMATED_PROXY_OPT_IN",
+    "direct": 0,
+    "proxy": 1,
+    "oiProxy": true,
+    "nominalShares": 500
+  },
+  "a2SourceConflictPrecedence": {
+    "iamc": 20000,
+    "data912Contracts": 250,
+    "data912Shares": 25000
+  },
+  "gexPartialAndInvalid": {
+    "partial": {
+      "gexStatus": "PARTIAL_COVERAGE",
+      "coverage": 0.5,
+      "direct": 2,
+      "missing": 2
+    },
+    "invalid": {
+      "value": -10,
+      "reason": "NEGATIVE_OI",
+      "gexStatus": "INVALID_DATA_OR_MODEL"
+    }
+  }
+}

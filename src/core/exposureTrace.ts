@@ -1,3 +1,6 @@
+import type { OiProvenanceStatus } from './options/oiProvenance.js';
+export { resolveArExposureOiQuality } from './options/oiProvenance.js';
+
 /**
  * Pieza 50.9 (Bloque A) — trazabilidad de exposición US/AR.
  *
@@ -188,7 +191,8 @@ export function resolveExposureCoverage(evidence: ExposureCoverageEvidence): Exp
 }
 
 export interface ArOiProvenanceInput {
-  /** `true` si el OI del input proviene de OI reportado (BMB), no de volumen nominal. */
+  readonly status?: OiProvenanceStatus;
+  /** `true` si el OI del input proviene de OI reportado. */
   readonly oiFromReported: boolean;
 }
 
@@ -206,7 +210,9 @@ export function resolveArOiProvenance(
   let directOiInputs = 0;
   let proxyOiInputs = 0;
   for (const input of inputs) {
-    if (input.oiFromReported) {
+    if (input.status === 'MISSING_OI' || input.status === 'INVALID_OI') continue;
+    if (input.status === 'IAMC_ANEXO_B' || input.status === 'DIRECT_CONTRACT_OI' ||
+        (input.status === undefined && input.oiFromReported)) {
       directOiInputs += 1;
     } else {
       proxyOiInputs += 1;
@@ -215,7 +221,7 @@ export function resolveArOiProvenance(
   return {
     directOiInputs,
     proxyOiInputs,
-    oiProxy: inputs.length === 0 ? null : proxyOiInputs > 0,
+    oiProxy: directOiInputs + proxyOiInputs === 0 ? null : proxyOiInputs > 0,
   };
 }
 

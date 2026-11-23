@@ -190,6 +190,7 @@ function createOfflineArgentinaHttp(cfg: OfflineArMockConfig): (
       prev_close: Number((mid * 0.96).toFixed(2)),
       pct_change: 4.16,
       v: oi,
+      open_interest: oi,
       v_ars: mid * 100 * oi,
     };
   };

@@ -1,3 +1,8 @@
+import type {
+  ContractMultiplierSource, DealerSignBasis, GexComputationStatus, OiFieldProvenance,
+  OiQualityTier, OiSourceConflictRecord, OptionFieldProvenanceMap,
+} from '../../../src/core/options/oiProvenance.js';
+
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
 export interface GlobalIndicatorDto {
@@ -754,6 +759,10 @@ export interface UsVolAnalyticsSuiteRef {
 }
 
 export interface ArOptionContractDto {
+  readonly fieldProvenance?: OptionFieldProvenanceMap;
+  readonly oiProvenance?: OiFieldProvenance;
+  readonly contractMultiplier?: number;
+  readonly multiplierSource?: ContractMultiplierSource;
   readonly symbol: string;
   readonly underlying: string;
   readonly contractType: 'call' | 'put';
@@ -829,6 +838,13 @@ export interface ArOptionsResponse {
   }[];
   readonly expiries: readonly ArOptionExpiryDto[];
   readonly exposureSummary: {
+    readonly gexStatus?: GexComputationStatus;
+    readonly oiQuality?: OiQualityTier;
+    readonly oiCoverageRatio?: number;
+    readonly isPartial?: boolean;
+    readonly currency?: 'ARS';
+    readonly gexUnit?: 'ARS_PER_1PCT_SPOT_MOVE';
+    readonly dealerSignBasis?: DealerSignBasis;
     readonly netGex: number | null;
     readonly netDex: number | null;
     readonly netVex: number | null;
@@ -859,6 +875,13 @@ export interface ArOptionsResponse {
       readonly engineStrikeCount: number;
       readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
       readonly byStrikeCount: number;
+      readonly missingOiInputs?: number;
+      readonly invalidOiInputs?: number;
+      readonly observedZeroOiInputs?: number;
+      readonly iamcOiInputs?: number;
+      readonly directContractOiInputs?: number;
+      readonly oiConflicts?: readonly OiSourceConflictRecord[];
+      readonly oiUniverseInputs?: number;
       readonly directOiInputs: number;
       readonly proxyOiInputs: number;
       readonly oiProxy: boolean | null;

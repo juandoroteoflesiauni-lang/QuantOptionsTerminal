@@ -1042,7 +1042,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       if (pathname === '/api/ar/options') {
         const underlying = params.get('underlying')?.trim() || 'GGAL';
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
-        const optionsChain = await arRuntime.getOptionsChain(underlying, forceRefresh);
+        const optionsChain = await arRuntime.getOptionsChain(underlying, forceRefresh, {
+          allowProxyOi: params.get('allowProxyOi') === 'true',
+        });
         sendJson(res, 200, optionsChain);
         return;
       }
@@ -1111,7 +1113,11 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           return;
         }
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
-        const structurePinning = await ggalRuntime.getStructurePinning(forceRefresh);
+        const targetExpiry = params.get('targetExpiry') ?? params.get('expiryCode');
+        const structurePinning = await ggalRuntime.getStructurePinning(forceRefresh, {
+          ...(targetExpiry !== null ? { targetExpiry } : {}),
+          allowProxyOi: params.get('allowProxyOi') === 'true',
+        });
         sendJson(res, 200, structurePinning);
         return;
       }

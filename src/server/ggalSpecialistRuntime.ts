@@ -1,3 +1,21 @@
+import {
+  explicitVolumeOi,
+  resolveContractMultiplier,
+  resolveOiSourcePrecedence,
+  type DealerSignBasis,
+  type GexComputationStatus,
+  type OiFieldProvenance,
+  type OiQualityTier,
+} from '../core/options/oiProvenance.js';
+import {
+  buildCanonicalOptionKey,
+  isIsoContractDate,
+  MONTH_CODES,
+  OPTION_PREFIX_TO_UNDERLYING,
+  resolveBymaContractualExpiry,
+  selectAnexoBPartition,
+  type CanonicalOptionIdentity,
+} from '../core/ggal/anexoBIdentity.js';
 /**
  * Orquestador Backend — Sub-Sector "GGAL Specialist" (Pieza 21).
  *
@@ -69,6 +87,7 @@ import {
 import {
   computeBymaOptionEvalParams,
   evaluateCrossCurrencyVolTriangle,
+  greeksBymaAmericanBs02,
   type BymaOptionQuoteInput,
   type CrossCurrencyVolOutput,
   type OpraMaturitySliceInput,
@@ -317,12 +336,23 @@ export interface GgalDualDensityResponse {
 }
 
 export interface AnexoBIngestStrikeRowInput {
+  readonly expiryCode?: string;
+  readonly contractualExpiry?: string;
+  readonly nativeSeries?: string;
+  readonly underlying?: string;
+  readonly reportDate?: string;
   readonly strikeArs: number;
   readonly callOi: AnexoBOiBuckets;
   readonly putOi: AnexoBOiBuckets;
 }
 
 export interface AnexoBIngestRequest {
+  readonly contractualExpiry?: string;
+  readonly targetExpiry?: string;
+  readonly strictReportDate?: boolean;
+  readonly strictDuplicates?: boolean;
+  readonly knownExpiries?: readonly { readonly expiryCode: string; readonly expirationDate: string }[];
+  readonly expectedUnderlying?: string;
   readonly asOfDate?: string;
   readonly expiryCode?: string;
   readonly sourceLabel?: string;
@@ -330,7 +360,36 @@ export interface AnexoBIngestRequest {
   readonly rows?: readonly AnexoBIngestStrikeRowInput[];
 }
 
+interface AnexoBRejectedRow {
+  readonly lineNumber: number;
+  readonly rawLine: string;
+  readonly code: string;
+  readonly detail: string;
+}
+
+interface AnexoBExpiryPartition {
+  readonly contractualExpiry: string;
+  readonly expiryCode: string;
+  readonly reportDate: string;
+  readonly underlying: string;
+  readonly unit: 'SHARES';
+  readonly appliedMultiplier: 1;
+  readonly identities: readonly CanonicalOptionIdentity[];
+  readonly rows: readonly AnexoBIngestStrikeRowInput[];
+  readonly totals: ReturnType<typeof sumAnexoBRows>;
+}
+
 export interface AnexoBStoredRecord {
+  readonly contractualExpiry: string | null;
+  readonly byExpiry: Readonly<Record<string, AnexoBExpiryPartition>>;
+  readonly byExpiryCode: Readonly<Record<string, readonly string[]>>;
+  readonly reportDateSource: 'REQUEST' | 'REPORT_HEADER' | 'INFERRED_INGEST_DATE';
+  readonly targetExpiryMatchStatus: 'MATCHED' | 'NOT_FOUND' | 'AMBIGUOUS_EXPIRY_CODE' | 'NOT_REQUESTED';
+  readonly diagnostics: {
+    readonly rejectedRows: readonly AnexoBRejectedRow[];
+    readonly conflictingDuplicates: readonly AnexoBRejectedRow[];
+    readonly exactDuplicateRows: number;
+  };
   readonly asOfDate: string;
   readonly expiryCode: string | null;
   readonly sourceLabel: string;
@@ -358,6 +417,13 @@ export interface GgalData912OiFallbackItemDto {
 }
 
 export interface GgalStructurePinningResponse {
+  readonly gexStatus: GexComputationStatus;
+  readonly oiQuality: OiQualityTier;
+  readonly oiCoverageRatio: number;
+  readonly dealerSignBasis: DealerSignBasis;
+  readonly targetExpiry: string | null;
+  readonly anexoBByExpiry: AnexoBStoredRecord['byExpiry'];
+
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -420,6 +486,9 @@ export interface GgalSpecialistOverviewResponse {
     readonly tailSignal: string | null;
   };
   readonly structure: {
+    readonly gexStatus?: GexComputationStatus;
+    readonly oiQuality?: OiQualityTier;
+    readonly oiCoverageRatio?: number;
     readonly regime: string;
     readonly zeroGammaLevelArs: number | null;
     readonly callWallArs: number | null;
@@ -720,219 +789,8 @@ function parseLocalizedNumber(token: string): number {
   return Number(cleaned);
 }
 
-/**
- * Parsea la matriz T-1 del Anexo B de IAMC desde filas JSON o texto pegado (PDF/CSV/TSV).
- * Admite:
- *  - Series individuales tipo `GFGC6500DI 120.000 45.000 18.000 5.000` (Cubierta/Descubierta/Opuesta/Cruzada)
- *  - Filas por strike `6500  120000 45000 18000 5000  20000 15000 5000 0` (Strike + 4 Call + 4 Put)
- *  - Filas `CALL 6500 120000 45000 18000 5000` / `PUT 6500 ...`
- */
-export function parseAnexoBIamcInput(
-  body: AnexoBIngestRequest,
-  nowUtcSec: number,
-): AnexoBStoredRecord {
-  const defaultDate = getBuenosAiresParts(nowUtcSec).dateKey;
-  let asOfDate =
-    body.asOfDate !== undefined && body.asOfDate.trim() !== ''
-      ? (parseUtcDateKey(body.asOfDate)?.date ?? body.asOfDate.trim())
-      : null;
-
-  const byStrike = new Map<
-    number,
-    { callOi: AnexoBOiBuckets; putOi: AnexoBOiBuckets }
-  >();
-
-  const mergeBuckets = (
-    prev: AnexoBOiBuckets,
-    next: AnexoBOiBuckets,
-  ): AnexoBOiBuckets => ({
-    coveredNom: prev.coveredNom + next.coveredNom,
-    uncoveredNom: prev.uncoveredNom + next.uncoveredNom,
-    oppositeNom: prev.oppositeNom + next.oppositeNom,
-    crossedNom: prev.crossedNom + next.crossedNom,
-  });
-
-  const validateBuckets = (b: AnexoBOiBuckets, ctx: string): void => {
-    const nums = [b.coveredNom, b.uncoveredNom, b.oppositeNom, b.crossedNom];
-    if (nums.some((n) => !Number.isFinite(n) || n < 0)) {
-      throw new RuntimeNoDataError(
-        'INVALID_PARAMETER',
-        `Anexo B OI buckets invalid for ${ctx}: negative or non-finite values`,
-        [],
-        400,
-      );
-    }
-  };
-
-  if (body.rows !== undefined) {
-    if (!Array.isArray(body.rows)) {
-      throw new RuntimeNoDataError('INVALID_PARAMETER', 'Anexo B rows must be an array', [], 400);
-    }
-    const structuredRows: readonly AnexoBIngestStrikeRowInput[] = body.rows;
-    for (let i = 0; i < structuredRows.length; i += 1) {
-      const row = structuredRows[i];
-      if (row === undefined || !Number.isFinite(row.strikeArs) || row.strikeArs <= 0) {
-        throw new RuntimeNoDataError(
-          'INVALID_PARAMETER',
-          `Anexo B row[${String(i)}] has invalid strikeArs`,
-          [],
-          400,
-        );
-      }
-      const callOi: AnexoBOiBuckets = row.callOi;
-      const putOi: AnexoBOiBuckets = row.putOi;
-      validateBuckets(callOi, `strike ${String(row.strikeArs)} callOi`);
-      validateBuckets(putOi, `strike ${String(row.strikeArs)} putOi`);
-      const existing = byStrike.get(row.strikeArs) ?? {
-        callOi: ZERO_BUCKETS,
-        putOi: ZERO_BUCKETS,
-      };
-      byStrike.set(row.strikeArs, {
-        callOi: mergeBuckets(existing.callOi, callOi),
-        putOi: mergeBuckets(existing.putOi, putOi),
-      });
-    }
-  }
-
-  if (typeof body.rawText === 'string' && body.rawText.trim() !== '') {
-    const lines = body.rawText.split(/\r?\n/);
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (line === '') {
-        continue;
-      }
-      if (asOfDate === null) {
-        const headerDateMatch = /(?:fecha|al|date)?[:\s]*(\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4})/i.exec(line);
-        if (headerDateMatch?.[1] !== undefined) {
-          const parsedHeader = parseUtcDateKey(headerDateMatch[1]);
-          if (parsedHeader !== null) {
-            asOfDate = parsedHeader.date;
-          }
-        }
-      }
-
-      // Tokenize by delimiter (; | tab comma-with-whitespace) or whitespace
-      const rawCols = /[;\t|]/.test(line)
-        ? line.split(/[;\t|]+/).map((c) => c.trim()).filter((c) => c !== '')
-        : line.includes(',') && !/\d,\d{1,2}(?:$|\s)/.test(line)
-          ? line.split(',').map((c) => c.trim()).filter((c) => c !== '')
-          : line.split(/\s+/).map((c) => c.trim()).filter((c) => c !== '');
-
-      if (rawCols.length < 5) {
-        continue;
-      }
-
-      const firstUpper = (rawCols[0] ?? '').toUpperCase();
-      // Pattern 1: BYMA ticker e.g. GFGC6500DI or GFGV6000DI + 4 buckets (+ optional total)
-      const tickerMatch = /^GFG([CV])(\d+(?:[.,]\d+)?)[A-Z]{0,4}$/.exec(firstUpper);
-      if (tickerMatch !== null) {
-        const sideChar = tickerMatch[1];
-        const strikeVal = parseLocalizedNumber(tickerMatch[2] ?? '');
-        const b1 = parseLocalizedNumber(rawCols[1] ?? '');
-        const b2 = parseLocalizedNumber(rawCols[2] ?? '');
-        const b3 = parseLocalizedNumber(rawCols[3] ?? '');
-        const b4 = parseLocalizedNumber(rawCols[4] ?? '');
-        if (
-          Number.isFinite(strikeVal) &&
-          strikeVal > 0 &&
-          [b1, b2, b3, b4].every((v) => Number.isFinite(v) && v >= 0)
-        ) {
-          const buckets: AnexoBOiBuckets = {
-            coveredNom: b1,
-            uncoveredNom: b2,
-            oppositeNom: b3,
-            crossedNom: b4,
-          };
-          const existing = byStrike.get(strikeVal) ?? { callOi: ZERO_BUCKETS, putOi: ZERO_BUCKETS };
-          byStrike.set(
-            strikeVal,
-            sideChar === 'C'
-              ? { callOi: mergeBuckets(existing.callOi, buckets), putOi: existing.putOi }
-              : { callOi: existing.callOi, putOi: mergeBuckets(existing.putOi, buckets) },
-          );
-          continue;
-        }
-      }
-
-      // Pattern 2: Explicit side word "CALL" / "PUT" + strike + 4 buckets
-      if ((firstUpper === 'CALL' || firstUpper === 'C' || firstUpper === 'PUT' || firstUpper === 'P' || firstUpper === 'V') && rawCols.length >= 6) {
-        const strikeVal = parseLocalizedNumber(rawCols[1] ?? '');
-        const b1 = parseLocalizedNumber(rawCols[2] ?? '');
-        const b2 = parseLocalizedNumber(rawCols[3] ?? '');
-        const b3 = parseLocalizedNumber(rawCols[4] ?? '');
-        const b4 = parseLocalizedNumber(rawCols[5] ?? '');
-        if (
-          Number.isFinite(strikeVal) &&
-          strikeVal > 0 &&
-          [b1, b2, b3, b4].every((v) => Number.isFinite(v) && v >= 0)
-        ) {
-          const buckets: AnexoBOiBuckets = {
-            coveredNom: b1,
-            uncoveredNom: b2,
-            oppositeNom: b3,
-            crossedNom: b4,
-          };
-          const isCall = firstUpper === 'CALL' || firstUpper === 'C';
-          const existing = byStrike.get(strikeVal) ?? { callOi: ZERO_BUCKETS, putOi: ZERO_BUCKETS };
-          byStrike.set(
-            strikeVal,
-            isCall
-              ? { callOi: mergeBuckets(existing.callOi, buckets), putOi: existing.putOi }
-              : { callOi: existing.callOi, putOi: mergeBuckets(existing.putOi, buckets) },
-          );
-          continue;
-        }
-      }
-
-      // Pattern 3: Numeric strike row with 8 numeric columns (strike + call 4 + put 4)
-      if (rawCols.length >= 9) {
-        const nums = rawCols.slice(0, 9).map(parseLocalizedNumber);
-        const strikeVal = nums[0] ?? Number.NaN;
-        if (
-          Number.isFinite(strikeVal) &&
-          strikeVal > 0 &&
-          nums.slice(1).every((n) => Number.isFinite(n) && n >= 0)
-        ) {
-          const callOi: AnexoBOiBuckets = {
-            coveredNom: nums[1] ?? 0,
-            uncoveredNom: nums[2] ?? 0,
-            oppositeNom: nums[3] ?? 0,
-            crossedNom: nums[4] ?? 0,
-          };
-          const putOi: AnexoBOiBuckets = {
-            coveredNom: nums[5] ?? 0,
-            uncoveredNom: nums[6] ?? 0,
-            oppositeNom: nums[7] ?? 0,
-            crossedNom: nums[8] ?? 0,
-          };
-          const existing = byStrike.get(strikeVal) ?? { callOi: ZERO_BUCKETS, putOi: ZERO_BUCKETS };
-          byStrike.set(strikeVal, {
-            callOi: mergeBuckets(existing.callOi, callOi),
-            putOi: mergeBuckets(existing.putOi, putOi),
-          });
-        }
-      }
-    }
-  }
-
-  if (byStrike.size === 0) {
-    throw new RuntimeNoDataError(
-      'INVALID_PARAMETER',
-      'Anexo B IAMC payload contains no parseable strike/OI rows. Provide structured `rows` or valid IAMC `rawText`.',
-      [],
-      400,
-    );
-  }
-
-  const sortedRows: AnexoBIngestStrikeRowInput[] = [...byStrike.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([strikeArs, oi]) => ({
-      strikeArs,
-      callOi: oi.callOi,
-      putOi: oi.putOi,
-    }));
-
-  const totals = sortedRows.reduce(
+function sumAnexoBRows(rows: readonly AnexoBIngestStrikeRowInput[]) {
+  return rows.reduce(
     (acc, r) => ({
       strikesCount: acc.strikesCount + 1,
       callCoveredNom: acc.callCoveredNom + r.callOi.coveredNom,
@@ -956,16 +814,286 @@ export function parseAnexoBIamcInput(
       putCrossedNom: 0,
     },
   );
+}
 
+class AnexoBInputError extends RuntimeNoDataError {
+  public constructor(
+    public readonly code: string,
+    public readonly rejectedRows: readonly AnexoBRejectedRow[] = [],
+  ) {
+    super('INVALID_PARAMETER', code, [], 400);
+  }
+
+  public override toPayload() {
+    return { ...super.toPayload(), code: this.code, rejectedRows: this.rejectedRows };
+  }
+}
+
+function directOiNominalShares(oi: OiFieldProvenance | undefined): number | null {
+  return oi?.status === 'DIRECT_CONTRACT_OI' || oi?.status === 'IAMC_ANEXO_B' ? oi.nominalShares : null;
+}
+
+function resolveAnexoBContractOi(
+  partition: AnexoBExpiryPartition | null,
+  contract: ArOptionContractDto,
+): OiFieldProvenance | undefined {
+  const direct = contract.oiProvenance;
+  const identity = partition?.identities.find((entry) =>
+    entry.side === contract.contractType && entry.strikeTicks1e4 === Math.round(contract.strike * 10_000),
+  );
+  const row = identity === undefined ? undefined : partition?.rows.find((entry) => entry.strikeArs === identity.strike);
+  if (partition === null || row === undefined) return direct;
+  const buckets = contract.contractType === 'call' ? row.callOi : row.putOi;
+  const iamc = anexoBNominalOi(partition, buckets);
+  return direct?.status === 'DIRECT_CONTRACT_OI' ? resolveOiSourcePrecedence(iamc, direct) : iamc;
+}
+
+function anexoBNominalOi(partition: AnexoBExpiryPartition, buckets: AnexoBOiBuckets) {
   return {
-    asOfDate: asOfDate ?? defaultDate,
-    expiryCode: body.expiryCode?.trim() || null,
+    status: 'IAMC_ANEXO_B', source: 'IAMC_ANEXO_B', unit: 'SHARES', appliedMultiplier: 1,
+    reportDate: partition.reportDate, contractualExpiry: partition.contractualExpiry,
+    asOfUtcSec: null, quality: 'OBSERVED',
+    nominalShares: buckets.coveredNom + buckets.uncoveredNom + buckets.oppositeNom + buckets.crossedNom,
+  } as const;
+}
+
+function structureProxyShares(contract: ArOptionContractDto | undefined): number {
+  if (contract === undefined) return 0;
+  const direct = directOiNominalShares(contract.oiProvenance);
+  if (direct !== null) return direct;
+  if (contract.oiProvenance?.status !== 'MISSING_OI') return 0;
+  const multiplier = resolveContractMultiplier(
+    contract.contractMultiplier ?? Number.NaN, contract.multiplierSource ?? 'UNVERIFIED',
+  );
+  return explicitVolumeOi(contract.fieldProvenance?.volume, multiplier)?.nominalShares ?? 0;
+}
+
+export function parseAnexoBIamcInput(
+  body: AnexoBIngestRequest,
+  nowUtcSec: number,
+  arHolidays: readonly string[] = [],
+): AnexoBStoredRecord {
+  const lines = typeof body.rawText === 'string' ? body.rawText.split(/\r?\n/) : [];
+  const headerDate = /(?:^|\b)(?:fecha|al|date)?[:\s]*(\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4})(?:\s|$)/im
+    .exec(body.rawText ?? '')?.[1];
+  const rawDate = body.asOfDate?.trim() || headerDate;
+  const reportDate = rawDate === undefined
+    ? getBuenosAiresParts(nowUtcSec).dateKey
+    : rawDate.replace(/^(\d{2})\/(\d{2})\/(\d{4})$/, '$3-$2-$1');
+  if (rawDate === undefined && body.strictReportDate === true) throw new AnexoBInputError('MISSING_REPORT_DATE');
+  if (!isIsoContractDate(reportDate)) throw new AnexoBInputError('INVALID_REPORT_DATE');
+  const reportDateSource = body.asOfDate?.trim()
+    ? 'REQUEST'
+    : headerDate !== undefined ? 'REPORT_HEADER' : 'INFERRED_INGEST_DATE';
+
+  const underlying = body.expectedUnderlying?.trim().toUpperCase() || 'GGAL';
+  const rejectedRows: AnexoBRejectedRow[] = [];
+  const conflictingDuplicates: AnexoBRejectedRow[] = [];
+  let exactDuplicateRows = 0;
+  const contracts = new Map<string, { identity: CanonicalOptionIdentity; buckets: AnexoBOiBuckets }>();
+  const conflictingKeys = new Set<string>();
+  const bucketKeys = ['coveredNom', 'uncoveredNom', 'oppositeNom', 'crossedNom'] as const;
+  const validBuckets = (input: unknown): input is AnexoBOiBuckets =>
+    isPlainRecord(input) && bucketKeys.every((key) => {
+      const nominal = input[key];
+      return typeof nominal === 'number' && Number.isSafeInteger(nominal) && nominal >= 0;
+    });
+  const addRow = (
+    row: Omit<AnexoBIngestStrikeRowInput, 'callOi' | 'putOi'>,
+    sides: readonly { side: 'call' | 'put'; buckets: unknown }[],
+    lineNumber: number,
+    rawLine: string,
+  ): void => {
+    const reject = (code: string) => rejectedRows.push({ lineNumber, rawLine, code, detail: code });
+    if (row.reportDate !== undefined && row.reportDate !== reportDate) {
+      reject('WRONG_REPORT_DATE');
+      return;
+    }
+    const nativeSeries = row.nativeSeries?.trim().toUpperCase() ?? null;
+    let expiryCode = row.expiryCode;
+    let strike = row.strikeArs;
+    if (nativeSeries !== null) {
+      const parts = /^([A-Z]{3,4})([CV])(\d+(?:[.,]\d+)?)([A-Z]*)$/.exec(nativeSeries);
+      if (parts === null) {
+        reject('INVALID_NATIVE_SERIES');
+        return;
+      }
+      const [, prefix = '', side, strikeRaw = '', suffix = ''] = parts;
+      if (OPTION_PREFIX_TO_UNDERLYING[prefix] !== underlying) {
+        reject('WRONG_UNDERLYING');
+        return;
+      }
+      if (suffix === '' || MONTH_CODES[suffix] === undefined) {
+        reject(suffix === '' ? 'MISSING_EXPIRY_SUFFIX' : 'AMBIGUOUS_EXPIRY_SUFFIX');
+        return;
+      }
+      if (expiryCode !== undefined && MONTH_CODES[expiryCode.trim().toUpperCase()]?.code !== MONTH_CODES[suffix].code) {
+        reject('EXPIRY_DATE_MISMATCH');
+        return;
+      }
+      expiryCode = suffix;
+      strike = Number(strikeRaw.replace(',', '.'));
+      const seriesSide = side === 'C' ? 'call' : 'put';
+      sides = sides.filter((entry) => entry.side === seriesSide);
+      if (Number.isFinite(row.strikeArs) && Math.round(row.strikeArs * 10_000) !== Math.round(strike * 10_000)) {
+        reject('STRIKE_MISMATCH');
+        return;
+      }
+    }
+    if (row.underlying !== undefined && row.underlying.trim().toUpperCase() !== underlying) {
+      reject('WRONG_UNDERLYING');
+      return;
+    }
+    const strikeTicks1e4 = Math.round(strike * 10_000);
+    if (!Number.isSafeInteger(strikeTicks1e4) || strikeTicks1e4 <= 0) {
+      reject('INVALID_STRIKE');
+      return;
+    }
+    const effectiveCode = expiryCode ?? (row.contractualExpiry === undefined ? body.expiryCode : undefined);
+    const effectiveExpiry = row.contractualExpiry ?? body.contractualExpiry;
+    const expiry = resolveBymaContractualExpiry({
+      reportDate,
+      ...(effectiveCode !== undefined ? { expiryCode: effectiveCode } : {}),
+      ...(effectiveExpiry !== undefined ? { contractualExpiry: effectiveExpiry } : {}),
+      ...(body.knownExpiries !== undefined ? { knownExpiries: body.knownExpiries } : {}),
+      arHolidays,
+    });
+    if ('code' in expiry) {
+      reject(expiry.code);
+      return;
+    }
+    for (const { side, buckets } of sides) {
+      if (!validBuckets(buckets)) {
+        reject('INVALID_ANEXO_B_BUCKETS');
+        throw new AnexoBInputError('INVALID_ANEXO_B_BUCKETS', rejectedRows);
+      }
+      const identity: CanonicalOptionIdentity = {
+        market: 'BYMA_AR', underlying, nativeSeries, side, ...expiry,
+        strike: strikeTicks1e4 / 10_000, strikeTicks1e4, reportDate,
+      };
+      const key = buildCanonicalOptionKey(identity);
+      const previous = contracts.get(key);
+      if (previous !== undefined && bucketKeys.every((bucket) => previous.buckets[bucket] === buckets[bucket])) {
+        exactDuplicateRows += 1;
+      } else if (previous !== undefined || conflictingKeys.has(key)) {
+        const rejected = { lineNumber, rawLine, code: 'DUPLICATE_CONFLICTING_SERIES', detail: key };
+        conflictingDuplicates.push(rejected);
+        rejectedRows.push(rejected);
+        conflictingKeys.add(key);
+        contracts.delete(key);
+      } else {
+        contracts.set(key, { identity, buckets: { ...buckets } });
+      }
+    }
+  };
+
+  const rawRows: unknown = body.rows;
+  if (rawRows !== undefined) {
+    if (!Array.isArray(rawRows)) throw new AnexoBInputError('INVALID_ANEXO_B_ROWS');
+    rawRows.forEach((row: unknown, index) => {
+      if (!isPlainRecord(row) || typeof row['strikeArs'] !== 'number') {
+        throw new AnexoBInputError('INVALID_ANEXO_B_ROWS');
+      }
+      const metadata: Omit<AnexoBIngestStrikeRowInput, 'callOi' | 'putOi'> = {
+        strikeArs: row['strikeArs'],
+        ...(typeof row['expiryCode'] === 'string' ? { expiryCode: row['expiryCode'] } : {}),
+        ...(typeof row['contractualExpiry'] === 'string' ? { contractualExpiry: row['contractualExpiry'] } : {}),
+        ...(typeof row['nativeSeries'] === 'string' ? { nativeSeries: row['nativeSeries'] } : {}),
+        ...(typeof row['underlying'] === 'string' ? { underlying: row['underlying'] } : {}),
+        ...(typeof row['reportDate'] === 'string' ? { reportDate: row['reportDate'] } : {}),
+      };
+      addRow(metadata, [
+        { side: 'call', buckets: row['callOi'] }, { side: 'put', buckets: row['putOi'] },
+      ], index + 1, '');
+    });
+  }
+
+  const readBuckets = (columns: readonly string[], offset: number): AnexoBOiBuckets => ({
+    coveredNom: parseLocalizedNumber(columns[offset] ?? ''),
+    uncoveredNom: parseLocalizedNumber(columns[offset + 1] ?? ''),
+    oppositeNom: parseLocalizedNumber(columns[offset + 2] ?? ''),
+    crossedNom: parseLocalizedNumber(columns[offset + 3] ?? ''),
+  });
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    const firstToken = line.split(/\s+/, 1)[0] ?? '';
+    const isCsv = firstToken.endsWith(',') || (firstToken === line && line.split(',').length >= 5);
+    const delimiter = /[;\t|]/.test(line) ? /[;\t|]/ : isCsv ? /,/ : /\s+/;
+    const columns = line.split(delimiter).map((value) => value.trim());
+    const token = columns[0]?.toUpperCase() ?? '';
+    const lineNumber = index + 1;
+    const series = /^([A-Z]{3,4})([CV])\d/.exec(token);
+    if (series !== null) {
+      addRow({ strikeArs: Number.NaN, nativeSeries: token }, [
+        { side: series[2] === 'C' ? 'call' : 'put', buckets: readBuckets(columns, 1) },
+      ], lineNumber, rawLine);
+    } else if (/^(CALL|C|PUT|P|V)$/.test(token) && columns.length >= 6) {
+      addRow({ strikeArs: parseLocalizedNumber(columns[1] ?? '') }, [
+        { side: token === 'CALL' || token === 'C' ? 'call' : 'put', buckets: readBuckets(columns, 2) },
+      ], lineNumber, rawLine);
+    } else if (columns.length >= 9 && /^\d/.test(token)) {
+      addRow({ strikeArs: parseLocalizedNumber(token) }, [
+        { side: 'call', buckets: readBuckets(columns, 1) },
+        { side: 'put', buckets: readBuckets(columns, 5) },
+      ], lineNumber, rawLine);
+    }
+  });
+  if (conflictingDuplicates.length > 0 && body.strictDuplicates !== false) {
+    throw new AnexoBInputError('ANEXO_B_DUPLICATE_CONFLICT', rejectedRows);
+  }
+  if (contracts.size === 0) throw new AnexoBInputError('NO_VALID_ANEXO_B_ROWS', rejectedRows);
+
+  interface ExpiryGroup {
+    expiryCode: string;
+    identities: CanonicalOptionIdentity[];
+    strikes: Map<number, AnexoBIngestStrikeRowInput>;
+  }
+  const groups = new Map<string, ExpiryGroup>();
+  for (const { identity, buckets } of contracts.values()) {
+    const { contractualExpiry, expiryCode, strike, side } = identity;
+    const group: ExpiryGroup = groups.get(contractualExpiry) ?? { expiryCode, identities: [], strikes: new Map() };
+    const row = group.strikes.get(strike) ?? { strikeArs: strike, callOi: ZERO_BUCKETS, putOi: ZERO_BUCKETS };
+    group.strikes.set(strike, { ...row, [side === 'call' ? 'callOi' : 'putOi']: buckets });
+    group.identities.push(identity);
+    groups.set(contractualExpiry, group);
+  }
+  const byExpiry: Record<string, AnexoBExpiryPartition> = {};
+  const byExpiryCode: Record<string, string[]> = {};
+  for (const contractualExpiry of Array.from(groups.keys()).sort()) {
+    const group = groups.get(contractualExpiry);
+    if (group === undefined) continue;
+    const { expiryCode, identities } = group;
+    const rows = Array.from(group.strikes.values()).sort((a, b) => a.strikeArs - b.strikeArs);
+    byExpiry[contractualExpiry] = {
+      contractualExpiry, expiryCode, reportDate, underlying, identities, rows,
+      unit: 'SHARES', appliedMultiplier: 1, totals: sumAnexoBRows(rows),
+    };
+    (byExpiryCode[expiryCode] ??= []).push(contractualExpiry);
+  }
+
+  const target = body.targetExpiry?.trim() || body.contractualExpiry || body.expiryCode?.trim();
+  const match = target
+    ? selectAnexoBPartition({ asOfDate: reportDate, byExpiry, byExpiryCode },
+        /^\d/.test(target) ? { contractualExpiry: target } : { expiryCode: target })
+    : null;
+  const partition = match !== null ? match.partition : groups.size === 1 ? Object.values(byExpiry)[0] : null;
+  return {
+    asOfDate: reportDate,
+    contractualExpiry: partition?.contractualExpiry ?? null,
+    expiryCode: partition?.expiryCode ?? null,
+    reportDateSource,
     sourceLabel: body.sourceLabel?.trim() || 'IAMC_ANEXO_B',
     ingestedAtUtcSec: nowUtcSec,
-    rows: sortedRows,
-    totals,
+    rows: partition?.rows ?? [],
+    totals: partition?.totals ?? sumAnexoBRows([]),
+    targetExpiryMatchStatus: match === null ? 'NOT_REQUESTED' : match.status === 'MATCHED' ||
+      match.status === 'AMBIGUOUS_EXPIRY_CODE' ? match.status : 'NOT_FOUND',
+    byExpiry,
+    byExpiryCode,
+    diagnostics: { rejectedRows, conflictingDuplicates, exactDuplicateRows },
   };
 }
+
 
 function selectLiquidFrontAndBackExpiries(
   options: ArOptionsResponse,
@@ -1182,7 +1310,12 @@ export class GgalSpecialistRuntime {
     { readonly atMs: number; readonly message: string }
   >();
 
-  private anexoBStore: AnexoBStoredRecord | null = null;
+  private readonly anexoBReportsByDate = new Map<string, AnexoBStoredRecord>();
+  private latestAnexoBReportDate: string | null = null;
+
+  private get anexoBStore(): AnexoBStoredRecord | null {
+    return this.getAnexoBState();
+  }
   private readonly iamcAnexoBUrl: string | null;
   private anexoBBgLastAttemptMs: number | null = null;
   private anexoBBgInFlight: Promise<void> | null = null;
@@ -1351,25 +1484,41 @@ export class GgalSpecialistRuntime {
     return 'ORATS_API_RESYNC_COMPLETED';
   }
 
-  public getAnexoBState(): AnexoBStoredRecord | null {
-    return this.anexoBStore;
+  public getAnexoBState(reportDate = this.latestAnexoBReportDate): AnexoBStoredRecord | null {
+    return reportDate === null ? null : this.anexoBReportsByDate.get(reportDate) ?? null;
+  }
+
+  public getAnexoBByExpiry(reportDate?: string): AnexoBStoredRecord['byExpiry'] {
+    return this.getAnexoBState(reportDate)?.byExpiry ?? {};
+  }
+
+  private storeAnexoB(record: AnexoBStoredRecord): void {
+    this.anexoBReportsByDate.set(record.asOfDate, record);
+    if (this.latestAnexoBReportDate !== null && record.asOfDate < this.latestAnexoBReportDate) return;
+    this.latestAnexoBReportDate = record.asOfDate;
+    if (typeof this.arRuntime.setAnexoBOpenInterest !== 'function') return;
+    const byContract = new Map<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>();
+    for (const partition of Object.values(record.byExpiry)) {
+      const rows = new Map(partition.rows.map((row) => [row.strikeArs, row]));
+      for (const identity of partition.identities) {
+        const row = rows.get(identity.strike);
+        if (row === undefined) continue;
+        const buckets = identity.side === 'call' ? row.callOi : row.putOi;
+        byContract.set(
+          [identity.underlying, identity.contractualExpiry, identity.side, identity.strikeTicks1e4].join('|'),
+          anexoBNominalOi(partition, buckets),
+        );
+      }
+    }
+    this.arRuntime.setAnexoBOpenInterest(byContract);
   }
 
   public ingestAnexoB(body: AnexoBIngestRequest): GgalAnexoBIngestResponse {
     const nowUtcSec = Math.floor(this.nowMsFn() / 1_000);
-    const parsed = parseAnexoBIamcInput(body, nowUtcSec);
-    this.anexoBStore = parsed;
-    return {
-      ok: true,
-      record: {
-        asOfDate: parsed.asOfDate,
-        expiryCode: parsed.expiryCode,
-        sourceLabel: parsed.sourceLabel,
-        ingestedAtUtcSec: parsed.ingestedAtUtcSec,
-        totals: parsed.totals,
-        previewRows: parsed.rows.slice(0, 25),
-      },
-    };
+    const parsed = parseAnexoBIamcInput(body, nowUtcSec, this.arHolidays);
+    this.storeAnexoB(parsed);
+    const { rows, ...metadata } = parsed;
+    return { ok: true, record: { ...metadata, previewRows: rows.slice(0, 25) } };
   }
 
   public async recordSnapshotNow(): Promise<GgalRecorderSnapshotEntry> {
@@ -1639,6 +1788,12 @@ export class GgalSpecialistRuntime {
                 ...(typeof parsedJson['expiryCode'] === 'string'
                   ? { expiryCode: parsedJson['expiryCode'] }
                   : {}),
+                ...(typeof parsedJson['contractualExpiry'] === 'string'
+                  ? { contractualExpiry: parsedJson['contractualExpiry'] }
+                  : {}),
+                ...(Array.isArray(parsedJson['rows'])
+                  ? { rows: parsedJson['rows'] as readonly AnexoBIngestStrikeRowInput[] }
+                  : {}),
                 ...(typeof parsedJson['rawText'] === 'string'
                   ? { rawText: parsedJson['rawText'] }
                   : {}),
@@ -1648,8 +1803,8 @@ export class GgalSpecialistRuntime {
         } else {
           req = { rawText: trimmed, sourceLabel: 'IAMC_ANEXO_B_BG' };
         }
-        const record = parseAnexoBIamcInput(req, Math.floor(this.nowMsFn() / 1_000));
-        this.anexoBStore = record;
+        const record = parseAnexoBIamcInput(req, Math.floor(this.nowMsFn() / 1_000), this.arHolidays);
+        this.storeAnexoB(record);
         this.anexoBBgLastError = null;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -3547,7 +3702,10 @@ export class GgalSpecialistRuntime {
     };
   }
 
-  public async getStructurePinning(forceRefresh = false): Promise<GgalStructurePinningResponse> {
+  public async getStructurePinning(
+    forceRefresh = false,
+    options: { readonly targetExpiry?: string; readonly allowProxyOi?: boolean } = {},
+  ): Promise<GgalStructurePinningResponse> {
     const bundle = await this.loadMarketBundle(forceRefresh);
     const isClosed = bundle.overview.marketState === 'CERRADO';
     const isEodMode =
@@ -3556,7 +3714,22 @@ export class GgalSpecialistRuntime {
       isClosed;
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const rates = this.resolveSofrAndRateBenchmarks(bundle);
-    const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    const requested = options.targetExpiry?.trim().toUpperCase();
+    const requestedCode = requested ? MONTH_CODES[requested]?.code : undefined;
+    const candidates = requested ? bundle.ggalOptions.expiries.filter((expiry) =>
+      expiry.expirationDate === requested || expiry.expiryCode === requestedCode
+    ) : [];
+    const front = requested
+      ? candidates.length === 1 ? candidates[0] ?? null : null
+      : selectLiquidFrontAndBackExpiries(bundle.ggalOptions).front;
+    const partition = front === null ? null : selectAnexoBPartition(this.anexoBStore, {
+      contractualExpiry: front.expirationDate, expiryCode: front.expiryCode,
+    }).partition;
+    const responseMetadata = {
+      dealerSignBasis: 'THEORETICAL_DEALER_PROXY' as const,
+      targetExpiry: requested ?? front?.expirationDate ?? null,
+      anexoBByExpiry: this.getAnexoBByExpiry(),
+    };
 
     const data912TotalOiFallback: GgalData912OiFallbackItemDto[] = [];
     if (front !== null) {
@@ -3565,8 +3738,8 @@ export class GgalSpecialistRuntime {
         const p = front.puts.find((x) => x.strike === strike);
         data912TotalOiFallback.push({
           strikeArs: strike,
-          callTotalOiNom: c?.openInterest ?? null,
-          putTotalOiNom: p?.openInterest ?? null,
+          callTotalOiNom: directOiNominalShares(c?.oiProvenance),
+          putTotalOiNom: directOiNominalShares(p?.oiProvenance),
           callIvPct: c?.iv !== null && c?.iv !== undefined ? sanitizeFinite(c.iv * 100) : null,
           putIvPct: p?.iv !== null && p?.iv !== undefined ? sanitizeFinite(p.iv * 100) : null,
         });
@@ -3654,12 +3827,13 @@ export class GgalSpecialistRuntime {
       };
     };
 
-    if (this.anexoBStore === null) {
+    if (partition === null) {
       let proxyOut: StructurePinningOutput | null = null;
       let flowBasis: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT' = isClosed
         ? 'EOD_PREV_SESSION'
         : 'INTRADAY_SNAPSHOT';
       if (
+        options.allowProxyOi === true &&
         front !== null &&
         Number.isFinite(spot24hArs) &&
         spot24hArs > 0 &&
@@ -3672,8 +3846,8 @@ export class GgalSpecialistRuntime {
         for (const strike of front.strikes) {
           const c = front.calls.find((x) => x.strike === strike);
           const p = front.puts.find((x) => x.strike === strike);
-          const rawCallLots = Math.max(0, c?.openInterest ?? c?.volume ?? 0);
-          const rawPutLots = Math.max(0, p?.openInterest ?? p?.volume ?? 0);
+          const callNominal = structureProxyShares(c);
+          const putNominal = structureProxyShares(p);
           const callIv =
             c?.iv !== null && c?.iv !== undefined && Number.isFinite(c.iv) && c.iv > 0
               ? c.iv
@@ -3682,11 +3856,11 @@ export class GgalSpecialistRuntime {
             p?.iv !== null && p?.iv !== undefined && Number.isFinite(p.iv) && p.iv > 0
               ? p.iv
               : front.ivAtm;
-          if ((rawCallLots > 0 || rawPutLots > 0) && Number.isFinite(callIv) && Number.isFinite(putIv)) {
+          if ((callNominal > 0 || putNominal > 0) && Number.isFinite(callIv) && Number.isFinite(putIv)) {
             proxyStrikes.push({
               strikeArs: strike,
-              callOi: { coveredNom: 0, uncoveredNom: rawCallLots * 100, oppositeNom: 0, crossedNom: 0 },
-              putOi: { coveredNom: 0, uncoveredNom: rawPutLots * 100, oppositeNom: 0, crossedNom: 0 },
+              callOi: { coveredNom: 0, uncoveredNom: callNominal, oppositeNom: 0, crossedNom: 0 },
+              putOi: { coveredNom: 0, uncoveredNom: putNominal, oppositeNom: 0, crossedNom: 0 },
               callIvDecimal: callIv,
               putIvDecimal: putIv,
             });
@@ -3711,12 +3885,16 @@ export class GgalSpecialistRuntime {
             ...(this.bymaFlowSnapshots.length >= 2 ? { bymaSnapshots: this.bymaFlowSnapshots } : {}),
           });
           const resolved = applyEodFlowIfClosedZero(rawProxyOut);
-          proxyOut = resolved.output;
+          proxyOut = Number.isFinite(resolved.output.netEffectiveGexArsPer1Pct) ? resolved.output : null;
           flowBasis = resolved.flowBasis;
         }
       }
       const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
       return {
+        ...responseMetadata,
+        gexStatus: proxyOut === null ? 'UNAVAILABLE_MISSING_OI' : 'ESTIMATED_PROXY_OPT_IN',
+        oiQuality: proxyOut === null ? 'MISSING_OI' : 'EXPLICIT_PROXY_OPT_IN',
+        oiCoverageRatio: 0,
         telemetry,
         frontExpiryCode: front?.expiryCode ?? null,
         frontExpiryDate: front?.expirationDate ?? null,
@@ -3729,7 +3907,7 @@ export class GgalSpecialistRuntime {
         notice:
           proxyOut !== null
             ? 'Modo PROXY DATA912 (SIN ANEXO B): GEX/Zero-Gamma/Pinning calculados sobre volumen/OI activo de Data912. Ingesta Anexo B IAMC para desglose oficial Cubierta/Descubierta/Opuesta/Cruzada.'
-            : 'Sin matriz Anexo B IAMC cargada. Ingresa las columnas Cubierta / Descubierta / Opuesta / Cruzada (en acciones nominales) para activar GEX/Vanna/Charm y Zero-Gamma Brent.',
+            : 'Sin matriz Anexo B IAMC para el vencimiento consultado. Ingresa las columnas Cubierta / Descubierta / Opuesta / Cruzada (en acciones nominales) para activar GEX/Vanna/Charm y Zero-Gamma Brent.',
       };
     }
 
@@ -3737,14 +3915,19 @@ export class GgalSpecialistRuntime {
       front === null ||
       !Number.isFinite(spot24hArs) ||
       spot24hArs <= 0 ||
-      rates.rateCurveArs.length === 0
+      rates.rateCurveArs.length === 0 ||
+      !(front.ivAtm !== null && Number.isFinite(front.ivAtm) && front.ivAtm > 0)
     ) {
       const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
       return {
+        ...responseMetadata,
+        gexStatus: 'INVALID_DATA_OR_MODEL',
+        oiQuality: 'INVALID_OI',
+        oiCoverageRatio: 0,
         telemetry,
         frontExpiryCode: front?.expiryCode ?? null,
         frontExpiryDate: front?.expirationDate ?? null,
-        anexoBSummary: this.anexoBStore.totals,
+        anexoBSummary: partition.totals,
         result: null,
         proxyResult: null,
         proxySource: null,
@@ -3754,9 +3937,9 @@ export class GgalSpecialistRuntime {
       };
     }
 
-    const fallbackAtmIv = front.ivAtm ?? 0.45;
+    const fallbackAtmIv = front.ivAtm;
     const strikesInput: AnexoBStrikeChainInput[] = [];
-    for (const row of this.anexoBStore.rows) {
+    for (const row of partition.rows) {
       const c = front.calls.find((x) => x.strike === row.strikeArs);
       const p = front.puts.find((x) => x.strike === row.strikeArs);
       const callIv = c?.iv !== null && c?.iv !== undefined && Number.isFinite(c.iv) && c.iv > 0 ? c.iv : fallbackAtmIv;
@@ -3770,18 +3953,19 @@ export class GgalSpecialistRuntime {
       });
     }
 
+    const bymaEval = {
+      asOfUtcSec: bundle.asOfUtcSec,
+      spot24hArs,
+      expiryDateKey: front.expirationDate,
+      expiry1530UtcSec: computeExpiration1530ArtUtcSec(front.expirationDate),
+      arHolidays: this.arHolidays,
+      rateCurve: rates.rateCurveArs,
+    };
     const rawOut = evaluateStructureAndPinning({
       asOfUtcSec: bundle.asOfUtcSec,
-      anexoBAsOfDate: this.anexoBStore.asOfDate,
-      bymaEval: {
-        asOfUtcSec: bundle.asOfUtcSec,
-        spot24hArs,
-        expiryDateKey: front.expirationDate,
-        expiry1530UtcSec: computeExpiration1530ArtUtcSec(front.expirationDate),
-        arHolidays: this.arHolidays,
-        rateCurve: rates.rateCurveArs,
-      },
-      atmIvDecimal: front.ivAtm ?? Number.NaN,
+      anexoBAsOfDate: partition.reportDate,
+      bymaEval,
+      atmIvDecimal: fallbackAtmIv,
       strikes: strikesInput,
       weights: DEFAULT_ANEXO_B_WEIGHTS,
       arHolidays: this.arHolidays,
@@ -3789,6 +3973,19 @@ export class GgalSpecialistRuntime {
     });
     const resolvedOut = applyEodFlowIfClosedZero(rawOut);
     const out = resolvedOut.output;
+    const evalParams = computeBymaOptionEvalParams(bymaEval);
+    const rowsByStrike = new Map(strikesInput.map((row) => [row.strikeArs, row]));
+    const identitiesEvaluated = partition.identities.filter((identity) => {
+      const row = rowsByStrike.get(identity.strike);
+      if (row === undefined) return false;
+      const call = identity.side === 'call';
+      const buckets = call ? row.callOi : row.putOi;
+      if (Object.values(buckets).every((nominal) => nominal === 0)) return true;
+      const iv = call ? row.callIvDecimal : row.putIvDecimal;
+      return evalParams !== null && Number.isFinite(greeksBymaAmericanBs02(evalParams, identity.strike, iv, identity.side).gamma);
+    });
+    const oiCoverageRatio = identitiesEvaluated.length / partition.identities.length;
+    const modelValid = Number.isFinite(out.netEffectiveGexArsPer1Pct) && oiCoverageRatio > 0;
 
     const telemetry = this.resolveTelemetryMode(
       bundle,
@@ -3798,11 +3995,15 @@ export class GgalSpecialistRuntime {
     );
 
     return {
+      ...responseMetadata,
+      gexStatus: !modelValid ? 'INVALID_DATA_OR_MODEL' : oiCoverageRatio < 1 ? 'PARTIAL_COVERAGE' : 'VALID_IAMC_ANEXO_B',
+      oiQuality: !modelValid ? 'INVALID_OI' : oiCoverageRatio < 1 ? 'PARTIAL_DIRECT_OI' : 'IAMC_ANEXO_B_EXACT',
+      oiCoverageRatio,
       telemetry,
       frontExpiryCode: front.expiryCode,
       frontExpiryDate: front.expirationDate,
-      anexoBSummary: this.anexoBStore.totals,
-      result: toJsonSafe(out),
+      anexoBSummary: partition.totals,
+      result: modelValid ? toJsonSafe(out) : null,
       proxyResult: null,
       proxySource: null,
       flowBasis: resolvedOut.flowBasis,
@@ -3867,43 +4068,19 @@ export class GgalSpecialistRuntime {
       };
     }
 
-    const anexoOiByStrike = new Map<number, { readonly callNom: number; readonly putNom: number }>();
-    if (this.anexoBStore !== null) {
-      for (const row of this.anexoBStore.rows) {
-        anexoOiByStrike.set(row.strikeArs, {
-          callNom:
-            row.callOi.coveredNom +
-            row.callOi.uncoveredNom +
-            row.callOi.oppositeNom +
-            row.callOi.crossedNom,
-          putNom:
-            row.putOi.coveredNom +
-            row.putOi.uncoveredNom +
-            row.putOi.oppositeNom +
-            row.putOi.crossedNom,
-        });
-      }
-    }
-
     const bymaChain: BymaStrategyOptionQuote[] = [];
     let optBasis: ExecutionPriceBasis = spots.basis;
     const selectedExpiries = back !== null ? [front, back] : [front];
     for (const exp of selectedExpiries) {
-      const anexoAppliesToExp =
-        this.anexoBStore !== null &&
-        exp.expiryCode === front.expiryCode &&
-        (this.anexoBStore.expiryCode === null || this.anexoBStore.expiryCode === exp.expiryCode);
+      const partition = selectAnexoBPartition(this.anexoBStore, {
+        contractualExpiry: exp.expirationDate, expiryCode: exp.expiryCode,
+      }).partition;
       for (const c of [...exp.calls, ...exp.puts]) {
         const built = makeBidAskQuote(c.bid, c.ask, c.mark ?? c.last, isEodMode);
         if (built.basis === 'LIVE_BID_ASK') {
           optBasis = 'LIVE_BID_ASK';
         }
-        const baseOi =
-          c.openInterest !== null && Number.isFinite(c.openInterest) ? Math.max(0, c.openInterest) : 0;
-        const anexoRow = anexoAppliesToExp ? anexoOiByStrike.get(c.strike) : undefined;
-        const anexoNom =
-          anexoRow !== undefined ? (c.contractType === 'call' ? anexoRow.callNom : anexoRow.putNom) : 0;
-        const effectiveOiNom = Math.max(baseOi, anexoNom);
+        const effectiveOiNom = directOiNominalShares(resolveAnexoBContractOi(partition, c)) ?? 0;
         if (Number.isFinite(built.quote.bid) && Number.isFinite(built.quote.ask) && built.quote.bid > 0) {
           bymaChain.push({
             ticker: c.symbol,
@@ -4332,8 +4509,15 @@ export class GgalSpecialistRuntime {
         : [];
 
     const tickSizeArs = Number.isFinite(optBid) && optBid < 100 ? 0.5 : 1.0;
-    const targetAnexoRow = this.anexoBStore?.rows.find(
-      (r) => Math.abs(r.strikeArs - targetContract.strike) < 1e-6,
+    const targetPartition = selectAnexoBPartition(this.anexoBStore, {
+      contractualExpiry: targetContract.expirationDate, expiryCode: targetContract.expiryCode,
+    }).partition;
+    const targetIdentity = targetPartition?.identities.find((entry) =>
+      entry.side === targetContract.contractType && entry.strikeTicks1e4 === Math.round(targetContract.strike * 10_000),
+    );
+    const targetAnexoRow = targetPartition?.rows.find((row) => row.strikeArs === targetIdentity?.strike);
+    const targetMultiplier = resolveContractMultiplier(
+      targetContract.contractMultiplier ?? Number.NaN, targetContract.multiplierSource ?? 'UNVERIFIED',
     );
     const bucketUncoveredNom =
       targetAnexoRow === undefined
@@ -4342,8 +4526,8 @@ export class GgalSpecialistRuntime {
           ? targetAnexoRow.callOi.uncoveredNom
           : targetAnexoRow.putOi.uncoveredNom;
     const uncoveredOiLots =
-      bucketUncoveredNom !== undefined && bucketUncoveredNom > 0
-        ? bucketUncoveredNom / GGAL_BYMA_LOT_SIZE
+      bucketUncoveredNom !== undefined && targetMultiplier !== null
+        ? bucketUncoveredNom / targetMultiplier.contractMultiplier
         : targetContract.openInterest !== null && targetContract.openInterest > 0
           ? targetContract.openInterest
           : Number.NaN;
@@ -4510,7 +4694,7 @@ export class GgalSpecialistRuntime {
       structure.telemetry.anexoBLagTradingDays,
     );
 
-    const strRes = structure.result ?? structure.proxyResult ?? null;
+    const strRes = structure.result;
 
     return {
       telemetry,
@@ -4542,6 +4726,9 @@ export class GgalSpecialistRuntime {
         tailSignal: dual.output !== null ? dual.output.tailDislocationSignal : null,
       },
       structure: {
+        gexStatus: structure.gexStatus,
+        oiQuality: structure.oiQuality,
+        oiCoverageRatio: structure.oiCoverageRatio,
         regime: strRes?.regime ?? 'NO_DATA',
         zeroGammaLevelArs: strRes?.zeroGammaLevelArs ?? null,
         callWallArs: strRes?.callWallArs ?? null,
@@ -4944,14 +5131,17 @@ export class GgalSpecialistRuntime {
 
   public async getClearingRisk(forceRefresh = false): Promise<{
     readonly routerStatus: ArFeedRouterStatusSnapshot;
-    readonly clearingRisk: JsonSafeValue<GgalClearingRiskPayload>;
+    readonly clearingRisk: JsonSafeValue<GgalClearingRiskPayload & {
+      readonly totalUncoveredNom?: number | null;
+      readonly totalCoveredNom?: number | null;
+    }>;
   }> {
     const bundle = await this.loadMarketBundle(forceRefresh);
     const { routerStatus, microstructure } = this.buildL2MetricsFromBundle(bundle);
     const structure = await this.getStructurePinning(false);
     const otmWingCclVol = this.buildOtmWingCclFromBundle(bundle);
 
-    const strRes = structure.result ?? structure.proxyResult ?? null;
+    const strRes = structure.result;
     if (strRes === null) {
       return {
         routerStatus,
@@ -4980,17 +5170,30 @@ export class GgalSpecialistRuntime {
       l2Metrics: microstructure,
     });
 
-    const anexoTotals = this.anexoBStore?.totals ?? null;
-    const totalUncoveredContracts =
-      anexoTotals !== null
-        ? Math.round((anexoTotals.callUncoveredNom + anexoTotals.putUncoveredNom) / 100)
-        : 0;
-    const totalCoveredContracts =
-      anexoTotals !== null
-        ? Math.round((anexoTotals.callCoveredNom + anexoTotals.putCoveredNom) / 100)
-        : 0;
-
     const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
+    const partition = front === null ? null : selectAnexoBPartition(this.anexoBStore, {
+      contractualExpiry: front.expirationDate, expiryCode: front.expiryCode,
+    }).partition;
+    const anexoTotals = partition?.totals;
+    const multipliers = new Set<number>();
+    let multiplierMissing = false;
+    for (const identity of partition?.identities ?? []) {
+      const contracts = identity.side === 'call' ? front?.calls : front?.puts;
+      const contract = contracts?.find((entry) => Math.round(entry.strike * 10_000) === identity.strikeTicks1e4);
+      const verified = resolveContractMultiplier(
+        contract?.contractMultiplier ?? Number.NaN, contract?.multiplierSource ?? 'UNVERIFIED',
+      );
+      if (verified === null) multiplierMissing = true;
+      else multipliers.add(verified.contractMultiplier);
+    }
+    const multiplier = !multiplierMissing && multipliers.size === 1
+      ? Array.from(multipliers)[0] ?? Number.NaN
+      : Number.NaN;
+    const totalUncoveredContracts = anexoTotals === undefined ? Number.NaN
+      : (anexoTotals.callUncoveredNom + anexoTotals.putUncoveredNom) / multiplier;
+    const totalCoveredContracts = anexoTotals === undefined ? Number.NaN
+      : (anexoTotals.callCoveredNom + anexoTotals.putCoveredNom) / multiplier;
+
     const jul26Flag =
       front !== null &&
       (front.expiryCode.toUpperCase().includes('JU') ||
@@ -4998,26 +5201,28 @@ export class GgalSpecialistRuntime {
         front.expirationDate.includes('-07-') ||
         front.expirationDate.includes('-08-'));
 
-    const payload: GgalClearingRiskPayload = {
+    const payload = {
       status: 'OPERATIONAL',
       asOfUtcSec: bundle.asOfUtcSec,
       anexoBStatus:
-        this.anexoBStore === null
+        partition === null
           ? 'UNAVAILABLE'
           : structure.telemetry.anexoBLagTradingDays !== null &&
               structure.telemetry.anexoBLagTradingDays > 0
             ? 'CARRY_FORWARD_NO_TRADE'
             : 'FRESH',
-      anexoBTradeDate: this.anexoBStore?.asOfDate ?? null,
+      anexoBTradeDate: partition?.reportDate ?? null,
       jul26DividendNoStrikeAdjFlag: jul26Flag,
       bymaInitialMarginPct: totalUncoveredContracts > 0 ? 18.0 : Number.NaN,
       clearingHaircutPct: totalUncoveredContracts > 0 ? 25.0 : Number.NaN,
       totalUncoveredContracts,
       totalCoveredContracts,
+      totalUncoveredNom: anexoTotals === undefined ? null : anexoTotals.callUncoveredNom + anexoTotals.putUncoveredNom,
+      totalCoveredNom: anexoTotals === undefined ? null : anexoTotals.callCoveredNom + anexoTotals.putCoveredNom,
       l2PinScore,
       otmWingCclVol,
       reason: null,
-    };
+    } satisfies GgalClearingRiskPayload & { totalCoveredNom: number | null; totalUncoveredNom: number | null };
 
     return {
       routerStatus,
@@ -5476,7 +5681,10 @@ export class GgalSpecialistRuntime {
     );
 
     const greekProfile: GgalStrikeGreekProfileRow[] = [];
-    const anexoByStrike = new Map((this.anexoBStore?.rows ?? []).map((r) => [r.strikeArs, r]));
+    const frontPartition = frontByma === null ? null : selectAnexoBPartition(this.anexoBStore, {
+      contractualExpiry: frontByma.expirationDate, expiryCode: frontByma.expiryCode,
+    }).partition;
+    const anexoByStrike = new Map((frontPartition?.rows ?? []).map((r) => [r.strikeArs, r]));
     for (const item of params.strRes?.strikeProfile ?? []) {
       const strikeArs = item.strikeArs;
       if (strikeArs === null || !Number.isFinite(strikeArs)) {
@@ -5507,20 +5715,20 @@ export class GgalSpecialistRuntime {
     }
 
     if (greekProfile.length === 0 && frontByma !== null) {
-      const bymaSpot = params.ggalOptions?.spot ?? params.adrLastUsd;
+      const bymaSpot = params.ggalOptions?.spot ?? Number.NaN;
       const byStrike = new Map<
         number,
         { signedGex: number; vanna: number; charm: number }
       >();
-      const validSpot = Number.isFinite(bymaSpot) && bymaSpot > 0 ? bymaSpot : 1;
+
       for (const c of [...frontByma.calls, ...frontByma.puts]) {
-        const oi = c.openInterest;
+        const oi = directOiNominalShares(resolveAnexoBContractOi(frontPartition, c));
         const gamma = c.gamma;
-        if (oi === null || !Number.isFinite(oi) || oi <= 0 || gamma === null || !Number.isFinite(gamma)) {
+        if (oi === null || !Number.isFinite(oi) || oi <= 0 || gamma === null || !Number.isFinite(gamma) || !Number.isFinite(bymaSpot) || bymaSpot <= 0) {
           continue;
         }
         const sign = c.contractType === 'call' ? 1 : -1;
-        const gex = sign * gamma * oi * GGAL_BYMA_LOT_SIZE * validSpot * validSpot * 0.01;
+        const gex = sign * gamma * oi * bymaSpot * bymaSpot * 0.01;
         const acc = byStrike.get(c.strike) ?? { signedGex: 0, vanna: 0, charm: 0 };
         acc.signedGex += gex;
         byStrike.set(c.strike, acc);
@@ -6190,7 +6398,7 @@ export class GgalSpecialistRuntime {
     const volumeProfile = computeVolumeProfile(convertedBars, 32, marketTz);
     const zones = this.detectUnmitigatedZones(convertedBars);
 
-    const strRes = structure?.result ?? structure?.proxyResult ?? null;
+    const strRes = structure?.result ?? null;
     const resolvedOpts = this.resolveDualChartOptionsLevelsAndProfile({
       coordMode: opts.coordMode,
       cclRate,

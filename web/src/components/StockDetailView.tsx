@@ -1400,12 +1400,23 @@ export const StockDetailView: React.FC<{
             : status === 'indeterminate'
               ? 'cruce indeterminado'
               : '—';
+    const arExposure = isArMarket ? arOptions?.exposureSummary : null;
+    const gexStatus = arExposure?.gexStatus;
+    const gexLabel =
+      gexStatus === 'UNAVAILABLE_MISSING_OI' ? '— · sin OI verificable'
+        : gexStatus === 'INVALID_DATA_OR_MODEL' ? '— · OI inválido o modelo no evaluable'
+        : gexStatus === 'PARTIAL_COVERAGE'
+          ? `${arExposure?.trace?.directOiInputs ?? 0}/${arExposure?.trace?.oiUniverseInputs ?? '—'} contratos · parcial`
+          : gexStatus === 'ESTIMATED_PROXY_OPT_IN' ? 'Proxy opt-in'
+          : gexStatus === 'VALID_IAMC_ANEXO_B' ? 'Nominales IAMC'
+          : gexStatus === 'VALID_CONTRACT_OI' ? 'OI contractual observado' : '—';
     return [
       { label: 'GEX spot', text: `${spot} · ${coverageLabel}`, title: undefined },
       { label: 'Cotizaciones', text: `${quoteLabel}${modeLabel}`, title: scopeTitle },
       { label: 'Alcance', text: scopeLabel, title: scopeTitle },
       { label: 'Zero-γ', text: zeroGammaLabel, title: undefined },
       { label: 'Supuesto', text: 'calls +1 · puts −1 (modelo teórico)', title: undefined },
+      ...(isArMarket ? [{ label: 'OI / GEX', text: gexLabel, title: undefined }] : []),
     ];
   }, [arOptions?.exposureSummary, isArMarket, usSnap?.exposureSummary]);
 
@@ -1907,9 +1918,9 @@ export const StockDetailView: React.FC<{
             </button>
           ))}
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#141419] pt-1.5 font-mono-num text-[10px] text-[#7C8398]">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#141419] pt-1.5 font-mono-num tabular-nums text-[10px] text-[#7C8398]">
           {exposureTraceInfo.map((item) => (
-            <span key={item.label} title={item.title}>
+            <span key={item.label} title={item.title} className={item.label === 'OI / GEX' ? 'inline-block w-60 truncate' : undefined}>
               <span className="text-[#565D75]">{item.label}:</span> {item.text}
             </span>
           ))}
@@ -2075,9 +2086,9 @@ export const StockDetailView: React.FC<{
           onGoToOptions={onGoToOptions}
         />
         <div className="rounded-[12px] border border-[#1C1C24] bg-[#111116] p-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1.5 font-mono-num text-[10px] text-[#7C8398]">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1.5 font-mono-num tabular-nums text-[10px] text-[#7C8398]">
             {exposureTraceInfo.map((item) => (
-              <span key={`gex-${item.label}`} title={item.title}>
+              <span key={`gex-${item.label}`} title={item.title} className={item.label === 'OI / GEX' ? 'inline-block w-60 truncate' : undefined}>
                 <span className="text-[#565D75]">{item.label}:</span> {item.text}
               </span>
             ))}

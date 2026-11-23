@@ -868,7 +868,7 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     expect(dualJson.cerSeriesCount).toBeGreaterThanOrEqual(60);
     expect(dualJson.result?.physicalMetricsUsd.status).toBe('OK');
 
-    // 4. Tab 4: Structure proxy Data912 sin Anexo B manteniendo result: null
+    // 4. Tab 4: Structure con proxy Data912 por opt-in
     const structRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/structure-pinning`);
     expect(structRes.status).toBe(200);
     const structRaw = await structRes.text();
@@ -878,17 +878,28 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
       readonly proxyResult?: GgalStructurePinningResponse['result'];
     };
     expect(structJson.result).toBeNull();
-    expect(structJson.proxySource).toBe('PROXY DATA912 (SIN ANEXO B)');
-    expect(structJson.proxyResult).not.toBeNull();
-    expect(structJson.proxyResult?.strikeProfile.length ?? 0).toBeGreaterThan(0);
-    expect(Number.isFinite(structJson.proxyResult?.netEffectiveGexArsPer1Pct ?? Number.NaN)).toBe(true);
-    expect(structJson.proxyResult?.callWallArs ?? 0).toBeGreaterThanOrEqual(5400);
+    expect(structJson.proxySource).toBeNull();
+    expect(structJson.proxyResult).toBeNull();
+    expect(structJson.gexStatus).toBe('UNAVAILABLE_MISSING_OI');
 
-    // Overview toma el proxy para structure
+    const proxyRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/structure-pinning?allowProxyOi=true`);
+    expect(proxyRes.status).toBe(200);
+    const proxyRaw = await proxyRes.text();
+    expect(JSON_FORBIDDEN_TOKEN.test(proxyRaw)).toBe(false);
+    const proxyJson = JSON.parse(proxyRaw) as GgalStructurePinningResponse;
+    expect(proxyJson.result).toBeNull();
+    expect(proxyJson.proxySource).toBe('PROXY DATA912 (SIN ANEXO B)');
+    expect(proxyJson.proxyResult).not.toBeNull();
+    expect(proxyJson.gexStatus).toBe('ESTIMATED_PROXY_OPT_IN');
+    expect(proxyJson.proxyResult?.strikeProfile.length ?? 0).toBeGreaterThan(0);
+    expect(Number.isFinite(proxyJson.proxyResult?.netEffectiveGexArsPer1Pct)).toBe(true);
+    expect(Number.isFinite(proxyJson.proxyResult?.callWallArs)).toBe(true);
+    expect(proxyJson.proxyResult?.callWallArs ?? 0).toBeGreaterThanOrEqual(5400);
+
     const ovRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/overview`);
     expect(ovRes.status).toBe(200);
     const ovJson = JSON.parse(await ovRes.text()) as GgalSpecialistOverviewResponse;
-    expect(ovJson.structure.peakPinStrikeArs).not.toBeNull();
+    expect(ovJson.structure.peakPinStrikeArs).toBeNull();
 
     // 5. Tab 5: Strategy Selector con body {} usa minOi = 0 por defecto
     const stratRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/strategy-selector`, {
@@ -1571,7 +1582,7 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     }
 
     // Tab 4: Flujo EOD Rueda Previa en mercado cerrado cuando deltas 20s son cero
-    const structRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/structure-pinning`);
+    const structRes = await fetch(`${baseUrl}/api/ar/ggal-specialist/structure-pinning?allowProxyOi=true`);
     expect(structRes.status).toBe(200);
     const structRaw = await structRes.text();
     expect(JSON_FORBIDDEN_TOKEN.test(structRaw)).toBe(false);

@@ -1,3 +1,6 @@
+import type { CanonicalOptionIdentity } from '../../../src/core/ggal/anexoBIdentity.js';
+import type { DealerSignBasis, GexComputationStatus, OiQualityTier } from '../../../src/core/options/oiProvenance.js';
+
 export type GgalBadgeMode =
   | 'LIVE'
   | 'EOD_CIERRE'
@@ -250,12 +253,19 @@ export interface AnexoBOiBucketsDto {
 }
 
 export interface AnexoBIngestStrikeRowDto {
+  readonly expiryCode?: string;
+  readonly contractualExpiry?: string;
+  readonly nativeSeries?: string;
+  readonly underlying?: string;
+  readonly reportDate?: string;
   readonly strikeArs: number;
   readonly callOi: AnexoBOiBucketsDto;
   readonly putOi: AnexoBOiBucketsDto;
 }
 
 export interface AnexoBIngestRequestDto {
+  readonly contractualExpiry?: string;
+  readonly targetExpiry?: string;
   readonly asOfDate?: string;
   readonly expiryCode?: string;
   readonly sourceLabel?: string;
@@ -275,7 +285,28 @@ export interface AnexoBSummaryTotalsDto {
   readonly putCrossedNom: number;
 }
 
+interface AnexoBExpiryPartitionDto {
+  readonly contractualExpiry: string;
+  readonly expiryCode: string;
+  readonly reportDate: string;
+  readonly underlying: string;
+  readonly unit: 'SHARES';
+  readonly appliedMultiplier: 1;
+  readonly identities: readonly CanonicalOptionIdentity[];
+  readonly rows: readonly AnexoBIngestStrikeRowDto[];
+  readonly totals: AnexoBSummaryTotalsDto;
+}
+
 export interface GgalStructurePinningResponseDto {
+  readonly gexStatus?: GexComputationStatus;
+  readonly oiQuality?: OiQualityTier;
+  readonly oiCoverageRatio?: number;
+  readonly dealerSignBasis?: DealerSignBasis;
+  readonly targetExpiry?: string | null;
+  readonly anexoBByExpiry?: Readonly<Record<string, AnexoBExpiryPartitionDto>>;
+  readonly proxyResult?: GgalStructurePinningResponseDto['result'];
+  readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
+  readonly flowBasis?: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT';
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -413,6 +444,9 @@ export interface GgalSpecialistOverviewResponseDto {
     readonly tailSignal: string | null;
   };
   readonly structure: {
+    readonly gexStatus?: GexComputationStatus;
+    readonly oiQuality?: OiQualityTier;
+    readonly oiCoverageRatio?: number;
     readonly regime: string;
     readonly zeroGammaLevelArs: number | null;
     readonly callWallArs: number | null;
@@ -424,9 +458,23 @@ export interface GgalSpecialistOverviewResponseDto {
   readonly topStrategies: readonly GgalRankedStrategyDto[];
 }
 
+interface AnexoBRejectedRowDto {
+  readonly lineNumber: number;
+  readonly rawLine: string;
+  readonly code: string;
+  readonly detail: string;
+}
+
 export interface GgalAnexoBIngestResponseDto {
   readonly ok: true;
   readonly record: {
+    readonly contractualExpiry?: string | null;
+    readonly byExpiry?: Readonly<Record<string, AnexoBExpiryPartitionDto>>;
+    readonly diagnostics?: {
+      readonly exactDuplicateRows: number;
+      readonly rejectedRows: readonly AnexoBRejectedRowDto[];
+      readonly conflictingDuplicates: readonly AnexoBRejectedRowDto[];
+    };
     readonly asOfDate: string;
     readonly expiryCode: string | null;
     readonly sourceLabel: string;
@@ -518,9 +566,19 @@ export function fetchGgalDualDensity(
 }
 
 export function fetchGgalStructurePinning(
-  options: { readonly forceRefresh?: boolean; readonly signal?: AbortSignal } = {},
+  options: {
+    readonly forceRefresh?: boolean;
+    readonly signal?: AbortSignal;
+    readonly allowProxyOi?: boolean;
+    readonly targetExpiry?: string;
+  } = {},
 ): Promise<GgalStructurePinningResponseDto> {
-  const qs = options.forceRefresh ? '?refresh=1' : '';
+  const params = new URLSearchParams();
+  if (options.forceRefresh) params.set('refresh', '1');
+  if (options.allowProxyOi === true) params.set('allowProxyOi', 'true');
+  if (options.targetExpiry) params.set('targetExpiry', options.targetExpiry);
+  const query = params.toString();
+  const qs = query === '' ? '' : `?${query}`;
   return requestJson<GgalStructurePinningResponseDto>(
     `/api/ar/ggal-specialist/structure-pinning${qs}`,
     {
@@ -753,8 +811,10 @@ export interface GgalClearingRiskResponseDto {
         readonly jul26DividendNoStrikeAdjFlag: boolean;
         readonly bymaInitialMarginPct: number | null;
         readonly clearingHaircutPct: number | null;
-        readonly totalUncoveredContracts: number;
-        readonly totalCoveredContracts: number;
+        readonly totalUncoveredContracts: number | null;
+        readonly totalCoveredContracts: number | null;
+        readonly totalUncoveredNom?: number | null;
+        readonly totalCoveredNom?: number | null;
         readonly l2PinScore: {
           readonly status: 'OPERATIONAL' | 'UNAVAILABLE';
           readonly weightedPinScore: number | null;

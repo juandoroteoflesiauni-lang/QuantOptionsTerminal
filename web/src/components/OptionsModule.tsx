@@ -1754,7 +1754,8 @@ export const OptionsModule: React.FC<{
 
   const dealerGammaReport = useMemo(() => {
     const expSum = liveOptions?.exposureSummary ?? null;
-    if (!expSum || expSum.netGex === null || !Number.isFinite(expSum.netGex)) {
+    if (!expSum || expSum.gexStatus === 'UNAVAILABLE_MISSING_OI' || expSum.gexStatus === 'INVALID_DATA_OR_MODEL' ||
+        expSum.netGex === null || !Number.isFinite(expSum.netGex)) {
       return classifyDealerGammaRegimeFromSummary({
         spot: displaySpot,
         netGex: Number.NaN,
@@ -1775,8 +1776,8 @@ export const OptionsModule: React.FC<{
     const inferredContractsFromStrikes = (expSum.byStrike ?? []).filter(
       (s) => (s.callOi ?? 0) > 0 || (s.putOi ?? 0) > 0,
     ).length;
-    const usableContracts = expSum.quality?.usableContracts ?? inferredContractsFromStrikes;
-    const usableOpenInterest = expSum.quality?.usableOpenInterest ?? inferredOiFromStrikes;
+    const usableContracts = expSum.quality?.usableContracts ?? (expSum.gexStatus === undefined ? inferredContractsFromStrikes : 0);
+    const usableOpenInterest = expSum.quality?.usableOpenInterest ?? (expSum.gexStatus === undefined ? inferredOiFromStrikes : 0);
     const flipStatus =
       expSum.gammaFlipStatus === 'unique' ||
       expSum.gammaFlipStatus === 'no_crossing' ||
@@ -1787,14 +1788,24 @@ export const OptionsModule: React.FC<{
     return classifyDealerGammaRegimeFromSummary({
       spot: displaySpot,
       netGex: expSum.netGex,
-      callWallStrike: expSum.callWallStrike ?? activeQuantEngines?.flowAdjustedGex?.callWallStrike ?? Number.NaN,
-      putWallStrike: expSum.putWallStrike ?? activeQuantEngines?.flowAdjustedGex?.putWallStrike ?? Number.NaN,
+      callWallStrike: expSum.callWallStrike ?? (expSum.gexStatus === undefined ? activeQuantEngines?.flowAdjustedGex?.callWallStrike : undefined) ?? Number.NaN,
+      putWallStrike: expSum.putWallStrike ?? (expSum.gexStatus === undefined ? activeQuantEngines?.flowAdjustedGex?.putWallStrike : undefined) ?? Number.NaN,
       gammaFlipSpot: expSum.gammaFlipSpot ?? Number.NaN,
       gammaFlipStatus: flipStatus,
       usableContracts,
       usableOpenInterest,
     });
   }, [liveOptions?.exposureSummary, displaySpot, activeQuantEngines?.flowAdjustedGex]);
+
+  const arExposure = !isUsMarket ? liveOptions?.exposureSummary : null;
+  const gexStatus = arExposure?.gexStatus;
+  const displayNetGex = gexStatus === undefined ? dealerGammaReport.netGex : arExposure?.netGex ?? Number.NaN;
+  const gexStatusLabel =
+    gexStatus === 'UNAVAILABLE_MISSING_OI' ? 'Sin OI verificable'
+      : gexStatus === 'INVALID_DATA_OR_MODEL' ? 'OI inválido o modelo no evaluable'
+      : gexStatus === 'PARTIAL_COVERAGE'
+        ? `${arExposure?.trace?.directOiInputs ?? 0}/${arExposure?.trace?.oiUniverseInputs ?? '—'} contratos · parcial`
+        : gexStatus === 'ESTIMATED_PROXY_OPT_IN' ? 'Proxy opt-in' : '';
 
   const exposureByStrikeMap = useMemo(() => {
     const map = new Map<
@@ -3741,21 +3752,21 @@ export const OptionsModule: React.FC<{
               )}
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-[#1E222D]/80 font-mono-num">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-[#1E222D]/80 font-mono-num tabular-nums">
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">NET GEX (1% SPOT)</div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">{gexStatus === 'PARTIAL_COVERAGE' ? 'GEX PARCIAL (1% SPOT)' : 'NET GEX (1% SPOT)'}</div>
                 <div
                   className={`text-[15px] font-extrabold ${
-                    Number.isFinite(dealerGammaReport.netGex)
-                      ? dealerGammaReport.netGex >= 0
+                    Number.isFinite(displayNetGex)
+                      ? displayNetGex >= 0
                         ? 'text-emerald-400'
                         : 'text-rose-400'
                       : 'text-[#787B86]'
                   }`}
                 >
-                  {Number.isFinite(dealerGammaReport.netGex)
+                  {Number.isFinite(displayNetGex)
                     ? (() => {
-                        const v = dealerGammaReport.netGex;
+                        const v = displayNetGex;
                         const sign = v > 0 ? '+' : v < 0 ? '-' : '';
                         const ccy = isUsMarket ? 'US$' : '$';
                         const abs = Math.abs(v);
@@ -3766,6 +3777,12 @@ export const OptionsModule: React.FC<{
                       })()
                     : '—'}
                 </div>
+                {!isUsMarket && (
+                  <div className="min-h-8 text-[10px] leading-4 text-[#9CA3AF]">
+                    <div>{gexStatusLabel}</div>
+                    <div>Signo dealer teórico</div>
+                  </div>
+                )}
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#787B86]">CALL WALL (CW)</div>

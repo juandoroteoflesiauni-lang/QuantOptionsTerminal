@@ -276,6 +276,8 @@ export const GgalSpecialistModule: React.FC<{
   const [anexoModalOpen, setAnexoModalOpen] = useState(false);
   const [anexoDateInput, setAnexoDateInput] = useState(() => new Date().toISOString().slice(0, 10));
   const [anexoRawText, setAnexoRawText] = useState('');
+  const [anexoExpiryCode, setAnexoExpiryCode] = useState('');
+  const [allowProxyOi, setAllowProxyOi] = useState(false);
   const [anexoSubmitting, setAnexoSubmitting] = useState(false);
   const [anexoError, setAnexoError] = useState<string | null>(null);
   const [anexoSuccess, setAnexoSuccess] = useState<string | null>(null);
@@ -453,7 +455,7 @@ export const GgalSpecialistModule: React.FC<{
         } else if (tab === 'dual-density') {
           tabPromise = fetchGgalDualDensity({ forceRefresh, signal: ctrl.signal }).then(setDualData);
         } else if (tab === 'structure-pinning') {
-          tabPromise = fetchGgalStructurePinning({ forceRefresh, signal: ctrl.signal }).then(
+          tabPromise = fetchGgalStructurePinning({ forceRefresh, signal: ctrl.signal, allowProxyOi }).then(
             setStructureData,
           );
         } else if (tab === 'microstructure-orats') {
@@ -530,6 +532,7 @@ export const GgalSpecialistModule: React.FC<{
       }
     },
     [
+      allowProxyOi,
       enforceThresholds,
       familyFilter,
       m6CapitalArs,
@@ -618,11 +621,14 @@ export const GgalSpecialistModule: React.FC<{
       const res = await postGgalAnexoBIngest({
         asOfDate: anexoDateInput.trim() || undefined,
         rawText: anexoRawText,
+        ...(anexoExpiryCode.trim() ? { expiryCode: anexoExpiryCode.trim() } : {}),
         sourceLabel: 'IAMC_ANEXO_B_MANUAL',
       });
-      setAnexoSuccess(
-        `Ingestados ${res.record.totals.strikesCount} strikes (${res.record.asOfDate}). Descubierta Calls: ${fmtNum(res.record.totals.callUncoveredNom, 0)} nom.`,
-      );
+      const expiries = Object.values(res.record.byExpiry ?? {});
+      const loaded = expiries.length > 0
+        ? expiries.map((item) => `${item.contractualExpiry} · ${item.totals.strikesCount} strikes`).join(', ')
+        : `${res.record.totals.strikesCount} strikes`;
+      setAnexoSuccess(`Informe ${res.record.asOfDate} · ${loaded}`);
       setAnexoModalOpen(false);
       await loadTab('structure-pinning', false);
       setActiveTab('structure-pinning');
@@ -917,14 +923,8 @@ export const GgalSpecialistModule: React.FC<{
   };
 
   const renderGexProfileChart = () => {
-    const structExt = structureData as
-      | (typeof structureData & {
-          readonly proxyResult?: NonNullable<typeof structureData>['result'];
-          readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
-        })
-      | null;
-    const isProxy = structExt !== null && structExt.result === null && structExt.proxyResult != null;
-    const profile = (structExt?.result ?? structExt?.proxyResult)?.strikeProfile ?? [];
+    const isProxy = allowProxyOi && structureData?.gexStatus === 'ESTIMATED_PROXY_OPT_IN';
+    const profile = (isProxy ? structureData?.proxyResult : structureData?.result)?.strikeProfile ?? [];
     if (profile.length === 0) {
       return null;
     }
@@ -1569,24 +1569,29 @@ export const GgalSpecialistModule: React.FC<{
 
       {/* TAB 4 — ESTRUCTURA, ANEXO B & PINNING */}
       {activeTab === 'structure-pinning' && structureData !== null && (() => {
-        const structExt = structureData as typeof structureData & {
-          readonly proxyResult?: typeof structureData.result;
-          readonly proxySource?: 'PROXY DATA912 (SIN ANEXO B)' | null;
-          readonly flowBasis?: 'EOD_PREV_SESSION' | 'INTRADAY_SNAPSHOT';
-        };
-        const effStruct = structExt.result ?? structExt.proxyResult ?? null;
-        const usingProxy = structExt.result === null && structExt.proxyResult != null;
+        const usingProxy = allowProxyOi && structureData.gexStatus === 'ESTIMATED_PROXY_OPT_IN';
+        const effStruct = usingProxy ? structureData.proxyResult ?? null : structureData.result;
         const flowBadge =
-          structExt.flowBasis === 'EOD_PREV_SESSION'
+          structureData.flowBasis === 'EOD_PREV_SESSION'
             ? 'EOD RUEDA PREVIA'
             : (effStruct?.intradayFlow.leeReadyConfidence ?? 'SNAPSHOT_20S_APPROX');
         return (
         <div className="space-y-4">
-          {structureData.notice !== null && (
-            <div className="rounded-[10px] bg-[#211B3A]/60 border border-[#43347A] p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-h-9 flex-wrap items-center gap-x-3 text-[12px] text-[#D1D5DB]">
+            <label className="inline-flex cursor-pointer items-center gap-2">
+              <input type="checkbox" checked={allowProxyOi} onChange={(event) => setAllowProxyOi(event.target.checked)} />
+              Estimar GEX con volumen
+            </label>
+            <span className="inline-flex w-28 tabular-nums text-[#F5B544]">
+              {usingProxy ? 'PROXY OPT-IN' : structureData.gexStatus === 'PARTIAL_COVERAGE'
+                ? `${fmtPct((structureData.oiCoverageRatio ?? 0) * 100, 0, false)} parcial` : ''}
+            </span>
+            <span>Signo dealer teórico</span>
+          </div>
+            <div className="min-h-20 rounded-[10px] bg-[#211B3A]/60 border border-[#43347A] p-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-[#A78BFA] shrink-0 mt-0.5" />
-                <div className="text-[12.5px] text-[#E5E7EB]">{structureData.notice}</div>
+                <div className="text-[12.5px] text-[#E5E7EB]">{structureData.notice ?? 'Anexo B disponible para el vencimiento consultado.'}</div>
               </div>
               <button
                 type="button"
@@ -1596,20 +1601,19 @@ export const GgalSpecialistModule: React.FC<{
                 Ingestar Anexo B ahora
               </button>
             </div>
-          )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 tabular-nums">
             <KPICard
               title="Régimen Gamma & Zero-Gamma"
               heroValue={fmtCurrency(effStruct?.zeroGammaLevelArs, '$ ', 0)}
               badge={effStruct?.regime ?? 'NO_DATA'}
-              subtitle={`Net Signed GEX: ${fmtCurrency(effStruct?.netEffectiveGexArsPer1Pct, '$ ', 0)} /1%${usingProxy ? ' · Proxy Data912' : ''}`}
+              subtitle={`GEX${structureData.gexStatus === 'PARTIAL_COVERAGE' ? ' parcial' : ''}: ${fmtCurrency(effStruct?.netEffectiveGexArsPer1Pct, '$ ', 0)} /1%${usingProxy ? ' · Proxy opt-in' : ''}`}
               helpText="Nivel donde la exposición Gamma ponderada (Anexo B IAMC o Proxy Data912) cruza por cero vía método de Brent."
             />
             <KPICard
               title="Call Wall / Put Wall"
               heroValue={`${fmtCurrency(effStruct?.putWallArs, '$ ', 0)} / ${fmtCurrency(effStruct?.callWallArs, '$ ', 0)}`}
-              badge={usingProxy ? (structExt.proxySource ?? 'PROXY DATA912 (SIN ANEXO B)') : structureData.telemetry.anexoBStatus}
+              badge={usingProxy ? (structureData.proxySource ?? 'PROXY DATA912 (SIN ANEXO B)') : structureData.telemetry.anexoBStatus}
               subtitle={`Lag Anexo B: ${structureData.telemetry.anexoBLagTradingDays !== null ? `${structureData.telemetry.anexoBLagTradingDays}d` : usingProxy ? 'Proxy activo' : '—'}`}
             />
             <KPICard
@@ -1626,7 +1630,7 @@ export const GgalSpecialistModule: React.FC<{
             />
           </div>
 
-          {renderGexProfileChart()}
+          <div className="h-[255px] overflow-hidden">{renderGexProfileChart()}</div>
 
           {effStruct !== null ? (
             <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden">
@@ -1636,14 +1640,10 @@ export const GgalSpecialistModule: React.FC<{
                     ? `Desglose Signed GEX / Vanna / Pinning (${structureData.frontExpiryCode ?? '—'}) — Volumen/OI Proxy Data912`
                     : 'Desglose Anexo B IAMC por Strike (Acciones Nominales sin multiplicar x100)'}
                 </span>
-                {usingProxy && (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-mono-num bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/40">
-                    PROXY DATA912 (SIN ANEXO B)
-                  </span>
-                )}
+
               </div>
-              <div className="overflow-x-auto max-h-[300px]">
-                <table className="w-full text-[11.5px] font-mono-num">
+              <div className="h-[260px] overflow-auto">
+                <table className="w-full text-[11.5px] font-mono-num tabular-nums">
                   <thead className="bg-[#0B0B12] text-[#787B86] text-[10.5px] uppercase">
                     <tr>
                       <th className="text-left px-3 py-2">Strike</th>
@@ -1683,15 +1683,15 @@ export const GgalSpecialistModule: React.FC<{
             <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden">
               <div className="px-4 py-2.5 border-b border-[#1E1E2B] flex items-center justify-between">
                 <span className="text-[12.5px] font-bold text-[#F3F4F6]">
-                  Referencia Informativa Data912: OI Total Bruto ({structureData.frontExpiryCode ?? '—'}) — Sin Desagregación IAMC
+                  Cadena BYMA ({structureData.frontExpiryCode ?? '—'})
                 </span>
                 <HelpTooltip
                   title="Data912 vs. Anexo B IAMC"
-                  text="Data912 solo informa OI total agregado y no distingue Cubierta vs Descubierta/Opuesta/Cruzada. Ingesta el Anexo B IAMC para habilitar el perfil Signed GEX oficial."
+                  text="Data912 publica volumen en vivo. El OI se muestra cuando el feed lo informa explícitamente. El Anexo B IAMC aporta el desglose de nominales por categoría."
                 />
               </div>
-              <div className="overflow-x-auto max-h-[260px]">
-                <table className="w-full text-[12px] font-mono-num">
+              <div className="h-[260px] overflow-auto">
+                <table className="w-full text-[12px] font-mono-num tabular-nums">
                   <thead className="bg-[#0B0B12] text-[#787B86] text-[10.5px] uppercase">
                     <tr>
                       <th className="text-left px-3 py-2">Strike ARS</th>
@@ -2076,9 +2076,13 @@ export const GgalSpecialistModule: React.FC<{
                       {clearingRiskData.clearingRisk.anexoBStatus} (
                       {clearingRiskData.clearingRisk.anexoBTradeDate ?? 'Sin ingesta'})
                     </div>
-                    <div className="text-[#787B86] mt-1">
-                      Descubiertas: {fmtNum(clearingRiskData.clearingRisk.totalUncoveredContracts, 0)} lotes · Cubiertas:{' '}
-                      {fmtNum(clearingRiskData.clearingRisk.totalCoveredContracts, 0)} lotes
+                    <div className="text-[#787B86] mt-1 tabular-nums">
+                      Descubiertas: {clearingRiskData.clearingRisk.totalUncoveredContracts === null
+                        ? `${fmtNum(clearingRiskData.clearingRisk.totalUncoveredNom, 0)} acc.`
+                        : `${fmtNum(clearingRiskData.clearingRisk.totalUncoveredContracts, 2)} lotes`} · Cubiertas:{' '}
+                      {clearingRiskData.clearingRisk.totalCoveredContracts === null
+                        ? `${fmtNum(clearingRiskData.clearingRisk.totalCoveredNom, 0)} acc.`
+                        : `${fmtNum(clearingRiskData.clearingRisk.totalCoveredContracts, 2)} lotes`}
                     </div>
                   </div>
                   <div className="rounded border border-[#1E1E2B] bg-[#0B0D14] p-3">
@@ -2916,9 +2920,16 @@ export const GgalSpecialistModule: React.FC<{
                   className="w-full px-3 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#2A2A3B] text-[12.5px] font-mono-num text-[#FFFFFF]"
                 />
               </div>
-              <div className="text-[11.5px] text-[#9CA3AF] flex items-end pb-1">
-                Pega filas del informe IAMC (ya en nominales, sin x100):
-              </div>
+              <label className="block text-[11px] font-mono-num uppercase text-[#9CA3AF]">
+                Código de vencimiento (opcional)
+                <input
+                  type="text"
+                  maxLength={2}
+                  value={anexoExpiryCode}
+                  onChange={(event) => setAnexoExpiryCode(event.target.value.toUpperCase())}
+                  className="mt-1 w-full px-3 py-1.5 rounded-[8px] bg-[#0B0B12] border border-[#2A2A3B] text-[12.5px] tabular-nums text-[#FFFFFF]"
+                />
+              </label>
             </div>
 
             <textarea

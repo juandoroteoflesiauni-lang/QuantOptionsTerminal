@@ -1,3 +1,21 @@
+import {
+  classifyRawOiValue,
+  explicitVolumeOi,
+  mergeOptionFieldProvenance,
+  missingOi,
+  resolveArExposureOiQuality,
+  resolveContractMultiplier,
+  resolveOiSourcePrecedence,
+  type ContractMultiplierSource,
+  type DealerSignBasis,
+  type GexComputationStatus,
+  type OiFieldProvenance,
+  type OiQualityTier,
+  type OiSourceConflictRecord,
+  type OptionFieldProvenanceMap,
+} from '../core/options/oiProvenance.js';
+export type { OiFieldProvenance, OptionFieldProvenanceMap } from '../core/options/oiProvenance.js';
+import { MONTH_CODES, OPTION_PREFIX_TO_UNDERLYING } from '../core/ggal/anexoBIdentity.js';
 /**
  * Cargador e integrador cuantitativo para el Mercado Argentino en Tiempo Real / Diferido
  * y Macro Local (`src/server/argentinaMarketLoader.ts`).
@@ -822,6 +840,10 @@ export interface ArStockDetailResponse {
 }
 
 export interface ArOptionContractDto {
+  readonly fieldProvenance?: OptionFieldProvenanceMap;
+  readonly oiProvenance?: OiFieldProvenance;
+  readonly contractMultiplier?: number;
+  readonly multiplierSource?: ContractMultiplierSource;
   readonly symbol: string;
   readonly underlying: string;
   readonly contractType: 'call' | 'put';
@@ -927,6 +949,13 @@ export interface ArOptionsResponse {
   }[];
   readonly expiries: readonly ArOptionExpiryDto[];
   readonly exposureSummary: {
+    readonly gexStatus?: GexComputationStatus;
+    readonly oiQuality?: OiQualityTier;
+    readonly oiCoverageRatio?: number;
+    readonly isPartial?: boolean;
+    readonly currency?: 'ARS';
+    readonly gexUnit?: 'ARS_PER_1PCT_SPOT_MOVE';
+    readonly dealerSignBasis?: DealerSignBasis;
     readonly netGex: number | null;
     readonly netDex: number | null;
     readonly netVex: number | null;
@@ -952,6 +981,13 @@ export interface ArOptionsResponse {
       readonly engineStrikeCount: number;
       readonly byStrikeRange: { readonly min: number | null; readonly max: number | null };
       readonly byStrikeCount: number;
+      readonly missingOiInputs?: number;
+      readonly invalidOiInputs?: number;
+      readonly observedZeroOiInputs?: number;
+      readonly iamcOiInputs?: number;
+      readonly directContractOiInputs?: number;
+      readonly oiConflicts?: readonly OiSourceConflictRecord[];
+      readonly oiUniverseInputs?: number;
       readonly directOiInputs: number;
       readonly proxyOiInputs: number;
       /** `true` si el motor usó OI proxy de volumen nominal; `null` sin inputs acreditables. */
@@ -1361,76 +1397,6 @@ export function computeSyntheticUsdFuturesCurve(params: {
   }
   return out;
 }
-
-const OPTION_PREFIX_TO_UNDERLYING: Readonly<Record<string, string>> = {
-  GFG: 'GGAL',
-  GGAL: 'GGAL',
-  YPF: 'YPFD',
-  YPFD: 'YPFD',
-  PAM: 'PAMP',
-  PAMP: 'PAMP',
-  BMA: 'BMA',
-  COM: 'COME',
-  COME: 'COME',
-  TXA: 'TXAR',
-  TXAR: 'TXAR',
-  ALU: 'ALUA',
-  ALUA: 'ALUA',
-  CEP: 'CEPU',
-  CEPU: 'CEPU',
-  EDN: 'EDN',
-  TGS: 'TGSU2',
-  TGSU: 'TGSU2',
-  SUP: 'SUPV',
-  SUPV: 'SUPV',
-  BBA: 'BBAR',
-  BBAR: 'BBAR',
-  BYM: 'BYMA',
-  BYMA: 'BYMA',
-  MIR: 'MIRG',
-  MIRG: 'MIRG',
-  CRE: 'CRES',
-  CRES: 'CRES',
-  LOM: 'LOMA',
-  LOMA: 'LOMA',
-  MET: 'METR',
-  METR: 'METR',
-  TGN: 'TGNO4',
-  TGNO: 'TGNO4',
-  VAL: 'VALO',
-  VALO: 'VALO',
-  MOR: 'MORI',
-  MORI: 'MORI',
-};
-
-const MONTH_CODES: Readonly<Record<string, { readonly month: number; readonly label: string; readonly code: string }>> = {
-  EN: { month: 1, label: 'Ene', code: 'EN' },
-  E: { month: 1, label: 'Ene', code: 'EN' },
-  FE: { month: 2, label: 'Feb', code: 'FE' },
-  F: { month: 2, label: 'Feb', code: 'FE' },
-  MA: { month: 3, label: 'Mar', code: 'MA' },
-  MR: { month: 3, label: 'Mar', code: 'MA' },
-  M: { month: 3, label: 'Mar', code: 'MA' },
-  AB: { month: 4, label: 'Abr', code: 'AB' },
-  A: { month: 4, label: 'Abr', code: 'AB' },
-  MY: { month: 5, label: 'May', code: 'MY' },
-  Y: { month: 5, label: 'May', code: 'MY' },
-  JU: { month: 6, label: 'Jun', code: 'JU' },
-  JN: { month: 6, label: 'Jun', code: 'JU' },
-  J: { month: 6, label: 'Jun', code: 'JU' },
-  JL: { month: 7, label: 'Jul', code: 'JL' },
-  L: { month: 7, label: 'Jul', code: 'JL' },
-  AG: { month: 8, label: 'Ago', code: 'AG' },
-  G: { month: 8, label: 'Ago', code: 'AG' },
-  SE: { month: 9, label: 'Sep', code: 'SE' },
-  S: { month: 9, label: 'Sep', code: 'SE' },
-  OC: { month: 10, label: 'Oct', code: 'OC' },
-  O: { month: 10, label: 'Oct', code: 'OC' },
-  NO: { month: 11, label: 'Nov', code: 'NO' },
-  N: { month: 11, label: 'Nov', code: 'NO' },
-  DI: { month: 12, label: 'Dic', code: 'DI' },
-  D: { month: 12, label: 'Dic', code: 'DI' },
-};
 
 const MONTHS_ES_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
@@ -2954,6 +2920,8 @@ function getArgentinaMarketState(nowUtcSec: number): {
 }
 
 export interface NormalizedQuoteRow {
+  readonly fieldProvenance?: OptionFieldProvenanceMap;
+
   readonly symbol: string;
   readonly last: number | null;
   readonly bid: number | null;
@@ -2978,7 +2946,7 @@ export interface NormalizedQuoteRow {
   readonly quoteAsOfUtcSec?: number | null;
 }
 
-function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
+function normalizeData912Rows(raw: unknown, source: 'DATA912' | 'OPEN_BYMA' = 'DATA912', options = false): readonly NormalizedQuoteRow[] {
   let arr: readonly unknown[] = [];
   if (Array.isArray(raw)) {
     arr = raw;
@@ -3016,8 +2984,16 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
     const vwap = readNum(item, ['vw', 'vwap']);
     const volumeArsRaw = readNum(item, ['v_ars', 'volumeAmount', 'monto', 'amount']);
     const nominalVol = readNum(item, ['v', 'q_op', 'volume', 'nominalVolume']);
-    const openInterestRaw = readNum(item, ['open_interest', 'openInterest', 'oi']);
-    const openInterest = openInterestRaw !== null && openInterestRaw >= 0 ? openInterestRaw : nominalVol;
+    const openInterestRaw = item['open_interest'] ?? item['openInterest'] ?? item['oi'];
+    const optionPrefix = /^([A-Z]{3,4})[CV]\d/.exec(cleanSym)?.[1];
+    const multiplier = options && optionPrefix !== undefined && OPTION_PREFIX_TO_UNDERLYING[optionPrefix] !== undefined
+      ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
+      : null;
+    const oi = classifyRawOiValue(openInterestRaw, source, null, multiplier);
+    const openInterest = oi.status === 'DIRECT_CONTRACT_OI' ? oi.contracts : null;
+    const fieldProvenance = mergeOptionFieldProvenance(
+      oi, { volume: nominalVol, bid, ask, bidSize, askSize, lastTrade: last }, source, null,
+    );
     const mark = readNum(item, ['mark', 'c', 'close', 'last']);
     const arsBid = readNum(item, ['ars_bid']);
     const arsAsk = readNum(item, ['ars_ask']);
@@ -3070,6 +3046,7 @@ function normalizeData912Rows(raw: unknown): readonly NormalizedQuoteRow[] {
       usdBid,
       usdAsk,
       openInterest,
+      fieldProvenance,
       quoteSource: 'DATA912',
       quoteAsOfUtcSec: null,
     });
@@ -3198,6 +3175,18 @@ function mergeBmbNormalizedRows(
       arsAsk: existing?.arsAsk ?? null,
       usdBid: existing?.usdBid ?? null,
       usdAsk: existing?.usdAsk ?? null,
+      ...(existing?.fieldProvenance !== undefined ? {
+        fieldProvenance: mergeOptionFieldProvenance(
+          existing.fieldProvenance.openInterest,
+          { bid: bestBid?.price ?? null, bidSize: bestBid?.size ?? null,
+            ask: bestAsk?.price ?? null, askSize: bestAsk?.size ?? null },
+          'BMB_HOMEBROKER_BRIDGE', book?.asOfUtcSec ?? null,
+          latestTrade === null ? existing.fieldProvenance : mergeOptionFieldProvenance(
+            existing.fieldProvenance.openInterest, { lastTrade: latestTrade.price },
+            'BMB_HOMEBROKER_BRIDGE', latestTrade.timeSec, existing.fieldProvenance,
+          ),
+        ),
+      } : {}),
       ...(existing?.openInterest !== undefined ? { openInterest: existing.openInterest } : {}),
       ...(latestTrade !== null || existing === undefined
         ? { quoteSource: 'BMB_HOMEBROKER_BRIDGE' as const }
@@ -3217,6 +3206,7 @@ export interface MergeBmbOptionQuotesInput {
   readonly spotHint: number | null;
   readonly nowUtcSec: number;
   readonly maxQuoteAgeSec?: number;
+  readonly trackFieldProvenance?: boolean;
 }
 
 /**
@@ -3266,24 +3256,31 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
   }
 
   const applyQuote = (row: NormalizedQuoteRow, quote: BmbOptionRowDto): NormalizedQuoteRow => {
-    const bid = positiveOrNull(quote.bid);
-    const ask = positiveOrNull(quote.ask);
-    const last = positiveOrNull(quote.last);
+    const track = input.trackFieldProvenance === true || row.fieldProvenance !== undefined;
+    const bid = positiveOrNull(quote.bid) ?? (track ? row.bid : null);
+    const ask = positiveOrNull(quote.ask) ?? (track ? row.ask : null);
+    const last = positiveOrNull(quote.last) ?? (track ? row.last : null);
+    const bidSize = positiveOrNull(quote.bidSize) ?? (track && positiveOrNull(quote.bid) === null ? row.bidSize : null);
+    const askSize = positiveOrNull(quote.askSize) ?? (track && positiveOrNull(quote.ask) === null ? row.askSize : null);
+    const volume = nonNegativeOrNull(quote.volume) ?? (track ? row.nominalVol : null);
     const mid = bid !== null && ask !== null && ask >= bid ? 0.5 * (bid + ask) : last;
-    const openInterest = row.openInterest !== undefined ? row.openInterest : row.nominalVol;
+    const fieldProvenance = track ? mergeOptionFieldProvenance(
+      row.fieldProvenance?.openInterest ?? missingOi('L1_OVERLAY_NO_OI'),
+      { bid: positiveOrNull(quote.bid), ask: positiveOrNull(quote.ask),
+        bidSize: positiveOrNull(quote.bidSize), askSize: positiveOrNull(quote.askSize),
+        lastTrade: positiveOrNull(quote.last), volume: nonNegativeOrNull(quote.volume) },
+      'BMB_HOMEBROKER_BRIDGE', quote.asOfUtcSec, row.fieldProvenance,
+    ) : undefined;
     return {
       ...row,
       symbol: quote.symbol.trim().toUpperCase(),
-      last,
-      bid,
-      bidSize: positiveOrNull(quote.bidSize),
-      ask,
-      askSize: positiveOrNull(quote.askSize),
-      deltaPct: quote.varPct !== null && Number.isFinite(quote.varPct) ? quote.varPct : null,
-      nominalVol: nonNegativeOrNull(quote.volume),
-      volumeArs: nonNegativeOrNull(quote.turnover),
+      last, bid, bidSize, ask, askSize,
+      deltaPct: sanitizeFinite(quote.varPct) ?? (track ? row.deltaPct : null),
+      nominalVol: volume,
+      volumeArs: nonNegativeOrNull(quote.turnover) ?? (track ? row.volumeArs : null),
       mark: mid,
-      openInterest,
+      openInterest: row.openInterest ?? null,
+      ...(fieldProvenance !== undefined ? { fieldProvenance } : {}),
       quoteSource: 'BMB_HOMEBROKER_BRIDGE',
       quoteAsOfUtcSec: quote.asOfUtcSec,
     };
@@ -3334,7 +3331,7 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
       quoteSource: 'BMB_HOMEBROKER_BRIDGE',
       quoteAsOfUtcSec: quote.asOfUtcSec,
     };
-    out.push(row);
+    out.push(input.trackFieldProvenance === true ? applyQuote(row, quote) : row);
   }
   return out;
 }
@@ -3569,6 +3566,11 @@ export class ArgentinaMarketRuntime {
   private readonly histCache: SingleFlightRuntimeCache<readonly Bar[]>;
   private readonly macroCache: SingleFlightRuntimeCache<unknown>;
   private readonly computedCache: SingleFlightRuntimeCache<unknown>;
+  private readonly quoteTtlResolver: (nowMs: number) => number;
+  private anexoBOptions: {
+    readonly byContract: ReadonlyMap<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>;
+    readonly cache: SingleFlightRuntimeCache<ArOptionsResponse>;
+  } | null = null;
   private readonly priorSmileCache = new Map<
     string,
     readonly {
@@ -3678,6 +3680,7 @@ export class ArgentinaMarketRuntime {
         ? Math.min(ttlMs, AR_LIVE_QUOTE_CACHE_TTL_MS)
         : ttlMs;
     };
+    this.quoteTtlResolver = quoteTtlResolver;
     this.liveCache = new SingleFlightRuntimeCache({ ttlResolver: quoteTtlResolver, nowFn: this.nowMsFn });
     this.histCache = new SingleFlightRuntimeCache({
       ttlResolver: (nowMs) => computeArHistoricalPanelTtlMs(nowMs),
@@ -4294,7 +4297,7 @@ export class ArgentinaMarketRuntime {
           if (!res.ok) {
             throw new Error(res.error);
           }
-          return normalizeData912Rows(res.data);
+          return normalizeData912Rows(res.data, 'DATA912', endpoint === '/live/arg_options');
         },
         { forceRefresh },
       );
@@ -4379,7 +4382,7 @@ export class ArgentinaMarketRuntime {
           if (!res.ok) {
             throw new Error(res.error);
           }
-          return normalizeData912Rows(res.data);
+          return normalizeData912Rows(res.data, 'OPEN_BYMA');
         },
         { forceRefresh },
       );
@@ -7689,18 +7692,33 @@ export class ArgentinaMarketRuntime {
     return response;
   }
 
-  public async getOptionsChain(rawUnderlying = 'GGAL', forceRefresh = false): Promise<ArOptionsResponse> {
-    return this.getOptionsChainInternal(rawUnderlying, forceRefresh);
+  public setAnexoBOpenInterest(
+    byContract: ReadonlyMap<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>,
+  ): void {
+    this.anexoBOptions = {
+      byContract: new Map(byContract),
+      cache: new SingleFlightRuntimeCache({ ttlResolver: this.quoteTtlResolver, nowFn: this.nowMsFn }),
+    };
+  }
+
+  public async getOptionsChain(
+    rawUnderlying = 'GGAL',
+    forceRefresh = false,
+    options: { readonly allowProxyOi?: boolean } = {},
+  ): Promise<ArOptionsResponse> {
+    return this.getOptionsChainInternal(rawUnderlying, forceRefresh, undefined, options);
   }
 
   private async getOptionsChainInternal(
     rawUnderlying = 'GGAL',
     forceRefresh = false,
     preloadedOverviewCore?: ArOverviewResponse,
+    options: { readonly allowProxyOi?: boolean } = {},
   ): Promise<ArOptionsResponse> {
     const underlying = rawUnderlying.trim().toUpperCase();
-    const cacheKey = `ar:options:${underlying}`;
-    const cached = await this.computedCache.getOrCompute(
+    const cacheKey = `ar:options:${underlying}${options.allowProxyOi === true ? ':proxy' : ''}`;
+    const anexoB = underlying === 'GGAL' ? this.anexoBOptions : null;
+    const cached = await (anexoB?.cache ?? this.computedCache).getOrCompute(
       cacheKey,
       async () => {
         const nowSec = Math.floor(this.nowMsFn() / 1_000);
@@ -7764,6 +7782,7 @@ export class ArgentinaMarketRuntime {
         const historicalCloses = bars.slice(-90).map((b) => b.close);
 
         const mergedOptionRows = mergeBmbOptionQuotes({
+          trackFieldProvenance: true,
           rows: optionsRes.rows,
           bmbSnapshot: dualBmbSnap,
           underlying,
@@ -7817,7 +7836,10 @@ export class ArgentinaMarketRuntime {
         const expiries: ArOptionExpiryDto[] = [];
         const allExposureInputs: ExposureContractInput[] = [];
         // Pieza 50.9: procedencia del OI usado por el motor (directo vs proxy de volumen).
-        const arOiProvenance: ArOiProvenanceInput[] = [];
+        const oiEntries: { oi: OiFieldProvenance; index: number | null }[] = [];
+        const multiplier = Object.values(OPTION_PREFIX_TO_UNDERLYING).includes(underlying)
+          ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
+          : null;
         const evalRate = continuousRate ?? Number.NaN;
         const inheritedIvSymbols = new Set<string>();
 
@@ -7926,21 +7948,22 @@ export class ArgentinaMarketRuntime {
                     ? 0.5 * (bid + ask)
                     : null;
 
-            const modelOpenInterest =
-              row.quoteSource === 'BMB_HOMEBROKER_BRIDGE'
-                ? row.openInterest !== null && row.openInterest !== undefined && Number.isFinite(row.openInterest) && row.openInterest > 0
-                  ? Math.round(row.openInterest)
-                  : null
-                : Math.max(1, Math.round(row.nominalVol ?? 1));
-            // Pieza 50.9: el OI del modelo es proxy de volumen nominal cuando la
-            // fuente no acredita OI reportado (aunque la fila venga fusionada con BMB).
-            const oiIsProxy = !(
-              row.quoteSource === 'BMB_HOMEBROKER_BRIDGE' &&
-              row.openInterest !== null &&
-              row.openInterest !== undefined &&
-              Number.isFinite(row.openInterest) &&
-              row.openInterest > 0
+            const feedOi = row.fieldProvenance?.openInterest ?? missingOi('FIELD_ABSENT_IN_FEED');
+            const anexoOi = anexoB?.byContract.get(
+              [underlying, parsed.expirationDate, parsed.contractType, Math.round(parsed.strike * 10_000)].join('|'),
             );
+            const observedOi = anexoOi === undefined ? feedOi
+              : feedOi.status === 'DIRECT_CONTRACT_OI' ? resolveOiSourcePrecedence(anexoOi, feedOi) : anexoOi;
+            const proxyOi = options.allowProxyOi === true && observedOi.status === 'MISSING_OI'
+              ? explicitVolumeOi(row.fieldProvenance?.volume, multiplier)
+              : null;
+            const oi = proxyOi ?? observedOi;
+            const modelOpenInterest = oi.status === 'DIRECT_CONTRACT_OI' ? oi.contracts
+              : oi.status === 'IAMC_ANEXO_B' ? oi.nominalShares
+              : oi.status === 'EXPLICIT_PROXY' ? oi.estimatedContracts : null;
+            const sharesPerContract = oi.status === 'DIRECT_CONTRACT_OI' || oi.status === 'EXPLICIT_PROXY'
+              ? oi.contractMultiplier
+              : oi.status === 'IAMC_ANEXO_B' ? oi.appliedMultiplier : null;
 
             const intrinsic =
               spot !== null
@@ -8003,7 +8026,7 @@ export class ArgentinaMarketRuntime {
                       charm: Number.isFinite(rawAmGreeks.charm) ? rawAmGreeks.charm : bsmFallback.charm,
                     };
 
-            if (modelOpenInterest !== null && ivIsSolved && Number.isFinite(iv) && iv > 0 && mid !== null && mid > 0) {
+            if (ivIsSolved && Number.isFinite(iv) && iv > 0 && mid !== null && mid > 0) {
               const effBid = bid !== null && bid > 0 ? bid : mid * 0.98;
               const effAsk = ask !== null && ask >= effBid ? ask : mid * 1.02;
               volQuotes.push({
@@ -8013,7 +8036,7 @@ export class ArgentinaMarketRuntime {
                 bid: effBid,
                 ask: effAsk,
                 mid,
-                openInterest: modelOpenInterest,
+                openInterest: observedOi.status === 'DIRECT_CONTRACT_OI' ? observedOi.contracts : 0,
               });
             }
 
@@ -8022,21 +8045,24 @@ export class ArgentinaMarketRuntime {
                 ? spot * Math.exp((evalRate - dividendYield) * tExp)
                 : Number.NaN;
 
+            let exposureIndex: number | null = null;
             if (
               modelOpenInterest !== null &&
+              sharesPerContract !== null &&
               spot !== null &&
               spot > 0 &&
               Number.isFinite(evalRate) &&
               Number.isFinite(forward) &&
-              (Number.isFinite(iv) || (mid !== null && mid > 0))
+              (modelOpenInterest === 0 || Number.isFinite(iv) || (mid !== null && mid > 0))
             ) {
+              exposureIndex = allExposureInputs.length;
               allExposureInputs.push({
                 contractType: parsed.contractType,
                 strike: parsed.strike,
                 expiryUtcSec: parsed.expiryUtcSec,
                 openInterest: modelOpenInterest,
                 ...(row.nominalVol !== null ? { volume: row.nominalVol } : {}),
-                sharesPerContract: OPTION_LOT_SIZE,
+                sharesPerContract,
                 spot,
                 forward,
                 rate: evalRate,
@@ -8046,12 +8072,8 @@ export class ArgentinaMarketRuntime {
                 ...(bid !== null && bid >= 0 ? { bid } : {}),
                 ...(ask !== null && ask > 0 ? { ask } : {}),
               });
-              if (oiIsProxy) {
-                arOiProvenance.push({ oiFromReported: false });
-              } else {
-                arOiProvenance.push({ oiFromReported: true });
-              }
             }
+            if (parsed.expiryUtcSec > nowSec) oiEntries.push({ oi, index: exposureIndex });
 
             const dto: ArOptionContractDto = {
               symbol: parsed.symbol,
@@ -8071,10 +8093,12 @@ export class ArgentinaMarketRuntime {
               mark: sanitizeFinite(mid),
               theoreticalPrice: null,
               volume: sanitizeFinite(row.nominalVol),
-              openInterest:
-                row.openInterest !== undefined
-                  ? sanitizeFinite(row.openInterest)
-                  : sanitizeFinite(row.nominalVol),
+              openInterest: observedOi.status === 'DIRECT_CONTRACT_OI' ? observedOi.contracts
+                : observedOi.status === 'IAMC_ANEXO_B' && multiplier !== null
+                  ? observedOi.nominalShares / multiplier.contractMultiplier : null,
+              oiProvenance: oi,
+              ...(row.fieldProvenance !== undefined ? { fieldProvenance: { ...row.fieldProvenance, openInterest: observedOi } } : {}),
+              ...(multiplier ?? {}),
               iv: sanitizeFinite(iv),
               delta: sanitizeFinite(greeks?.delta),
               gamma: sanitizeFinite(greeks?.gamma),
@@ -8138,7 +8162,7 @@ export class ArgentinaMarketRuntime {
               {
                 requirePositiveBid: false,
                 maxSpreadRatio: 0.9,
-                minOpenInterest: 1,
+                minOpenInterest: 0,
                 minPoints: 4,
                 quoteSelection: 'otm',
               },
@@ -8212,12 +8236,16 @@ export class ArgentinaMarketRuntime {
           const pricedPuts = puts.map(computeTheoForDto);
 
           // Max Pain exacto sobre Open Interest positivo del vencimiento
+          const observedNominal = (contract: ArOptionContractDto): number => {
+            const oi = contract.oiProvenance;
+            return oi?.status === 'IAMC_ANEXO_B' || oi?.status === 'DIRECT_CONTRACT_OI' ? oi.nominalShares : 0;
+          };
           let totalOiExp = 0;
           for (const c of pricedCalls) {
-            if (c.openInterest !== null && c.openInterest > 0) totalOiExp += c.openInterest;
+            totalOiExp += observedNominal(c);
           }
           for (const p of pricedPuts) {
-            if (p.openInterest !== null && p.openInterest > 0) totalOiExp += p.openInterest;
+            totalOiExp += observedNominal(p);
           }
           let maxPainStrike: number | null = null;
           let maxPainDistPct: number | null = null;
@@ -8227,13 +8255,13 @@ export class ArgentinaMarketRuntime {
             for (const candStrike of sortedStrikes) {
               let payout = 0;
               for (const c of pricedCalls) {
-                if (c.openInterest !== null && c.openInterest > 0 && candStrike > c.strike) {
-                  payout += c.openInterest * (candStrike - c.strike);
+                if (candStrike > c.strike) {
+                  payout += observedNominal(c) * (candStrike - c.strike);
                 }
               }
               for (const p of pricedPuts) {
-                if (p.openInterest !== null && p.openInterest > 0 && p.strike > candStrike) {
-                  payout += p.openInterest * (p.strike - candStrike);
+                if (p.strike > candStrike) {
+                  payout += observedNominal(p) * (p.strike - candStrike);
                 }
               }
               const distSpot = spot !== null && spot > 0 ? Math.abs(candStrike - spot) : 0;
@@ -8299,19 +8327,19 @@ export class ArgentinaMarketRuntime {
         }
 
         let exposureSummary: ArOptionsResponse['exposureSummary'] = null;
-        if (spot !== null && spot > 0 && Number.isFinite(evalRate) && allExposureInputs.length > 0) {
+        if (expiries.length > 0) {
           const frontExp = primaryExp;
           const expResult = computeDealerExposure(
             allExposureInputs,
             {
-              spot,
+              spot: spot ?? Number.NaN,
               nowUtcSec: nowSec,
               rate: evalRate,
               dividendYield,
               forward:
-                frontExp !== undefined
+                frontExp !== undefined && spot !== null
                   ? spot * Math.exp((evalRate - dividendYield) * (frontExp.days / 365))
-                  : spot,
+                  : spot ?? Number.NaN,
             },
             {
               model: 'american',
@@ -8341,22 +8369,55 @@ export class ArgentinaMarketRuntime {
               ),
             ),
           ].sort();
+          const marketValid = spot !== null && spot > 0 && Number.isFinite(evalRate);
+          const skippedIndices = new Set(expResult.quality.skippedDetails.map(({ index }) => index));
+          const evaluatedOi = oiEntries.map(({ oi, index }) => ({
+            oi, index, used: marketValid && index !== null && !skippedIndices.has(index) &&
+              (Number.isFinite(expResult.netGex) || expResult.quality.zeroOiContracts > 0) &&
+              (expResult.quality.usableContracts > 0 || ('nominalShares' in oi && oi.nominalShares === 0)),
+          }));
+          const { missingOiInputs, invalidOiInputs, observedZeroOiInputs, iamcOiInputs, directContractOiInputs,
+            oiConflicts, ...gexQuality } = resolveArExposureOiQuality(evaluatedOi);
+          const arOiProvenance: ArOiProvenanceInput[] = evaluatedOi
+            .filter(({ used }) => used)
+            .map(({ oi }) => ({ oiFromReported: oi.status !== 'EXPLICIT_PROXY', status: oi.status }));
           const arOiSummary = resolveArOiProvenance(arOiProvenance);
+          const gexAvailable = gexQuality.gexStatus !== 'INVALID_DATA_OR_MODEL' &&
+            gexQuality.gexStatus !== 'UNAVAILABLE_MISSING_OI';
+          const hasOnlyZero = gexAvailable && expResult.quality.usableContracts === 0;
+          // The engine accepts both IAMC shares and contracts. Publish OI in lot equivalents.
+          const lotOiByStrike = new Map<number, Record<'call' | 'put', number>>();
+          let usableOpenInterestLots = 0;
+          for (const { oi, used, index } of evaluatedOi) {
+            const input = used && index !== null ? allExposureInputs[index] : undefined;
+            if (input === undefined) continue;
+            const lots = oi.status === 'IAMC_ANEXO_B'
+              ? oi.nominalShares / (multiplier?.contractMultiplier ?? Number.NaN)
+              : input.openInterest;
+            const totals = lotOiByStrike.get(input.strike) ?? { call: 0, put: 0 };
+            totals[input.contractType] += lots;
+            lotOiByStrike.set(input.strike, totals);
+            usableOpenInterestLots += lots;
+          }
           exposureSummary = {
-            netGex: sanitizeFinite(expResult.netGex),
-            netDex: sanitizeFinite(expResult.netDex),
-            netVex: sanitizeFinite(expResult.netVannaExposure),
-            netCex: sanitizeFinite(expResult.netCharmExposure),
+            ...gexQuality,
+            currency: 'ARS',
+            gexUnit: 'ARS_PER_1PCT_SPOT_MOVE',
+            dealerSignBasis: 'THEORETICAL_DEALER_PROXY',
+            netGex: hasOnlyZero ? 0 : gexAvailable ? sanitizeFinite(expResult.netGex) : null,
+            netDex: hasOnlyZero ? 0 : gexAvailable ? sanitizeFinite(expResult.netDex) : null,
+            netVex: hasOnlyZero ? 0 : gexAvailable ? sanitizeFinite(expResult.netVannaExposure) : null,
+            netCex: hasOnlyZero ? 0 : gexAvailable ? sanitizeFinite(expResult.netCharmExposure) : null,
             vannaRegime: expResult.vannaRegime,
-            charmPinStrike: sanitizeFinite(expResult.charmPinStrike),
-            callWallStrike: sanitizeFinite(expResult.callWallStrike),
-            putWallStrike: sanitizeFinite(expResult.putWallStrike),
-            gammaFlipSpot: sanitizeFinite(expResult.gammaFlipSpot),
-            gammaFlipStatus: expResult.gammaFlipStatus,
-            gammaFlipCandidates: expResult.gammaFlipCandidates.filter((value) => Number.isFinite(value)),
+            charmPinStrike: gexAvailable && !hasOnlyZero ? sanitizeFinite(expResult.charmPinStrike) : null,
+            callWallStrike: gexAvailable && !hasOnlyZero ? sanitizeFinite(expResult.callWallStrike) : null,
+            putWallStrike: gexAvailable && !hasOnlyZero ? sanitizeFinite(expResult.putWallStrike) : null,
+            gammaFlipSpot: gexAvailable && !hasOnlyZero ? sanitizeFinite(expResult.gammaFlipSpot) : null,
+            gammaFlipStatus: gexAvailable && !hasOnlyZero ? expResult.gammaFlipStatus : 'indeterminate',
+            gammaFlipCandidates: gexAvailable ? expResult.gammaFlipCandidates.filter(Number.isFinite) : [],
             trace: {
               evaluationSec: nowSec,
-              valuationSpot: Number.isFinite(spot) && spot > 0 ? spot : null,
+              valuationSpot: spot !== null && Number.isFinite(spot) && spot > 0 ? spot : null,
               valuationSpotSource: arSpotSource,
               quoteMode: null,
               coverage: 'unknown',
@@ -8372,6 +8433,8 @@ export class ArgentinaMarketRuntime {
                 max: arExposureStrikes.length > 0 ? Math.max(...arExposureStrikes) : null,
               },
               byStrikeCount: expResult.byStrike.length,
+              missingOiInputs, invalidOiInputs, observedZeroOiInputs, iamcOiInputs, directContractOiInputs,
+              oiConflicts, oiUniverseInputs: oiEntries.length,
               directOiInputs: arOiSummary.directOiInputs,
               proxyOiInputs: arOiSummary.proxyOiInputs,
               oiProxy: arOiSummary.oiProxy,
@@ -8383,12 +8446,12 @@ export class ArgentinaMarketRuntime {
             expectedMoveDays: frontExp?.days ?? null,
             quality: {
               usableContracts: expResult.quality.usableContracts,
-              usableOpenInterest: expResult.quality.usableOpenInterest,
+              usableOpenInterest: usableOpenInterestLots,
             },
-            byStrike: expResult.byStrike.map((s) => ({
+            byStrike: (gexAvailable ? expResult.byStrike : []).map((s) => ({
               strike: s.strike,
-              callOi: sanitizeFinite(s.callOpenInterest),
-              putOi: sanitizeFinite(s.putOpenInterest),
+              callOi: sanitizeFinite(lotOiByStrike.get(s.strike)?.call),
+              putOi: sanitizeFinite(lotOiByStrike.get(s.strike)?.put),
               callVolume: sanitizeFinite(s.callVolume),
               putVolume: sanitizeFinite(s.putVolume),
               callGex: sanitizeFinite(s.callGex),
@@ -8475,7 +8538,7 @@ export class ArgentinaMarketRuntime {
                   dayVolume: c.volume,
                   openInterest: c.openInterest,
                   impliedVolatility: c.iv,
-                  sharesPerContract: OPTION_LOT_SIZE,
+                  sharesPerContract: c.contractMultiplier ?? Number.NaN,
                 });
               }
             }
@@ -8539,7 +8602,7 @@ export class ArgentinaMarketRuntime {
           };
 
           const flowAdjustedGex =
-            allExposureInputs.length > 0
+            exposureFinal?.netGex != null && (exposureFinal.quality?.usableContracts ?? 0) > 0
               ? computeFlowAdjustedSignedGex(
                   allExposureInputs,
                   marketExp,
@@ -8548,7 +8611,7 @@ export class ArgentinaMarketRuntime {
               : null;
 
           const gexCharmPin =
-            allExposureInputs.length > 0
+            exposureFinal?.netGex != null && (exposureFinal.quality?.usableContracts ?? 0) > 0
               ? computeGexCharmPin(allExposureInputs, marketExp, { maxPinDte: 60 })
               : null;
 

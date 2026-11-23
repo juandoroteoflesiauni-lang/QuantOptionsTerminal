@@ -34,7 +34,7 @@ DEFAULT_IAMC_ANEXO_B_URL = os.environ.get(
 
 # Typical IAMC/BYMA GGAL option series prefixes: GFGC (Calls), GFGV (Puts), e.g., GFGC7200JU
 BYMA_GGAL_SERIES_RE = re.compile(
-    r"\b(GFG[CV])(\d+(?:[.,]\d+)?)([A-Z]{2,3})?\b",
+    r"\b(GFG[CV])(\d+(?:[.,]\d+)?)([A-Z]{1,2})\b",
     re.IGNORECASE,
 )
 
@@ -163,7 +163,7 @@ def _parse_anexo_b_lines(
 
         prefix = m.group(1).upper()
         strike_raw = m.group(2)
-        expiry_code = (m.group(3) or "").upper()
+        expiry_code = m.group(3).upper()
         series_code = f"{prefix}{strike_raw}{expiry_code}".upper()
         seen_series.add(series_code)
 
@@ -302,6 +302,12 @@ def _parse_anexo_b_lines(
                 }
             )
 
+    if records:
+        warnings.append("Legacy OI *Contracts fields are deprecated and express nominal shares; use *Nom.")
+    for record in records:
+        record["unit"] = "SHARES"
+        for bucket in ("uncovered", "covered", "crossed", "total"):
+            record[bucket + "Nom"] = record.get(bucket + "Contracts")
     return records, warnings
 
 
