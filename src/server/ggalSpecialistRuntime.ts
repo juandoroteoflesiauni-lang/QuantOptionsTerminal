@@ -879,6 +879,57 @@ function structureProxyShares(contract: ArOptionContractDto | undefined): number
   return explicitVolumeOi(contract.fieldProvenance?.volume, multiplier)?.nominalShares ?? 0;
 }
 
+export function adaptScraperAnexoBJsonToIngestRequest(
+  parsedJson: Record<string, unknown>,
+): AnexoBIngestRequest | null {
+  if (!Array.isArray(parsedJson['records'])) {
+    return null;
+  }
+  const tradeDate =
+    typeof parsedJson['tradeDate'] === 'string' && parsedJson['tradeDate'].trim() !== ''
+      ? parsedJson['tradeDate'].trim()
+      : typeof parsedJson['asOfDate'] === 'string' && parsedJson['asOfDate'].trim() !== ''
+        ? parsedJson['asOfDate'].trim()
+        : undefined;
+  const lines: string[] = [];
+  for (const item of parsedJson['records']) {
+    if (!isPlainRecord(item)) continue;
+    const flag = typeof item['flag'] === 'string' ? item['flag'].trim().toUpperCase() : '';
+    if (flag !== 'FRESH') continue;
+    const sourceReportDate =
+      typeof item['sourceReportDate'] === 'string' ? item['sourceReportDate'].trim() : undefined;
+    if (sourceReportDate !== undefined && tradeDate !== undefined && sourceReportDate !== tradeDate) {
+      continue;
+    }
+    const series = typeof item['series'] === 'string' ? item['series'].trim().toUpperCase() : '';
+    const covered = readNum(item, ['coveredNom', 'coveredContracts']);
+    const uncovered = readNum(item, ['uncoveredNom', 'uncoveredContracts']);
+    const opposite = readNum(item, ['oppositeNom', 'oppositeContracts']) ?? 0;
+    const crossed = readNum(item, ['crossedNom', 'crossedContracts']) ?? 0;
+    if (
+      series === '' ||
+      covered === null ||
+      uncovered === null ||
+      !Number.isSafeInteger(covered) ||
+      !Number.isSafeInteger(uncovered) ||
+      !Number.isSafeInteger(opposite) ||
+      !Number.isSafeInteger(crossed) ||
+      covered < 0 ||
+      uncovered < 0 ||
+      opposite < 0 ||
+      crossed < 0
+    ) {
+      continue;
+    }
+    lines.push(`${series} ${String(covered)} ${String(uncovered)} ${String(opposite)} ${String(crossed)}`);
+  }
+  return {
+    ...(tradeDate !== undefined ? { asOfDate: tradeDate } : {}),
+    rawText: lines.join('\n'),
+    sourceLabel: 'IAMC_ANEXO_B_BG',
+  };
+}
+
 export function parseAnexoBIamcInput(
   body: AnexoBIngestRequest,
   nowUtcSec: number,
@@ -914,6 +965,7 @@ export function parseAnexoBIamcInput(
     sides: readonly { side: 'call' | 'put'; buckets: unknown }[],
     lineNumber: number,
     rawLine: string,
+    sourceOrigin: 'rows' | 'rawText' = 'rawText',
   ): void => {
     const reject = (code: string) => rejectedRows.push({ lineNumber, rawLine, code, detail: code });
     if (row.reportDate !== undefined && row.reportDate !== reportDate) {
@@ -945,6 +997,18 @@ export function parseAnexoBIamcInput(
       expiryCode = suffix;
       strike = Number(strikeRaw.replace(',', '.'));
       const seriesSide = side === 'C' ? 'call' : 'put';
+      const hasOppositePositive = sides.some((entry) => {
+        if (entry.side === seriesSide || !isPlainRecord(entry.buckets)) return false;
+        const b = entry.buckets;
+        return bucketKeys.some((key) => {
+          const val = b[key];
+          return typeof val === 'number' && Number.isFinite(val) && val > 0;
+        });
+      });
+      if (hasOppositePositive) {
+        reject('SIDE_MISMATCH');
+        return;
+      }
       sides = sides.filter((entry) => entry.side === seriesSide);
       if (Number.isFinite(row.strikeArs) && Math.round(row.strikeArs * 10_000) !== Math.round(strike * 10_000)) {
         reject('STRIKE_MISMATCH');
@@ -960,8 +1024,10 @@ export function parseAnexoBIamcInput(
       reject('INVALID_STRIKE');
       return;
     }
-    const effectiveCode = expiryCode ?? (row.contractualExpiry === undefined ? body.expiryCode : undefined);
-    const effectiveExpiry = row.contractualExpiry ?? body.contractualExpiry;
+    const hasRowExpiryContext =
+      nativeSeries !== null || row.expiryCode !== undefined || row.contractualExpiry !== undefined;
+    const effectiveCode = expiryCode ?? (!hasRowExpiryContext ? body.expiryCode : undefined);
+    const effectiveExpiry = row.contractualExpiry ?? (!hasRowExpiryContext ? body.contractualExpiry : undefined);
     const expiry = resolveBymaContractualExpiry({
       reportDate,
       ...(effectiveCode !== undefined ? { expiryCode: effectiveCode } : {}),
@@ -976,7 +1042,10 @@ export function parseAnexoBIamcInput(
     for (const { side, buckets } of sides) {
       if (!validBuckets(buckets)) {
         reject('INVALID_ANEXO_B_BUCKETS');
-        throw new AnexoBInputError('INVALID_ANEXO_B_BUCKETS', rejectedRows);
+        if (sourceOrigin === 'rows') {
+          throw new AnexoBInputError('INVALID_ANEXO_B_BUCKETS', rejectedRows);
+        }
+        return;
       }
       const identity: CanonicalOptionIdentity = {
         market: 'BYMA_AR', underlying, nativeSeries, side, ...expiry,
@@ -1015,7 +1084,7 @@ export function parseAnexoBIamcInput(
       };
       addRow(metadata, [
         { side: 'call', buckets: row['callOi'] }, { side: 'put', buckets: row['putOi'] },
-      ], index + 1, '');
+      ], index + 1, '', 'rows');
     });
   }
 
@@ -1382,6 +1451,10 @@ export class GgalSpecialistRuntime {
     this.maxSyncSkewSec = deps.maxSyncSkewSec ?? DEFAULT_STALENESS_SEC;
     this.arHolidays = deps.arHolidays ?? [];
     this.usHolidays = deps.usHolidays ?? [];
+    const arWithHolidays = this.arRuntime as { setArHolidays?: (holidays: readonly string[]) => void };
+    if (this.arHolidays.length > 0 && typeof arWithHolidays.setArHolidays === 'function') {
+      arWithHolidays.setArHolidays(this.arHolidays);
+    }
     this.secrets = [...new Set(combinedSecrets)];
     this.arFeedRouter =
       deps.arFeedRouter ??
@@ -1797,7 +1870,10 @@ export class GgalSpecialistRuntime {
         let req: AnexoBIngestRequest;
         if (trimmed.startsWith('{')) {
           const parsedJson: unknown = JSON.parse(trimmed);
-          req = isPlainRecord(parsedJson)
+          const scraperReq = isPlainRecord(parsedJson)
+            ? adaptScraperAnexoBJsonToIngestRequest(parsedJson)
+            : null;
+          req = scraperReq ?? (isPlainRecord(parsedJson)
             ? {
                 ...(typeof parsedJson['asOfDate'] === 'string'
                   ? { asOfDate: parsedJson['asOfDate'] }
@@ -1816,7 +1892,7 @@ export class GgalSpecialistRuntime {
                   : {}),
                 sourceLabel: 'IAMC_ANEXO_B_BG',
               }
-            : { rawText: trimmed, sourceLabel: 'IAMC_ANEXO_B_BG' };
+            : { rawText: trimmed, sourceLabel: 'IAMC_ANEXO_B_BG' });
         } else {
           req = { rawText: trimmed, sourceLabel: 'IAMC_ANEXO_B_BG' };
         }
@@ -2114,6 +2190,7 @@ export class GgalSpecialistRuntime {
     executionPriceBasis: ExecutionPriceBasis,
     paritySignal?: ParityGapOutput['signal'],
     overrideAnexoBLag?: number | null,
+    anexoBPartitionMatch?: { readonly matched: boolean; readonly reportDate: string | null },
   ): GgalTelemetryHeaderDto {
     const asOfUtcSec = bundle.asOfUtcSec;
     const isClosedSession = bundle.overview.marketState === 'CERRADO';
@@ -2142,8 +2219,9 @@ export class GgalSpecialistRuntime {
     const data912AgeSec = asOfUtcSec - d912Ts;
     const massiveAgeSec = massiveTs !== null ? asOfUtcSec - massiveTs : null;
 
-    const anexoBStatus: 'T-1 ANEXO B' | 'NO_DATA' =
-      this.anexoBStore !== null ? 'T-1 ANEXO B' : 'NO_DATA';
+    const hasAnexoB =
+      anexoBPartitionMatch !== undefined ? anexoBPartitionMatch.matched : this.anexoBStore !== null;
+    const anexoBStatus: 'T-1 ANEXO B' | 'NO_DATA' = hasAnexoB ? 'T-1 ANEXO B' : 'NO_DATA';
 
     let feedStatus: GgalBadgeMode;
     if (paritySignal === 'STALE_DATA_LOCK') {
@@ -2207,7 +2285,10 @@ export class GgalSpecialistRuntime {
       data912AgeSec: sanitizeFinite(data912AgeSec),
       massiveAgeSec: massiveAgeSec !== null ? sanitizeFinite(massiveAgeSec) : null,
       anexoBStatus,
-      anexoBAsOfDate: this.anexoBStore?.asOfDate ?? null,
+      anexoBAsOfDate:
+        anexoBPartitionMatch !== undefined
+          ? anexoBPartitionMatch.reportDate
+          : (this.anexoBStore?.asOfDate ?? null),
       anexoBLagTradingDays: overrideAnexoBLag ?? null,
       recorder: this.getRecorderStatus(),
       providerErrors: visibleErrors,
@@ -2958,9 +3039,11 @@ export class GgalSpecialistRuntime {
       const call = front.calls.find((c) => c.strike === strike);
       const put = front.puts.find((p) => p.strike === strike);
       const anom = anomalyMap.get(strike);
+      const callOiNom = directOiNominalShares(call?.oiProvenance);
+      const putOiNom = directOiNominalShares(put?.oiProvenance);
       const oi =
-        (call?.openInterest ?? 0) + (put?.openInterest ?? 0) > 0
-          ? (call?.openInterest ?? 0) + (put?.openInterest ?? 0)
+        callOiNom !== null || putOiNom !== null
+          ? (callOiNom ?? 0) + (putOiNom ?? 0)
           : null;
 
       const bymaCallPct = call?.iv !== null && call?.iv !== undefined && Number.isFinite(call.iv) && call.iv > 0 ? call.iv * 100 : null;
@@ -3164,12 +3247,13 @@ export class GgalSpecialistRuntime {
         optBasis = 'LIVE_BID_ASK';
       }
       if (Number.isFinite(built.quote.bid) && Number.isFinite(built.quote.ask) && built.quote.bid > 0) {
+        const cOiNom = directOiNominalShares(c.oiProvenance);
         bymaOptions.push({
           strike: c.strike,
           contractType: c.contractType,
           quote: built.quote,
-          ...(c.openInterest !== null && Number.isFinite(c.openInterest) && c.openInterest >= 0
-            ? { openInterestNom: c.openInterest }
+          ...(cOiNom !== null && Number.isFinite(cOiNom) && cOiNom >= 0
+            ? { openInterestNom: cOiNom }
             : {}),
         });
       }
@@ -3909,7 +3993,13 @@ export class GgalSpecialistRuntime {
           flowBasis = resolved.flowBasis;
         }
       }
-      const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
+      const telemetry = this.resolveTelemetryMode(
+        bundle,
+        spots.basis,
+        undefined,
+        undefined,
+        { matched: false, reportDate: null },
+      );
       return {
         ...responseMetadata,
         gexStatus: proxyOut === null ? 'UNAVAILABLE_MISSING_OI' : 'ESTIMATED_PROXY_OPT_IN',
@@ -3938,11 +4028,17 @@ export class GgalSpecialistRuntime {
       rates.rateCurveArs.length === 0 ||
       !(front.ivAtm !== null && Number.isFinite(front.ivAtm) && front.ivAtm > 0)
     ) {
-      const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
+      const telemetry = this.resolveTelemetryMode(
+        bundle,
+        spots.basis,
+        undefined,
+        undefined,
+        { matched: true, reportDate: partition.reportDate },
+      );
       return {
         ...responseMetadata,
         gexStatus: 'INVALID_DATA_OR_MODEL',
-        oiQuality: 'INVALID_OI',
+        oiQuality: 'IAMC_ANEXO_B_EXACT',
         oiCoverageRatio: 0,
         telemetry,
         frontExpiryCode: front?.expiryCode ?? null,
@@ -4000,6 +4096,18 @@ export class GgalSpecialistRuntime {
     const out = resolvedOut.output;
     const evalParams = computeBymaOptionEvalParams(bymaEval);
     const rowsByStrike = new Map(strikesInput.map((row) => [row.strikeArs, row]));
+    const positiveOiIdentities = partition.identities.filter((identity) => {
+      const row = rowsByStrike.get(identity.strike);
+      if (row === undefined) return false;
+      const buckets = identity.side === 'call' ? row.callOi : row.putOi;
+      return Object.values(buckets).some((nominal) => nominal > 0);
+    });
+    const positiveIdentitiesEvaluated = positiveOiIdentities.filter((identity) => {
+      const row = rowsByStrike.get(identity.strike);
+      if (row === undefined) return false;
+      const iv = identity.side === 'call' ? row.callIvDecimal : row.putIvDecimal;
+      return evalParams !== null && Number.isFinite(greeksBymaAmericanBs02(evalParams, identity.strike, iv, identity.side).gamma);
+    });
     const identitiesEvaluated = partition.identities.filter((identity) => {
       const row = rowsByStrike.get(identity.strike);
       if (row === undefined) return false;
@@ -4009,6 +4117,20 @@ export class GgalSpecialistRuntime {
       const iv = call ? row.callIvDecimal : row.putIvDecimal;
       return evalParams !== null && Number.isFinite(greeksBymaAmericanBs02(evalParams, identity.strike, iv, identity.side).gamma);
     });
+    const universeKeys = new Set<string>(
+      partition.identities.map((identity) => `${identity.side}|${String(identity.strikeTicks1e4)}`),
+    );
+    for (const contract of [...front.calls, ...front.puts]) {
+      const active =
+        contract.ivStatus === 'SOLVED_AMERICAN' ||
+        (contract.bid !== null && contract.bid > 0) ||
+        (contract.ask !== null && contract.ask > 0) ||
+        (contract.last !== null && contract.last > 0) ||
+        (contract.volume !== null && contract.volume > 0);
+      if (active) {
+        universeKeys.add(`${contract.contractType}|${String(Math.round(contract.strike * 10_000))}`);
+      }
+    }
     const identified = identitiesEvaluated.filter((identity) => {
       const chain = identity.side === 'call' ? front.calls : front.puts;
       const row = rowsByStrike.get(identity.strike);
@@ -4016,20 +4138,25 @@ export class GgalSpecialistRuntime {
       return (buckets !== undefined && Object.values(buckets).every((oi) => oi === 0)) ||
         chain.some((contract) => contract.strike === identity.strike && contract.ivStatus === 'SOLVED_AMERICAN');
     });
-    const oiCoverageRatio = identified.length / partition.identities.length;
-    const modelValid = Number.isFinite(out.netEffectiveGexArsPer1Pct) && identitiesEvaluated.length > 0;
+    const denominator = Math.max(partition.identities.length, universeKeys.size);
+    const oiCoverageRatio = denominator > 0 ? identified.length / denominator : 0;
+    const modelValid =
+      Number.isFinite(out.netEffectiveGexArsPer1Pct) &&
+      identitiesEvaluated.length > 0 &&
+      positiveIdentitiesEvaluated.length === positiveOiIdentities.length;
 
     const telemetry = this.resolveTelemetryMode(
       bundle,
       spots.basis,
       undefined,
       out.anexoBLagTradingDays,
+      { matched: true, reportDate: partition.reportDate },
     );
 
     return {
       ...responseMetadata,
       gexStatus: !modelValid ? 'INVALID_DATA_OR_MODEL' : oiCoverageRatio < 1 ? 'PARTIAL_COVERAGE' : 'VALID_IAMC_ANEXO_B',
-      oiQuality: !modelValid ? 'INVALID_OI' : oiCoverageRatio < 1 ? 'PARTIAL_DIRECT_OI' : 'IAMC_ANEXO_B_EXACT',
+      oiQuality: !modelValid ? 'IAMC_ANEXO_B_EXACT' : oiCoverageRatio < 1 ? 'PARTIAL_DIRECT_OI' : 'IAMC_ANEXO_B_EXACT',
       oiCoverageRatio,
       atmFallbackStrikes: [...atmFallbackStrikes],
       telemetry,
@@ -5214,16 +5341,37 @@ export class GgalSpecialistRuntime {
       contractualExpiry: front.expirationDate, expiryCode: front.expiryCode,
     }).partition;
     const anexoTotals = partition?.totals;
+    const frontContracts = [...(front?.calls ?? []), ...(front?.puts ?? [])];
+    const frontMultipliers = new Set<number>();
+    let frontMultiplierMissing = false;
+    for (const entry of frontContracts) {
+      const verified = resolveContractMultiplier(
+        entry.contractMultiplier ?? Number.NaN,
+        entry.multiplierSource ?? 'UNVERIFIED',
+      );
+      if (verified === null) frontMultiplierMissing = true;
+      else frontMultipliers.add(verified.contractMultiplier);
+    }
+    const homogeneousFrontMultiplier =
+      !frontMultiplierMissing && frontMultipliers.size === 1
+        ? Array.from(frontMultipliers)[0] ?? null
+        : null;
     const multipliers = new Set<number>();
     let multiplierMissing = false;
     for (const identity of partition?.identities ?? []) {
       const contracts = identity.side === 'call' ? front?.calls : front?.puts;
       const contract = contracts?.find((entry) => Math.round(entry.strike * 10_000) === identity.strikeTicks1e4);
-      const verified = resolveContractMultiplier(
-        contract?.contractMultiplier ?? Number.NaN, contract?.multiplierSource ?? 'UNVERIFIED',
-      );
-      if (verified === null) multiplierMissing = true;
-      else multipliers.add(verified.contractMultiplier);
+      if (contract !== undefined) {
+        const verified = resolveContractMultiplier(
+          contract.contractMultiplier ?? Number.NaN, contract.multiplierSource ?? 'UNVERIFIED',
+        );
+        if (verified === null) multiplierMissing = true;
+        else multipliers.add(verified.contractMultiplier);
+      } else if (homogeneousFrontMultiplier !== null) {
+        multipliers.add(homogeneousFrontMultiplier);
+      } else {
+        multiplierMissing = true;
+      }
     }
     const multiplier = !multiplierMissing && multipliers.size === 1
       ? Array.from(multipliers)[0] ?? Number.NaN
@@ -5790,43 +5938,45 @@ export class GgalSpecialistRuntime {
     if (greekProfile.length === 0 && frontUsContracts.length > 0) {
       const adrSpotRef =
         params.usSnapshot?.envelope.snapshot.metrics.spot ?? params.adrLastUsd;
-      const validAdr = Number.isFinite(adrSpotRef) && adrSpotRef > 0 ? adrSpotRef : 1;
-      const byStrike = new Map<
-        number,
-        { signedGex: number; vanna: number; charm: number }
-      >();
-      for (const c of frontUsContracts) {
-        if (
-          c.openInterest === null ||
-          !Number.isFinite(c.openInterest) ||
-          c.openInterest <= 0 ||
-          c.gamma === null ||
-          !Number.isFinite(c.gamma)
-        ) {
-          continue;
+      if (Number.isFinite(adrSpotRef) && adrSpotRef > 0) {
+        const validAdr = adrSpotRef;
+        const byStrike = new Map<
+          number,
+          { signedGex: number; vanna: number; charm: number }
+        >();
+        for (const c of frontUsContracts) {
+          if (
+            c.openInterest === null ||
+            !Number.isFinite(c.openInterest) ||
+            c.openInterest <= 0 ||
+            c.gamma === null ||
+            !Number.isFinite(c.gamma)
+          ) {
+            continue;
+          }
+          const sign = c.contractType === 'call' ? 1 : -1;
+          const gex = sign * c.gamma * c.openInterest * 100 * validAdr * validAdr * 0.01;
+          const vanna = (c.vanna ?? 0) * c.openInterest * 100;
+          const charm = (c.charm ?? 0) * c.openInterest * 100;
+          const acc = byStrike.get(c.strike) ?? { signedGex: 0, vanna: 0, charm: 0 };
+          acc.signedGex += gex;
+          acc.vanna += vanna;
+          acc.charm += charm;
+          byStrike.set(c.strike, acc);
         }
-        const sign = c.contractType === 'call' ? 1 : -1;
-        const gex = sign * c.gamma * c.openInterest * 100 * validAdr * validAdr * 0.01;
-        const vanna = (c.vanna ?? 0) * c.openInterest * 100;
-        const charm = (c.charm ?? 0) * c.openInterest * 100;
-        const acc = byStrike.get(c.strike) ?? { signedGex: 0, vanna: 0, charm: 0 };
-        acc.signedGex += gex;
-        acc.vanna += vanna;
-        acc.charm += charm;
-        byStrike.set(c.strike, acc);
-      }
-      for (const [k, vals] of [...byStrike.entries()].sort((a, b) => a[0] - b[0])) {
-        const strikeCoord = fromUsd(k);
-        if (!Number.isFinite(strikeCoord)) continue;
-        greekProfile.push({
-          strike: strikeCoord,
-          signedGexUncovered: vals.signedGex,
-          signedGexCovered: 0,
-          vannaUncovered: vals.vanna,
-          vannaCovered: 0,
-          charmUncovered: vals.charm,
-          charmCovered: 0,
-        });
+        for (const [k, vals] of [...byStrike.entries()].sort((a, b) => a[0] - b[0])) {
+          const strikeCoord = fromUsd(k);
+          if (!Number.isFinite(strikeCoord)) continue;
+          greekProfile.push({
+            strike: strikeCoord,
+            signedGexUncovered: vals.signedGex,
+            signedGexCovered: 0,
+            vannaUncovered: vals.vanna,
+            vannaCovered: 0,
+            charmUncovered: vals.charm,
+            charmCovered: 0,
+          });
+        }
       }
     }
 

@@ -152,5 +152,74 @@
       "reason": "NEGATIVE_OI",
       "gexStatus": "INVALID_DATA_OR_MODEL"
     }
+  },
+  "a1ContractualExpiryProjectionDelta": {
+    "rawText": "GFGC6000DI 100 200 0 0\nGFGC6000FE 400 800 0 0",
+    "contractualExpiry": "2026-12-18",
+    "projectedUncovered": 200,
+    "byExpiryUncovered": {
+      "2026-12-18": 200,
+      "2027-02-19": 800
+    }
+  },
+  "a1HolidayAlignedExpiryDelta": {
+    "holiday": "2026-12-18",
+    "shiftedExpiry": "2026-12-17",
+    "canonicalLiveKey": "GGAL|2026-12-17|call|60000000",
+    "rejectedSymbols": [
+      "GFGC6000DX",
+      "GFGC6000DIC"
+    ]
+  },
+  "a1PartialMalformedRawTextAndSideMismatchDelta": {
+    "rawText": "GFGC6000DI 100 200 0 0\nGFGC6200DI - - - -",
+    "validUncovered": 200,
+    "rawRejectedCode": "INVALID_ANEXO_B_BUCKETS",
+    "rowRejectedCode": "SIDE_MISMATCH"
+  },
+  "a1VolTriangleNominalSharesDelta": {
+    "contracts": 250,
+    "multiplier": 100,
+    "expectedOpenInterestNom": 25000
+  },
+  "a2OpenBymaAndModelFailQualityDelta": {
+    "openBymaSource": "OPEN_BYMA",
+    "modelFailGexStatus": "INVALID_DATA_OR_MODEL",
+    "modelFailOiQuality": "DIRECT_CONTRACT_OI_EXACT",
+    "proxyWithInvalidGexStatus": "INVALID_DATA_OR_MODEL",
+    "proxyWithInvalidOiQuality": "INVALID_OI"
+  },
+  "gexPerExpiryIsolationDelta": {
+    "diContracts": 150,
+    "feContracts": 400,
+    "di": {
+      "count": 150,
+      "multiplier": 100,
+      "nominalShares": 15000,
+      "side": "call",
+      "spot": 6000,
+      "strike": 6000,
+      "volatility": 0.44,
+      "years": 0.25,
+      "gamma": 0.0003004060348830953,
+      "gex": 1622192.5883687146,
+      "americanCallPrice": 525.5437505078016
+    },
+    "fe": {
+      "count": 400,
+      "multiplier": 100,
+      "nominalShares": 40000,
+      "side": "call",
+      "spot": 6000,
+      "strike": 6000,
+      "volatility": 0.44,
+      "years": 0.25,
+      "gamma": 0.0003004060348830953,
+      "gex": 4325846.902316572,
+      "americanCallPrice": 525.5437505078016
+    },
+    "partialChainStrikes": 3,
+    "partialCoveredStrikes": 1,
+    "partialCoverageRatio": 0.3333333333333333
   }
 }

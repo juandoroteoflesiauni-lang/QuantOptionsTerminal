@@ -1,6 +1,6 @@
 """Generate offline IAMC/OI expectations with independent Python arithmetic."""
 from calendar import FRIDAY, Calendar
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, getcontext
 import json
 import math
@@ -90,6 +90,45 @@ def build_reference() -> dict:
         "gexPartialAndInvalid": {
             "partial": {"gexStatus": "PARTIAL_COVERAGE", "coverage": float(Decimal(2) / 4), "direct": 2, "missing": 2},
             "invalid": {"value": -10, "reason": "NEGATIVE_OI", "gexStatus": "INVALID_DATA_OR_MODEL"},
+        },
+        "a1ContractualExpiryProjectionDelta": {
+            "rawText": f"{DI}\n{FE}",
+            "contractualExpiry": str(DECEMBER),
+            "projectedUncovered": 200,
+            "byExpiryUncovered": {str(DECEMBER): 200, str(FEBRUARY): 800},
+        },
+        "a1HolidayAlignedExpiryDelta": {
+            "holiday": str(DECEMBER),
+            "shiftedExpiry": str(DECEMBER - timedelta(days=1)),
+            "canonicalLiveKey": f"GGAL|{DECEMBER - timedelta(days=1)}|call|{int(Decimal('6000') * 10000)}",
+            "rejectedSymbols": ["GFGC6000DX", "GFGC6000DIC"],
+        },
+        "a1PartialMalformedRawTextAndSideMismatchDelta": {
+            "rawText": f"{DI}\nGFGC6200DI - - - -",
+            "validUncovered": 200,
+            "rawRejectedCode": "INVALID_ANEXO_B_BUCKETS",
+            "rowRejectedCode": "SIDE_MISMATCH",
+        },
+        "a1VolTriangleNominalSharesDelta": {
+            "contracts": 250,
+            "multiplier": 100,
+            "expectedOpenInterestNom": int(Decimal(250) * Decimal(100)),
+        },
+        "a2OpenBymaAndModelFailQualityDelta": {
+            "openBymaSource": "OPEN_BYMA",
+            "modelFailGexStatus": "INVALID_DATA_OR_MODEL",
+            "modelFailOiQuality": "DIRECT_CONTRACT_OI_EXACT",
+            "proxyWithInvalidGexStatus": "INVALID_DATA_OR_MODEL",
+            "proxyWithInvalidOiQuality": "INVALID_OI",
+        },
+        "gexPerExpiryIsolationDelta": {
+            "diContracts": 150,
+            "feContracts": 400,
+            "di": exposure(150, 100, "call"),
+            "fe": exposure(400, 100, "call"),
+            "partialChainStrikes": 3,
+            "partialCoveredStrikes": 1,
+            "partialCoverageRatio": float(Decimal(1) / Decimal(3)),
         },
     }
 

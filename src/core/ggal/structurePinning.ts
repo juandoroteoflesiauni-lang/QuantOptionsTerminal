@@ -392,6 +392,10 @@ export function evaluateStructureAndPinning(
     readonly rawAttraction: number;
   }[] = [];
 
+  let positiveOiLegs = 0;
+  let evaluatedPositiveOiLegs = 0;
+  let failedPositiveOiLegs = 0;
+
   for (const row of sortedRows) {
     const callEffOi = computeEffectiveAnexoBOi(row.callOi, weights);
     const putEffOi = computeEffectiveAnexoBOi(row.putOi, weights);
@@ -406,13 +410,21 @@ export function evaluateStructureAndPinning(
     let callVanna = 0;
     let callCharm = 0;
     let callWallMetric = 0;
-    if (callEffOi > 0 && isPositiveFinite(row.callIvDecimal)) {
-      const g = greeksBymaAmericanBs02(evalParams, row.strikeArs, row.callIvDecimal, 'call');
-      if (Number.isFinite(g.gamma)) {
-        callWallMetric = callEffOi * g.gamma * spotSq * ONE_PCT;
-        callSignedGex = sgnCall * callWallMetric;
-        callVanna = sgnCall * callEffOi * g.vanna * spotArs * ONE_PCT;
-        callCharm = sgnCall * callEffOi * g.charm * (spotArs / DAYS_IN_YEAR);
+    if (callEffOi > 0) {
+      positiveOiLegs += 1;
+      if (isPositiveFinite(row.callIvDecimal)) {
+        const g = greeksBymaAmericanBs02(evalParams, row.strikeArs, row.callIvDecimal, 'call');
+        if (Number.isFinite(g.gamma)) {
+          evaluatedPositiveOiLegs += 1;
+          callWallMetric = callEffOi * g.gamma * spotSq * ONE_PCT;
+          callSignedGex = sgnCall * callWallMetric;
+          callVanna = sgnCall * callEffOi * g.vanna * spotArs * ONE_PCT;
+          callCharm = sgnCall * callEffOi * g.charm * (spotArs / DAYS_IN_YEAR);
+        } else {
+          failedPositiveOiLegs += 1;
+        }
+      } else {
+        failedPositiveOiLegs += 1;
       }
     }
 
@@ -420,13 +432,21 @@ export function evaluateStructureAndPinning(
     let putVanna = 0;
     let putCharm = 0;
     let putWallMetric = 0;
-    if (putEffOi > 0 && isPositiveFinite(row.putIvDecimal)) {
-      const g = greeksBymaAmericanBs02(evalParams, row.strikeArs, row.putIvDecimal, 'put');
-      if (Number.isFinite(g.gamma)) {
-        putWallMetric = putEffOi * g.gamma * spotSq * ONE_PCT;
-        putSignedGex = sgnPut * putWallMetric;
-        putVanna = sgnPut * putEffOi * g.vanna * spotArs * ONE_PCT;
-        putCharm = sgnPut * putEffOi * g.charm * (spotArs / DAYS_IN_YEAR);
+    if (putEffOi > 0) {
+      positiveOiLegs += 1;
+      if (isPositiveFinite(row.putIvDecimal)) {
+        const g = greeksBymaAmericanBs02(evalParams, row.strikeArs, row.putIvDecimal, 'put');
+        if (Number.isFinite(g.gamma)) {
+          evaluatedPositiveOiLegs += 1;
+          putWallMetric = putEffOi * g.gamma * spotSq * ONE_PCT;
+          putSignedGex = sgnPut * putWallMetric;
+          putVanna = sgnPut * putEffOi * g.vanna * spotArs * ONE_PCT;
+          putCharm = sgnPut * putEffOi * g.charm * (spotArs / DAYS_IN_YEAR);
+        } else {
+          failedPositiveOiLegs += 1;
+        }
+      } else {
+        failedPositiveOiLegs += 1;
       }
     }
 
@@ -482,6 +502,10 @@ export function evaluateStructureAndPinning(
       putIvDecimal: row.putIvDecimal,
       rawAttraction,
     });
+  }
+
+  if (failedPositiveOiLegs > 0 && evaluatedPositiveOiLegs === 0) {
+    return emptyOutput;
   }
 
   const totalAttraction = interim.reduce((acc, r) => acc + r.rawAttraction, 0);
@@ -562,31 +586,33 @@ export function evaluateStructureAndPinning(
   const probeSpots = Array.from(gridSet).sort((a, b) => a - b);
 
   let zeroGammaLevelArs = Number.NaN;
-  let bestMidDist = Number.POSITIVE_INFINITY;
-  let prevS = probeSpots[0];
-  let prevVal = prevS !== undefined ? evalNetGexAtSpot(prevS) : Number.NaN;
-  for (let i = 1; i < probeSpots.length; i += 1) {
-    const curS = probeSpots[i];
-    if (curS === undefined || prevS === undefined) {
-      continue;
-    }
-    const curVal = evalNetGexAtSpot(curS);
-    if (
-      Number.isFinite(prevVal) &&
-      Number.isFinite(curVal) &&
-      ((prevVal <= 0 && curVal >= 0) || (prevVal >= 0 && curVal <= 0))
-    ) {
-      const root = brentRoot(evalNetGexAtSpot, prevS, curS, 1e-6, 80);
-      if (isPositiveFinite(root)) {
-        const dist = Math.abs(root - spotArs);
-        if (dist < bestMidDist) {
-          bestMidDist = dist;
-          zeroGammaLevelArs = root;
+  if (positiveOiLegs > 0) {
+    let bestMidDist = Number.POSITIVE_INFINITY;
+    let prevS = probeSpots[0];
+    let prevVal = prevS !== undefined ? evalNetGexAtSpot(prevS) : Number.NaN;
+    for (let i = 1; i < probeSpots.length; i += 1) {
+      const curS = probeSpots[i];
+      if (curS === undefined || prevS === undefined) {
+        continue;
+      }
+      const curVal = evalNetGexAtSpot(curS);
+      if (
+        Number.isFinite(prevVal) &&
+        Number.isFinite(curVal) &&
+        ((prevVal <= 0 && curVal >= 0) || (prevVal >= 0 && curVal <= 0))
+      ) {
+        const root = brentRoot(evalNetGexAtSpot, prevS, curS, 1e-6, 80);
+        if (isPositiveFinite(root)) {
+          const dist = Math.abs(root - spotArs);
+          if (dist < bestMidDist) {
+            bestMidDist = dist;
+            zeroGammaLevelArs = root;
+          }
         }
       }
+      prevS = curS;
+      prevVal = curVal;
     }
-    prevS = curS;
-    prevVal = curVal;
   }
 
   const maxUncoveredCrossedConcentrationPct = isPositiveFinite(totalUncovCrossAll)
@@ -596,7 +622,9 @@ export function evaluateStructureAndPinning(
   const pinThreshold = input.pinScoreThreshold ?? DEFAULT_PIN_THRESHOLD;
   const pinWindowMin = input.pinWindowMinutesBeforeCutoff ?? PIN_CUTOFF_WINDOW_MIN;
   let regime: StructurePinningRegime;
-  if (
+  if (positiveOiLegs === 0) {
+    regime = 'NO_DATA';
+  } else if (
     isExpiryDay &&
     minutesTo1530Cutoff !== null &&
     minutesTo1530Cutoff >= 0 &&

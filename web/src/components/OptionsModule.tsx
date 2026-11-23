@@ -1754,7 +1754,7 @@ export const OptionsModule: React.FC<{
   }, [liveOptions?.forwardIvSegments, activeExpiries]);
 
   const dealerGammaReport = useMemo(() => {
-    const expSum = liveOptions?.exposureSummary ?? null;
+    const expSum = activeExposureSummary;
     if (!expSum || expSum.gexStatus === 'UNAVAILABLE_MISSING_OI' || expSum.gexStatus === 'INVALID_DATA_OR_MODEL' ||
         expSum.netGex === null || !Number.isFinite(expSum.netGex)) {
       return classifyDealerGammaRegimeFromSummary({
@@ -1796,13 +1796,15 @@ export const OptionsModule: React.FC<{
       usableContracts,
       usableOpenInterest,
     });
-  }, [liveOptions?.exposureSummary, displaySpot, activeQuantEngines?.flowAdjustedGex]);
+  }, [activeExposureSummary, displaySpot, activeQuantEngines?.flowAdjustedGex]);
 
-  const arExposure = !isUsMarket ? liveOptions?.exposureSummary : null;
+  const arExposure = !isUsMarket ? activeExposureSummary : null;
   const gexStatus = arExposure?.gexStatus;
   const displayNetGex = gexStatus === undefined ? dealerGammaReport.netGex : arExposure?.netGex ?? Number.NaN;
   const gexStatusLabel =
-    gexStatus === 'UNAVAILABLE_MISSING_OI' ? 'Sin OI verificable'
+    gexStatus === 'VALID_IAMC_ANEXO_B' ? 'Nominales IAMC'
+      : gexStatus === 'VALID_CONTRACT_OI' ? 'OI contractual observado'
+      : gexStatus === 'UNAVAILABLE_MISSING_OI' ? 'Sin OI verificable'
       : gexStatus === 'INVALID_DATA_OR_MODEL' ? 'OI inválido o modelo no evaluable'
       : gexStatus === 'PARTIAL_COVERAGE'
         ? `${arExposure?.trace?.directOiInputs ?? 0}/${arExposure?.trace?.oiUniverseInputs ?? '—'} contratos · parcial`
@@ -1821,7 +1823,7 @@ export const OptionsModule: React.FC<{
         readonly cex: number | null;
       }
     >();
-    for (const s of liveOptions?.exposureSummary?.byStrike ?? []) {
+    for (const s of activeExposureSummary?.byStrike ?? []) {
       map.set(s.strike, {
         callGex: s.callGex,
         putGex: s.putGex,
@@ -1833,7 +1835,7 @@ export const OptionsModule: React.FC<{
       });
     }
     return map;
-  }, [liveOptions?.exposureSummary?.byStrike]);
+  }, [activeExposureSummary?.byStrike]);
 
   const focusedStrategyCard = useMemo(() => {
     if (visiblePayoffCards.length === 0) return null;
@@ -3755,7 +3757,13 @@ export const OptionsModule: React.FC<{
 
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-[#1E222D]/80 font-mono-num tabular-nums">
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">{gexStatus === 'PARTIAL_COVERAGE' ? 'GEX PARCIAL (1% SPOT)' : 'NET GEX (1% SPOT)'}</div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">
+                  {gexStatus === 'ESTIMATED_PROXY_OPT_IN'
+                    ? 'GEX PROXY (1% SPOT)'
+                    : gexStatus === 'PARTIAL_COVERAGE'
+                      ? 'GEX PARCIAL (1% SPOT)'
+                      : 'NET GEX (1% SPOT)'}
+                </div>
                 <div
                   className={`text-[15px] font-extrabold ${
                     Number.isFinite(displayNetGex)
@@ -3786,7 +3794,9 @@ export const OptionsModule: React.FC<{
                 )}
               </div>
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">CALL WALL (CW)</div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">
+                  {`CALL WALL (CW)${!isUsMarket && gexStatus === 'PARTIAL_COVERAGE' ? ' · PARCIAL' : !isUsMarket && gexStatus === 'ESTIMATED_PROXY_OPT_IN' ? ' · PROXY' : ''}`}
+                </div>
                 <div className="text-[15px] font-extrabold text-[#EAB308]">
                   {Number.isFinite(dealerGammaReport.callWallStrike)
                     ? formatStrike(dealerGammaReport.callWallStrike)
@@ -3794,7 +3804,9 @@ export const OptionsModule: React.FC<{
                 </div>
               </div>
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">PUT WALL (PW)</div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">
+                  {`PUT WALL (PW)${!isUsMarket && gexStatus === 'PARTIAL_COVERAGE' ? ' · PARCIAL' : !isUsMarket && gexStatus === 'ESTIMATED_PROXY_OPT_IN' ? ' · PROXY' : ''}`}
+                </div>
                 <div className="text-[15px] font-extrabold text-[#C084FC]">
                   {Number.isFinite(dealerGammaReport.putWallStrike)
                     ? formatStrike(dealerGammaReport.putWallStrike)
@@ -3802,7 +3814,9 @@ export const OptionsModule: React.FC<{
                 </div>
               </div>
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">ZERO GAMMA (FLIP)</div>
+                <div className="text-[10px] uppercase tracking-wider text-[#787B86]">
+                  {`ZERO GAMMA (FLIP)${!isUsMarket && gexStatus === 'PARTIAL_COVERAGE' ? ' · PARCIAL' : !isUsMarket && gexStatus === 'ESTIMATED_PROXY_OPT_IN' ? ' · PROXY' : ''}`}
+                </div>
                 <div className="text-[15px] font-extrabold text-[#38BDF8]">
                   {Number.isFinite(dealerGammaReport.zeroGammaSpot)
                     ? formatStrike(dealerGammaReport.zeroGammaSpot)

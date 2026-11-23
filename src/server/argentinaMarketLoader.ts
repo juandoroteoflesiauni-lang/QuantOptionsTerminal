@@ -259,6 +259,7 @@ export interface ArgentinaRuntimeDeps {
     lookbackBars?: number,
     forceRefresh?: boolean,
   ) => Promise<CachedDailyBarsResult>;
+  readonly arHolidays?: readonly string[];
 }
 
 export interface GlobalIndicatorDto {
@@ -882,7 +883,7 @@ export interface ArOptionContractDto {
   readonly ivOrigin?: 'SOLVED' | 'INHERITED' | 'NONE';
   readonly source: 'DATA912' | 'MODEL';
   /** Proveedor de la caja de puntas; `source` se conserva para el origen de VI por compatibilidad. */
-  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE' | 'OPEN_BYMA';
   readonly quoteAsOfUtcSec?: number | null;
 }
 
@@ -1006,6 +1007,7 @@ export interface ArOptionsResponse {
     readonly quality?: {
       readonly usableContracts: number;
       readonly usableOpenInterest: number;
+      readonly usableOpenInterestShares?: number | null;
     };
     readonly byStrike?: readonly {
       readonly strike: number;
@@ -1034,6 +1036,10 @@ export interface ArOptionsResponse {
   readonly primaryLiquidExpiryCode?: string | null;
   /** Motores cuantitativos recalculados por vencimiento líquido (clave = `expiryCode`). */
   readonly quantEnginesByExpiry?: Readonly<Record<string, ArOptionsQuantEnginesDto | null>>;
+  /** Exposición de dealers recalculada por vencimiento (clave = `expiryCode`). */
+  readonly exposureSummaryByExpiry?: Readonly<
+    Record<string, NonNullable<ArOptionsResponse['exposureSummary']>>
+  >;
   readonly providerErrors: readonly string[];
 }
 
@@ -2708,12 +2714,22 @@ export function evaluateSovereignBondMath(
   };
 }
 
-function thirdFridayUtcSec(year: number, month1Based: number): number {
+function thirdFridayUtcSec(year: number, month1Based: number, holidays?: ReadonlySet<string>): number {
   const firstDay = new Date(Date.UTC(year, month1Based - 1, 1, 18, 30, 0));
   const firstDow = firstDay.getUTCDay(); // 5 = Friday
   const daysToFirstFriday = (5 - firstDow + 7) % 7;
   const thirdFridayDay = 1 + daysToFirstFriday + 14;
-  return Math.floor(Date.UTC(year, month1Based - 1, thirdFridayDay, 18, 30, 0) / 1_000);
+  const expiry = new Date(Date.UTC(year, month1Based - 1, thirdFridayDay, 18, 30, 0));
+  if (holidays !== undefined && holidays.size > 0) {
+    while (
+      expiry.getUTCDay() === 0 ||
+      expiry.getUTCDay() === 6 ||
+      holidays.has(expiry.toISOString().slice(0, 10))
+    ) {
+      expiry.setUTCDate(expiry.getUTCDate() - 1);
+    }
+  }
+  return Math.floor(expiry.getTime() / 1_000);
 }
 
 interface ParsedBymaOptionSymbol {
@@ -2736,6 +2752,7 @@ export function parseBymaOptionSymbol(
   spotHint: number | null,
   asOfUtcSec: number,
   includeNearExpiry = false,
+  arHolidays: readonly string[] = [],
 ): ParsedBymaOptionSymbol | null {
   const cleaned = rawSymbol.trim().toUpperCase().replace(/[^A-Z0-9.]/g, '');
   if (cleaned.length < 6) {
@@ -2775,17 +2792,17 @@ export function parseBymaOptionSymbol(
     }
   }
 
-  const monthKey = rawMonthSuffix.slice(0, 2);
-  const monthInfo = MONTH_CODES[monthKey] ?? MONTH_CODES[rawMonthSuffix.slice(0, 1)];
+  const monthInfo = MONTH_CODES[rawMonthSuffix];
   if (monthInfo === undefined) {
     return null;
   }
 
+  const holidaySet = arHolidays.length > 0 ? new Set(arHolidays) : undefined;
   const asOfDate = new Date(asOfUtcSec * 1_000);
   const baseYear = asOfDate.getUTCFullYear();
-  let expSec = thirdFridayUtcSec(baseYear, monthInfo.month);
+  let expSec = thirdFridayUtcSec(baseYear, monthInfo.month, holidaySet);
   if (expSec <= asOfUtcSec - 86_400) {
-    expSec = thirdFridayUtcSec(baseYear + 1, monthInfo.month);
+    expSec = thirdFridayUtcSec(baseYear + 1, monthInfo.month, holidaySet);
   }
   if (expSec <= asOfUtcSec || (!includeNearExpiry && expSec - asOfUtcSec <= MIN_CONTRACTUAL_EXPIRY_SEC)) {
     return null;
@@ -2858,11 +2875,15 @@ export interface NormalizedQuoteRow {
   readonly usdBid: number | null;
   readonly usdAsk: number | null;
   readonly openInterest?: number | null;
-  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE' | 'OPEN_BYMA';
   readonly quoteAsOfUtcSec?: number | null;
 }
 
-function normalizeData912Rows(raw: unknown, source: 'DATA912' | 'OPEN_BYMA' = 'DATA912', options = false): readonly NormalizedQuoteRow[] {
+export function normalizeData912Rows(
+  raw: unknown,
+  source: 'DATA912' | 'OPEN_BYMA' = 'DATA912',
+  options = false,
+): readonly NormalizedQuoteRow[] {
   let arr: readonly unknown[] = [];
   if (Array.isArray(raw)) {
     arr = raw;
@@ -2900,15 +2921,19 @@ function normalizeData912Rows(raw: unknown, source: 'DATA912' | 'OPEN_BYMA' = 'D
     const vwap = readNum(item, ['vw', 'vwap']);
     const volumeArsRaw = readNum(item, ['v_ars', 'volumeAmount', 'monto', 'amount']);
     const nominalVol = readNum(item, ['v', 'q_op', 'volume', 'nominalVolume']);
+    const itemTsSec = parseTimestampSec(item['timestamp'] ?? item['updated_at'] ?? item['date'] ?? item['t']);
     const openInterestRaw = item['open_interest'] ?? item['openInterest'] ?? item['oi'];
     const optionPrefix = /^([A-Z]{3,4})[CV]\d/.exec(cleanSym)?.[1];
-    const multiplier = options && optionPrefix !== undefined && OPTION_PREFIX_TO_UNDERLYING[optionPrefix] !== undefined
-      ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
-      : null;
-    const oi = classifyRawOiValue(openInterestRaw, source, null, multiplier);
+    const explicitMult = readNum(item, ['contractMultiplier', 'shares_per_contract', 'lotSize']);
+    const multiplier = explicitMult !== null
+      ? resolveContractMultiplier(explicitMult, 'EXCHANGE_CONTRACT_SPEC')
+      : options && optionPrefix !== undefined && OPTION_PREFIX_TO_UNDERLYING[optionPrefix] !== undefined
+        ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
+        : null;
+    const oi = classifyRawOiValue(openInterestRaw, source, itemTsSec, multiplier);
     const openInterest = oi.status === 'DIRECT_CONTRACT_OI' ? oi.contracts : null;
     const fieldProvenance = mergeOptionFieldProvenance(
-      oi, { volume: nominalVol, bid, ask, bidSize, askSize, lastTrade: last }, source, null,
+      oi, { volume: nominalVol, bid, ask, bidSize, askSize, lastTrade: last }, source, itemTsSec,
     );
     const mark = readNum(item, ['mark', 'c', 'close', 'last']);
     const arsBid = readNum(item, ['ars_bid']);
@@ -2963,8 +2988,8 @@ function normalizeData912Rows(raw: unknown, source: 'DATA912' | 'OPEN_BYMA' = 'D
       usdAsk,
       openInterest,
       fieldProvenance,
-      quoteSource: 'DATA912',
-      quoteAsOfUtcSec: null,
+      quoteSource: source,
+      quoteAsOfUtcSec: itemTsSec,
     });
   }
   return rows;
@@ -3091,18 +3116,34 @@ function mergeBmbNormalizedRows(
       arsAsk: existing?.arsAsk ?? null,
       usdBid: existing?.usdBid ?? null,
       usdAsk: existing?.usdAsk ?? null,
-      ...(existing?.fieldProvenance !== undefined ? {
-        fieldProvenance: mergeOptionFieldProvenance(
-          existing.fieldProvenance.openInterest,
-          { bid: bestBid?.price ?? null, bidSize: bestBid?.size ?? null,
-            ask: bestAsk?.price ?? null, askSize: bestAsk?.size ?? null },
-          'BMB_HOMEBROKER_BRIDGE', book?.asOfUtcSec ?? null,
-          latestTrade === null ? existing.fieldProvenance : mergeOptionFieldProvenance(
-            existing.fieldProvenance.openInterest, { lastTrade: latestTrade.price },
-            'BMB_HOMEBROKER_BRIDGE', latestTrade.timeSec, existing.fieldProvenance,
-          ),
-        ),
-      } : {}),
+      ...(existing === undefined || existing.fieldProvenance !== undefined
+        ? {
+            fieldProvenance: (() => {
+              const baseOi = existing?.fieldProvenance?.openInterest ?? missingOi('L1_OVERLAY_NO_OI');
+              const bboProvenance = mergeOptionFieldProvenance(
+                baseOi,
+                {
+                  bid: bestBid?.price ?? null,
+                  bidSize: bestBid?.size ?? null,
+                  ask: bestAsk?.price ?? null,
+                  askSize: bestAsk?.size ?? null,
+                },
+                'BMB_HOMEBROKER_BRIDGE',
+                book?.asOfUtcSec ?? null,
+                existing?.fieldProvenance,
+              );
+              return latestTrade === null
+                ? bboProvenance
+                : mergeOptionFieldProvenance(
+                    baseOi,
+                    { lastTrade: latestTrade.price },
+                    'BMB_HOMEBROKER_BRIDGE',
+                    latestTrade.timeSec,
+                    bboProvenance,
+                  );
+            })(),
+          }
+        : {}),
       ...(existing?.openInterest !== undefined ? { openInterest: existing.openInterest } : {}),
       ...(latestTrade !== null || existing === undefined
         ? { quoteSource: 'BMB_HOMEBROKER_BRIDGE' as const }
@@ -3123,6 +3164,7 @@ export interface MergeBmbOptionQuotesInput {
   readonly nowUtcSec: number;
   readonly maxQuoteAgeSec?: number;
   readonly trackFieldProvenance?: boolean;
+  readonly arHolidays?: readonly string[];
 }
 
 /**
@@ -3161,7 +3203,13 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
     ) {
       continue;
     }
-    const parsed = parseBymaOptionSymbol(symbol, input.spotHint, input.nowUtcSec, input.trackFieldProvenance === true);
+    const parsed = parseBymaOptionSymbol(
+      symbol,
+      input.spotHint,
+      input.nowUtcSec,
+      input.trackFieldProvenance === true,
+      input.arHolidays ?? [],
+    );
     if (parsed === null || parsed.underlying !== underlying) {
       continue;
     }
@@ -3171,6 +3219,7 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
     return input.rows;
   }
 
+  const underlyingHasStandardTable = Object.values(OPTION_PREFIX_TO_UNDERLYING).includes(underlying);
   const applyQuote = (row: NormalizedQuoteRow, quote: BmbOptionRowDto): NormalizedQuoteRow => {
     const track = input.trackFieldProvenance === true || row.fieldProvenance !== undefined;
     const bid = positiveOrNull(quote.bid) ?? (track ? row.bid : null);
@@ -3180,13 +3229,35 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
     const askSize = positiveOrNull(quote.askSize) ?? (track && positiveOrNull(quote.ask) === null ? row.askSize : null);
     const volume = nonNegativeOrNull(quote.volume) ?? (track ? row.nominalVol : null);
     const mid = bid !== null && ask !== null && ask >= bid ? 0.5 * (bid + ask) : last;
-    const fieldProvenance = track ? mergeOptionFieldProvenance(
-      row.fieldProvenance?.openInterest ?? missingOi('L1_OVERLAY_NO_OI'),
+    const baseOiSource =
+      row.quoteSource === 'OPEN_BYMA'
+        ? 'OPEN_BYMA'
+        : row.quoteSource === 'BMB_HOMEBROKER_BRIDGE'
+          ? 'BMB_HOMEBROKER_BRIDGE'
+          : 'DATA912';
+    const baseOi = track
+      ? row.fieldProvenance?.openInterest ??
+        (row.openInterest != null
+          ? classifyRawOiValue(
+              row.openInterest,
+              baseOiSource,
+              row.quoteAsOfUtcSec ?? null,
+              underlyingHasStandardTable
+                ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
+                : null,
+            )
+          : missingOi('L1_OVERLAY_NO_OI'))
+      : undefined;
+    const fieldProvenance = track && baseOi !== undefined ? mergeOptionFieldProvenance(
+      baseOi,
       { bid: positiveOrNull(quote.bid), ask: positiveOrNull(quote.ask),
         bidSize: positiveOrNull(quote.bidSize), askSize: positiveOrNull(quote.askSize),
         lastTrade: positiveOrNull(quote.last), volume: nonNegativeOrNull(quote.volume) },
       'BMB_HOMEBROKER_BRIDGE', quote.asOfUtcSec, row.fieldProvenance,
     ) : undefined;
+    const openInterest = track && baseOi !== undefined
+      ? (baseOi.status === 'DIRECT_CONTRACT_OI' ? baseOi.contracts : null)
+      : (row.openInterest ?? null);
     return {
       ...row,
       symbol: quote.symbol.trim().toUpperCase(),
@@ -3195,7 +3266,7 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
       nominalVol: volume,
       volumeArs: nonNegativeOrNull(quote.turnover) ?? (track ? row.volumeArs : null),
       mark: mid,
-      openInterest: row.openInterest ?? null,
+      openInterest,
       ...(fieldProvenance !== undefined ? { fieldProvenance } : {}),
       quoteSource: 'BMB_HOMEBROKER_BRIDGE',
       quoteAsOfUtcSec: quote.asOfUtcSec,
@@ -3506,12 +3577,14 @@ export class ArgentinaMarketRuntime {
   private data912Queue: Promise<void> = Promise.resolve();
   private lastData912ReqMs = 0;
   private readonly effectiveEnv: NodeJS.ProcessEnv;
+  private arHolidays: readonly string[];
 
   public constructor(deps: ArgentinaRuntimeDeps = {}) {
     this.fetchFn = deps.fetchFn ?? defaultArHttpFn;
     this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.minData912IntervalMs = deps.minData912IntervalMs ?? DEFAULT_MIN_DATA912_INTERVAL_MS;
+    this.arHolidays = [...(deps.arHolidays ?? [])];
 
     // Aislamiento de tests offline: si el caller inyecta fetchFn sin env explícito,
     // evitamos leer process.env para no disparar peticiones reales no mockeadas.
@@ -7608,6 +7681,10 @@ export class ArgentinaMarketRuntime {
     return response;
   }
 
+  public setArHolidays(arHolidays: readonly string[]): void {
+    this.arHolidays = [...arHolidays];
+  }
+
   public setAnexoBOpenInterest(
     byContract: ReadonlyMap<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>,
   ): void {
@@ -7704,6 +7781,7 @@ export class ArgentinaMarketRuntime {
           underlying,
           spotHint: spot,
           nowUtcSec: nowSec,
+          arHolidays: this.arHolidays,
         });
         const hasLiveBmbOptions = mergedOptionRows.some(
           (row) =>
@@ -7718,7 +7796,7 @@ export class ArgentinaMarketRuntime {
         }[] = [];
         const rawRowBySymbol = new Map<string, NormalizedQuoteRow>();
         for (const row of mergedOptionRows) {
-          const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec, true);
+          const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec, true, this.arHolidays);
           if (parsed !== null && parsed.underlying === underlying) {
             parsedContracts.push({ parsed, row });
             rawRowBySymbol.set(parsed.symbol, row);
@@ -7753,6 +7831,9 @@ export class ArgentinaMarketRuntime {
         const allExposureInputs: ExposureContractInput[] = [];
         // Pieza 50.9: procedencia del OI usado por el motor (directo vs proxy de volumen).
         const oiEntries: { oi: OiFieldProvenance; index: number | null }[] = [];
+        const exposureInputsByExpiry = new Map<string, ExposureContractInput[]>();
+        const oiEntriesByExpiry = new Map<string, { oi: OiFieldProvenance; index: number | null }[]>();
+        const ivStatusCountsByExpiry = new Map<string, Partial<Record<AmericanIvStatus, number>>>();
         const multiplier = Object.values(OPTION_PREFIX_TO_UNDERLYING).includes(underlying)
           ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
           : null;
@@ -7773,6 +7854,12 @@ export class ArgentinaMarketRuntime {
           const puts: ArOptionContractDto[] = [];
           const volQuotes: VolQuoteInput[] = [];
           const strikeSet = new Set<number>();
+          const sliceExposureInputs = exposureInputsByExpiry.get(sample.expiryCode) ?? [];
+          const sliceOiEntries = oiEntriesByExpiry.get(sample.expiryCode) ?? [];
+          const sliceIvStatusCounts = ivStatusCountsByExpiry.get(sample.expiryCode) ?? {};
+          exposureInputsByExpiry.set(sample.expiryCode, sliceExposureInputs);
+          oiEntriesByExpiry.set(sample.expiryCode, sliceOiEntries);
+          ivStatusCountsByExpiry.set(sample.expiryCode, sliceIvStatusCounts);
 
           for (const { parsed, row } of bucket) {
             strikeSet.add(parsed.strike);
@@ -7787,6 +7874,7 @@ export class ArgentinaMarketRuntime {
             });
             const ivStatus = resolution.modelStatus;
             ivStatusCounts[ivStatus] = (ivStatusCounts[ivStatus] ?? 0) + 1;
+            sliceIvStatusCounts[ivStatus] = (sliceIvStatusCounts[ivStatus] ?? 0) + 1;
             const mid = resolution.observedQuote.referencePrice ?? (last !== null && last > 0 ? last : null);
 
             const feedOi = row.fieldProvenance?.openInterest ?? missingOi('FIELD_ABSENT_IN_FEED');
@@ -7805,6 +7893,11 @@ export class ArgentinaMarketRuntime {
             const sharesPerContract = oi.status === 'DIRECT_CONTRACT_OI' || oi.status === 'EXPLICIT_PROXY'
               ? oi.contractMultiplier
               : oi.status === 'IAMC_ANEXO_B' ? oi.appliedMultiplier : null;
+            const effectiveLotMultiplier = multiplier ?? (
+              oi.status === 'DIRECT_CONTRACT_OI' || oi.status === 'EXPLICIT_PROXY'
+                ? { contractMultiplier: oi.contractMultiplier, multiplierSource: oi.multiplierSource }
+                : null
+            );
 
             const intrinsic =
               spot !== null
@@ -7841,6 +7934,7 @@ export class ArgentinaMarketRuntime {
                 : Number.NaN;
 
             let exposureIndex: number | null = null;
+            let sliceExposureIndex: number | null = null;
             if (
               modelOpenInterest !== null &&
               sharesPerContract !== null &&
@@ -7850,8 +7944,7 @@ export class ArgentinaMarketRuntime {
               Number.isFinite(forward) &&
               iv !== null
             ) {
-              exposureIndex = allExposureInputs.length;
-              allExposureInputs.push({
+              const expInput: ExposureContractInput = {
                 contractType: parsed.contractType,
                 strike: parsed.strike,
                 expiryUtcSec: parsed.expiryUtcSec,
@@ -7865,9 +7958,16 @@ export class ArgentinaMarketRuntime {
                 iv,
                 ...(bid !== null && bid >= 0 ? { bid } : {}),
                 ...(ask !== null && ask > 0 ? { ask } : {}),
-              });
+              };
+              exposureIndex = allExposureInputs.length;
+              allExposureInputs.push(expInput);
+              sliceExposureIndex = sliceExposureInputs.length;
+              sliceExposureInputs.push(expInput);
             }
-            if (parsed.expiryUtcSec > nowSec) oiEntries.push({ oi, index: exposureIndex });
+            if (parsed.expiryUtcSec > nowSec) {
+              oiEntries.push({ oi, index: exposureIndex });
+              sliceOiEntries.push({ oi, index: sliceExposureIndex });
+            }
 
             const dto: ArOptionContractDto = {
               symbol: parsed.symbol,
@@ -7908,8 +8008,8 @@ export class ArgentinaMarketRuntime {
                   return sanitizeFinite(row.volumeArs);
                 }
                 const refPx = last !== null && last > 0 ? last : mid;
-                return row.nominalVol !== null && row.nominalVol > 0 && refPx !== null && refPx > 0
-                  ? sanitizeFinite(row.nominalVol * refPx * OPTION_LOT_SIZE)
+                return row.nominalVol !== null && row.nominalVol > 0 && refPx !== null && refPx > 0 && effectiveLotMultiplier !== null
+                  ? sanitizeFinite(row.nominalVol * refPx * effectiveLotMultiplier.contractMultiplier)
                   : null;
               })(),
               ivStatus,
@@ -8098,19 +8198,22 @@ export class ArgentinaMarketRuntime {
         const termExpiries = expiries.filter(
           (e) => e.ivAtm !== null && (liquidIvStrikeCount(e) >= 3 || e === primaryExp),
         );
-        let exposureSummary: ArOptionsResponse['exposureSummary'] = null;
-        if (expiries.length > 0) {
-          const frontExp = primaryExp;
+        const buildExposureSummaryForSlice = (
+          sliceInputs: readonly ExposureContractInput[],
+          sliceOiEntries: readonly { oi: OiFieldProvenance; index: number | null }[],
+          sliceIvStatusCounts: Readonly<Partial<Record<AmericanIvStatus, number>>>,
+          refExp: ArOptionExpiryDto | undefined,
+        ): NonNullable<ArOptionsResponse['exposureSummary']> => {
           const expResult = computeDealerExposure(
-            allExposureInputs,
+            sliceInputs,
             {
               spot: spot ?? Number.NaN,
               nowUtcSec: nowSec,
               rate: evalRate,
               dividendYield,
               forward:
-                frontExp !== undefined && spot !== null
-                  ? spot * Math.exp((evalRate - dividendYield) * ((frontExp.expiryUtcSec - nowSec) / 31_536_000))
+                refExp !== undefined && spot !== null
+                  ? spot * Math.exp((evalRate - dividendYield) * ((refExp.expiryUtcSec - nowSec) / 31_536_000))
                   : spot ?? Number.NaN,
             },
             {
@@ -8121,9 +8224,9 @@ export class ArgentinaMarketRuntime {
               gammaFlipGridSteps: 80,
               gammaFlipMultiRootPolicy: 'nearestSpot',
               ivResolutionMode: 'ivOnly',
-              ...(frontExp !== undefined ? { expectedMoveExpirySec: frontExp.expiryUtcSec } : {}),
-              ...(frontExp?.ivAtm !== null && frontExp?.ivAtm !== undefined
-                ? { expectedMoveIvAtmOverride: frontExp.ivAtm }
+              ...(refExp !== undefined ? { expectedMoveExpirySec: refExp.expiryUtcSec } : {}),
+              ...(refExp?.ivAtm !== null && refExp?.ivAtm !== undefined
+                ? { expectedMoveIvAtmOverride: refExp.ivAtm }
                 : {}),
             },
           );
@@ -8131,19 +8234,19 @@ export class ArgentinaMarketRuntime {
           const arExposureStrikes = expResult.byStrike
             .map((s) => s.strike)
             .filter((value) => Number.isFinite(value));
-          const arEngineStrikes = allExposureInputs
+          const arEngineStrikes = sliceInputs
             .map((input) => input.strike)
             .filter((value) => Number.isFinite(value));
           const arEngineExpirationDates = [
             ...new Set(
-              allExposureInputs.map((input) =>
+              sliceInputs.map((input) =>
                 new Date(input.expiryUtcSec * 1_000).toISOString().slice(0, 10),
               ),
             ),
           ].sort();
           const marketValid = spot !== null && spot > 0 && Number.isFinite(evalRate);
           const skippedIndices = new Set(expResult.quality.skippedDetails.map(({ index }) => index));
-          const evaluatedOi = oiEntries.map(({ oi, index }) => ({
+          const evaluatedOi = sliceOiEntries.map(({ oi, index }) => ({
             oi, index, used: marketValid && index !== null && !skippedIndices.has(index) &&
               (Number.isFinite(expResult.netGex) || expResult.quality.zeroOiContracts > 0) &&
               (expResult.quality.usableContracts > 0 || ('nominalShares' in oi && oi.nominalShares === 0)),
@@ -8157,21 +8260,33 @@ export class ArgentinaMarketRuntime {
           const gexAvailable = gexQuality.gexStatus !== 'INVALID_DATA_OR_MODEL' &&
             gexQuality.gexStatus !== 'UNAVAILABLE_MISSING_OI';
           const hasOnlyZero = gexAvailable && expResult.quality.usableContracts === 0;
-          // The engine accepts both IAMC shares and contracts. Publish OI in lot equivalents.
+          // The engine accepts both IAMC shares and contracts. Publish OI in lot equivalents without fabricating lots when multiplier is unverified.
           const lotOiByStrike = new Map<number, Record<'call' | 'put', number>>();
           let usableOpenInterestLots = 0;
+          let usableOpenInterestShares = 0;
           for (const { oi, used, index } of evaluatedOi) {
-            const input = used && index !== null ? allExposureInputs[index] : undefined;
+            const input = used && index !== null ? sliceInputs[index] : undefined;
             if (input === undefined) continue;
-            const lots = oi.status === 'IAMC_ANEXO_B'
-              ? oi.nominalShares / (multiplier?.contractMultiplier ?? Number.NaN)
-              : input.openInterest;
-            const totals = lotOiByStrike.get(input.strike) ?? { call: 0, put: 0 };
-            totals[input.contractType] += lots;
-            lotOiByStrike.set(input.strike, totals);
-            usableOpenInterestLots += lots;
+            const shares = oi.status === 'IAMC_ANEXO_B'
+              ? oi.nominalShares
+              : input.openInterest * input.sharesPerContract;
+            usableOpenInterestShares += shares;
+            if (oi.status === 'IAMC_ANEXO_B') {
+              if (multiplier === null) continue;
+              const lots = oi.nominalShares / multiplier.contractMultiplier;
+              const totals = lotOiByStrike.get(input.strike) ?? { call: 0, put: 0 };
+              totals[input.contractType] += lots;
+              lotOiByStrike.set(input.strike, totals);
+              usableOpenInterestLots += lots;
+            } else {
+              const lots = input.openInterest;
+              const totals = lotOiByStrike.get(input.strike) ?? { call: 0, put: 0 };
+              totals[input.contractType] += lots;
+              lotOiByStrike.set(input.strike, totals);
+              usableOpenInterestLots += lots;
+            }
           }
-          exposureSummary = {
+          return {
             ...gexQuality,
             currency: 'ARS',
             gexUnit: 'ARS_PER_1PCT_SPOT_MOVE',
@@ -8199,26 +8314,27 @@ export class ArgentinaMarketRuntime {
                 min: arEngineStrikes.length > 0 ? Math.min(...arEngineStrikes) : null,
                 max: arEngineStrikes.length > 0 ? Math.max(...arEngineStrikes) : null,
               },
-              engineStrikeCount: allExposureInputs.length,
+              engineStrikeCount: sliceInputs.length,
               byStrikeRange: {
                 min: arExposureStrikes.length > 0 ? Math.min(...arExposureStrikes) : null,
                 max: arExposureStrikes.length > 0 ? Math.max(...arExposureStrikes) : null,
               },
               byStrikeCount: expResult.byStrike.length,
               missingOiInputs, invalidOiInputs, observedZeroOiInputs, iamcOiInputs, directContractOiInputs,
-              oiConflicts, oiUniverseInputs: oiEntries.length, ivStatusCounts,
+              oiConflicts, oiUniverseInputs: sliceOiEntries.length, ivStatusCounts: sliceIvStatusCounts,
               directOiInputs: arOiSummary.directOiInputs,
               proxyOiInputs: arOiSummary.proxyOiInputs,
               oiProxy: arOiSummary.oiProxy,
             },
             expectedMoveAbs: sanitizeFinite(expResult.expectedMove.formulaMove),
             expectedMovePct: sanitizeFinite(expResult.expectedMove.formulaMovePct),
-            expectedMoveExpirySec: frontExp?.expiryUtcSec ?? null,
-            expectedMoveExpiryCode: frontExp?.expiryCode ?? null,
-            expectedMoveDays: frontExp?.days ?? null,
+            expectedMoveExpirySec: refExp?.expiryUtcSec ?? null,
+            expectedMoveExpiryCode: refExp?.expiryCode ?? null,
+            expectedMoveDays: refExp?.days ?? null,
             quality: {
               usableContracts: expResult.quality.usableContracts,
               usableOpenInterest: usableOpenInterestLots,
+              usableOpenInterestShares,
             },
             byStrike: (gexAvailable ? expResult.byStrike : []).map((s) => ({
               strike: s.strike,
@@ -8233,6 +8349,25 @@ export class ArgentinaMarketRuntime {
               cex: sanitizeFinite(s.netCharmExposure),
             })),
           };
+        };
+
+        let exposureSummary: ArOptionsResponse['exposureSummary'] = null;
+        const exposureSummaryByExpiry: Record<string, NonNullable<ArOptionsResponse['exposureSummary']>> = {};
+        if (expiries.length > 0) {
+          exposureSummary = buildExposureSummaryForSlice(
+            allExposureInputs,
+            oiEntries,
+            ivStatusCounts,
+            primaryExp,
+          );
+          for (const e of expiries) {
+            exposureSummaryByExpiry[e.expiryCode] = buildExposureSummaryForSlice(
+              exposureInputsByExpiry.get(e.expiryCode) ?? [],
+              oiEntriesByExpiry.get(e.expiryCode) ?? [],
+              ivStatusCountsByExpiry.get(e.expiryCode) ?? {},
+              e,
+            );
+          }
         }
 
         const termStructure = termExpiries
@@ -8257,7 +8392,11 @@ export class ArgentinaMarketRuntime {
           if (!(spot !== null && spot > 0 && Number.isFinite(evalRate))) {
             return null;
           }
-          const exposureSummary = exposureFinal;
+          const expExposureSummary =
+            frontExp !== undefined ? exposureSummaryByExpiry[frontExp.expiryCode] ?? null : exposureFinal;
+          const expExposureInputs =
+            frontExp !== undefined ? exposureInputsByExpiry.get(frontExp.expiryCode) ?? [] : allExposureInputs;
+          const exposureSummary = expExposureSummary;
           const evalSec = Math.floor(nowSec);
           const closedBars = normalizeClosedDailyBarsForEngines(bars.slice(-120), evalSec);
           const cclDiv = overview.cclMedian ?? overview.mepMedian ?? null;
@@ -8374,17 +8513,17 @@ export class ArgentinaMarketRuntime {
           };
 
           const flowAdjustedGex =
-            exposureFinal?.netGex != null && (exposureFinal.quality?.usableContracts ?? 0) > 0
+            expExposureSummary?.netGex != null && (expExposureSummary.quality?.usableContracts ?? 0) > 0
               ? computeFlowAdjustedSignedGex(
-                  allExposureInputs,
+                  expExposureInputs,
                   marketExp,
                   orderFlowArs?.byStrikeFlow ?? [],
                 )
               : null;
 
           const gexCharmPin =
-            exposureFinal?.netGex != null && (exposureFinal.quality?.usableContracts ?? 0) > 0
-              ? computeGexCharmPin(allExposureInputs, marketExp, { maxPinDte: 60 })
+            expExposureSummary?.netGex != null && (expExposureSummary.quality?.usableContracts ?? 0) > 0
+              ? computeGexCharmPin(expExposureInputs, marketExp, { maxPinDte: 60 })
               : null;
 
           // 3) Divergencia Probabilística Q vs P & Cono Vol (Pieza 17 + Pieza 45 PCHIP)
@@ -8934,6 +9073,7 @@ export class ArgentinaMarketRuntime {
           termStructure,
           expiries,
           exposureSummary,
+          exposureSummaryByExpiry,
           costSchedule: {
             rvMarketFeeRate: BYMA_RV_FEE,
             optionsFeeRate: BYMA_OPTION_FEE,

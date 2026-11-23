@@ -796,7 +796,7 @@ export interface ArOptionContractDto {
   readonly previousClose?: number | null;
   readonly changePct?: number | null;
   readonly source: 'DATA912' | 'MODEL';
-  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE';
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE' | 'OPEN_BYMA';
   readonly quoteAsOfUtcSec?: number | null;
 }
 
@@ -894,6 +894,7 @@ export interface ArOptionsResponse {
     readonly quality?: {
       readonly usableContracts: number;
       readonly usableOpenInterest: number;
+      readonly usableOpenInterestShares?: number | null;
     };
     readonly byStrike?: readonly {
       readonly strike: number;

@@ -278,6 +278,7 @@ export const GgalSpecialistModule: React.FC<{
   const [anexoRawText, setAnexoRawText] = useState('');
   const [anexoExpiryCode, setAnexoExpiryCode] = useState('');
   const [allowProxyOi, setAllowProxyOi] = useState(false);
+  const [selectedAnexoExpiry, setSelectedAnexoExpiry] = useState<string>('');
   const [anexoSubmitting, setAnexoSubmitting] = useState(false);
   const [anexoError, setAnexoError] = useState<string | null>(null);
   const [anexoSuccess, setAnexoSuccess] = useState<string | null>(null);
@@ -455,9 +456,12 @@ export const GgalSpecialistModule: React.FC<{
         } else if (tab === 'dual-density') {
           tabPromise = fetchGgalDualDensity({ forceRefresh, signal: ctrl.signal }).then(setDualData);
         } else if (tab === 'structure-pinning') {
-          tabPromise = fetchGgalStructurePinning({ forceRefresh, signal: ctrl.signal, allowProxyOi }).then(
-            setStructureData,
-          );
+          tabPromise = fetchGgalStructurePinning({
+            forceRefresh,
+            signal: ctrl.signal,
+            allowProxyOi,
+            ...(selectedAnexoExpiry !== '' ? { targetExpiry: selectedAnexoExpiry } : {}),
+          }).then(setStructureData);
         } else if (tab === 'microstructure-orats') {
           tabPromise = Promise.all([
             fetchGgalMicrostructure({ forceRefresh, signal: ctrl.signal }),
@@ -533,6 +537,7 @@ export const GgalSpecialistModule: React.FC<{
     },
     [
       allowProxyOi,
+      selectedAnexoExpiry,
       enforceThresholds,
       familyFilter,
       m6CapitalArs,
@@ -1577,14 +1582,36 @@ export const GgalSpecialistModule: React.FC<{
             : (effStruct?.intradayFlow.leeReadyConfidence ?? 'SNAPSHOT_20S_APPROX');
         return (
         <div className="space-y-4">
-          <div className="flex min-h-9 flex-wrap items-center gap-x-3 text-[12px] text-[#D1D5DB]">
+          <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-[#D1D5DB]">
             <label className="inline-flex cursor-pointer items-center gap-2">
               <input type="checkbox" checked={allowProxyOi} onChange={(event) => setAllowProxyOi(event.target.checked)} />
               Estimar GEX con volumen
             </label>
-            <span className="inline-flex w-28 tabular-nums text-[#F5B544]">
-              {usingProxy ? 'PROXY OPT-IN' : structureData.gexStatus === 'PARTIAL_COVERAGE'
-                ? `${fmtPct((structureData.oiCoverageRatio ?? 0) * 100, 0, false)} parcial` : ''}
+            <label className="inline-flex items-center gap-1.5 text-[11.5px] text-[#9CA3AF]">
+              <span>Vencimiento</span>
+              <select
+                value={selectedAnexoExpiry}
+                onChange={(event) => setSelectedAnexoExpiry(event.target.value)}
+                className="min-w-36 rounded-[6px] bg-[#0B0B12] border border-[#2A2A3B] px-2 py-1 text-[11.5px] tabular-nums text-[#E5E7EB]"
+              >
+                <option value="">{`Front líquido (${structureData.frontExpiryCode ?? '—'})`}</option>
+                {Object.entries(structureData.anexoBByExpiry ?? {}).map(([expDate, part]) => (
+                  <option key={expDate} value={expDate}>{`${expDate} (${part.expiryCode})`}</option>
+                ))}
+                {selectedAnexoExpiry !== '' && structureData.anexoBByExpiry?.[selectedAnexoExpiry] === undefined && (
+                  <option value={selectedAnexoExpiry}>{selectedAnexoExpiry}</option>
+                )}
+              </select>
+            </label>
+            <span className="inline-flex min-w-36 tabular-nums text-[#F5B544]">
+              {usingProxy ? 'PROXY OPT-IN'
+                : structureData.gexStatus === 'VALID_IAMC_ANEXO_B' ? 'IAMC Anexo B'
+                : structureData.gexStatus === 'VALID_CONTRACT_OI' ? 'OI contractual'
+                : structureData.gexStatus === 'PARTIAL_COVERAGE'
+                  ? `${fmtPct((structureData.oiCoverageRatio ?? 0) * 100, 0, false)} parcial`
+                : structureData.gexStatus === 'UNAVAILABLE_MISSING_OI' ? 'Sin OI verificable'
+                : structureData.gexStatus === 'INVALID_DATA_OR_MODEL' ? 'OI/modelo inválido'
+                : ''}
             </span>
             <span>Signo dealer teórico</span>
           </div>

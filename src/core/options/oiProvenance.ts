@@ -184,6 +184,8 @@ export function resolveArExposureOiQuality(
   let invalidOiInputs = 0;
   let observedZeroOiInputs = 0;
   let usedDirect = 0;
+  let observedIamcCount = 0;
+  let observedDirectContractCount = 0;
   const oiConflicts: OiSourceConflictRecord[] = [];
   for (const { oi, used } of entries) {
     const conflict = 'conflict' in oi ? oi.conflict : undefined;
@@ -192,6 +194,8 @@ export function resolveArExposureOiQuality(
     if (oi.status === 'INVALID_OI') invalidOiInputs += 1;
     if (oi.status === 'EXPLICIT_PROXY' && used) proxyOiInputs += 1;
     if (oi.status === 'IAMC_ANEXO_B' || oi.status === 'DIRECT_CONTRACT_OI') {
+      if (oi.status === 'IAMC_ANEXO_B') observedIamcCount += 1;
+      else observedDirectContractCount += 1;
       if (oi.nominalShares === 0) observedZeroOiInputs += 1;
       if (used) {
         if (oi.status === 'IAMC_ANEXO_B') iamcOiInputs += 1;
@@ -205,20 +209,30 @@ export function resolveArExposureOiQuality(
   let gexStatus: GexComputationStatus;
   let oiQuality: OiQualityTier;
   if (proxyOiInputs > 0) {
-    gexStatus = 'ESTIMATED_PROXY_OPT_IN';
-    oiQuality = 'EXPLICIT_PROXY_OPT_IN';
+    gexStatus = invalidOiInputs > 0 ? 'INVALID_DATA_OR_MODEL' : 'ESTIMATED_PROXY_OPT_IN';
+    oiQuality = invalidOiInputs > 0 ? 'INVALID_OI' : 'EXPLICIT_PROXY_OPT_IN';
   } else if (isPartial) {
     gexStatus = 'PARTIAL_COVERAGE';
-    oiQuality = 'PARTIAL_DIRECT_OI';
-  } else if (iamcOiInputs > 0) {
-    gexStatus = 'VALID_IAMC_ANEXO_B';
-    oiQuality = 'IAMC_ANEXO_B_EXACT';
-  } else if (directContractOiInputs > 0) {
-    gexStatus = 'VALID_CONTRACT_OI';
-    oiQuality = 'DIRECT_CONTRACT_OI_EXACT';
-  } else if (invalidOiInputs > 0 || entries.length > missingOiInputs) {
+    oiQuality = invalidOiInputs > 0 ? 'INVALID_OI' : 'PARTIAL_DIRECT_OI';
+  } else if (usedDirect === entries.length && entries.length > 0) {
+    if (iamcOiInputs > 0) {
+      gexStatus = 'VALID_IAMC_ANEXO_B';
+      oiQuality = 'IAMC_ANEXO_B_EXACT';
+    } else {
+      gexStatus = 'VALID_CONTRACT_OI';
+      oiQuality = 'DIRECT_CONTRACT_OI_EXACT';
+    }
+  } else if (invalidOiInputs > 0) {
     gexStatus = 'INVALID_DATA_OR_MODEL';
     oiQuality = 'INVALID_OI';
+  } else if (entries.length > 0 && (observedIamcCount > 0 || observedDirectContractCount > 0)) {
+    gexStatus = 'INVALID_DATA_OR_MODEL';
+    oiQuality =
+      observedIamcCount === entries.length
+        ? 'IAMC_ANEXO_B_EXACT'
+        : observedDirectContractCount === entries.length
+          ? 'DIRECT_CONTRACT_OI_EXACT'
+          : 'PARTIAL_DIRECT_OI';
   } else {
     gexStatus = 'UNAVAILABLE_MISSING_OI';
     oiQuality = 'MISSING_OI';

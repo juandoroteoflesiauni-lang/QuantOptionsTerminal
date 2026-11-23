@@ -38,6 +38,12 @@ BYMA_GGAL_SERIES_RE = re.compile(
     re.IGNORECASE,
 )
 
+VALID_BYMA_EXPIRY_CODES = frozenset({
+    "EN", "E", "FE", "F", "MA", "MR", "M", "AB", "A", "MY", "Y",
+    "JU", "JN", "J", "JL", "L", "AG", "G", "SE", "S", "OC", "O",
+    "NO", "N", "DI", "D",
+})
+
 # Row matching: Series, optional reference price/volume, Descubierta, Cubierta, Cruzada/Total
 NUMERIC_TOKEN_RE = re.compile(r"[-+]?\d[\d.,]*|-")
 
@@ -145,6 +151,13 @@ def _normalize_strike_from_symbol(series: str, raw_strike: str) -> float:
     return parsed
 
 
+def _to_exact_num(val: float | None) -> int | float | None:
+    if val is None or not math.isfinite(val):
+        return None
+    rounded = round(val)
+    return int(rounded) if abs(val - rounded) < 1e-9 else float(val)
+
+
 def _parse_anexo_b_lines(
     lines: list[str],
     prior_by_series: dict[str, dict[str, Any]],
@@ -152,6 +165,8 @@ def _parse_anexo_b_lines(
     records: list[dict[str, Any]] = []
     warnings: list[str] = []
     seen_series: set[str] = set()
+    parsed_by_series: dict[str, tuple[int | float | None, int | float | None, int | float | None, int | float | None]] = {}
+    conflicting_series: set[str] = set()
 
     for raw_line in lines:
         line = " ".join(raw_line.split())
@@ -164,8 +179,10 @@ def _parse_anexo_b_lines(
         prefix = m.group(1).upper()
         strike_raw = m.group(2)
         expiry_code = m.group(3).upper()
+        if expiry_code not in VALID_BYMA_EXPIRY_CODES:
+            warnings.append(f"AMBIGUOUS_EXPIRY_SUFFIX: invalid BYMA expiry code '{expiry_code}'")
+            continue
         series_code = f"{prefix}{strike_raw}{expiry_code}".upper()
-        seen_series.add(series_code)
 
         option_type = "CALL" if prefix.endswith("C") else "PUT"
         strike_ars = _normalize_strike_from_symbol(series_code, strike_raw)
@@ -181,6 +198,11 @@ def _parse_anexo_b_lines(
 
         has_missing_dash = "-" in tokens
         prior = prior_by_series.get(series_code)
+        prior_source_date = (
+            prior.get("sourceReportDate") or prior.get("tradeDate")
+            if isinstance(prior, dict)
+            else None
+        )
 
         if non_null_count >= 3 and not has_missing_dash:
             # Treat last 3 numeric columns as uncovered (descubierta), covered (cubierta), total (or [1],[2])
@@ -202,37 +224,58 @@ def _parse_anexo_b_lines(
                 total_oi = parsed_nums[-1]
 
             if uncovered is None or total_oi is None:
-                records.append(
-                    {
-                        "series": series_code,
-                        "optionType": option_type,
-                        "strikeArs": strike_ars if math.isfinite(strike_ars) else None,
-                        "expiryCode": expiry_code or None,
-                        "uncoveredContracts": prior.get("uncoveredContracts") if prior else None,
-                        "coveredContracts": prior.get("coveredContracts") if prior else None,
-                        "crossedContracts": prior.get("crossedContracts") if prior else None,
-                        "totalContracts": prior.get("totalContracts") if prior else None,
-                        "dailyVolumeContracts": daily_volume,
-                        "flag": "CARRY_FORWARD_NO_TRADE" if prior else "MISSING_UNAVAILABLE",
-                    }
-                )
+                seen_series.add(series_code)
+                rec: dict[str, Any] = {
+                    "series": series_code,
+                    "optionType": option_type,
+                    "strikeArs": strike_ars if math.isfinite(strike_ars) else None,
+                    "expiryCode": expiry_code or None,
+                    "uncoveredContracts": prior.get("uncoveredContracts") if prior else None,
+                    "coveredContracts": prior.get("coveredContracts") if prior else None,
+                    "crossedContracts": prior.get("crossedContracts") if prior else None,
+                    "totalContracts": prior.get("totalContracts") if prior else None,
+                    "dailyVolumeContracts": daily_volume,
+                    "flag": "CARRY_FORWARD_NO_TRADE" if prior else "MISSING_UNAVAILABLE",
+                }
+                if prior and isinstance(prior_source_date, str) and prior_source_date:
+                    rec["sourceReportDate"] = prior_source_date
+                records.append(rec)
                 continue
 
+            uncov_val = _to_exact_num(uncovered)
+            cov_val = _to_exact_num(covered or 0.0)
+            cross_val = _to_exact_num(crossed)
+            tot_val = _to_exact_num(total_oi)
+            sig = (cov_val, uncov_val, cross_val, tot_val)
+            if series_code in conflicting_series:
+                continue
+            if series_code in parsed_by_series:
+                if parsed_by_series[series_code] == sig:
+                    warnings.append(f"Series {series_code}: exact duplicate row skipped")
+                else:
+                    warnings.append(f"DUPLICATE_CONFLICTING_SERIES: {series_code}")
+                    conflicting_series.add(series_code)
+                    records = [r for r in records if r.get("series") != series_code]
+                continue
+            parsed_by_series[series_code] = sig
+            seen_series.add(series_code)
+
             if daily_volume is not None and daily_volume == 0 and prior is not None:
-                records.append(
-                    {
-                        "series": series_code,
-                        "optionType": option_type,
-                        "strikeArs": strike_ars if math.isfinite(strike_ars) else None,
-                        "expiryCode": expiry_code or None,
-                        "uncoveredContracts": float(uncovered),
-                        "coveredContracts": float(covered or 0.0),
-                        "crossedContracts": float(crossed),
-                        "totalContracts": float(total_oi),
-                        "dailyVolumeContracts": 0.0,
-                        "flag": "CARRY_FORWARD_NO_TRADE",
-                    }
-                )
+                rec = {
+                    "series": series_code,
+                    "optionType": option_type,
+                    "strikeArs": strike_ars if math.isfinite(strike_ars) else None,
+                    "expiryCode": expiry_code or None,
+                    "uncoveredContracts": uncov_val,
+                    "coveredContracts": cov_val,
+                    "crossedContracts": cross_val,
+                    "totalContracts": tot_val,
+                    "dailyVolumeContracts": 0,
+                    "flag": "CARRY_FORWARD_NO_TRADE",
+                }
+                if isinstance(prior_source_date, str) and prior_source_date:
+                    rec["sourceReportDate"] = prior_source_date
+                records.append(rec)
             else:
                 records.append(
                     {
@@ -240,31 +283,35 @@ def _parse_anexo_b_lines(
                         "optionType": option_type,
                         "strikeArs": strike_ars if math.isfinite(strike_ars) else None,
                         "expiryCode": expiry_code or None,
-                        "uncoveredContracts": float(uncovered),
-                        "coveredContracts": float(covered or 0.0),
-                        "crossedContracts": float(crossed),
-                        "totalContracts": float(total_oi),
-                        "dailyVolumeContracts": daily_volume,
+                        "uncoveredContracts": uncov_val,
+                        "coveredContracts": cov_val,
+                        "crossedContracts": cross_val,
+                        "totalContracts": tot_val,
+                        "dailyVolumeContracts": _to_exact_num(daily_volume),
                         "flag": "FRESH",
                     }
                 )
         else:
+            if series_code in seen_series:
+                continue
+            seen_series.add(series_code)
             # Incomplete row or dashes: DO NOT IMPUTE ZEROS!
             if prior is not None:
-                records.append(
-                    {
-                        "series": series_code,
-                        "optionType": option_type,
-                        "strikeArs": strike_ars if math.isfinite(strike_ars) else prior.get("strikeArs"),
-                        "expiryCode": expiry_code or prior.get("expiryCode"),
-                        "uncoveredContracts": prior.get("uncoveredContracts"),
-                        "coveredContracts": prior.get("coveredContracts"),
-                        "crossedContracts": prior.get("crossedContracts"),
-                        "totalContracts": prior.get("totalContracts"),
-                        "dailyVolumeContracts": None,
-                        "flag": "CARRY_FORWARD_NO_TRADE",
-                    }
-                )
+                rec = {
+                    "series": series_code,
+                    "optionType": option_type,
+                    "strikeArs": strike_ars if math.isfinite(strike_ars) else prior.get("strikeArs"),
+                    "expiryCode": expiry_code or prior.get("expiryCode"),
+                    "uncoveredContracts": prior.get("uncoveredContracts"),
+                    "coveredContracts": prior.get("coveredContracts"),
+                    "crossedContracts": prior.get("crossedContracts"),
+                    "totalContracts": prior.get("totalContracts"),
+                    "dailyVolumeContracts": None,
+                    "flag": "CARRY_FORWARD_NO_TRADE",
+                }
+                if isinstance(prior_source_date, str) and prior_source_date:
+                    rec["sourceReportDate"] = prior_source_date
+                records.append(rec)
             else:
                 warnings.append(
                     f"Series {series_code}: incomplete OI columns and no T-1 record (zero imputation forbidden)"
@@ -287,27 +334,32 @@ def _parse_anexo_b_lines(
     # Carry forward any T-1 series completely absent from an incomplete daily bulletin
     for series_code, prior in prior_by_series.items():
         if series_code not in seen_series:
-            records.append(
-                {
-                    "series": series_code,
-                    "optionType": prior.get("optionType", "CALL"),
-                    "strikeArs": prior.get("strikeArs"),
-                    "expiryCode": prior.get("expiryCode"),
-                    "uncoveredContracts": prior.get("uncoveredContracts"),
-                    "coveredContracts": prior.get("coveredContracts"),
-                    "crossedContracts": prior.get("crossedContracts"),
-                    "totalContracts": prior.get("totalContracts"),
-                    "dailyVolumeContracts": None,
-                    "flag": "CARRY_FORWARD_NO_TRADE",
-                }
-            )
+            prior_source_date = prior.get("sourceReportDate") or prior.get("tradeDate")
+            rec = {
+                "series": series_code,
+                "optionType": prior.get("optionType", "CALL"),
+                "strikeArs": prior.get("strikeArs"),
+                "expiryCode": prior.get("expiryCode"),
+                "uncoveredContracts": prior.get("uncoveredContracts"),
+                "coveredContracts": prior.get("coveredContracts"),
+                "crossedContracts": prior.get("crossedContracts"),
+                "totalContracts": prior.get("totalContracts"),
+                "dailyVolumeContracts": None,
+                "flag": "CARRY_FORWARD_NO_TRADE",
+            }
+            if isinstance(prior_source_date, str) and prior_source_date:
+                rec["sourceReportDate"] = prior_source_date
+            records.append(rec)
 
     if records:
         warnings.append("Legacy OI *Contracts fields are deprecated and express nominal shares; use *Nom.")
     for record in records:
         record["unit"] = "SHARES"
         for bucket in ("uncovered", "covered", "crossed", "total"):
-            record[bucket + "Nom"] = record.get(bucket + "Contracts")
+            raw_val = record.get(bucket + "Contracts")
+            exact_val = _to_exact_num(float(raw_val)) if isinstance(raw_val, (int, float)) else raw_val
+            record[bucket + "Contracts"] = exact_val
+            record[bucket + "Nom"] = exact_val
     return records, warnings
 
 
@@ -329,10 +381,14 @@ def load_prior_records(prev_json_path: Path | None) -> dict[str, dict[str, Any]]
     try:
         payload = json.loads(prev_json_path.read_text(encoding="utf-8"))
         items = payload.get("records", []) if isinstance(payload, dict) else []
+        trade_date = payload.get("tradeDate") if isinstance(payload, dict) else None
         out: dict[str, dict[str, Any]] = {}
         for item in items:
             if isinstance(item, dict) and isinstance(item.get("series"), str):
-                out[item["series"].upper()] = item
+                item_copy = dict(item)
+                if isinstance(trade_date, str) and trade_date and not item_copy.get("sourceReportDate"):
+                    item_copy["sourceReportDate"] = trade_date
+                out[item_copy["series"].upper()] = item_copy
         return out
     except (OSError, json.JSONDecodeError):
         return {}
