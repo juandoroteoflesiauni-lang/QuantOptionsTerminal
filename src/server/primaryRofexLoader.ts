@@ -293,6 +293,8 @@ export interface BmbBridgeBookEntry {
 export interface BmbOptionRowDto {
   readonly symbol: string;
   readonly underlying: string | null;
+  readonly strike?: number | null;
+  readonly expirationDate?: string | null;
   readonly bid: number | null;
   readonly bidSize: number | null;
   readonly ask: number | null;
@@ -409,7 +411,7 @@ export interface PrimaryMervMarketDataFrame {
   readonly receivedAtUtcSec: number;
 }
 
-interface InstrumentDetailMetadata {
+export interface InstrumentDetailMetadata {
   readonly symbol: string;
   readonly marketId: string;
   readonly segmentId: string | null;
@@ -417,6 +419,8 @@ interface InstrumentDetailMetadata {
   readonly maturityDate: string | null;
   readonly contractMultiplier: number | null;
   readonly minPriceIncrement: number | null;
+  readonly strikePrice: number | null;
+  readonly underlying: string | null;
 }
 
 const DEFAULT_PRIMARY_API_URL = 'https://api.remarkets.primary.com.ar';
@@ -2209,6 +2213,8 @@ export class PrimaryRofexClient {
           maturityDate: readStr(inst, ['maturityDate']),
           contractMultiplier: readNum(inst, ['contractMultiplier']),
           minPriceIncrement: readNum(inst, ['minPriceIncrement']),
+          strikePrice: readNum(inst, ['strikePrice', 'strike', 'exercisePrice']),
+          underlying: readStr(inst, ['underlying', 'underlyingSymbol'])?.toUpperCase() ?? null,
         };
       },
       { forceRefresh },
@@ -3677,9 +3683,13 @@ export class BmbBridgeClient {
             if (optSym === null) {
               continue;
             }
+            const strike = readNum(item, ['strike', 'strikePrice', 'exercisePrice']);
+            const expirationDate = readStr(item, ['expirationDate', 'contractualExpiry', 'maturityDate']);
             options.push({
               symbol: optSym.toUpperCase(),
               underlying: readStr(item, ['underlying'])?.toUpperCase() ?? null,
+              ...(strike !== null ? { strike } : {}),
+              ...(expirationDate !== null ? { expirationDate } : {}),
               bid: readNum(item, ['bid']),
               bidSize: readNum(item, ['bidSize', 'bid_size', 'bidsize', 'q_bid']),
               ask: readNum(item, ['ask']),

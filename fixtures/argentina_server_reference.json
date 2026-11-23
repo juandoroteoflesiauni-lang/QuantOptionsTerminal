@@ -190,17 +190,7 @@
       "rawSymbol": "GFGV62974AB",
       "spotHint": 6400.0,
       "asOfUtcSec": 1741620000,
-      "expected": {
-        "symbol": "GFGV62974AB",
-        "underlying": "GGAL",
-        "contractType": "put",
-        "strike": 6297.4,
-        "expiryCode": "AB",
-        "expiryLabel": "18 abr",
-        "expirationDate": "2025-04-18",
-        "expiryUtcSec": 1745001000,
-        "daysToExpiry": 39
-      }
+      "expected": null
     },
     {
       "rawSymbol": "YPFC42000OC",

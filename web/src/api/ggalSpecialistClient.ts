@@ -18,7 +18,53 @@ export type GgalSessionRegime =
   | 'PREMARKET_REPRICE'
   | 'CLOSED';
 
-export type GgalExecutionPriceBasis = 'LIVE_BID_ASK' | 'EOD_CLOSE_REFERENCE' | 'NONE';
+export type GgalExecutionPriceBasis =
+  | 'LIVE_BID_ASK'
+  | 'LAST_ONLY'
+  | 'ONE_SIDED_QUOTE'
+  | 'EOD_CLOSE_REFERENCE'
+  | 'NONE';
+
+export type GgalAdrQuoteModeDto =
+  | 'LIVE_BID_ASK'
+  | 'LAST_ONLY'
+  | 'ONE_SIDED_QUOTE'
+  | 'EOD_CLOSE_REF'
+  | 'UNAVAILABLE';
+
+export interface GgalAdrQuoteTelemetryDto {
+  readonly last: number | null;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly bidSize: number | null;
+  readonly askSize: number | null;
+  readonly mid: number | null;
+  readonly spreadUsd: number | null;
+  readonly spreadRel: number | null;
+  readonly quoteMode: GgalAdrQuoteModeDto;
+  readonly indicativePriceUsd: number | null;
+  readonly indicativePriceBasis: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
+  readonly tradeTimestampSec: number | null;
+  readonly quoteTimestampSec: number | null;
+  readonly tradeSource: string | null;
+  readonly quoteSource: string | null;
+  readonly invalidReason: string;
+  readonly isBilateralExecutable: boolean;
+}
+
+export interface GgalParityEvaluationDto {
+  readonly indicativeBasis: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
+  readonly executableStatus:
+    | 'EXECUTABLE_BILATERAL_L1'
+    | 'INDICATIVE_ONLY_NO_ADR_BBO'
+    | 'INDICATIVE_ONLY_NO_BYMA_BBO'
+    | 'INDICATIVE_ONLY_NO_BOND_BBO'
+    | 'EOD_REFERENCE_ONLY'
+    | 'STALE_LOCKED'
+    | 'UNAVAILABLE';
+  readonly actionableSignalAllowed: boolean;
+  readonly blockedReason: string | null;
+}
 
 export type GgalStrategyFamily =
   | 'BULL_CALL_SPREAD'
@@ -45,6 +91,7 @@ export interface GgalTelemetryHeaderDto {
   readonly feedStatus: GgalBadgeMode;
   readonly feedBadges: readonly GgalBadgeMode[];
   readonly executionPriceBasis: GgalExecutionPriceBasis;
+  readonly adrQuote?: GgalAdrQuoteTelemetryDto;
   readonly data912TimestampSec: number | null;
   readonly massiveTimestampSec: number | null;
   readonly data912AgeSec: number | null;
@@ -72,6 +119,13 @@ export interface GgalParityGapOutputDto {
     readonly byma24hArs: number | null;
     readonly bymaCiArs: number | null;
     readonly adrMidUsd: number | null;
+    readonly adrBidUsd?: number | null;
+    readonly adrAskUsd?: number | null;
+    readonly adrLastUsd?: number | null;
+    readonly adrSpreadUsd?: number | null;
+    readonly adrIndicativeUsd?: number | null;
+    readonly adrQuoteMode?: GgalAdrQuoteModeDto;
+    readonly adrIndicativeBasis?: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
     readonly fairBymaOpenArs: number | null;
     readonly fairAdrUsd: number | null;
     readonly gapPctVsPrevClose: number | null;
@@ -103,6 +157,7 @@ export interface GgalParityGapOutputDto {
     readonly eqSigma: number | null;
   };
   readonly signal: 'LONG_BYMA_SHORT_ADR' | 'SHORT_BYMA_LONG_ADR' | 'NEUTRAL' | 'STALE_DATA_LOCK';
+  readonly parityEvaluation?: GgalParityEvaluationDto;
   readonly preOpenOptionRepricing: readonly {
     readonly tickerByma: string;
     readonly prevCloseArs: number | null;
@@ -391,6 +446,8 @@ export interface GgalRankedStrategyDto {
   readonly usdAlternativeComparison: {
     readonly opraEquivalentSharpe: number | null;
     readonly bymaAdvantageBps: number | null;
+    readonly crossVenueExecutable?: boolean;
+    readonly crossVenueBlockedReason?: string | null;
   };
 }
 
@@ -414,6 +471,9 @@ export interface GgalStrategySelectorResponseDto {
   readonly result: {
     readonly timestampUtc: string;
     readonly status: 'OK' | 'NO_DATA';
+    readonly adrQuoteMode?: GgalAdrQuoteModeDto;
+    readonly crossVenueExecutable?: boolean;
+    readonly crossVenueBlockedReason?: string | null;
     readonly marketBenchmarks: {
       readonly caucion1dTnaPct: number | null;
       readonly lecapMatchedTnaPct: number | null;
@@ -429,6 +489,12 @@ export interface GgalSpecialistOverviewResponseDto {
     readonly byma24hArs: number | null;
     readonly bymaCiArs: number | null;
     readonly adrMidUsd: number | null;
+    readonly adrBidUsd?: number | null;
+    readonly adrAskUsd?: number | null;
+    readonly adrLastUsd?: number | null;
+    readonly adrSpreadUsd?: number | null;
+    readonly adrIndicativeUsd?: number | null;
+    readonly adrQuoteMode?: GgalAdrQuoteModeDto;
     readonly fairBymaOpenArs: number | null;
     readonly fairAdrUsd: number | null;
     readonly gapPctVsPrevClose: number | null;
@@ -436,6 +502,7 @@ export interface GgalSpecialistOverviewResponseDto {
     readonly cclSovereignBenchmark: number | null;
     readonly parityZScore: number | null;
     readonly paritySignal: string | null;
+    readonly parityEvaluation?: GgalParityEvaluationDto;
   };
   readonly volatility: {
     readonly bymaAtmIvPct: number | null;
@@ -1192,6 +1259,13 @@ export interface GgalMarginRiskResponseDto {
     readonly optionL1BidSizeLots: number | null;
     readonly optionL1AskSizeLots: number | null;
     readonly recorderPairsCount: number;
+    readonly adrBookQuality?: GgalAdrQuoteModeDto;
+    readonly adrBidUsd?: number | null;
+    readonly adrAskUsd?: number | null;
+    readonly adrSpreadUsd?: number | null;
+    readonly adrExecutableL1?: boolean;
+    readonly crossVenueExecutionAllowed?: boolean;
+    readonly adrExecutionBlockedReason?: string | null;
   };
   readonly marginRisk: {
     readonly riskStatus?: MarginRiskStatus;

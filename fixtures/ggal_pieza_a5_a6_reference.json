@@ -1,0 +1,1020 @@
+{
+  "meta": {
+    "piece": "P1_A5_A6",
+    "tolerance": 1e-09,
+    "asOfUtcSec": 1792078200,
+    "reportDate": "2026-11-16"
+  },
+  "a5SpotInvariance": {
+    "rawSymbol": "GFGC62974D",
+    "reportDate": "2026-11-16",
+    "spotValues": [
+      6000.0,
+      18000.0,
+      100.0,
+      null
+    ],
+    "expected": {
+      "nativeSymbol": "GFGC62974D",
+      "canonicalContractId": null,
+      "strike": null,
+      "strikeTicks1e4": null,
+      "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+      "strikeSource": "NONE",
+      "scaleFactorApplied": null,
+      "contractualExpiry": "2026-12-18",
+      "expiryCode": "DI",
+      "expiryResolutionError": "NONE",
+      "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+      "conflictsCount": 0
+    }
+  },
+  "a5SeriesCases": [
+    {
+      "rawSymbol": "GFGC6000DI",
+      "expected": {
+        "nativeSymbol": "GFGC6000DI",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|60000000|2026-11-16",
+        "strike": 6000.0,
+        "strikeTicks1e4": 60000000,
+        "strikeResolutionStatus": "CANONICAL_SYMBOL",
+        "strikeSource": "SYMBOL_CANONICAL_INTEGER",
+        "scaleFactorApplied": 1,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "YPFC42000OC",
+      "expected": {
+        "nativeSymbol": "YPFC42000OC",
+        "canonicalContractId": "BYMA_AR|YPFD|2027-10-15|call|420000000|2026-11-16",
+        "strike": 42000.0,
+        "strikeTicks1e4": 420000000,
+        "strikeResolutionStatus": "CANONICAL_SYMBOL",
+        "strikeSource": "SYMBOL_CANONICAL_INTEGER",
+        "scaleFactorApplied": 1,
+        "contractualExpiry": "2027-10-15",
+        "expiryCode": "OC",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC10800NO",
+      "expected": {
+        "nativeSymbol": "GFGC10800NO",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-11-20|call|108000000|2026-11-16",
+        "strike": 10800.0,
+        "strikeTicks1e4": 108000000,
+        "strikeResolutionStatus": "CANONICAL_SYMBOL",
+        "strikeSource": "SYMBOL_CANONICAL_INTEGER",
+        "scaleFactorApplied": 1,
+        "contractualExpiry": "2026-11-20",
+        "expiryCode": "NO",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC6297.4DI",
+      "expected": {
+        "nativeSymbol": "GFGC6297.4DI",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|62974000|2026-11-16",
+        "strike": 6297.4,
+        "strikeTicks1e4": 62974000,
+        "strikeResolutionStatus": "CANONICAL_SYMBOL",
+        "strikeSource": "SYMBOL_EXPLICIT_DECIMAL",
+        "scaleFactorApplied": 1,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC6400.0DI",
+      "expected": {
+        "nativeSymbol": "GFGC6400.0DI",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|64000000|2026-11-16",
+        "strike": 6400.0,
+        "strikeTicks1e4": 64000000,
+        "strikeResolutionStatus": "CANONICAL_SYMBOL",
+        "strikeSource": "SYMBOL_EXPLICIT_DECIMAL",
+        "scaleFactorApplied": 1,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC62974D",
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGV62974AB",
+      "expected": {
+        "nativeSymbol": "GFGV62974AB",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "contractualExpiry": "2027-04-16",
+        "expiryCode": "AB",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC629745D",
+      "expected": {
+        "nativeSymbol": "GFGC629745D",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC6297D",
+      "expected": {
+        "nativeSymbol": "GFGC6297D",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC625DI",
+      "expected": {
+        "nativeSymbol": "GFGC625DI",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+        "conflictsCount": 0
+      }
+    },
+    {
+      "rawSymbol": "GFGC06297D",
+      "expected": {
+        "nativeSymbol": "GFGC06297D",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "AMBIGUOUS_SCALE_UNRESOLVED",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "AMBIGUOUS_STRIKE_SCALE_REQUIRES_METADATA",
+        "conflictsCount": 0
+      }
+    }
+  ],
+  "a5ExplicitMetadata": [
+    {
+      "name": "IAMC_6297_4",
+      "rawSymbol": "GFGC62974D",
+      "spots": [
+        6000.0,
+        18000.0,
+        100.0,
+        null
+      ],
+      "metadata": [
+        {
+          "source": "IAMC_ANEXO_B",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 6297.4
+        }
+      ],
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|62974000|2026-11-16",
+        "strike": 6297.4,
+        "strikeTicks1e4": 62974000,
+        "strikeResolutionStatus": "EXPLICIT_METADATA",
+        "strikeSource": "IAMC_ANEXO_B",
+        "scaleFactorApplied": 10,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "name": "PRIMARY_6297_4",
+      "rawSymbol": "GFGC62974D",
+      "spots": [
+        6000.0,
+        18000.0
+      ],
+      "metadata": [
+        {
+          "source": "PRIMARY_INSTRUMENT_DETAIL",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 6297.4
+        }
+      ],
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|62974000|2026-11-16",
+        "strike": 6297.4,
+        "strikeTicks1e4": 62974000,
+        "strikeResolutionStatus": "EXPLICIT_METADATA",
+        "strikeSource": "PRIMARY_INSTRUMENT_DETAIL",
+        "scaleFactorApplied": 10,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "name": "BMB_6297_4",
+      "rawSymbol": "GFGC62974D",
+      "spots": [
+        6000.0,
+        18000.0
+      ],
+      "metadata": [
+        {
+          "source": "BMB_OPTION_METADATA",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 6297.4
+        }
+      ],
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|62974000|2026-11-16",
+        "strike": 6297.4,
+        "strikeTicks1e4": 62974000,
+        "strikeResolutionStatus": "EXPLICIT_METADATA",
+        "strikeSource": "BMB_OPTION_METADATA",
+        "scaleFactorApplied": 10,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    },
+    {
+      "name": "PRIMARY_62974_EXACT",
+      "rawSymbol": "GFGC62974D",
+      "spots": [
+        6000.0,
+        18000.0
+      ],
+      "metadata": [
+        {
+          "source": "PRIMARY_INSTRUMENT_DETAIL",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 62974.0
+        }
+      ],
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": "BYMA_AR|GGAL|2026-12-18|call|629740000|2026-11-16",
+        "strike": 62974.0,
+        "strikeTicks1e4": 629740000,
+        "strikeResolutionStatus": "EXPLICIT_METADATA",
+        "strikeSource": "PRIMARY_INSTRUMENT_DETAIL",
+        "scaleFactorApplied": 1,
+        "contractualExpiry": "2026-12-18",
+        "expiryCode": "DI",
+        "expiryResolutionError": "NONE",
+        "exclusionReason": null,
+        "conflictsCount": 0
+      }
+    }
+  ],
+  "a5Conflicts": [
+    {
+      "name": "IAMC_6297_4_VS_PRIMARY_62974",
+      "rawSymbol": "GFGC62974D",
+      "spot": 6000.0,
+      "metadata": [
+        {
+          "source": "IAMC_ANEXO_B",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 6297.4
+        },
+        {
+          "source": "PRIMARY_INSTRUMENT_DETAIL",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 62974.0
+        }
+      ],
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "CONFLICTING_METADATA",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "CONFLICTING_AUTHORITATIVE_STRIKE_METADATA",
+        "conflictsCount": 2
+      }
+    },
+    {
+      "name": "IAMC_7500_MISMATCH_GFGC62974D",
+      "rawSymbol": "GFGC62974D",
+      "spot": 6000.0,
+      "metadata": [
+        {
+          "source": "IAMC_ANEXO_B",
+          "nativeSymbol": "GFGC62974D",
+          "strike": 7500.0
+        }
+      ],
+      "expected": {
+        "nativeSymbol": "GFGC62974D",
+        "canonicalContractId": null,
+        "strike": null,
+        "strikeTicks1e4": null,
+        "strikeResolutionStatus": "CONFLICTING_METADATA",
+        "strikeSource": "NONE",
+        "scaleFactorApplied": null,
+        "expiryResolutionError": "NONE",
+        "exclusionReason": "CONFLICTING_AUTHORITATIVE_STRIKE_METADATA",
+        "conflictsCount": 1
+      }
+    }
+  ],
+  "a5ExpiryCases": {
+    "ambiguousSuffixSymbols": [
+      {
+        "rawSymbol": "GFGC6000DIC",
+        "expected": {
+          "nativeSymbol": "GFGC6000DIC",
+          "canonicalContractId": null,
+          "strike": null,
+          "strikeTicks1e4": null,
+          "strikeResolutionStatus": "INVALID_SYMBOL",
+          "strikeSource": "NONE",
+          "scaleFactorApplied": null,
+          "expiryResolutionError": "AMBIGUOUS_EXPIRY_SUFFIX",
+          "exclusionReason": "AMBIGUOUS_EXPIRY_SUFFIX",
+          "conflictsCount": 0
+        }
+      },
+      {
+        "rawSymbol": "GFGC6000DX",
+        "expected": {
+          "nativeSymbol": "GFGC6000DX",
+          "canonicalContractId": null,
+          "strike": null,
+          "strikeTicks1e4": null,
+          "strikeResolutionStatus": "INVALID_SYMBOL",
+          "strikeSource": "NONE",
+          "scaleFactorApplied": null,
+          "expiryResolutionError": "AMBIGUOUS_EXPIRY_SUFFIX",
+          "exclusionReason": "AMBIGUOUS_EXPIRY_SUFFIX",
+          "conflictsCount": 0
+        }
+      },
+      {
+        "rawSymbol": "GFGC61120C",
+        "expected": {
+          "nativeSymbol": "GFGC61120C",
+          "canonicalContractId": null,
+          "strike": null,
+          "strikeTicks1e4": null,
+          "strikeResolutionStatus": "INVALID_SYMBOL",
+          "strikeSource": "NONE",
+          "scaleFactorApplied": null,
+          "expiryResolutionError": "AMBIGUOUS_EXPIRY_SUFFIX",
+          "exclusionReason": "AMBIGUOUS_EXPIRY_SUFFIX",
+          "conflictsCount": 0
+        }
+      }
+    ],
+    "ambiguousTwoYears": {
+      "nativeSymbol": "GFGC6000DI",
+      "canonicalContractId": null,
+      "strike": null,
+      "strikeTicks1e4": null,
+      "strikeResolutionStatus": "INVALID_SYMBOL",
+      "strikeSource": "NONE",
+      "scaleFactorApplied": null,
+      "expiryResolutionError": "AMBIGUOUS_EXPIRY_YEAR",
+      "exclusionReason": "AMBIGUOUS_EXPIRY_YEAR",
+      "conflictsCount": 0
+    },
+    "holidayShift": {
+      "nativeSymbol": "GFGC6000DI",
+      "canonicalContractId": "BYMA_AR|GGAL|2026-12-17|call|60000000|2026-11-16",
+      "strike": 6000.0,
+      "strikeTicks1e4": 60000000,
+      "strikeResolutionStatus": "CANONICAL_SYMBOL",
+      "strikeSource": "SYMBOL_CANONICAL_INTEGER",
+      "scaleFactorApplied": 1,
+      "contractualExpiry": "2026-12-17",
+      "expiryCode": "DI",
+      "expiryResolutionError": "NONE",
+      "exclusionReason": null,
+      "conflictsCount": 0
+    }
+  },
+  "a6QuoteCases": {
+    "A6_1_FMP_LAST_ONLY": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": null,
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "FMP_ENTERPRISE"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "LAST_ONLY",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": null,
+        "ask": null,
+        "bidSize": null,
+        "askSize": null,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "NO_L1_PROVIDER_BBO",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "LAST_TRADE"
+      }
+    },
+    "A6_3_LIVE_BID_ASK": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": {
+          "quoteSource": "TRADIER_LIVE_NBBO",
+          "bid": 49.9,
+          "ask": 50.1,
+          "bidSize": 8,
+          "askSize": 10,
+          "quoteTimestamp": 1792078200
+        },
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "TRADIER_LIVE_NBBO"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "LIVE_BID_ASK",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": 49.9,
+        "ask": 50.1,
+        "bidSize": 8.0,
+        "askSize": 10.0,
+        "mid": 50.0,
+        "spreadUsd": 0.2,
+        "spreadRel": 0.004,
+        "isBilateralExecutable": true,
+        "invalidReason": "NONE",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "L1_MID"
+      }
+    },
+    "A6_4_CROSSED_BOOK": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": {
+          "quoteSource": "TRADIER_LIVE_NBBO",
+          "bid": 50.2,
+          "ask": 49.9,
+          "bidSize": 5,
+          "askSize": 5,
+          "quoteTimestamp": 1792078200
+        },
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "MASSIVE"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "LAST_ONLY",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": null,
+        "ask": null,
+        "bidSize": null,
+        "askSize": null,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "CROSSED_BOOK",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "LAST_TRADE"
+      }
+    },
+    "A6_4_ONE_SIDED_BID_ONLY": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": {
+          "quoteSource": "TRADIER_LIVE_NBBO",
+          "bid": 49.9,
+          "ask": null,
+          "bidSize": 6,
+          "askSize": null,
+          "quoteTimestamp": 1792078200
+        },
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "MASSIVE"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "ONE_SIDED_QUOTE",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": 49.9,
+        "ask": null,
+        "bidSize": 6.0,
+        "askSize": null,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "ONE_SIDED_BID_ONLY",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "LAST_TRADE"
+      }
+    },
+    "A6_4_ONE_SIDED_ASK_ONLY": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": {
+          "quoteSource": "MASSIVE_NBBO",
+          "bid": null,
+          "ask": 50.1,
+          "bidSize": null,
+          "askSize": 4,
+          "quoteTimestamp": 1792078200
+        },
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "MASSIVE"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "ONE_SIDED_QUOTE",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": null,
+        "ask": 50.1,
+        "bidSize": null,
+        "askSize": 4.0,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "ONE_SIDED_ASK_ONLY",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "LAST_TRADE"
+      }
+    },
+    "A6_4_STALE_L1_FRESH_TRADE": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": {
+          "quoteSource": "TRADIER_LIVE_NBBO",
+          "bid": 49.9,
+          "ask": 50.1,
+          "bidSize": 5,
+          "askSize": 5,
+          "quoteTimestamp": 1792078175
+        },
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "FMP_ENTERPRISE"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "LAST_ONLY",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": null,
+        "ask": null,
+        "bidSize": null,
+        "askSize": null,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "STALE_L1_QUOTE",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "LAST_TRADE"
+      }
+    },
+    "A6_4_MISSING_L1_TIMESTAMP_FRESH_TRADE": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": false,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": {
+          "quoteSource": "MASSIVE_NBBO",
+          "bid": 49.9,
+          "ask": 50.1,
+          "bidSize": 5,
+          "askSize": 5,
+          "quoteTimestamp": null
+        },
+        "tradeCandidate": {
+          "lastPrice": 50.0,
+          "tradeTimestamp": 1792078200,
+          "tradeSource": "MASSIVE"
+        },
+        "referenceCandidate": null
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "LAST_ONLY",
+        "tradeLastPrice": 50.0,
+        "tradeLastSize": null,
+        "bid": null,
+        "ask": null,
+        "bidSize": null,
+        "askSize": null,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "MISSING_L1_TIMESTAMP",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "LAST_TRADE"
+      }
+    },
+    "A6_5_EOD_CLOSE_REF": {
+      "input": {
+        "symbol": "GGAL",
+        "asOfUtcSec": 1792078200,
+        "isEodMode": true,
+        "maxQuoteAgeSec": 20,
+        "l1Candidate": null,
+        "tradeCandidate": null,
+        "referenceCandidate": {
+          "close": 50.0,
+          "referenceTimestamp": 1792074600,
+          "referenceSource": "MASSIVE_BARS"
+        }
+      },
+      "expected": {
+        "symbol": "GGAL",
+        "quoteMode": "EOD_CLOSE_REF",
+        "tradeLastPrice": null,
+        "tradeLastSize": null,
+        "bid": null,
+        "ask": null,
+        "bidSize": null,
+        "askSize": null,
+        "mid": null,
+        "spreadUsd": null,
+        "spreadRel": null,
+        "isBilateralExecutable": false,
+        "invalidReason": "OUT_OF_SESSION_QUOTE",
+        "indicativePriceUsd": 50.0,
+        "indicativePriceBasis": "EOD_CLOSE"
+      }
+    }
+  },
+  "a6ParityCases": {
+    "A6_2_LAST_ONLY_INDICATIVE": {
+      "adrMidUsd": null,
+      "adrBidUsd": null,
+      "adrAskUsd": null,
+      "adrLastUsd": 50.0,
+      "adrSpreadUsd": null,
+      "adrIndicativeUsd": 50.0,
+      "adrQuoteMode": "LAST_ONLY",
+      "cclGgal24h": 1360.0,
+      "cclSovereignBenchmark": 1299.9700160680388,
+      "spreadLogBps": 451.43500109507704,
+      "ouMeanBps": 0.8126637007408383,
+      "ouEqSigmaBps": 26.939726641814826,
+      "zScore": 16.72705678813003,
+      "fairAdrUsd": 52.30889878958636,
+      "netEdgeAfterCostsBps": null,
+      "signal": "NEUTRAL",
+      "parityEvaluation": {
+        "indicativeBasis": "LAST_TRADE",
+        "executableStatus": "INDICATIVE_ONLY_NO_ADR_BBO",
+        "actionableSignalAllowed": false,
+        "blockedReason": "ADR_NO_BILATERAL_L1_BBO"
+      }
+    },
+    "A6_3_LIVE_BID_ASK_EXECUTABLE": {
+      "adrMidUsd": 50.0,
+      "adrBidUsd": 49.9,
+      "adrAskUsd": 50.1,
+      "adrLastUsd": 50.0,
+      "adrSpreadUsd": 0.2,
+      "adrIndicativeUsd": 50.0,
+      "adrQuoteMode": "LIVE_BID_ASK",
+      "cclGgal24h": 1360.0,
+      "cclSovereignBenchmark": 1299.9700160680388,
+      "spreadLogBps": 451.43500109507704,
+      "ouMeanBps": 0.8126637007408383,
+      "ouEqSigmaBps": 26.939726641814826,
+      "zScore": 16.72705678813003,
+      "fairAdrUsd": 52.30889878958636,
+      "netEdgeAfterCostsBps": 379.4836235954267,
+      "signal": "SHORT_BYMA_LONG_ADR",
+      "parityEvaluation": {
+        "indicativeBasis": "L1_MID",
+        "executableStatus": "EXECUTABLE_BILATERAL_L1",
+        "actionableSignalAllowed": true,
+        "blockedReason": null
+      }
+    },
+    "A6_5_EOD_CLOSE_REF": {
+      "adrMidUsd": null,
+      "adrBidUsd": null,
+      "adrAskUsd": null,
+      "adrLastUsd": null,
+      "adrSpreadUsd": null,
+      "adrIndicativeUsd": 50.0,
+      "adrQuoteMode": "EOD_CLOSE_REF",
+      "cclGgal24h": 1360.0,
+      "cclSovereignBenchmark": 1299.9700160680388,
+      "spreadLogBps": 451.43500109507704,
+      "ouMeanBps": 0.8126637007408383,
+      "ouEqSigmaBps": 26.939726641814826,
+      "zScore": 16.72705678813003,
+      "fairAdrUsd": 52.30889878958636,
+      "netEdgeAfterCostsBps": null,
+      "signal": "NEUTRAL",
+      "parityEvaluation": {
+        "indicativeBasis": "EOD_CLOSE",
+        "executableStatus": "EOD_REFERENCE_ONLY",
+        "actionableSignalAllowed": false,
+        "blockedReason": "MARKET_EOD_REFERENCE_ONLY"
+      }
+    },
+    "sharedInputs": {
+      "asOfUtcSec": 1792078200,
+      "bymaBid": 6798.0,
+      "bymaAsk": 6802.0,
+      "bymaLast": 6800.0,
+      "sofrRateAnnual": 0.043,
+      "bonds": [
+        {
+          "ticker": "AL30",
+          "arsBid": "130000",
+          "arsAsk": "130100",
+          "usdBid": "100.00",
+          "usdAsk": "100.08"
+        },
+        {
+          "ticker": "GD30",
+          "arsBid": "130050",
+          "arsAsk": "130150",
+          "usdBid": "100.04",
+          "usdAsk": "100.12"
+        }
+      ],
+      "spreadHistory": [
+        {
+          "time": 1789486200,
+          "cclGgal24h": 1302.60260173,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1789572600,
+          "cclGgal24h": 1305.47579856,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1789659000,
+          "cclGgal24h": 1303.60002605,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1789745400,
+          "cclGgal24h": 1298.07362062,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1789831800,
+          "cclGgal24h": 1293.85355011,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1789918200,
+          "cclGgal24h": 1294.82393725,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790004600,
+          "cclGgal24h": 1299.94033455,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790091000,
+          "cclGgal24h": 1304.34603675,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790177400,
+          "cclGgal24h": 1304.30475993,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790263800,
+          "cclGgal24h": 1300.81549815,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790350200,
+          "cclGgal24h": 1298.0616306,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790436600,
+          "cclGgal24h": 1298.64585269,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790523000,
+          "cclGgal24h": 1300.95928997,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790609400,
+          "cclGgal24h": 1301.38507183,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790695800,
+          "cclGgal24h": 1298.76364157,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790782200,
+          "cclGgal24h": 1295.99382672,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790868600,
+          "cclGgal24h": 1296.83118746,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1790955000,
+          "cclGgal24h": 1301.46350974,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791041400,
+          "cclGgal24h": 1305.78468969,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791127800,
+          "cclGgal24h": 1305.40225597,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791214200,
+          "cclGgal24h": 1300.32103629,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791300600,
+          "cclGgal24h": 1295.13059236,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791387000,
+          "cclGgal24h": 1294.40171396,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791473400,
+          "cclGgal24h": 1298.24770877,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791559800,
+          "cclGgal24h": 1302.52639925,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791646200,
+          "cclGgal24h": 1303.30176589,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791732600,
+          "cclGgal24h": 1300.82301098,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791819000,
+          "cclGgal24h": 1298.73830575,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791905400,
+          "cclGgal24h": 1299.64856269,
+          "cclSovereign": 1300.0
+        },
+        {
+          "time": 1791991800,
+          "cclGgal24h": 1302.12891732,
+          "cclSovereign": 1300.0
+        }
+      ]
+    }
+  }
+}

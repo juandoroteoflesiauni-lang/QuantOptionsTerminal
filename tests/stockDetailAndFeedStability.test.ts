@@ -476,7 +476,13 @@ describe('Pieza 43 — negociación REST 401 Tradier, circuit-breaker AUTH_INVAL
     expect(tradierHttpCalls).toBe(2);
     expect(runtime.isTradierAuthInvalid()).toBe(true);
     expect(runtime.getTradierLiveStatus().state).toBe('AUTH_INVALID');
-    expect(parity.result.spot.adrMidUsd).toBeCloseTo(54.4, 9);
+    expect(parity.result.spot.adrMidUsd).toBeNull();
+    expect(parity.result.spot.adrBidUsd).toBeNull();
+    expect(parity.result.spot.adrAskUsd).toBeNull();
+    expect(parity.result.spot.adrLastUsd).toBeCloseTo(54.4, 9);
+    expect(parity.result.spot.adrIndicativeUsd).toBeCloseTo(54.4, 9);
+    expect(parity.result.spot.adrQuoteMode).toBe('LAST_ONLY');
+    expect(parity.telemetry.executionPriceBasis).toBe('LAST_ONLY');
     const fmpFallbackQuotes = await runtime.fetchFmpAdrQuotesSafe(['GGAL']);
     expect(fmpFallbackQuotes[0]?.price).toBeCloseTo(54.4, 9);
     expect(parity.telemetry.providerErrors.some((err) => /Tradier ADR NBBO/i.test(err))).toBe(false);

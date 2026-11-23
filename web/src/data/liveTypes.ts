@@ -4,6 +4,11 @@ import type {
   ContractMultiplierSource, DealerSignBasis, GexComputationStatus, OiFieldProvenance,
   OiQualityTier, OiSourceConflictRecord, OptionFieldProvenanceMap,
 } from '../../../src/core/options/oiProvenance.js';
+import type {
+  BymaStrikeNormalizationEvidence,
+  BymaStrikeResolutionStatus,
+  BymaStrikeSource,
+} from '../../../src/core/ggal/bymaContractResolver.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
@@ -760,7 +765,41 @@ export interface UsVolAnalyticsSuiteRef {
   readonly expiriesByCode: Readonly<Record<string, unknown>>;
 }
 
+export interface ArUnresolvedOptionContractDto {
+  readonly symbol: string;
+  readonly underlying: string | null;
+  readonly contractType: 'call' | 'put' | null;
+  readonly strike: null;
+  readonly strikeResolutionStatus: BymaStrikeResolutionStatus;
+  readonly strikeSource: BymaStrikeSource;
+  readonly contractualExpiry: string | null;
+  readonly expiryCode: string | null;
+  readonly normalizationEvidence: BymaStrikeNormalizationEvidence;
+  readonly exclusionReason: string;
+  readonly bid: number | null;
+  readonly bidSize: number | null;
+  readonly ask: number | null;
+  readonly askSize: number | null;
+  readonly last: number | null;
+  readonly mark: number | null;
+  readonly volume: number | null;
+  readonly openInterest: number | null;
+  readonly quoteSource: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE' | 'OPEN_BYMA';
+  readonly quoteAsOfUtcSec: number | null;
+}
+
+export interface ArStrikeQualitySummaryDto {
+  readonly resolvedExplicitCount: number;
+  readonly resolvedCanonicalCount: number;
+  readonly ambiguousUnresolvedCount: number;
+  readonly conflictingMetadataCount: number;
+}
+
 export interface ArOptionContractDto {
+  readonly canonicalContractId?: string | null;
+  readonly strikeResolutionStatus?: BymaStrikeResolutionStatus;
+  readonly strikeSource?: BymaStrikeSource;
+  readonly normalizationEvidence?: BymaStrikeNormalizationEvidence;
   readonly ivStatus?: AmericanIvStatus;
   readonly ivResolution?: ImpliedVolResolution;
   readonly theoreticalPriceModel?: 'AMERICAN_BS2002_SURFACE';
@@ -814,6 +853,7 @@ export interface ArOptionExpiryDto {
   readonly strikes: readonly number[];
   readonly calls: readonly ArOptionContractDto[];
   readonly puts: readonly ArOptionContractDto[];
+  readonly unresolvedContracts?: readonly ArUnresolvedOptionContractDto[];
   /** Pieza 50.2: `true` si la cadena del vencimiento está cargada en profundidad. */
   readonly loaded?: boolean;
 }
@@ -842,6 +882,8 @@ export interface ArOptionsResponse {
     readonly atm: number;
   }[];
   readonly expiries: readonly ArOptionExpiryDto[];
+  readonly unresolvedContracts?: readonly ArUnresolvedOptionContractDto[];
+  readonly strikeQuality?: ArStrikeQualitySummaryDto;
   readonly exposureSummary: {
     readonly gexStatus?: GexComputationStatus;
     readonly oiQuality?: OiQualityTier;
@@ -888,6 +930,7 @@ export interface ArOptionsResponse {
       readonly oiConflicts?: readonly OiSourceConflictRecord[];
       readonly oiUniverseInputs?: number;
       readonly ivStatusCounts?: Readonly<Partial<Record<AmericanIvStatus, number>>>;
+      readonly strikeQuality?: ArStrikeQualitySummaryDto;
       readonly directOiInputs: number;
       readonly proxyOiInputs: number;
       readonly oiProxy: boolean | null;

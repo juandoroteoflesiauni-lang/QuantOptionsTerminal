@@ -1,4 +1,5 @@
 import type { AmericanIvStatus } from '../options/ivContract.js';
+import type { AdrQuoteQualityMode } from './adrQuoteIntegrity.js';
 /**
  * Motor 5 — Selector Especializado de Estrategias GGAL (ARS BYMA vs. OPRA USD).
  *
@@ -89,6 +90,8 @@ export interface StrategyEconomicsOutput {
 export interface UsdAlternativeComparison {
   readonly opraEquivalentSharpe: number | null;
   readonly bymaAdvantageBps: number | null;
+  readonly crossVenueExecutable?: boolean;
+  readonly crossVenueBlockedReason?: string | null;
 }
 
 export interface RankedStrategyCandidate {
@@ -103,6 +106,9 @@ export interface RankedStrategyCandidate {
 export interface StrategySelectorOutput {
   readonly timestampUtc: string;
   readonly status: 'OK' | 'NO_DATA';
+  readonly adrQuoteMode?: AdrQuoteQualityMode;
+  readonly crossVenueExecutable: boolean;
+  readonly crossVenueBlockedReason: string | null;
   readonly marketBenchmarks: {
     readonly caucion1dTnaPct: number;
     readonly lecapMatchedTnaPct: number;
@@ -162,6 +168,7 @@ export interface StrategySelectorInput {
   readonly spotByma24hQuote: BidAskQuote;
   readonly spotAdrUsd: number;
   readonly spotAdrQuote?: BidAskQuote;
+  readonly adrQuoteMode?: AdrQuoteQualityMode;
   readonly frontExpiryDateKey: string;
   readonly frontExpiry1530UtcSec?: number;
   readonly backExpiryDateKey?: string;
@@ -1033,6 +1040,17 @@ function computeOpraEquivalentComparison(
     cf0NetUsd += leg.side === 'BUY' ? -(notionalUsd + feeUsd) : notionalUsd - feeUsd;
   }
 
+  const adrModeBlocked =
+    input.adrQuoteMode !== undefined && input.adrQuoteMode !== 'LIVE_BID_ASK';
+  if (adrModeBlocked) {
+    return {
+      opraEquivalentSharpe: null,
+      bymaAdvantageBps: null,
+      crossVenueExecutable: false,
+      crossVenueBlockedReason: 'ADR_NO_BILATERAL_L1_BBO',
+    };
+  }
+
   // Margen OPRA para Buy-Write o descubiertos
   let extraOpraMarginUsd = 0;
   let buyWriteDesembolsoUsd = 0;
@@ -1043,7 +1061,12 @@ function computeOpraEquivalentComparison(
         : input.spotAdrUsd;
     const callLeg = opraLegs[0];
     if (!isPositiveFinite(adrAskUsd) || callLeg === undefined) {
-      return { opraEquivalentSharpe: null, bymaAdvantageBps: null };
+      return {
+        opraEquivalentSharpe: null,
+        bymaAdvantageBps: null,
+        crossVenueExecutable: false,
+        crossVenueBlockedReason: 'ADR_NO_BILATERAL_L1_BBO',
+      };
     }
     const eqFeeBuy = computeUsEquityFeeRate(input.asOfUtcSec, adrAskUsd, 'BUY', usFeeSchedule);
     const callBidUsd = callLeg.quote.bidUsd;
@@ -1161,11 +1184,24 @@ function computeOpraEquivalentComparison(
 export function evaluateStrategySelector(
   input: StrategySelectorInput,
 ): StrategySelectorOutput {
+  const crossVenueExecutable =
+    input.adrQuoteMode !== undefined
+      ? input.adrQuoteMode === 'LIVE_BID_ASK'
+      : input.spotAdrQuote !== undefined
+        ? isPositiveFinite(input.spotAdrQuote.bid) &&
+          isPositiveFinite(input.spotAdrQuote.ask) &&
+          input.spotAdrQuote.ask >= input.spotAdrQuote.bid
+        : isPositiveFinite(input.spotAdrUsd);
+  const crossVenueBlockedReason = crossVenueExecutable ? null : 'ADR_NO_BILATERAL_L1_BBO';
+
   const emptyOutput: StrategySelectorOutput = {
     timestampUtc: isValidUtcSec(input.asOfUtcSec)
       ? formatIsoUtcFromSec(input.asOfUtcSec)
       : 'INVALID_UTC',
     status: 'NO_DATA',
+    ...(input.adrQuoteMode !== undefined ? { adrQuoteMode: input.adrQuoteMode } : {}),
+    crossVenueExecutable,
+    crossVenueBlockedReason,
     marketBenchmarks: {
       caucion1dTnaPct: Number.isFinite(input.caucion1dTnaPct) ? input.caucion1dTnaPct : Number.NaN,
       lecapMatchedTnaPct: Number.isFinite(input.lecapMatchedTnaPct)
@@ -1762,6 +1798,9 @@ export function evaluateStrategySelector(
   return {
     timestampUtc: formatIsoUtcFromSec(input.asOfUtcSec),
     status: sliced.length > 0 ? 'OK' : 'NO_DATA',
+    ...(input.adrQuoteMode !== undefined ? { adrQuoteMode: input.adrQuoteMode } : {}),
+    crossVenueExecutable,
+    crossVenueBlockedReason,
     marketBenchmarks: {
       caucion1dTnaPct: input.caucion1dTnaPct,
       lecapMatchedTnaPct: input.lecapMatchedTnaPct,

@@ -34,6 +34,7 @@ import {
   type ArFeedRouterStatusSnapshotDto,
   type BymaClearingStrategyKindDto,
   type CollateralAssetKindDto,
+  type GgalAdrQuoteModeDto,
   type GgalAvwapAnchorMode,
   type GgalBadgeMode,
   type GgalClearingRiskResponseDto,
@@ -190,6 +191,23 @@ function fmtCurrency(val: number | null | undefined, prefix = '$ ', decimals = 2
 function fmtAge(sec: number | null | undefined): string {
   if (sec === null || sec === undefined || !Number.isFinite(sec)) return '—';
   return `${Math.round(sec)}s`;
+}
+
+function adrQuoteModeBadgeLabel(mode: GgalAdrQuoteModeDto | undefined): string {
+  switch (mode) {
+    case 'LIVE_BID_ASK':
+      return 'LIVE_BID_ASK';
+    case 'LAST_ONLY':
+      return 'LAST_ONLY (Indicativo)';
+    case 'ONE_SIDED_QUOTE':
+      return 'ONE_SIDED_QUOTE';
+    case 'EOD_CLOSE_REF':
+      return 'EOD_CLOSE_REF';
+    case 'UNAVAILABLE':
+      return 'UNAVAILABLE';
+    default:
+      return '—';
+  }
 }
 
 function sessionRegimeLabel(regime: string | undefined): string {
@@ -1046,8 +1064,8 @@ export const GgalSpecialistModule: React.FC<{
             D912: {fmtAge(t?.data912AgeSec)} · Massive: {fmtAge(t?.massiveAgeSec)}
           </span>
 
-          <span className="px-2 py-0.5 rounded-[6px] bg-[#171722] border border-[#1E1E2B] text-[10.5px] font-mono-num text-[#9CA3AF]">
-            Base: {t?.executionPriceBasis ?? '—'} · Grabador 20s: {t?.recorder.snapshotsCount ?? 0}
+          <span className="inline-flex items-center h-[22px] px-2 py-0.5 rounded-[6px] bg-[#171722] border border-[#1E1E2B] text-[10.5px] font-mono-num tabular-nums text-[#9CA3AF]">
+            Base: {t?.executionPriceBasis ?? '—'} · ADR: {adrQuoteModeBadgeLabel(t?.adrQuote?.quoteMode)} · Grabador 20s: {t?.recorder.snapshotsCount ?? 0}
           </span>
         </div>
 
@@ -1231,19 +1249,31 @@ export const GgalSpecialistModule: React.FC<{
       </div>
 
       {/* TAB 1 — PARIDAD & GAP */}
-      {activeTab === 'parity-gap' && parityData !== null && (
+      {activeTab === 'parity-gap' && parityData !== null && (() => {
+        const actionableAllowed =
+          parityData.result.parityEvaluation?.actionableSignalAllowed ??
+          (parityData.result.signal !== 'NEUTRAL' && parityData.result.signal !== 'STALE_DATA_LOCK');
+        const bannerVariant =
+          parityData.result.signal === 'STALE_DATA_LOCK'
+            ? 'neg'
+            : actionableAllowed &&
+                (parityData.result.signal === 'LONG_BYMA_SHORT_ADR' ||
+                  parityData.result.signal === 'SHORT_BYMA_LONG_ADR')
+              ? 'pos'
+              : 'default';
+        const adrHeroPrice =
+          parityData.result.spot.adrMidUsd ??
+          parityData.result.spot.adrIndicativeUsd ??
+          parityData.result.spot.adrLastUsd ??
+          liveUsGgal?.price;
+        const adrModeText = adrQuoteModeBadgeLabel(parityData.result.spot.adrQuoteMode);
+        return (
         <div className="space-y-4">
-          <InsightBanner
-            tag="Paridad & OU AR(1)"
-            variant={
-              parityData.result.signal === 'STALE_DATA_LOCK'
-                ? 'neg'
-                : parityData.result.signal === 'NEUTRAL'
-                  ? 'default'
-                  : 'pos'
-            }
-          >
-            Señal activa: <strong className="font-mono-num">{parityData.result.signal}</strong> · Liquidación ΔAR={parityData.result.deltaAr1Days ?? '—'}d / ΔUS={parityData.result.deltaUs1Days ?? '—'}d · Edge neto={fmtNum(parityData.result.ccl.netEdgeAfterCostsBps, 1)} pb · Prob. cierre 5d={fmtPct(parityData.result.ccl.closeProbability5d !== null ? parityData.result.ccl.closeProbability5d * 100 : null, 1, false)}
+          <InsightBanner tag="Paridad & OU AR(1)" variant={bannerVariant}>
+            Señal activa: <strong className="font-mono-num tabular-nums">{parityData.result.signal}</strong> · Liquidación ΔAR={parityData.result.deltaAr1Days ?? '—'}d / ΔUS={parityData.result.deltaUs1Days ?? '—'}d · Edge neto={fmtNum(parityData.result.ccl.netEdgeAfterCostsBps, 1)} pb · Prob. cierre 5d={fmtPct(parityData.result.ccl.closeProbability5d !== null ? parityData.result.ccl.closeProbability5d * 100 : null, 1, false)}
+            {!actionableAllowed && parityData.result.signal !== 'STALE_DATA_LOCK' && (
+              <span> · Paridad indicativa · No ejecutable sin BBO L1 ADR</span>
+            )}
           </InsightBanner>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
@@ -1286,19 +1316,21 @@ export const GgalSpecialistModule: React.FC<{
                     text="Precio del ADR en dólares en NASDAQ y paridad justa implícita frente al benchmark de bonos soberanos."
                   />
                 </div>
-                <span className="text-[10px] font-mono-num font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
-                  {parityData.rateInputs.sofrSource ?? 'SOFR'}
+                <span className="text-[10px] font-mono-num tabular-nums font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
+                  {parityData.result.spot.adrQuoteMode !== undefined
+                    ? adrModeText
+                    : (parityData.rateInputs.sofrSource ?? 'SOFR')}
                 </span>
               </div>
               <div className="flex items-baseline gap-2.5 pt-0.5">
                 <div
                   className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(usFlash)}`}
                 >
-                  {fmtCurrency(liveUsGgal?.price ?? parityData.result.spot.adrMidUsd, 'US$ ', 2)}
+                  {fmtCurrency(adrHeroPrice, 'US$ ', 2)}
                 </div>
               </div>
-              <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
-                {`ADR Justo s/ AL30: ${fmtCurrency(parityData.result.spot.fairAdrUsd, 'US$ ', 2)} · SOFR: ${fmtPct(parityData.rateInputs.sofrPct, 2, false)}`}
+              <div className="text-[11.5px] font-mono-num tabular-nums text-[#787B86] leading-snug truncate">
+                {`Bid / Ask: ${fmtCurrency(parityData.result.spot.adrBidUsd, 'US$ ', 2)} / ${fmtCurrency(parityData.result.spot.adrAskUsd, 'US$ ', 2)} · Last: ${fmtCurrency(parityData.result.spot.adrLastUsd ?? parityData.result.spot.adrIndicativeUsd, 'US$ ', 2)} · Justo s/ AL30: ${fmtCurrency(parityData.result.spot.fairAdrUsd, 'US$ ', 2)}`}
               </div>
             </div>
             <KPICard
@@ -1395,7 +1427,8 @@ export const GgalSpecialistModule: React.FC<{
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* TAB 2 — TRIÁNGULO DE VOLATILIDAD */}
       {activeTab === 'vol-triangle' && volData !== null && (() => {
@@ -2659,9 +2692,13 @@ export const GgalSpecialistModule: React.FC<{
                       >
                         {marginRiskData.executionMicrostructure.decision}
                       </span>
-                      <span className="text-[11px] font-mono-num text-[#787B86]">
+                      <span className="text-[11px] font-mono-num tabular-nums text-[#787B86]">
                         Book: {marginRiskData.executionBookDiagnostics.bookSource} · Subyacente L2:{' '}
-                        {marginRiskData.executionBookDiagnostics.underlyingBook5LevelsSource ?? '—'}
+                        {marginRiskData.executionBookDiagnostics.underlyingBook5LevelsSource ?? '—'} · ADR L1:{' '}
+                        {marginRiskData.executionBookDiagnostics.adrBookQuality ?? '—'} (
+                        {fmtCurrency(marginRiskData.executionBookDiagnostics.adrBidUsd, 'US$ ', 2)} /{' '}
+                        {fmtCurrency(marginRiskData.executionBookDiagnostics.adrAskUsd, 'US$ ', 2)} · Spread:{' '}
+                        {fmtCurrency(marginRiskData.executionBookDiagnostics.adrSpreadUsd, 'US$ ', 2)})
                       </span>
                     </div>
                   </div>

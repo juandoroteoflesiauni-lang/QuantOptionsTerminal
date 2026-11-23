@@ -15,7 +15,21 @@ import {
   type OptionFieldProvenanceMap,
 } from '../core/options/oiProvenance.js';
 export type { OiFieldProvenance, OptionFieldProvenanceMap } from '../core/options/oiProvenance.js';
-import { MONTH_CODES, OPTION_PREFIX_TO_UNDERLYING } from '../core/ggal/anexoBIdentity.js';
+import { OPTION_PREFIX_TO_UNDERLYING } from '../core/ggal/anexoBIdentity.js';
+import {
+  resolveBymaOptionContract,
+  type BymaContractMetadataRecord,
+  type BymaStrikeNormalizationEvidence,
+  type BymaStrikeResolutionStatus,
+  type BymaStrikeSource,
+  type ResolvedBymaOptionContract,
+} from '../core/ggal/bymaContractResolver.js';
+export type {
+  BymaContractMetadataRecord,
+  BymaStrikeNormalizationEvidence,
+  BymaStrikeResolutionStatus,
+  BymaStrikeSource,
+} from '../core/ggal/bymaContractResolver.js';
 /**
  * Cargador e integrador cuantitativo para el Mercado Argentino en Tiempo Real / Diferido
  * y Macro Local (`src/server/argentinaMarketLoader.ts`).
@@ -841,6 +855,40 @@ export interface ArStockDetailResponse {
   readonly providerErrors: readonly string[];
 }
 
+export interface ArUnresolvedOptionContractDto {
+  readonly symbol: string;
+  readonly underlying: string | null;
+  readonly contractType: 'call' | 'put' | null;
+  readonly strike: null;
+  readonly canonicalContractId: null;
+  readonly strikeResolutionStatus: Extract<
+    BymaStrikeResolutionStatus,
+    'AMBIGUOUS_SCALE_UNRESOLVED' | 'CONFLICTING_METADATA' | 'INVALID_SYMBOL'
+  >;
+  readonly strikeSource: 'NONE';
+  readonly expiryCode: string | null;
+  readonly expirationDate: string | null;
+  readonly expiryUtcSec: number | null;
+  readonly bid: number | null;
+  readonly bidSize?: number | null;
+  readonly ask: number | null;
+  readonly askSize?: number | null;
+  readonly last: number | null;
+  readonly volume: number | null;
+  readonly openInterest: number | null;
+  readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE' | 'OPEN_BYMA';
+  readonly quoteAsOfUtcSec?: number | null;
+  readonly exclusionReason: string;
+  readonly normalizationEvidence: BymaStrikeNormalizationEvidence;
+}
+
+export interface ArStrikeQualitySummaryDto {
+  readonly resolvedExplicitCount: number;
+  readonly resolvedCanonicalCount: number;
+  readonly ambiguousUnresolvedCount: number;
+  readonly conflictingMetadataCount: number;
+}
+
 export interface ArOptionContractDto {
   readonly ivStatus?: AmericanIvStatus;
   readonly ivResolution?: ImpliedVolResolution;
@@ -849,6 +897,10 @@ export interface ArOptionContractDto {
   readonly oiProvenance?: OiFieldProvenance;
   readonly contractMultiplier?: number;
   readonly multiplierSource?: ContractMultiplierSource;
+  readonly canonicalContractId?: string | null;
+  readonly strikeResolutionStatus?: BymaStrikeResolutionStatus;
+  readonly strikeSource?: BymaStrikeSource;
+  readonly normalizationEvidence?: BymaStrikeNormalizationEvidence;
   readonly symbol: string;
   readonly underlying: string;
   readonly contractType: 'call' | 'put';
@@ -902,6 +954,7 @@ export interface ArOptionExpiryDto {
   readonly strikes: readonly number[];
   readonly calls: readonly ArOptionContractDto[];
   readonly puts: readonly ArOptionContractDto[];
+  readonly unresolvedContracts?: readonly ArUnresolvedOptionContractDto[];
 }
 
 export interface ArOptionStrategyCardDto {
@@ -953,6 +1006,8 @@ export interface ArOptionsResponse {
     readonly atm: number;
   }[];
   readonly expiries: readonly ArOptionExpiryDto[];
+  readonly unresolvedContracts?: readonly ArUnresolvedOptionContractDto[];
+  readonly strikeQuality?: ArStrikeQualitySummaryDto;
   readonly exposureSummary: {
     readonly gexStatus?: GexComputationStatus;
     readonly oiQuality?: OiQualityTier;
@@ -994,6 +1049,7 @@ export interface ArOptionsResponse {
       readonly oiConflicts?: readonly OiSourceConflictRecord[];
       readonly oiUniverseInputs?: number;
       readonly ivStatusCounts?: Readonly<Partial<Record<AmericanIvStatus, number>>>;
+      readonly strikeQuality?: ArStrikeQualitySummaryDto;
       readonly directOiInputs: number;
       readonly proxyOiInputs: number;
       /** `true` si el motor usó OI proxy de volumen nominal; `null` sin inputs acreditables. */
@@ -1408,8 +1464,6 @@ export function computeSyntheticUsdFuturesCurve(params: {
   }
   return out;
 }
-
-const MONTHS_ES_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
 interface BondFlow {
   readonly dateUtcSec: number;
@@ -2714,24 +2768,6 @@ export function evaluateSovereignBondMath(
   };
 }
 
-function thirdFridayUtcSec(year: number, month1Based: number, holidays?: ReadonlySet<string>): number {
-  const firstDay = new Date(Date.UTC(year, month1Based - 1, 1, 18, 30, 0));
-  const firstDow = firstDay.getUTCDay(); // 5 = Friday
-  const daysToFirstFriday = (5 - firstDow + 7) % 7;
-  const thirdFridayDay = 1 + daysToFirstFriday + 14;
-  const expiry = new Date(Date.UTC(year, month1Based - 1, thirdFridayDay, 18, 30, 0));
-  if (holidays !== undefined && holidays.size > 0) {
-    while (
-      expiry.getUTCDay() === 0 ||
-      expiry.getUTCDay() === 6 ||
-      holidays.has(expiry.toISOString().slice(0, 10))
-    ) {
-      expiry.setUTCDate(expiry.getUTCDate() - 1);
-    }
-  }
-  return Math.floor(expiry.getTime() / 1_000);
-}
-
 interface ParsedBymaOptionSymbol {
   readonly symbol: string;
   readonly underlying: string;
@@ -2745,85 +2781,51 @@ interface ParsedBymaOptionSymbol {
 }
 
 /**
- * Parsea símbolos de opciones BYMA / Data912 (ej. `GFGC6000DI`, `GFGV5800OC`, `GFGC62974D`, `YPFC42000AB`).
+ * Parsea determinísticamente símbolos de opciones BYMA sin heurísticas basadas en el precio spot.
+ * Contratos sin metadata explícita cuya escala de strike sea ambigua devuelven `null`.
  */
 export function parseBymaOptionSymbol(
   rawSymbol: string,
-  spotHint: number | null,
-  asOfUtcSec: number,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _spotHint: number | null = null,
+  asOfUtcSec = 0,
   includeNearExpiry = false,
   arHolidays: readonly string[] = [],
+  metadataRecords?: readonly BymaContractMetadataRecord[],
 ): ParsedBymaOptionSymbol | null {
-  const cleaned = rawSymbol.trim().toUpperCase().replace(/[^A-Z0-9.]/g, '');
-  if (cleaned.length < 6) {
+  const resolved = resolveBymaOptionContract({
+    rawSymbol,
+    asOfUtcSec,
+    includeNearExpiry,
+    arHolidays,
+    knownUnderlyings: STOCK_META_MAP,
+    ...(metadataRecords !== undefined ? { metadataRecords } : {}),
+  });
+  if (
+    (resolved.strikeResolutionStatus !== 'EXPLICIT_METADATA' &&
+      resolved.strikeResolutionStatus !== 'CANONICAL_SYMBOL') ||
+    resolved.underlying === null ||
+    resolved.side === null ||
+    resolved.strike === null ||
+    resolved.contractualExpiry === null ||
+    resolved.expiryCode === null ||
+    resolved.expiryLabel === null ||
+    resolved.expiryUtcSec === null ||
+    resolved.daysToExpiry === null
+  ) {
     return null;
   }
-
-  // Ejemplos: GFGC6000DI, YPFV42000OC, PAMP3600D, GFGC62974D, GFGC6400.0DI
-  const match = /^([A-Z]{3,5})([CV])(\d+(?:\.\d+)?)([A-Z]{1,3})$/.exec(cleaned);
-  if (match === null) {
-    return null;
-  }
-
-  const rawPrefix = match[1] ?? '';
-  const optChar = match[2] ?? '';
-  const rawStrikeStr = match[3] ?? '';
-  const rawMonthSuffix = match[4] ?? '';
-
-  const underlying =
-    OPTION_PREFIX_TO_UNDERLYING[rawPrefix] ??
-    (STOCK_META_MAP.has(rawPrefix) ? rawPrefix : null);
-  if (underlying === null) {
-    return null;
-  }
-
-  const contractType: 'call' | 'put' = optChar === 'C' ? 'call' : 'put';
-  let strike = Number(rawStrikeStr);
-  if (!Number.isFinite(strike) || strike <= 0) {
-    return null;
-  }
-
-  // En BYMA algunos strikes ajustados por dividendos omiten el punto decimal (ej. 62974 -> 6297.4)
-  if (!rawStrikeStr.includes('.') && spotHint !== null && spotHint > 0 && strike > spotHint * 3.5) {
-    if (strike / 10 >= spotHint * 0.25 && strike / 10 <= spotHint * 2.5) {
-      strike = strike / 10;
-    } else if (strike / 100 >= spotHint * 0.25 && strike / 100 <= spotHint * 2.5) {
-      strike = strike / 100;
-    }
-  }
-
-  const monthInfo = MONTH_CODES[rawMonthSuffix];
-  if (monthInfo === undefined) {
-    return null;
-  }
-
-  const holidaySet = arHolidays.length > 0 ? new Set(arHolidays) : undefined;
-  const asOfDate = new Date(asOfUtcSec * 1_000);
-  const baseYear = asOfDate.getUTCFullYear();
-  let expSec = thirdFridayUtcSec(baseYear, monthInfo.month, holidaySet);
-  if (expSec <= asOfUtcSec - 86_400) {
-    expSec = thirdFridayUtcSec(baseYear + 1, monthInfo.month, holidaySet);
-  }
-  if (expSec <= asOfUtcSec || (!includeNearExpiry && expSec - asOfUtcSec <= MIN_CONTRACTUAL_EXPIRY_SEC)) {
-    return null;
-  }
-
-  const expDate = new Date(expSec * 1_000);
-  const dd = String(expDate.getUTCDate()).padStart(2, '0');
-  const mm = String(expDate.getUTCMonth() + 1).padStart(2, '0');
-  const yyyy = String(expDate.getUTCFullYear());
-  const monShort = MONTHS_ES_SHORT[expDate.getUTCMonth()] ?? monthInfo.label.toLowerCase();
 
   return {
-    symbol: cleaned,
-    underlying,
-    contractType,
-    strike: Math.round(strike * 100) / 100,
-    expiryCode: monthInfo.code,
-    expiryLabel: `${String(Number(dd))} ${monShort}`,
-    expirationDate: `${yyyy}-${mm}-${dd}`,
-    expiryUtcSec: expSec,
-    daysToExpiry: Math.max(1, Math.round((expSec - asOfUtcSec) / 86_400)),
+    symbol: resolved.nativeSymbol,
+    underlying: resolved.underlying,
+    contractType: resolved.side,
+    strike: Math.round(resolved.strike * 10_000) / 10_000,
+    expiryCode: resolved.expiryCode,
+    expiryLabel: resolved.expiryLabel,
+    expirationDate: resolved.contractualExpiry,
+    expiryUtcSec: resolved.expiryUtcSec,
+    daysToExpiry: resolved.daysToExpiry,
   };
 }
 
@@ -2877,6 +2879,10 @@ export interface NormalizedQuoteRow {
   readonly openInterest?: number | null;
   readonly quoteSource?: 'DATA912' | 'BMB_HOMEBROKER_BRIDGE' | 'OPEN_BYMA';
   readonly quoteAsOfUtcSec?: number | null;
+  readonly explicitStrike?: number | null;
+  readonly explicitExpirationDate?: string | null;
+  readonly explicitUnderlying?: string | null;
+  readonly explicitMetadataSource?: 'DATA912_METADATA' | 'OPEN_BYMA_METADATA';
 }
 
 export function normalizeData912Rows(
@@ -2940,6 +2946,9 @@ export function normalizeData912Rows(
     const arsAsk = readNum(item, ['ars_ask']);
     const usdBid = readNum(item, ['usd_bid']);
     const usdAsk = readNum(item, ['usd_ask']);
+    const explicitStrike = sanitizePositive(readNum(item, ['strike', 'strikePrice', 'exercisePrice']));
+    const explicitExpirationDate = readStr(item, ['expirationDate', 'contractualExpiry', 'maturityDate']);
+    const explicitUnderlying = readStr(item, ['underlying', 'underlyingSymbol'])?.toUpperCase() ?? null;
 
     const prevClose =
       prevCloseRaw !== null
@@ -2990,6 +2999,14 @@ export function normalizeData912Rows(
       fieldProvenance,
       quoteSource: source,
       quoteAsOfUtcSec: itemTsSec,
+      ...(explicitStrike !== null
+        ? {
+            explicitStrike,
+            explicitMetadataSource: source === 'OPEN_BYMA' ? ('OPEN_BYMA_METADATA' as const) : ('DATA912_METADATA' as const),
+          }
+        : {}),
+      ...(explicitExpirationDate !== null ? { explicitExpirationDate } : {}),
+      ...(explicitUnderlying !== null ? { explicitUnderlying } : {}),
     });
   }
   return rows;
@@ -3203,14 +3220,31 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
     ) {
       continue;
     }
-    const parsed = parseBymaOptionSymbol(
-      symbol,
-      input.spotHint,
-      input.nowUtcSec,
-      input.trackFieldProvenance === true,
-      input.arHolidays ?? [],
-    );
-    if (parsed === null || parsed.underlying !== underlying) {
+    const quoteStrike = positiveOrNull(quote.strike ?? null);
+    const quoteExpiry =
+      typeof quote.expirationDate === 'string' && quote.expirationDate.trim() !== ''
+        ? quote.expirationDate.trim()
+        : null;
+    const bmbMeta: BymaContractMetadataRecord | undefined =
+      quoteStrike !== null
+        ? {
+            source: 'BMB_OPTION_METADATA',
+            nativeSymbol: symbol,
+            underlying: quote.underlying,
+            strike: quoteStrike,
+            ...(quoteExpiry !== null ? { contractualExpiry: quoteExpiry } : {}),
+            unit: 'ARS',
+          }
+        : undefined;
+    const resolved = resolveBymaOptionContract({
+      rawSymbol: symbol,
+      asOfUtcSec: input.nowUtcSec,
+      includeNearExpiry: input.trackFieldProvenance === true,
+      arHolidays: input.arHolidays ?? [],
+      knownUnderlyings: STOCK_META_MAP,
+      ...(bmbMeta !== undefined ? { metadataRecords: [bmbMeta] } : {}),
+    });
+    if (resolved.strikeResolutionStatus === 'INVALID_SYMBOL' || resolved.underlying !== underlying) {
       continue;
     }
     freshBySymbol.set(symbol, quote);
@@ -3558,6 +3592,8 @@ export class ArgentinaMarketRuntime {
     readonly byContract: ReadonlyMap<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>;
     readonly cache: SingleFlightRuntimeCache<ArOptionsResponse>;
   } | null = null;
+  private anexoBContractMetadata: ReadonlyMap<string, readonly BymaContractMetadataRecord[]> = new Map();
+  private primaryContractMetadata: ReadonlyMap<string, readonly BymaContractMetadataRecord[]> = new Map();
   private readonly priorSmileCache = new Map<
     string,
     readonly {
@@ -7388,7 +7424,7 @@ export class ArgentinaMarketRuntime {
       : null;
 
     const parsedOptionsForSymbol = optionsRes.rows
-      .map((o) => parseBymaOptionSymbol(o.symbol, stock?.last ?? null, nowSec))
+      .map((o) => parseBymaOptionSymbol(o.symbol, null, nowSec))
       .filter((p): p is ParsedBymaOptionSymbol => p !== null && p.underlying === symbol);
     const relatedOptionsCount = parsedOptionsForSymbol.length;
 
@@ -7685,6 +7721,45 @@ export class ArgentinaMarketRuntime {
     this.arHolidays = [...arHolidays];
   }
 
+  private normalizeMetadataSeriesMap(
+    byNativeSeries: ReadonlyMap<string, BymaContractMetadataRecord | readonly BymaContractMetadataRecord[]>,
+  ): Map<string, readonly BymaContractMetadataRecord[]> {
+    const next = new Map<string, readonly BymaContractMetadataRecord[]>();
+    const isRecordList = (
+      val: BymaContractMetadataRecord | readonly BymaContractMetadataRecord[],
+    ): val is readonly BymaContractMetadataRecord[] => Array.isArray(val);
+    for (const [rawKey, entry] of byNativeSeries) {
+      const cleanKey = rawKey.trim().toUpperCase().replace(/[^A-Z0-9.,]/g, '').replace(/,/g, '.');
+      if (cleanKey === '') continue;
+      next.set(cleanKey, isRecordList(entry) ? [...entry] : [entry]);
+    }
+    return next;
+  }
+
+  private invalidateOptionChainCaches(): void {
+    this.computedCache.clear();
+    if (this.anexoBOptions !== null) {
+      this.anexoBOptions = {
+        byContract: this.anexoBOptions.byContract,
+        cache: new SingleFlightRuntimeCache({ ttlResolver: this.quoteTtlResolver, nowFn: this.nowMsFn }),
+      };
+    }
+  }
+
+  public setAnexoBContractMetadata(
+    byNativeSeries: ReadonlyMap<string, BymaContractMetadataRecord | readonly BymaContractMetadataRecord[]>,
+  ): void {
+    this.anexoBContractMetadata = this.normalizeMetadataSeriesMap(byNativeSeries);
+    this.invalidateOptionChainCaches();
+  }
+
+  public setPrimaryContractMetadata(
+    byNativeSeries: ReadonlyMap<string, BymaContractMetadataRecord | readonly BymaContractMetadataRecord[]>,
+  ): void {
+    this.primaryContractMetadata = this.normalizeMetadataSeriesMap(byNativeSeries);
+    this.invalidateOptionChainCaches();
+  }
+
   public setAnexoBOpenInterest(
     byContract: ReadonlyMap<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>,
   ): void {
@@ -7790,18 +7865,238 @@ export class ArgentinaMarketRuntime {
               (value) => value !== null && Number.isFinite(value) && value > 0,
             ),
         );
-        const parsedContracts: {
-          readonly parsed: ParsedBymaOptionSymbol;
-          readonly row: NormalizedQuoteRow;
-        }[] = [];
-        const rawRowBySymbol = new Map<string, NormalizedQuoteRow>();
-        for (const row of mergedOptionRows) {
-          const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec, true, this.arHolidays);
-          if (parsed !== null && parsed.underlying === underlying) {
-            parsedContracts.push({ parsed, row });
-            rawRowBySymbol.set(parsed.symbol, row);
+        const bmbMetaBySymbol = new Map<string, BymaContractMetadataRecord>();
+        if (dualBmbSnap !== null) {
+          for (const bmbOpt of dualBmbSnap.options) {
+            const symKey = bmbOpt.symbol.trim().toUpperCase().replace(/[^A-Z0-9.,]/g, '').replace(/,/g, '.');
+            if (symKey === '') continue;
+            if (
+              bmbOpt.strike !== undefined &&
+              bmbOpt.strike !== null &&
+              Number.isFinite(bmbOpt.strike) &&
+              bmbOpt.strike > 0
+            ) {
+              bmbMetaBySymbol.set(symKey, {
+                source: 'BMB_OPTION_METADATA',
+                nativeSymbol: symKey,
+                underlying: bmbOpt.underlying,
+                strike: bmbOpt.strike,
+                ...(typeof bmbOpt.expirationDate === 'string' && bmbOpt.expirationDate.trim() !== ''
+                  ? { contractualExpiry: bmbOpt.expirationDate.trim() }
+                  : {}),
+                unit: 'ARS',
+              });
+            }
           }
         }
+
+        const buildMetaRecordsForRow = (
+          row: NormalizedQuoteRow,
+          symKey: string,
+          extraPrimary?: BymaContractMetadataRecord,
+        ): readonly BymaContractMetadataRecord[] => {
+          const out: BymaContractMetadataRecord[] = [];
+          const anexoRecs = this.anexoBContractMetadata.get(symKey);
+          if (anexoRecs !== undefined) {
+            out.push(...anexoRecs);
+          }
+          const primaryRecs = this.primaryContractMetadata.get(symKey);
+          if (primaryRecs !== undefined) {
+            out.push(...primaryRecs);
+          } else if (extraPrimary !== undefined) {
+            out.push(extraPrimary);
+          }
+          const bmbRec = bmbMetaBySymbol.get(symKey);
+          if (bmbRec !== undefined) {
+            out.push(bmbRec);
+          }
+          if (
+            row.explicitStrike !== undefined &&
+            row.explicitStrike !== null &&
+            Number.isFinite(row.explicitStrike) &&
+            row.explicitStrike > 0
+          ) {
+            out.push({
+              source:
+                row.explicitMetadataSource ??
+                (row.quoteSource === 'OPEN_BYMA' ? 'OPEN_BYMA_METADATA' : 'DATA912_METADATA'),
+              nativeSymbol: symKey,
+              ...(row.explicitUnderlying !== undefined ? { underlying: row.explicitUnderlying } : {}),
+              strike: row.explicitStrike,
+              ...(row.explicitExpirationDate !== undefined ? { contractualExpiry: row.explicitExpirationDate } : {}),
+              unit: 'ARS',
+            });
+          }
+          return out;
+        };
+
+        const resolveRowContract = (
+          row: NormalizedQuoteRow,
+          extraPrimary?: BymaContractMetadataRecord,
+        ): ResolvedBymaOptionContract => {
+          const symKey = row.symbol.trim().toUpperCase().replace(/[^A-Z0-9.,]/g, '').replace(/,/g, '.');
+          return resolveBymaOptionContract({
+            rawSymbol: row.symbol,
+            metadataRecords: buildMetaRecordsForRow(row, symKey, extraPrimary),
+            asOfUtcSec: nowSec,
+            includeNearExpiry: true,
+            arHolidays: this.arHolidays,
+            knownUnderlyings: STOCK_META_MAP,
+          });
+        };
+
+        let initialResolved = mergedOptionRows.map((row) => ({
+          row,
+          symKey: row.symbol.trim().toUpperCase().replace(/[^A-Z0-9.,]/g, '').replace(/,/g, '.'),
+          resolved: resolveRowContract(row),
+        }));
+
+        const ambiguousForPrimary = [
+          ...new Set(
+            initialResolved
+              .filter(
+                (item) =>
+                  item.resolved.strikeResolutionStatus === 'AMBIGUOUS_SCALE_UNRESOLVED' &&
+                  item.resolved.underlying === underlying,
+              )
+              .map((item) => item.symKey),
+          ),
+        ].slice(0, 12);
+
+        if (ambiguousForPrimary.length > 0 && this.primaryClient.isConfigured()) {
+          const primaryDetails = await mapWithConcurrencyLimit(ambiguousForPrimary, 4, async (symKey) => {
+            const detail = await this.primaryClient.getInstrumentDetail(symKey, 'ROFX').catch((): null => null);
+            return { symKey, detail };
+          });
+          const fetchedPrimaryMap = new Map<string, BymaContractMetadataRecord>();
+          for (const { symKey, detail } of primaryDetails) {
+            if (
+              detail !== null &&
+              detail.strikePrice !== null &&
+              Number.isFinite(detail.strikePrice) &&
+              detail.strikePrice > 0
+            ) {
+              fetchedPrimaryMap.set(symKey, {
+                source: 'PRIMARY_INSTRUMENT_DETAIL',
+                nativeSymbol: symKey,
+                underlying: detail.underlying,
+                strike: detail.strikePrice,
+                contractualExpiry: detail.maturityDate,
+                unit: 'ARS',
+              });
+            }
+          }
+          if (fetchedPrimaryMap.size > 0) {
+            initialResolved = initialResolved.map((item) => {
+              const extraPrimary = fetchedPrimaryMap.get(item.symKey);
+              return extraPrimary !== undefined
+                ? { ...item, resolved: resolveRowContract(item.row, extraPrimary) }
+                : item;
+            });
+          }
+        }
+
+        const parsedContracts: {
+          readonly parsed: ParsedBymaOptionSymbol;
+          readonly resolved: ResolvedBymaOptionContract;
+          readonly row: NormalizedQuoteRow;
+        }[] = [];
+        const unresolvedContracts: ArUnresolvedOptionContractDto[] = [];
+        const unresolvedByExpiry = new Map<string, ArUnresolvedOptionContractDto[]>();
+        const rawRowBySymbol = new Map<string, NormalizedQuoteRow>();
+        let resolvedExplicitCount = 0;
+        let resolvedCanonicalCount = 0;
+        let ambiguousUnresolvedCount = 0;
+        let conflictingMetadataCount = 0;
+
+        for (const { row, resolved } of initialResolved) {
+          if (resolved.strikeResolutionStatus === 'INVALID_SYMBOL' || resolved.underlying !== underlying) {
+            continue;
+          }
+          if (
+            resolved.strikeResolutionStatus === 'AMBIGUOUS_SCALE_UNRESOLVED' ||
+            resolved.strikeResolutionStatus === 'CONFLICTING_METADATA'
+          ) {
+            if (resolved.strikeResolutionStatus === 'AMBIGUOUS_SCALE_UNRESOLVED') {
+              ambiguousUnresolvedCount += 1;
+            } else {
+              conflictingMetadataCount += 1;
+            }
+            const unresolvedDto: ArUnresolvedOptionContractDto = {
+              symbol: resolved.nativeSymbol,
+              underlying: resolved.underlying,
+              contractType: resolved.side,
+              strike: null,
+              canonicalContractId: null,
+              strikeResolutionStatus: resolved.strikeResolutionStatus,
+              strikeSource: 'NONE',
+              expiryCode: resolved.expiryCode,
+              expirationDate: resolved.contractualExpiry,
+              expiryUtcSec: resolved.expiryUtcSec,
+              bid: sanitizeFinite(row.bid),
+              bidSize: row.bidSize ?? null,
+              ask: sanitizeFinite(row.ask),
+              askSize: row.askSize ?? null,
+              last: sanitizeFinite(row.last),
+              volume: sanitizeFinite(row.nominalVol),
+              openInterest: sanitizeFinite(row.openInterest),
+              quoteSource: row.quoteSource ?? 'DATA912',
+              quoteAsOfUtcSec: row.quoteAsOfUtcSec ?? null,
+              exclusionReason:
+                resolved.normalizationEvidence.exclusionReason ?? resolved.strikeResolutionStatus,
+              normalizationEvidence: resolved.normalizationEvidence,
+            };
+            unresolvedContracts.push(unresolvedDto);
+            if (resolved.contractualExpiry !== null) {
+              const expBucket = unresolvedByExpiry.get(resolved.contractualExpiry);
+              if (expBucket !== undefined) {
+                expBucket.push(unresolvedDto);
+              } else {
+                unresolvedByExpiry.set(resolved.contractualExpiry, [unresolvedDto]);
+              }
+            }
+            continue;
+          }
+
+          if (
+            resolved.side === null ||
+            resolved.strike === null ||
+            resolved.contractualExpiry === null ||
+            resolved.expiryCode === null ||
+            resolved.expiryLabel === null ||
+            resolved.expiryUtcSec === null ||
+            resolved.daysToExpiry === null
+          ) {
+            continue;
+          }
+
+          if (resolved.strikeResolutionStatus === 'EXPLICIT_METADATA') {
+            resolvedExplicitCount += 1;
+          } else {
+            resolvedCanonicalCount += 1;
+          }
+
+          const parsed: ParsedBymaOptionSymbol = {
+            symbol: resolved.nativeSymbol,
+            underlying: resolved.underlying,
+            contractType: resolved.side,
+            strike: resolved.strike,
+            expiryCode: resolved.expiryCode,
+            expiryLabel: resolved.expiryLabel,
+            expirationDate: resolved.contractualExpiry,
+            expiryUtcSec: resolved.expiryUtcSec,
+            daysToExpiry: resolved.daysToExpiry,
+          };
+          parsedContracts.push({ parsed, resolved, row });
+          rawRowBySymbol.set(parsed.symbol, row);
+        }
+
+        const strikeQuality: ArStrikeQualitySummaryDto = {
+          resolvedExplicitCount,
+          resolvedCanonicalCount,
+          ambiguousUnresolvedCount,
+          conflictingMetadataCount,
+        };
 
         const providerErrors = [
           ...overview.providerErrors,
@@ -7861,7 +8156,7 @@ export class ArgentinaMarketRuntime {
           oiEntriesByExpiry.set(sample.expiryCode, sliceOiEntries);
           ivStatusCountsByExpiry.set(sample.expiryCode, sliceIvStatusCounts);
 
-          for (const { parsed, row } of bucket) {
+          for (const { parsed, resolved, row } of bucket) {
             strikeSet.add(parsed.strike);
             const { bid, ask, last } = row;
             const resolution = solveImpliedVolAmericanDetailed({
@@ -7993,6 +8288,10 @@ export class ArgentinaMarketRuntime {
               oiProvenance: oi,
               ...(row.fieldProvenance !== undefined ? { fieldProvenance: { ...row.fieldProvenance, openInterest: observedOi } } : {}),
               ...(multiplier ?? {}),
+              canonicalContractId: resolved.canonicalContractId,
+              strikeResolutionStatus: resolved.strikeResolutionStatus,
+              strikeSource: resolved.strikeSource,
+              normalizationEvidence: resolved.normalizationEvidence,
               iv: sanitizeFinite(iv),
               delta: sanitizeFinite(greeks?.delta),
               gamma: sanitizeFinite(greeks?.gamma),
@@ -8154,6 +8453,7 @@ export class ArgentinaMarketRuntime {
             }
           }
 
+          const unresolvedForExp = unresolvedByExpiry.get(sample.expirationDate);
           expiries.push({
             expiryCode: sample.expiryCode,
             expiryLabel: sample.expiryLabel,
@@ -8169,6 +8469,9 @@ export class ArgentinaMarketRuntime {
             strikes: sortedStrikes,
             calls: pricedCalls,
             puts: pricedPuts,
+            ...(unresolvedForExp !== undefined && unresolvedForExp.length > 0
+              ? { unresolvedContracts: unresolvedForExp }
+              : {}),
           });
         }
 
@@ -8322,6 +8625,7 @@ export class ArgentinaMarketRuntime {
               byStrikeCount: expResult.byStrike.length,
               missingOiInputs, invalidOiInputs, observedZeroOiInputs, iamcOiInputs, directContractOiInputs,
               oiConflicts, oiUniverseInputs: sliceOiEntries.length, ivStatusCounts: sliceIvStatusCounts,
+              strikeQuality,
               directOiInputs: arOiSummary.directOiInputs,
               proxyOiInputs: arOiSummary.proxyOiInputs,
               oiProxy: arOiSummary.oiProxy,
@@ -9072,6 +9376,8 @@ export class ArgentinaMarketRuntime {
           historicalCloses,
           termStructure,
           expiries,
+          unresolvedContracts,
+          strikeQuality,
           exposureSummary,
           exposureSummaryByExpiry,
           costSchedule: {

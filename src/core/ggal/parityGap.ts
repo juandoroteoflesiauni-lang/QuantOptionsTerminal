@@ -7,6 +7,7 @@
  */
 
 import { evaluateCclContemporaneity, type CclTemporalValuation } from '../temporalFeedIntegrity.js';
+import type { AdrQuoteQualityMode, NormalizedAdrMarketData } from './adrQuoteIntegrity.js';
 import { normCdf } from '../options/math.js';
 import { greeksBsm, priceBsm } from '../options/blackScholes.js';
 import {
@@ -164,6 +165,7 @@ export interface ParityGapInput {
   readonly byma24h: BidAskQuote;
   readonly bymaCi?: BidAskQuote;
   readonly adr: BidAskQuote;
+  readonly adrMarketData?: NormalizedAdrMarketData;
   readonly sofrRateAnnual: number;
   readonly caucionArsRateTna: number;
   readonly sovereignBonds: readonly SovereignBondCclQuote[];
@@ -185,6 +187,22 @@ export interface ParityGapInput {
   readonly preOpenOptions?: readonly LocalOptionPreOpenInput[];
 }
 
+export type ParityExecutableStatus =
+  | 'EXECUTABLE_BILATERAL_L1'
+  | 'INDICATIVE_ONLY_NO_ADR_BBO'
+  | 'INDICATIVE_ONLY_NO_BYMA_BBO'
+  | 'INDICATIVE_ONLY_NO_BOND_BBO'
+  | 'EOD_REFERENCE_ONLY'
+  | 'STALE_LOCKED'
+  | 'UNAVAILABLE';
+
+export interface ParityEvaluationSummary {
+  readonly indicativeBasis: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
+  readonly executableStatus: ParityExecutableStatus;
+  readonly actionableSignalAllowed: boolean;
+  readonly blockedReason: string | null;
+}
+
 export interface ParityGapOutput {
   readonly cclTemporal: CclTemporalValuation;
   readonly timestampUtc: string;
@@ -201,6 +219,13 @@ export interface ParityGapOutput {
     readonly byma24hArs: number;
     readonly bymaCiArs: number;
     readonly adrMidUsd: number;
+    readonly adrBidUsd: number;
+    readonly adrAskUsd: number;
+    readonly adrLastUsd: number;
+    readonly adrSpreadUsd: number;
+    readonly adrIndicativeUsd: number;
+    readonly adrQuoteMode: AdrQuoteQualityMode;
+    readonly adrIndicativeBasis: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
     readonly fairBymaOpenArs: number;
     readonly fairAdrUsd: number;
     readonly gapPctVsPrevClose: number;
@@ -220,6 +245,7 @@ export interface ParityGapOutput {
     readonly closeProbability5d: number;
   };
   readonly ouCalibration: OuCalibrationResult;
+  readonly parityEvaluation: ParityEvaluationSummary;
   readonly signal: ParityGapSignal;
   readonly preOpenOptionRepricing: readonly PreOpenOptionRepricingItem[];
 }
@@ -521,6 +547,97 @@ export function computeIndividualOptionRepricingBsm(
   };
 }
 
+function repricePreOpenOptionList(params: {
+  readonly prevSpotArs: number;
+  readonly fairBymaOpenArs: number;
+  readonly overnightDays: number;
+  readonly rAdrOvnAdj: number;
+  readonly ivSensitivity: number;
+  readonly options: readonly LocalOptionPreOpenInput[];
+}): readonly PreOpenOptionRepricingItem[] {
+  const { prevSpotArs, fairBymaOpenArs, overnightDays, rAdrOvnAdj, ivSensitivity, options } = params;
+  if (!isPositiveFinite(prevSpotArs) || !isPositiveFinite(fairBymaOpenArs) || options.length === 0) {
+    return [];
+  }
+  const dS = fairBymaOpenArs - prevSpotArs;
+  const dtYears = Math.max(0, overnightDays) / DAYS_PER_YEAR;
+  const repricing: PreOpenOptionRepricingItem[] = [];
+
+  for (const opt of options) {
+    const strikeArs = opt.strikeArs;
+    const contractType = opt.contractType;
+    const timeToExpiryYears = opt.timeToExpiryYears;
+    const iv = opt.iv;
+
+    if (
+      strikeArs !== undefined &&
+      contractType !== undefined &&
+      timeToExpiryYears !== undefined &&
+      iv !== undefined &&
+      isPositiveFinite(strikeArs) &&
+      isPositiveFinite(timeToExpiryYears) &&
+      isPositiveFinite(iv) &&
+      isPositiveFinite(opt.prevCloseArs)
+    ) {
+      const targetSpot =
+        opt.projectedSpotArs !== undefined && isPositiveFinite(opt.projectedSpotArs)
+          ? opt.projectedSpotArs
+          : fairBymaOpenArs;
+      const dSigma = opt.deltaImpliedVol ?? ivSensitivity * rAdrOvnAdj;
+      const rateCont = opt.rateCont !== undefined && Number.isFinite(opt.rateCont) ? opt.rateCont : 0;
+      repricing.push(
+        computeIndividualOptionRepricingBsm({
+          tickerByma: opt.tickerByma,
+          prevSpotArs,
+          projectedSpotArs: targetSpot,
+          strikeArs,
+          contractType,
+          timeToExpiryYears,
+          iv,
+          rateCont,
+          prevCloseArs: opt.prevCloseArs,
+          ...(opt.dividendYield !== undefined ? { dividendYield: opt.dividendYield } : {}),
+          deltaImpliedVol: dSigma,
+          dtYears,
+        }),
+      );
+      continue;
+    }
+
+    if (
+      !isPositiveFinite(opt.prevCloseArs) ||
+      !Number.isFinite(opt.delta) ||
+      !Number.isFinite(opt.gamma) ||
+      !Number.isFinite(opt.vega) ||
+      !Number.isFinite(opt.theta)
+    ) {
+      repricing.push({
+        tickerByma: opt.tickerByma,
+        prevCloseArs: opt.prevCloseArs,
+        fairOpenArs: Number.NaN,
+        deltaRepricePct: Number.NaN,
+      });
+      continue;
+    }
+    const dSigma = opt.deltaImpliedVol ?? ivSensitivity * rAdrOvnAdj;
+    const dV =
+      opt.delta * dS +
+      0.5 * opt.gamma * dS * dS +
+      opt.vega * dSigma +
+      opt.theta * dtYears;
+    const fairOpenArs = opt.prevCloseArs + dV;
+    const deltaRepricePct = (dV / opt.prevCloseArs) * 100;
+    repricing.push({
+      tickerByma: opt.tickerByma,
+      prevCloseArs: opt.prevCloseArs,
+      fairOpenArs,
+      deltaRepricePct,
+    });
+  }
+
+  return repricing;
+}
+
 /**
  * Calcula precio teórico de apertura pre-11:00 ART y repricing individual por base (`BSM` o `Taylor`).
  */
@@ -607,81 +724,14 @@ export function computeBymaFairOpenAndReprice(
     return { fairBymaOpenArs: Number.NaN, repricing: [] };
   }
 
-  const dS = fairBymaOpenArs - preOpen.bymaPrevClose24hArs;
-  const dtYears = ovnDays / DAYS_PER_YEAR;
-  const repricing: PreOpenOptionRepricingItem[] = [];
-
-  for (const opt of options) {
-    const strikeArs = opt.strikeArs;
-    const contractType = opt.contractType;
-    const timeToExpiryYears = opt.timeToExpiryYears;
-    const iv = opt.iv;
-
-    if (
-      strikeArs !== undefined &&
-      contractType !== undefined &&
-      timeToExpiryYears !== undefined &&
-      iv !== undefined &&
-      isPositiveFinite(strikeArs) &&
-      isPositiveFinite(timeToExpiryYears) &&
-      isPositiveFinite(iv) &&
-      isPositiveFinite(opt.prevCloseArs)
-    ) {
-      const targetSpot =
-        opt.projectedSpotArs !== undefined && isPositiveFinite(opt.projectedSpotArs)
-          ? opt.projectedSpotArs
-          : fairBymaOpenArs;
-      const dSigma = opt.deltaImpliedVol ?? ivSens * rAdrOvnAdj;
-      const rateCont = opt.rateCont !== undefined && Number.isFinite(opt.rateCont) ? opt.rateCont : 0;
-      repricing.push(
-        computeIndividualOptionRepricingBsm({
-          tickerByma: opt.tickerByma,
-          prevSpotArs: preOpen.bymaPrevClose24hArs,
-          projectedSpotArs: targetSpot,
-          strikeArs,
-          contractType,
-          timeToExpiryYears,
-          iv,
-          rateCont,
-          prevCloseArs: opt.prevCloseArs,
-          ...(opt.dividendYield !== undefined ? { dividendYield: opt.dividendYield } : {}),
-          deltaImpliedVol: dSigma,
-          dtYears,
-        }),
-      );
-      continue;
-    }
-
-    if (
-      !isPositiveFinite(opt.prevCloseArs) ||
-      !Number.isFinite(opt.delta) ||
-      !Number.isFinite(opt.gamma) ||
-      !Number.isFinite(opt.vega) ||
-      !Number.isFinite(opt.theta)
-    ) {
-      repricing.push({
-        tickerByma: opt.tickerByma,
-        prevCloseArs: opt.prevCloseArs,
-        fairOpenArs: Number.NaN,
-        deltaRepricePct: Number.NaN,
-      });
-      continue;
-    }
-    const dSigma = opt.deltaImpliedVol ?? ivSens * rAdrOvnAdj;
-    const dV =
-      opt.delta * dS +
-      0.5 * opt.gamma * dS * dS +
-      opt.vega * dSigma +
-      opt.theta * dtYears;
-    const fairOpenArs = opt.prevCloseArs + dV;
-    const deltaRepricePct = (dV / opt.prevCloseArs) * 100;
-    repricing.push({
-      tickerByma: opt.tickerByma,
-      prevCloseArs: opt.prevCloseArs,
-      fairOpenArs,
-      deltaRepricePct,
-    });
-  }
+  const repricing = repricePreOpenOptionList({
+    prevSpotArs: preOpen.bymaPrevClose24hArs,
+    fairBymaOpenArs,
+    overnightDays: ovnDays,
+    rAdrOvnAdj,
+    ivSensitivity: ivSens,
+    options,
+  });
 
   return { fairBymaOpenArs, repricing };
 }
@@ -735,11 +785,84 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
       syncSkew > maxSkew);
 
   const byma24hMid = quoteMid(input.byma24h);
+  const byma24hIndicative = isPositiveFinite(byma24hMid)
+    ? byma24hMid
+    : input.byma24h.last !== undefined && isPositiveFinite(input.byma24h.last)
+      ? input.byma24h.last
+      : Number.NaN;
   const bymaCiMid = input.bymaCi !== undefined ? quoteMid(input.bymaCi) : Number.NaN;
-  const adrMid = quoteMid(input.adr);
+  const bymaCiIndicative = isPositiveFinite(bymaCiMid)
+    ? bymaCiMid
+    : input.bymaCi?.last !== undefined && isPositiveFinite(input.bymaCi.last)
+      ? input.bymaCi.last
+      : Number.NaN;
+
+  const adrData = input.adrMarketData;
+  const adrBilateralFromQuote =
+    isPositiveFinite(input.adr.bid) &&
+    isPositiveFinite(input.adr.ask) &&
+    input.adr.ask >= input.adr.bid;
+  const adrMid = adrData !== undefined ? adrData.l1Book.mid : adrBilateralFromQuote ? quoteMid(input.adr) : Number.NaN;
+  const adrBidUsd =
+    adrData !== undefined
+      ? adrData.l1Book.bid
+      : isPositiveFinite(input.adr.bid) && (adrBilateralFromQuote || isPositiveFinite(input.adr.bid))
+        ? input.adr.bid
+        : Number.NaN;
+  const adrAskUsd =
+    adrData !== undefined
+      ? adrData.l1Book.ask
+      : isPositiveFinite(input.adr.ask) && (adrBilateralFromQuote || isPositiveFinite(input.adr.ask))
+        ? input.adr.ask
+        : Number.NaN;
+  const adrLastUsd =
+    adrData !== undefined
+      ? adrData.trade.lastPrice
+      : input.adr.last !== undefined && isPositiveFinite(input.adr.last)
+        ? input.adr.last
+        : Number.NaN;
+  const adrSpreadUsd =
+    adrData !== undefined
+      ? adrData.l1Book.spreadUsd
+      : adrBilateralFromQuote
+        ? input.adr.ask - input.adr.bid
+        : Number.NaN;
+  const adrQuoteMode: AdrQuoteQualityMode =
+    adrData !== undefined
+      ? adrData.quoteMode
+      : isEodMode
+        ? isPositiveFinite(adrMid) || isPositiveFinite(adrLastUsd)
+          ? 'EOD_CLOSE_REF'
+          : 'UNAVAILABLE'
+        : adrBilateralFromQuote
+          ? 'LIVE_BID_ASK'
+          : isPositiveFinite(adrBidUsd) !== isPositiveFinite(adrAskUsd)
+            ? 'ONE_SIDED_QUOTE'
+            : isPositiveFinite(adrLastUsd)
+              ? 'LAST_ONLY'
+              : 'UNAVAILABLE';
+  const adrIndicativeUsd =
+    adrData !== undefined
+      ? adrData.indicativePriceUsd
+      : isPositiveFinite(adrMid)
+        ? adrMid
+        : isPositiveFinite(adrLastUsd)
+          ? adrLastUsd
+          : Number.NaN;
+  const adrIndicativeBasis: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE' =
+    adrData !== undefined
+      ? adrData.indicativePriceBasis
+      : isPositiveFinite(adrMid) && !isEodMode
+        ? 'L1_MID'
+        : isEodMode && isPositiveFinite(adrIndicativeUsd)
+          ? 'EOD_CLOSE'
+          : isPositiveFinite(adrIndicativeUsd)
+            ? 'LAST_TRADE'
+            : 'NONE';
+
   const cclTemporal = evaluateCclContemporaneity({
-    byma: { price: byma24hMid, timeSec: input.data912TimestampSec },
-    adr: { price: adrMid, timeSec: input.massiveTimestampSec },
+    byma: { price: byma24hIndicative, timeSec: input.data912TimestampSec },
+    adr: { price: adrIndicativeUsd, timeSec: input.massiveTimestampSec },
     evaluationNowSec: input.asOfUtcSec,
     marketRegime: session.sessionRegime,
     isEodMode,
@@ -751,20 +874,20 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
   let cclGgal24h = Number.NaN;
   let cclGgalCiTo24h = Number.NaN;
   if (
-    isPositiveFinite(byma24hMid) &&
-    isPositiveFinite(adrMid) &&
+    isPositiveFinite(byma24hIndicative) &&
+    isPositiveFinite(adrIndicativeUsd) &&
     Number.isFinite(input.sofrRateAnnual) &&
     Number.isFinite(deltaAr1Days) &&
     Number.isFinite(deltaUs1Days)
   ) {
     const deltaDiff = deltaAr1Days - deltaUs1Days;
     const sofrAdj = Math.exp(input.sofrRateAnnual * (deltaDiff / DAYS_PER_YEAR));
-    cclGgal24h = (GGAL_ADR_RATIO * byma24hMid) / (adrMid * sofrAdj);
+    cclGgal24h = (GGAL_ADR_RATIO * byma24hIndicative) / (adrIndicativeUsd * sofrAdj);
 
-    if (isPositiveFinite(bymaCiMid) && Number.isFinite(input.caucionArsRateTna)) {
+    if (isPositiveFinite(bymaCiIndicative) && Number.isFinite(input.caucionArsRateTna)) {
       const ciCarryFactor = 1 + input.caucionArsRateTna * (deltaAr1Days / DAYS_PER_YEAR);
       if (ciCarryFactor > 0) {
-        cclGgalCiTo24h = (GGAL_ADR_RATIO * bymaCiMid * ciCarryFactor) / (adrMid * sofrAdj);
+        cclGgalCiTo24h = (GGAL_ADR_RATIO * bymaCiIndicative * ciCarryFactor) / (adrIndicativeUsd * sofrAdj);
       }
     }
   }
@@ -867,7 +990,12 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
   }
 
   const bymaSpreadRel = quoteRelativeSpread(input.byma24h);
-  const adrSpreadRel = quoteRelativeSpread(input.adr);
+  const adrSpreadRel =
+    adrData !== undefined
+      ? adrData.l1Book.spreadRel
+      : adrBilateralFromQuote
+        ? quoteRelativeSpread(input.adr)
+        : Number.NaN;
   const feeSchedule = input.bymaFeeSchedule ?? BYMA_FEE_SCHEDULE;
   const usSchedule = input.usFeeSchedule ?? DEFAULT_US_FEE_SCHEDULE;
   const notionalArs = input.notionalArsForFees ?? DEFAULT_NOTIONAL_FOR_FEES;
@@ -884,6 +1012,7 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
     zScore = (spreadLog - ouCalibration.muLog) / ouCalibration.eqSigma;
 
     if (
+      !isEodMode &&
       Number.isFinite(bymaSpreadRel) &&
       Number.isFinite(adrSpreadRel) &&
       Number.isFinite(avgBondArsSpread) &&
@@ -923,38 +1052,75 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
 
   let fairAdrUsd = Number.NaN;
   if (
-    isPositiveFinite(byma24hMid) &&
+    isPositiveFinite(byma24hIndicative) &&
     isPositiveFinite(cclSovereignBenchmark) &&
     Number.isFinite(input.sofrRateAnnual) &&
     Number.isFinite(deltaAr1Days) &&
     Number.isFinite(deltaUs1Days)
   ) {
     const sofrAdj = Math.exp(input.sofrRateAnnual * ((deltaAr1Days - deltaUs1Days) / DAYS_PER_YEAR));
-    fairAdrUsd = (GGAL_ADR_RATIO * byma24hMid) / (cclSovereignBenchmark * sofrAdj);
+    fairAdrUsd = (GGAL_ADR_RATIO * byma24hIndicative) / (cclSovereignBenchmark * sofrAdj);
   }
 
   let fairBymaOpenArs = Number.NaN;
   let preOpenOptionRepricing: readonly PreOpenOptionRepricingItem[] = [];
-  if (input.preOpen !== undefined) {
+  if (
+    input.preOpen !== undefined &&
+    isPositiveFinite(adrMid) &&
+    isPositiveFinite(adrBidUsd) &&
+    isPositiveFinite(adrAskUsd) &&
+    adrAskUsd >= adrBidUsd
+  ) {
     const openRes = computeBymaFairOpenAndReprice(
       input.preOpen,
       ouCalibration,
       adrMid,
-      input.adr.bid,
-      input.adr.ask,
+      adrBidUsd,
+      adrAskUsd,
       input.preOpenOptions ?? [],
     );
     fairBymaOpenArs = openRes.fairBymaOpenArs;
     preOpenOptionRepricing = openRes.repricing;
-  } else if (
-    isPositiveFinite(adrMid) &&
-    isPositiveFinite(cclSovereignBenchmark) &&
-    Number.isFinite(input.sofrRateAnnual) &&
-    Number.isFinite(deltaAr1Days) &&
-    Number.isFinite(deltaUs1Days)
-  ) {
-    const sofrAdj = Math.exp(input.sofrRateAnnual * ((deltaAr1Days - deltaUs1Days) / DAYS_PER_YEAR));
-    fairBymaOpenArs = (adrMid * sofrAdj * cclSovereignBenchmark) / GGAL_ADR_RATIO;
+  } else {
+    if (
+      isPositiveFinite(adrIndicativeUsd) &&
+      isPositiveFinite(cclSovereignBenchmark) &&
+      Number.isFinite(input.sofrRateAnnual) &&
+      Number.isFinite(deltaAr1Days) &&
+      Number.isFinite(deltaUs1Days)
+    ) {
+      const sofrAdj = Math.exp(input.sofrRateAnnual * ((deltaAr1Days - deltaUs1Days) / DAYS_PER_YEAR));
+      fairBymaOpenArs = (adrIndicativeUsd * sofrAdj * cclSovereignBenchmark) / GGAL_ADR_RATIO;
+    } else if (
+      input.preOpen !== undefined &&
+      isPositiveFinite(adrIndicativeUsd) &&
+      isPositiveFinite(input.preOpen.bymaPrevClose24hArs) &&
+      isPositiveFinite(input.preOpen.adrPrev1700ArtUsd)
+    ) {
+      fairBymaOpenArs =
+        input.preOpen.bymaPrevClose24hArs * (adrIndicativeUsd / input.preOpen.adrPrev1700ArtUsd);
+    }
+
+    if (
+      input.preOpen !== undefined &&
+      (input.preOpenOptions?.length ?? 0) > 0 &&
+      isPositiveFinite(input.preOpen.bymaPrevClose24hArs) &&
+      isPositiveFinite(fairBymaOpenArs)
+    ) {
+      const adrNum = adrIndicativeUsd + (input.preOpen.adrExDividendUsd ?? 0);
+      const rAdrOvnAdj =
+        isPositiveFinite(adrNum) && isPositiveFinite(input.preOpen.adrPrev1700ArtUsd)
+          ? Math.log(adrNum / input.preOpen.adrPrev1700ArtUsd)
+          : 0;
+      preOpenOptionRepricing = repricePreOpenOptionList({
+        prevSpotArs: input.preOpen.bymaPrevClose24hArs,
+        fairBymaOpenArs,
+        overnightDays: input.preOpen.overnightDays ?? 1,
+        rAdrOvnAdj,
+        ivSensitivity: input.preOpen.params?.ivSensitivityToAdrReturn ?? 0,
+        options: input.preOpenOptions ?? [],
+      });
+    }
   }
 
   const refPrevClose = input.bymaPrevClose24hArs ?? input.preOpen?.bymaPrevClose24hArs;
@@ -962,6 +1128,48 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
     refPrevClose !== undefined && isPositiveFinite(refPrevClose) && isPositiveFinite(fairBymaOpenArs)
       ? ((fairBymaOpenArs - refPrevClose) / refPrevClose) * 100
       : Number.NaN;
+
+  const bymaBilateralL1 =
+    isPositiveFinite(input.byma24h.bid) &&
+    isPositiveFinite(input.byma24h.ask) &&
+    input.byma24h.ask >= input.byma24h.bid &&
+    Number.isFinite(bymaSpreadRel);
+  const adrBilateralL1 =
+    adrData !== undefined
+      ? adrData.l1Book.isBilateralExecutable && Number.isFinite(adrSpreadRel)
+      : adrBilateralFromQuote && Number.isFinite(adrSpreadRel);
+  const bondsBilateralL1 =
+    bondEntries.length > 0 && Number.isFinite(avgBondArsSpread) && Number.isFinite(avgBondUsdCSpread);
+
+  let executableStatus: ParityExecutableStatus;
+  let blockedReason: string | null;
+  if (staleLocked) {
+    executableStatus = 'STALE_LOCKED';
+    blockedReason = 'STALE_OR_DESYNCHRONIZED_FEEDS';
+  } else if (isEodMode) {
+    executableStatus = 'EOD_REFERENCE_ONLY';
+    blockedReason = 'MARKET_EOD_REFERENCE_ONLY';
+  } else if (!adrBilateralL1) {
+    executableStatus = isPositiveFinite(adrIndicativeUsd) ? 'INDICATIVE_ONLY_NO_ADR_BBO' : 'UNAVAILABLE';
+    blockedReason = isPositiveFinite(adrIndicativeUsd) ? 'ADR_NO_BILATERAL_L1_BBO' : 'ADR_UNAVAILABLE';
+  } else if (!bymaBilateralL1) {
+    executableStatus = isPositiveFinite(byma24hIndicative) ? 'INDICATIVE_ONLY_NO_BYMA_BBO' : 'UNAVAILABLE';
+    blockedReason = isPositiveFinite(byma24hIndicative) ? 'BYMA_NO_BILATERAL_L1_BBO' : 'BYMA_UNAVAILABLE';
+  } else if (!bondsBilateralL1) {
+    executableStatus = 'INDICATIVE_ONLY_NO_BOND_BBO';
+    blockedReason = 'BONDS_NO_BILATERAL_L1_BBO';
+  } else {
+    executableStatus = 'EXECUTABLE_BILATERAL_L1';
+    blockedReason = null;
+  }
+
+  const actionableSignalAllowed = executableStatus === 'EXECUTABLE_BILATERAL_L1';
+  const parityEvaluation: ParityEvaluationSummary = {
+    indicativeBasis: adrIndicativeBasis,
+    executableStatus,
+    actionableSignalAllowed,
+    blockedReason,
+  };
 
   const zThreshold = input.zEntryThreshold ?? DEFAULT_Z_THRESHOLD;
   const minEdgeBps = input.minNetEdgeBps ?? DEFAULT_MIN_EDGE_BPS;
@@ -971,6 +1179,7 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
   if (staleLocked) {
     signal = 'STALE_DATA_LOCK';
   } else if (
+    actionableSignalAllowed &&
     ouCalibration.status === 'OK' &&
     Number.isFinite(zScore) &&
     Number.isFinite(netEdgeAfterCostsBps) &&
@@ -995,9 +1204,16 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
       data912: data912Staleness,
     },
     spot: {
-      byma24hArs: byma24hMid,
-      bymaCiArs: bymaCiMid,
+      byma24hArs: byma24hIndicative,
+      bymaCiArs: bymaCiIndicative,
       adrMidUsd: adrMid,
+      adrBidUsd,
+      adrAskUsd,
+      adrLastUsd,
+      adrSpreadUsd,
+      adrIndicativeUsd,
+      adrQuoteMode,
+      adrIndicativeBasis,
       fairBymaOpenArs,
       fairAdrUsd,
       gapPctVsPrevClose,
@@ -1018,6 +1234,7 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
     },
     cclTemporal: { ...cclTemporal, value: cclTemporal.cclQuality === 'MISSING_LEG' ? Number.NaN : cclGgal24h },
     ouCalibration,
+    parityEvaluation,
     signal,
     preOpenOptionRepricing,
   };

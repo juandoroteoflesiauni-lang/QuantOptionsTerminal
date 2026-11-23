@@ -1,4 +1,6 @@
 import { isIsoContractDate } from './anexoBIdentity.js';
+import type { AdrQuoteQualityMode } from './adrQuoteIntegrity.js';
+import type { BymaStrikeResolutionStatus } from './bymaContractResolver.js';
 import type { AmericanIvStatus, MarginModelBasis, MarginRiskStatus } from '../options/ivContract.js';
 import type { ArMarketFieldSource, ContractMultiplierSource } from '../options/oiProvenance.js';
 /**
@@ -98,6 +100,7 @@ export interface BymaMarginLegInput {
   readonly ivStatus?: AmericanIvStatus;
   readonly quoteSource?: ArMarketFieldSource;
   readonly quoteAsOfUtcSec?: number | null;
+  readonly strikeResolutionStatus?: BymaStrikeResolutionStatus;
   readonly ticker: string;
   readonly contractType: OptionContractType;
   readonly side: OrderSide;
@@ -288,6 +291,10 @@ export interface ExecutionMicrostructureInput {
   readonly minL1DepthLots?: number;
   readonly sqrtImpactCoef?: number;
   readonly maxImpactRatio?: number;
+  readonly adrQuoteMode?: AdrQuoteQualityMode;
+  readonly adrBidUsd?: number | null;
+  readonly adrAskUsd?: number | null;
+  readonly adrExecutableL1?: boolean;
 }
 
 export interface HayashiYoshidaLagPoint {
@@ -342,6 +349,15 @@ export interface ExecutionMicrostructureOutput {
   readonly maxSingleOrderLots: number;
   readonly sqrtImpactCapLots: number;
   readonly liquidityCapBindingReason: string;
+  readonly adrBookDiagnostics?: {
+    readonly adrBookQuality: AdrQuoteQualityMode;
+    readonly adrBidUsd: number;
+    readonly adrAskUsd: number;
+    readonly adrSpreadUsd: number;
+    readonly adrExecutableL1: boolean;
+    readonly crossVenueExecutionAllowed: boolean;
+    readonly adrExecutionBlockedReason: string | null;
+  };
 }
 
 export interface StressOpraLegInput {
@@ -386,6 +402,7 @@ export interface TailStressAndSizingInput {
   readonly expiry1530UtcSec?: number;
   readonly spot24hArs: number;
   readonly spotAdrUsd: number;
+  readonly spotAdrPriceBasis?: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
   readonly cclArs: number;
   readonly rateCurveArs: readonly ContinuousRateCurvePoint[];
   readonly caucionRateContinuous?: number;
@@ -439,6 +456,7 @@ export interface SizingConstraintBreakdown {
 export interface StressTestMatrixOutput {
   readonly status: 'OK' | 'NO_DATA';
   readonly reason?: string;
+  readonly spotAdrPriceBasis?: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
   readonly scenarioResults: readonly StressScenarioResult[];
   readonly worstScenarioId: string;
   readonly worstUnitLossArs: number;
@@ -611,6 +629,10 @@ export function classifyAndValidateMarginStructure(input: BymaClearingMarginInpu
     const reason = mixedUnderlying || underlying === '' ? 'MIXED_UNDERLYING'
       : leg.currency !== undefined && leg.currency !== 'ARS' ? 'CURRENCY_MISMATCH'
       : leg.exerciseStyle !== undefined && leg.exerciseStyle !== 'AMERICAN' ? 'UNSUPPORTED_EXERCISE_STYLE'
+      : leg.strikeResolutionStatus !== undefined &&
+          leg.strikeResolutionStatus !== 'EXPLICIT_METADATA' &&
+          leg.strikeResolutionStatus !== 'CANONICAL_SYMBOL'
+        ? 'AMBIGUOUS_STRIKE_SCALE'
       : multiplierSource === 'UNVERIFIED' || !Number.isSafeInteger(contractMultiplier) || contractMultiplier <= 0
         ? 'UNVERIFIED_MULTIPLIER'
       : !isIsoContractDate(expiryDateKey) || !isValidUtcSec(expiryUtcSec) || expiryUtcSec <= input.asOfUtcSec ||
@@ -1653,6 +1675,50 @@ export function evaluateExecutionMicrostructure(
       ? 'OK'
       : 'DEGRADED_L1_ONLY';
 
+  const adrBookDiagnostics: ExecutionMicrostructureOutput['adrBookDiagnostics'] =
+    input.adrQuoteMode !== undefined
+      ? (() => {
+          const adrBookQuality = input.adrQuoteMode;
+          const adrBidRaw =
+            input.adrBidUsd !== undefined &&
+            input.adrBidUsd !== null &&
+            isPositiveFinite(input.adrBidUsd)
+              ? input.adrBidUsd
+              : Number.NaN;
+          const adrAskRaw =
+            input.adrAskUsd !== undefined &&
+            input.adrAskUsd !== null &&
+            isPositiveFinite(input.adrAskUsd)
+              ? input.adrAskUsd
+              : Number.NaN;
+          const adrExecutableL1 =
+            input.adrExecutableL1 === true &&
+            adrBookQuality === 'LIVE_BID_ASK' &&
+            isPositiveFinite(adrBidRaw) &&
+            isPositiveFinite(adrAskRaw) &&
+            adrAskRaw >= adrBidRaw;
+          const adrBidUsd = adrExecutableL1 ? adrBidRaw : Number.NaN;
+          const adrAskUsd = adrExecutableL1 ? adrAskRaw : Number.NaN;
+          const adrSpreadUsd = adrExecutableL1 ? adrAskRaw - adrBidRaw : Number.NaN;
+          const crossVenueExecutionAllowed =
+            adrExecutableL1 && validBookPrices && gate1FreshnessPassed && input.telemetryMode === 'LIVE';
+          const adrExecutionBlockedReason = adrExecutableL1
+            ? null
+            : adrBookQuality === 'EOD_CLOSE_REF'
+              ? 'MARKET_EOD_REFERENCE_ONLY'
+              : 'ADR_NO_BILATERAL_L1_BBO';
+          return {
+            adrBookQuality,
+            adrBidUsd,
+            adrAskUsd,
+            adrSpreadUsd,
+            adrExecutableL1,
+            crossVenueExecutionAllowed,
+            adrExecutionBlockedReason,
+          };
+        })()
+      : undefined;
+
   return {
     status,
     decision,
@@ -1685,6 +1751,7 @@ export function evaluateExecutionMicrostructure(
     maxSingleOrderLots,
     sqrtImpactCapLots,
     liquidityCapBindingReason,
+    ...(adrBookDiagnostics !== undefined ? { adrBookDiagnostics } : {}),
   };
 }
 
@@ -2104,6 +2171,7 @@ export function evaluateTailStressAndSizing(
 
   return {
     status: 'OK',
+    ...(input.spotAdrPriceBasis !== undefined ? { spotAdrPriceBasis: input.spotAdrPriceBasis } : {}),
     scenarioResults,
     worstScenarioId,
     worstUnitLossArs,

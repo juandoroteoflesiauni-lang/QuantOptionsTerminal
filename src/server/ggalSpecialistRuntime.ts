@@ -13,11 +13,23 @@ import {
   buildCanonicalOptionKey,
   isIsoContractDate,
   MONTH_CODES,
-  OPTION_PREFIX_TO_UNDERLYING,
   resolveBymaContractualExpiry,
   selectAnexoBPartition,
   type CanonicalOptionIdentity,
 } from '../core/ggal/anexoBIdentity.js';
+import {
+  resolveBymaOptionContract,
+  type BymaContractMetadataRecord,
+} from '../core/ggal/bymaContractResolver.js';
+import {
+  normalizeAdrMarketData,
+  type AdrL1CandidateInput,
+  type AdrQuoteInvalidReason,
+  type AdrQuoteQualityMode,
+  type AdrReferenceCandidateInput,
+  type AdrTradeCandidateInput,
+  type NormalizedAdrMarketData,
+} from '../core/ggal/adrQuoteIntegrity.js';
 /**
  * Orquestador Backend — Sub-Sector "GGAL Specialist" (Pieza 21).
  *
@@ -204,7 +216,32 @@ export type GgalBadgeMode =
   | 'T-1 ANEXO B'
   | 'NO_DATA';
 
-export type ExecutionPriceBasis = 'LIVE_BID_ASK' | 'EOD_CLOSE_REFERENCE' | 'NONE';
+export type ExecutionPriceBasis =
+  | 'LIVE_BID_ASK'
+  | 'LAST_ONLY'
+  | 'ONE_SIDED_QUOTE'
+  | 'EOD_CLOSE_REFERENCE'
+  | 'NONE';
+
+export interface GgalAdrQuoteTelemetryDto {
+  readonly last: number | null;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly bidSize: number | null;
+  readonly askSize: number | null;
+  readonly mid: number | null;
+  readonly spreadUsd: number | null;
+  readonly spreadRel: number | null;
+  readonly quoteMode: AdrQuoteQualityMode;
+  readonly indicativePriceUsd: number | null;
+  readonly indicativePriceBasis: 'L1_MID' | 'LAST_TRADE' | 'EOD_CLOSE' | 'NONE';
+  readonly tradeTimestampSec: number | null;
+  readonly quoteTimestampSec: number | null;
+  readonly tradeSource: string | null;
+  readonly quoteSource: string | null;
+  readonly invalidReason: AdrQuoteInvalidReason;
+  readonly isBilateralExecutable: boolean;
+}
 
 export interface GgalSpecialistRuntimeDeps {
   readonly runtime: MarketRuntime;
@@ -236,6 +273,7 @@ export interface GgalTelemetryHeaderDto {
   readonly feedStatus: GgalBadgeMode;
   readonly feedBadges: readonly GgalBadgeMode[];
   readonly executionPriceBasis: ExecutionPriceBasis;
+  readonly adrQuote?: GgalAdrQuoteTelemetryDto;
   readonly data912TimestampSec: number | null;
   readonly massiveTimestampSec: number | null;
   readonly data912AgeSec: number | null;
@@ -470,6 +508,12 @@ export interface GgalSpecialistOverviewResponse {
     readonly byma24hArs: number | null;
     readonly bymaCiArs: number | null;
     readonly adrMidUsd: number | null;
+    readonly adrBidUsd?: number | null;
+    readonly adrAskUsd?: number | null;
+    readonly adrLastUsd?: number | null;
+    readonly adrSpreadUsd?: number | null;
+    readonly adrIndicativeUsd?: number | null;
+    readonly adrQuoteMode?: AdrQuoteQualityMode;
     readonly fairBymaOpenArs: number | null;
     readonly fairAdrUsd: number | null;
     readonly gapPctVsPrevClose: number | null;
@@ -477,6 +521,7 @@ export interface GgalSpecialistOverviewResponse {
     readonly cclSovereignBenchmark: number | null;
     readonly parityZScore: number | null;
     readonly paritySignal: string | null;
+    readonly parityEvaluation?: ParityGapOutput['parityEvaluation'];
   };
   readonly volatility: {
     readonly bymaAtmIvPct: number | null;
@@ -560,6 +605,13 @@ export interface GgalMarginRiskResponse {
     readonly optionL1BidSizeLots: number | null;
     readonly optionL1AskSizeLots: number | null;
     readonly recorderPairsCount: number;
+    readonly adrBookQuality?: AdrQuoteQualityMode;
+    readonly adrBidUsd?: number | null;
+    readonly adrAskUsd?: number | null;
+    readonly adrSpreadUsd?: number | null;
+    readonly adrExecutableL1?: boolean;
+    readonly crossVenueExecutionAllowed?: boolean;
+    readonly adrExecutionBlockedReason?: string | null;
   };
   readonly marginRisk: JsonSafeValue<MarginAndRiskOutput> | null;
   readonly executionMicrostructure: JsonSafeValue<ExecutionMicrostructureOutput> | null;
@@ -828,7 +880,7 @@ function sumAnexoBRows(rows: readonly AnexoBIngestStrikeRowInput[]) {
   );
 }
 
-class AnexoBInputError extends RuntimeNoDataError {
+export class AnexoBInputError extends RuntimeNoDataError {
   public constructor(
     public readonly code: string,
     public readonly rejectedRows: readonly AnexoBRejectedRow[] = [],
@@ -977,27 +1029,59 @@ export function parseAnexoBIamcInput(
     let expiryCode = row.expiryCode;
     let strike = row.strikeArs;
     if (nativeSeries !== null) {
-      const parts = /^([A-Z]{3,4})([CV])(\d+(?:[.,]\d+)?)([A-Z]*)$/.exec(nativeSeries);
-      if (parts === null) {
+      const hasValidSeriesSyntax = /^([A-Z]{3,4})([CV])(\d+(?:[.,]\d+)?)([A-Z]*)$/.test(nativeSeries);
+      if (!hasValidSeriesSyntax) {
         reject('INVALID_NATIVE_SERIES');
         return;
       }
-      const [, prefix = '', side, strikeRaw = '', suffix = ''] = parts;
-      if (OPTION_PREFIX_TO_UNDERLYING[prefix] !== underlying) {
+      const explicitMeta: readonly BymaContractMetadataRecord[] =
+        Number.isFinite(row.strikeArs) && row.strikeArs > 0
+          ? [{
+              source: 'IAMC_ANEXO_B',
+              nativeSymbol: nativeSeries,
+              strike: row.strikeArs,
+              reportDate,
+              ...(row.contractualExpiry !== undefined ? { contractualExpiry: row.contractualExpiry } : {}),
+              ...(row.underlying !== undefined ? { underlying: row.underlying } : {}),
+              unit: 'ARS',
+            }]
+          : [];
+      const resolved = resolveBymaOptionContract({
+        rawSymbol: nativeSeries,
+        reportDate,
+        ...(body.knownExpiries !== undefined ? { knownExpiries: body.knownExpiries } : {}),
+        arHolidays,
+        metadataRecords: explicitMeta,
+        enforceNotExpired: false,
+      });
+
+      if (resolved.strikeResolutionStatus === 'INVALID_SYMBOL') {
+        const expErr = resolved.normalizationEvidence.expiryResolutionError;
+        if (resolved.normalizationEvidence.exclusionReason === 'UNKNOWN_UNDERLYING_PREFIX') {
+          reject('WRONG_UNDERLYING');
+        } else if (expErr !== 'NONE') {
+          reject(expErr);
+        } else {
+          reject('INVALID_NATIVE_SERIES');
+        }
+        return;
+      }
+      if (resolved.underlying !== underlying) {
         reject('WRONG_UNDERLYING');
         return;
       }
-      if (suffix === '' || MONTH_CODES[suffix] === undefined) {
-        reject(suffix === '' ? 'MISSING_EXPIRY_SUFFIX' : 'AMBIGUOUS_EXPIRY_SUFFIX');
-        return;
-      }
-      if (expiryCode !== undefined && MONTH_CODES[expiryCode.trim().toUpperCase()]?.code !== MONTH_CODES[suffix].code) {
+      if (
+        expiryCode !== undefined &&
+        MONTH_CODES[expiryCode.trim().toUpperCase()]?.code !== resolved.expiryCode
+      ) {
         reject('EXPIRY_DATE_MISMATCH');
         return;
       }
-      expiryCode = suffix;
-      strike = Number(strikeRaw.replace(',', '.'));
-      const seriesSide = side === 'C' ? 'call' : 'put';
+      const seriesSide = resolved.side;
+      if (seriesSide === null) {
+        reject('INVALID_NATIVE_SERIES');
+        return;
+      }
       const hasOppositePositive = sides.some((entry) => {
         if (entry.side === seriesSide || !isPlainRecord(entry.buckets)) return false;
         const b = entry.buckets;
@@ -1011,10 +1095,30 @@ export function parseAnexoBIamcInput(
         return;
       }
       sides = sides.filter((entry) => entry.side === seriesSide);
-      if (Number.isFinite(row.strikeArs) && Math.round(row.strikeArs * 10_000) !== Math.round(strike * 10_000)) {
-        reject('STRIKE_MISMATCH');
+
+      if (resolved.strikeResolutionStatus === 'CONFLICTING_METADATA') {
+        const firstReason = resolved.normalizationEvidence.conflicts[0]?.reason ?? '';
+        if (firstReason.startsWith('UNDERLYING_MISMATCH')) {
+          reject('WRONG_UNDERLYING');
+        } else if (firstReason.startsWith('SIDE_MISMATCH')) {
+          reject('SIDE_MISMATCH');
+        } else if (firstReason === 'EXPIRY_DATE_MISMATCH' || firstReason === 'EXPIRY_CODE_MISMATCH') {
+          reject('EXPIRY_DATE_MISMATCH');
+        } else {
+          reject('STRIKE_MISMATCH');
+        }
         return;
       }
+      if (resolved.strikeResolutionStatus === 'AMBIGUOUS_SCALE_UNRESOLVED') {
+        reject('AMBIGUOUS_SCALE_UNRESOLVED');
+        return;
+      }
+      if (resolved.strike === null || resolved.expiryCode === null) {
+        reject('INVALID_STRIKE');
+        return;
+      }
+      expiryCode = resolved.expiryCode;
+      strike = resolved.strike;
     }
     if (row.underlying !== undefined && row.underlying.trim().toUpperCase() !== underlying) {
       reject('WRONG_UNDERLYING');
@@ -1550,6 +1654,28 @@ export class GgalSpecialistRuntime {
     this.anexoBReportsByDate.set(record.asOfDate, record);
     if (this.latestAnexoBReportDate !== null && record.asOfDate < this.latestAnexoBReportDate) return;
     this.latestAnexoBReportDate = record.asOfDate;
+    if (typeof this.arRuntime.setAnexoBContractMetadata === 'function') {
+      const byNativeSeries = new Map<string, BymaContractMetadataRecord[]>();
+      for (const partition of Object.values(record.byExpiry)) {
+        for (const identity of partition.identities) {
+          if (identity.nativeSeries === null) continue;
+          const list = byNativeSeries.get(identity.nativeSeries) ?? [];
+          list.push({
+            source: 'IAMC_ANEXO_B',
+            nativeSymbol: identity.nativeSeries,
+            underlying: identity.underlying,
+            side: identity.side,
+            strike: identity.strike,
+            contractualExpiry: identity.contractualExpiry,
+            expiryCode: identity.expiryCode,
+            reportDate: identity.reportDate,
+            unit: 'ARS',
+          });
+          byNativeSeries.set(identity.nativeSeries, list);
+        }
+      }
+      this.arRuntime.setAnexoBContractMetadata(byNativeSeries);
+    }
     if (typeof this.arRuntime.setAnexoBOpenInterest !== 'function') return;
     const byContract = new Map<string, Extract<OiFieldProvenance, { status: 'IAMC_ANEXO_B' }>>();
     for (const partition of Object.values(record.byExpiry)) {
@@ -1591,8 +1717,8 @@ export class GgalSpecialistRuntime {
 
     const ggalRow = bundle.liveStocks.find((r) => r.symbol === 'GGAL');
     const ggalOverview = bundle.overview.mervalStocks.find((s) => s.ticker === 'GGAL');
-    const bid = ggalRow?.bid ?? ggalOverview?.bid ?? ggalOverview?.last ?? null;
-    const ask = ggalRow?.ask ?? ggalOverview?.ask ?? ggalOverview?.last ?? null;
+    const bid = ggalRow?.bid ?? ggalOverview?.bid ?? null;
+    const ask = ggalRow?.ask ?? ggalOverview?.ask ?? null;
     const last = ggalRow?.last ?? ggalOverview?.last ?? null;
     const cumVol = ggalRow?.nominalVol ?? null;
 
@@ -1634,7 +1760,7 @@ export class GgalSpecialistRuntime {
       marketMode: session.marketMode,
       sessionRegime: session.sessionRegime,
       spotByma24hArs: sanitizeFinite(parity.output.spot.byma24hArs),
-      spotAdrUsd: sanitizeFinite(parity.output.spot.adrMidUsd),
+      spotAdrUsd: sanitizeFinite(parity.output.spot.adrIndicativeUsd),
       cclGgal24h: sanitizeFinite(parity.output.ccl.cclGgal24h),
       optionsContractsCount: totalOpts,
     };
@@ -2149,6 +2275,51 @@ export class GgalSpecialistRuntime {
     }
   }
 
+  private resolveMarketEodMode(bundle: MarketBundle): boolean {
+    const isClosed = bundle.overview.marketState === 'CERRADO';
+    if (isClosed || bundle.overview.feedStatus === 'EOD_CIERRE') {
+      return true;
+    }
+    if (bundle.usSnapshot?.feedMode !== 'EOD_CIERRE') {
+      return false;
+    }
+    const hasFreshTradier =
+      bundle.tradierAdrQuotes?.quotes.some(
+        (q) =>
+          q.symbol === 'GGAL' &&
+          ((Number.isFinite(q.bid) && q.bid > 0) ||
+            (Number.isFinite(q.ask) && q.ask > 0) ||
+            (Number.isFinite(q.last) && q.last > 0)) &&
+          Number.isFinite(q.asOfUtcSec) &&
+          bundle.asOfUtcSec - q.asOfUtcSec >= 0 &&
+          bundle.asOfUtcSec - q.asOfUtcSec <= this.maxMassiveStalenessSec,
+      ) ?? false;
+    const hasFreshFmp = bundle.fmpAdrQuotes.some(
+      (q) =>
+        q.symbol === 'GGAL' &&
+        ((q.extendedPrice !== null && Number.isFinite(q.extendedPrice) && q.extendedPrice > 0) ||
+          (Number.isFinite(q.price) && q.price > 0)) &&
+        q.asOfUtcSec !== null &&
+        Number.isFinite(q.asOfUtcSec) &&
+        bundle.asOfUtcSec - q.asOfUtcSec >= 0 &&
+        bundle.asOfUtcSec - q.asOfUtcSec <= this.maxMassiveStalenessSec,
+    );
+    const liveUsGgal = this.runtime.getLiveUsQuotes().find((q) => q.symbol === 'GGAL') ?? null;
+    const hasFreshExtended =
+      liveUsGgal !== null &&
+      liveUsGgal.sessionPhase !== undefined &&
+      isExtendedHoursPhase(liveUsGgal.sessionPhase) &&
+      liveUsGgal.extendedPrice !== undefined &&
+      liveUsGgal.extendedPrice !== null &&
+      Number.isFinite(liveUsGgal.extendedPrice) &&
+      liveUsGgal.extendedPrice > 0 &&
+      liveUsGgal.asOfUtcSec !== null &&
+      Number.isFinite(liveUsGgal.asOfUtcSec) &&
+      bundle.asOfUtcSec - liveUsGgal.asOfUtcSec >= 0 &&
+      bundle.asOfUtcSec - liveUsGgal.asOfUtcSec <= this.maxMassiveStalenessSec;
+    return !(hasFreshTradier || hasFreshFmp || hasFreshExtended);
+  }
+
   private resolveTelemetryMode(
     bundle: MarketBundle,
     executionPriceBasis: ExecutionPriceBasis,
@@ -2158,10 +2329,7 @@ export class GgalSpecialistRuntime {
   ): GgalTelemetryHeaderDto {
     const asOfUtcSec = bundle.asOfUtcSec;
     const isClosedSession = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosedSession;
+    const isEodMode = this.resolveMarketEodMode(bundle);
 
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const parity = evaluateParityGap({
@@ -2231,10 +2399,30 @@ export class GgalSpecialistRuntime {
 
     const adrDiag =
       bundle.tradierAdrQuotes !== null
-        ? `ADR NBBO GGAL: TRADIER (rows=${String(bundle.tradierAdrQuotes.provenance.rows)}, http=${String(bundle.tradierAdrQuotes.provenance.httpStatus ?? 'n/a')})`
+        ? `ADR NBBO GGAL: TRADIER (mode=${spots.adrMarketData.quoteMode}, rows=${String(bundle.tradierAdrQuotes.provenance.rows)}, http=${String(bundle.tradierAdrQuotes.provenance.httpStatus ?? 'n/a')})`
         : bundle.fmpAdrQuotes.length > 0
-          ? `ADR NBBO GGAL: FMP_ENTERPRISE (rows=${String(bundle.fmpAdrQuotes.length)}${bundle.tradierAuthInvalid ? ', Tradier AUTH_INVALID fallback' : ''})`
-          : 'ADR NBBO GGAL: MASSIVE (Tradier no configurado o sin respuesta)';
+          ? `ADR NBBO GGAL: FMP_ENTERPRISE (mode=${spots.adrMarketData.quoteMode}, rows=${String(bundle.fmpAdrQuotes.length)}${bundle.tradierAuthInvalid ? ', Tradier AUTH_INVALID fallback' : ''})`
+          : `ADR NBBO GGAL: MASSIVE (mode=${spots.adrMarketData.quoteMode}, Tradier no configurado o sin respuesta)`;
+
+    const adrQuote: GgalAdrQuoteTelemetryDto = {
+      last: sanitizeFinite(spots.adrMarketData.trade.lastPrice),
+      bid: sanitizeFinite(spots.adrMarketData.l1Book.bid),
+      ask: sanitizeFinite(spots.adrMarketData.l1Book.ask),
+      bidSize: sanitizeFinite(spots.adrMarketData.l1Book.bidSize),
+      askSize: sanitizeFinite(spots.adrMarketData.l1Book.askSize),
+      mid: sanitizeFinite(spots.adrMarketData.l1Book.mid),
+      spreadUsd: sanitizeFinite(spots.adrMarketData.l1Book.spreadUsd),
+      spreadRel: sanitizeFinite(spots.adrMarketData.l1Book.spreadRel),
+      quoteMode: spots.adrMarketData.quoteMode,
+      indicativePriceUsd: sanitizeFinite(spots.adrMarketData.indicativePriceUsd),
+      indicativePriceBasis: spots.adrMarketData.indicativePriceBasis,
+      tradeTimestampSec: sanitizeFinite(spots.adrMarketData.trade.tradeTimestamp),
+      quoteTimestampSec: sanitizeFinite(spots.adrMarketData.l1Book.quoteTimestamp),
+      tradeSource: spots.adrMarketData.trade.tradeSource,
+      quoteSource: spots.adrMarketData.l1Book.quoteSource,
+      invalidReason: spots.adrMarketData.l1Book.invalidReason,
+      isBilateralExecutable: spots.adrMarketData.l1Book.isBilateralExecutable,
+    };
 
     return {
       asOfUtcSec,
@@ -2245,6 +2433,7 @@ export class GgalSpecialistRuntime {
       feedStatus,
       feedBadges: badges,
       executionPriceBasis,
+      adrQuote,
       data912TimestampSec: d912Ts,
       massiveTimestampSec: massiveTs,
       data912AgeSec: sanitizeFinite(data912AgeSec),
@@ -2481,25 +2670,18 @@ export class GgalSpecialistRuntime {
         ? makeBidAskQuote(ggalCiRow.bid, ggalCiRow.ask, ggalCiRow.last, isEodMode)
         : null;
 
-    // ADR NASDAQ desde Massive snapshot / bars o Data912 usa_adrs reflejado en ggalOverview.adrPrice.
-    // Pieza 32 / 43: cuando Tradier está configurado y sano, las puntas NBBO del ADR se
-    // refrescan con Tradier Live (`TRADIER_LIVE_NBBO`); si Tradier devuelve 401/AUTH_INVALID
-    // o puntas inválidas, cae automáticamente a FMP Enterprise (`FMP_ENTERPRISE`) y en último
-    // término a Massive (`MASSIVE`).
+    // ADR NASDAQ desde libro L1 verificado (Tradier Live NBBO / Massive NBBO / FMP Extended)
+    // separado estrictamente de `trade` (`FMP_ENTERPRISE`, `last_trade`) y `reference` EOD.
     const tradierGgal =
       bundle.tradierAdrQuotes?.quotes.find((q) => q.symbol === 'GGAL') ?? null;
-    const tradierNbboValid =
-      tradierGgal !== null &&
-      Number.isFinite(tradierGgal.bid) &&
-      tradierGgal.bid > 0 &&
-      Number.isFinite(tradierGgal.ask) &&
-      tradierGgal.ask >= tradierGgal.bid;
     const fmpGgal =
       bundle.fmpAdrQuotes.find(
         (q) =>
           q.symbol === 'GGAL' &&
           ((q.extendedPrice !== null && Number.isFinite(q.extendedPrice) && q.extendedPrice > 0) ||
-            (Number.isFinite(q.price) && q.price > 0)),
+            (Number.isFinite(q.price) && q.price > 0) ||
+            (q.bid !== undefined && q.bid !== null && Number.isFinite(q.bid) && q.bid > 0) ||
+            (q.ask !== undefined && q.ask !== null && Number.isFinite(q.ask) && q.ask > 0)),
       ) ?? null;
     const fmpGgalPrice =
       fmpGgal === null
@@ -2508,7 +2690,9 @@ export class GgalSpecialistRuntime {
             Number.isFinite(fmpGgal.extendedPrice) &&
             fmpGgal.extendedPrice > 0
           ? fmpGgal.extendedPrice
-          : fmpGgal.price;
+          : Number.isFinite(fmpGgal.price) && fmpGgal.price > 0
+            ? fmpGgal.price
+            : null;
     const liveUsGgal = this.runtime.getLiveUsQuotes().find((q) => q.symbol === 'GGAL') ?? null;
     const extendedAdrSpot =
       liveUsGgal !== null &&
@@ -2522,48 +2706,257 @@ export class GgalSpecialistRuntime {
         : null;
     const lastAdrBar = bundle.usBars?.bars.at(-1);
     const lastAdrBarClose = lastAdrBar?.close ?? null;
-    const adrSpot =
-      extendedAdrSpot ??
-      fmpGgalPrice ??
-      bundle.usSnapshot?.envelope.snapshot.metrics.spot ??
-      lastAdrBarClose ??
-      ggalOverview?.adrPrice ??
-      null;
-    const adrBuilt = tradierNbboValid
-      ? makeBidAskQuote(
-          tradierGgal.bid,
-          tradierGgal.ask,
-          Number.isFinite(tradierGgal.last) && tradierGgal.last > 0 ? tradierGgal.last : adrSpot,
-          isEodMode,
-        )
-      : makeBidAskQuote(null, null, adrSpot, true);
-    const adrQuoteSource: 'TRADIER_LIVE_NBBO' | 'FMP_ENTERPRISE' | 'MASSIVE' = tradierNbboValid
-      ? 'TRADIER_LIVE_NBBO'
-      : fmpGgal !== null
-        ? 'FMP_ENTERPRISE'
-        : 'MASSIVE';
+    const massiveAdrUnified =
+      bundle.usSnapshot?.marketContext.unifiedQuotes.find((q) => q.ticker === 'GGAL') ?? null;
+    const massiveSnapshotSpot =
+      bundle.usSnapshot !== null &&
+      bundle.usSnapshot.envelope.snapshot.metrics.spot !== null &&
+      Number.isFinite(bundle.usSnapshot.envelope.snapshot.metrics.spot) &&
+      bundle.usSnapshot.envelope.snapshot.metrics.spot > 0
+        ? bundle.usSnapshot.envelope.snapshot.metrics.spot
+        : null;
+    const massiveLastPrice =
+      massiveAdrUnified?.lastTradePrice !== undefined &&
+      massiveAdrUnified.lastTradePrice !== null &&
+      Number.isFinite(massiveAdrUnified.lastTradePrice) &&
+      massiveAdrUnified.lastTradePrice > 0
+        ? massiveAdrUnified.lastTradePrice
+        : massiveAdrUnified !== null &&
+            massiveAdrUnified.price !== null &&
+            Number.isFinite(massiveAdrUnified.price) &&
+            massiveAdrUnified.price > 0
+          ? massiveAdrUnified.price
+          : massiveSnapshotSpot;
+    const massiveLastSize =
+      massiveAdrUnified?.lastTradeSize !== undefined &&
+      massiveAdrUnified.lastTradeSize !== null &&
+      Number.isFinite(massiveAdrUnified.lastTradeSize) &&
+      massiveAdrUnified.lastTradeSize > 0
+        ? massiveAdrUnified.lastTradeSize
+        : null;
+    const massiveTradeTs =
+      massiveAdrUnified?.tradeTimestampUtcSec !== undefined &&
+      massiveAdrUnified.tradeTimestampUtcSec !== null &&
+      Number.isFinite(massiveAdrUnified.tradeTimestampUtcSec)
+        ? massiveAdrUnified.tradeTimestampUtcSec
+        : (bundle.usSnapshot?.asOfUtcSec ?? null);
 
-    const basis: ExecutionPriceBasis =
-      bymaBuilt.basis === 'LIVE_BID_ASK'
+    const tradeCandidate: AdrTradeCandidateInput | null =
+      extendedAdrSpot !== null
+        ? {
+            lastPrice: extendedAdrSpot,
+            lastSize: null,
+            tradeTimestamp: liveUsGgal?.asOfUtcSec ?? null,
+            tradeSource: 'LIVE_US_EXTENDED',
+          }
+        : fmpGgalPrice !== null
+          ? {
+              lastPrice: fmpGgalPrice,
+              lastSize: null,
+              tradeTimestamp: fmpGgal?.asOfUtcSec ?? bundle.usSnapshot?.asOfUtcSec ?? null,
+              tradeSource: 'FMP_ENTERPRISE',
+            }
+          : tradierGgal !== null && Number.isFinite(tradierGgal.last) && tradierGgal.last > 0
+            ? {
+                lastPrice: tradierGgal.last,
+                lastSize: null,
+                tradeTimestamp: tradierGgal.tradeTimeUtcSec ?? tradierGgal.asOfUtcSec,
+                tradeSource: 'TRADIER_LIVE_NBBO',
+              }
+            : massiveLastPrice !== null
+              ? {
+                  lastPrice: massiveLastPrice,
+                  lastSize: massiveLastSize,
+                  tradeTimestamp: massiveTradeTs,
+                  tradeSource: 'MASSIVE',
+                }
+              : null;
+
+    const useUsSnapshotRef =
+      massiveSnapshotSpot !== null &&
+      bundle.usSnapshot !== null &&
+      (lastAdrBar === undefined || bundle.usSnapshot.asOfUtcSec >= lastAdrBar.time);
+    const referenceCandidate: AdrReferenceCandidateInput | null = useUsSnapshotRef
+      ? {
+          close: massiveSnapshotSpot,
+          referenceTimestamp: bundle.usSnapshot.asOfUtcSec,
+          referenceSource: 'MASSIVE_EOD',
+        }
+      : lastAdrBar !== undefined && Number.isFinite(lastAdrBar.close) && lastAdrBar.close > 0
+        ? {
+            close: lastAdrBar.close,
+            referenceTimestamp: lastAdrBar.time,
+            referenceSource: 'MASSIVE_BARS',
+          }
+        : fmpGgalPrice !== null
+          ? {
+              close: fmpGgalPrice,
+              referenceTimestamp: fmpGgal?.asOfUtcSec ?? bundle.asOfUtcSec,
+              referenceSource: 'FMP_ENTERPRISE_EOD',
+            }
+          : ggalOverview?.adrPrice !== null &&
+              ggalOverview?.adrPrice !== undefined &&
+              Number.isFinite(ggalOverview.adrPrice) &&
+              ggalOverview.adrPrice > 0
+            ? {
+                close: ggalOverview.adrPrice,
+                referenceTimestamp: bundle.overview.asOfUtcSec,
+                referenceSource: 'DATA912_ADR_REF',
+              }
+            : null;
+
+    const l1Candidates: AdrL1CandidateInput[] = [];
+    if (tradierGgal !== null && (Number.isFinite(tradierGgal.bid) || Number.isFinite(tradierGgal.ask))) {
+      const tradierHasBid = Number.isFinite(tradierGgal.bid) && tradierGgal.bid > 0;
+      const tradierHasAsk = Number.isFinite(tradierGgal.ask) && tradierGgal.ask > 0;
+      const bidTs =
+        tradierGgal.bidTimeUtcSec !== undefined && Number.isFinite(tradierGgal.bidTimeUtcSec)
+          ? tradierGgal.bidTimeUtcSec
+          : null;
+      const askTs =
+        tradierGgal.askTimeUtcSec !== undefined && Number.isFinite(tradierGgal.askTimeUtcSec)
+          ? tradierGgal.askTimeUtcSec
+          : null;
+      const provTs =
+        tradierGgal.providerTimestampUtcSec !== undefined &&
+        Number.isFinite(tradierGgal.providerTimestampUtcSec)
+          ? tradierGgal.providerTimestampUtcSec
+          : null;
+      const tradierQuoteTs =
+        bidTs !== null && askTs !== null
+          ? Math.min(bidTs, askTs)
+          : provTs !== null
+            ? provTs
+            : tradierHasBid && !tradierHasAsk && bidTs !== null
+              ? bidTs
+              : tradierHasAsk && !tradierHasBid && askTs !== null
+                ? askTs
+                : Number.isFinite(tradierGgal.asOfUtcSec)
+                  ? tradierGgal.asOfUtcSec
+                  : Number.NaN;
+      l1Candidates.push({
+        quoteSource: 'TRADIER_LIVE_NBBO',
+        bid: tradierGgal.bid,
+        ask: tradierGgal.ask,
+        bidSize: tradierGgal.bidSize,
+        askSize: tradierGgal.askSize,
+        quoteTimestamp: tradierQuoteTs,
+      });
+    }
+    if (
+      massiveAdrUnified !== null &&
+      ((massiveAdrUnified.bid !== undefined && massiveAdrUnified.bid !== null && Number.isFinite(massiveAdrUnified.bid)) ||
+        (massiveAdrUnified.ask !== undefined && massiveAdrUnified.ask !== null && Number.isFinite(massiveAdrUnified.ask)))
+    ) {
+      l1Candidates.push({
+        quoteSource: 'MASSIVE_NBBO',
+        bid: massiveAdrUnified.bid ?? Number.NaN,
+        ask: massiveAdrUnified.ask ?? Number.NaN,
+        bidSize: massiveAdrUnified.bidSize ?? Number.NaN,
+        askSize: massiveAdrUnified.askSize ?? Number.NaN,
+        quoteTimestamp: massiveAdrUnified.quoteTimestampUtcSec ?? Number.NaN,
+      });
+    }
+    if (
+      fmpGgal !== null &&
+      ((fmpGgal.bid !== undefined && fmpGgal.bid !== null && Number.isFinite(fmpGgal.bid)) ||
+        (fmpGgal.ask !== undefined && fmpGgal.ask !== null && Number.isFinite(fmpGgal.ask)))
+    ) {
+      l1Candidates.push({
+        quoteSource: 'FMP_EXTENDED_NBBO',
+        bid: fmpGgal.bid ?? Number.NaN,
+        ask: fmpGgal.ask ?? Number.NaN,
+        bidSize: fmpGgal.bidSize ?? Number.NaN,
+        askSize: fmpGgal.askSize ?? Number.NaN,
+        quoteTimestamp: fmpGgal.quoteTimestampUtcSec ?? Number.NaN,
+      });
+    }
+
+    const evaluatedCandidates: NormalizedAdrMarketData[] =
+      l1Candidates.length > 0
+        ? l1Candidates.map((l1Candidate) =>
+            normalizeAdrMarketData({
+              symbol: 'GGAL',
+              asOfUtcSec: bundle.asOfUtcSec,
+              isEodMode,
+              maxQuoteAgeSec: this.maxMassiveStalenessSec,
+              l1Candidate,
+              tradeCandidate,
+              referenceCandidate,
+            }),
+          )
+        : [
+            normalizeAdrMarketData({
+              symbol: 'GGAL',
+              asOfUtcSec: bundle.asOfUtcSec,
+              isEodMode,
+              maxQuoteAgeSec: this.maxMassiveStalenessSec,
+              l1Candidate: null,
+              tradeCandidate,
+              referenceCandidate,
+            }),
+          ];
+
+    const adrMarketData =
+      evaluatedCandidates.find((c) => c.quoteMode === 'LIVE_BID_ASK') ??
+      evaluatedCandidates.find((c) => c.quoteMode === 'ONE_SIDED_QUOTE') ??
+      evaluatedCandidates[0] ??
+      normalizeAdrMarketData({
+        symbol: 'GGAL',
+        asOfUtcSec: bundle.asOfUtcSec,
+        isEodMode,
+        maxQuoteAgeSec: this.maxMassiveStalenessSec,
+        l1Candidate: null,
+        tradeCandidate,
+        referenceCandidate,
+      });
+
+    const adrQuote: BidAskQuote = {
+      bid: adrMarketData.l1Book.bid,
+      ask: adrMarketData.l1Book.ask,
+      ...(Number.isFinite(adrMarketData.trade.lastPrice) && adrMarketData.trade.lastPrice > 0
+        ? { last: adrMarketData.trade.lastPrice }
+        : {}),
+    };
+
+    const adrQuoteSource: 'TRADIER_LIVE_NBBO' | 'FMP_ENTERPRISE' | 'MASSIVE' =
+      adrMarketData.l1Book.quoteSource === 'TRADIER_LIVE_NBBO'
+        ? 'TRADIER_LIVE_NBBO'
+        : fmpGgal !== null
+          ? 'FMP_ENTERPRISE'
+          : 'MASSIVE';
+
+    const basis: ExecutionPriceBasis = isEodMode
+      ? bymaBuilt.basis === 'EOD_CLOSE_REFERENCE' || adrMarketData.quoteMode === 'EOD_CLOSE_REF'
+        ? 'EOD_CLOSE_REFERENCE'
+        : 'NONE'
+      : bymaBuilt.basis === 'LIVE_BID_ASK' && adrMarketData.quoteMode === 'LIVE_BID_ASK'
         ? 'LIVE_BID_ASK'
-        : bymaBuilt.basis === 'EOD_CLOSE_REFERENCE'
-          ? 'EOD_CLOSE_REFERENCE'
-          : 'NONE';
+        : adrMarketData.quoteMode === 'ONE_SIDED_QUOTE'
+          ? 'ONE_SIDED_QUOTE'
+          : adrMarketData.quoteMode === 'LAST_ONLY'
+            ? 'LAST_ONLY'
+            : adrMarketData.quoteMode === 'EOD_CLOSE_REF' || bymaBuilt.basis === 'EOD_CLOSE_REFERENCE'
+              ? 'EOD_CLOSE_REFERENCE'
+              : 'NONE';
+
+    const adrTimestampSec =
+      adrMarketData.l1Book.isBilateralExecutable && Number.isFinite(adrMarketData.l1Book.quoteTimestamp)
+        ? adrMarketData.l1Book.quoteTimestamp
+        : Number.isFinite(adrMarketData.indicativeTimestampSec)
+          ? adrMarketData.indicativeTimestampSec
+          : (bundle.usSnapshot?.asOfUtcSec ?? lastAdrBar?.time ?? null);
 
     return {
       byma24hQuote: bymaBuilt.quote,
       bymaCiQuote: bymaCiBuilt?.quote,
       bymaPrevClose: ggalLive?.prevClose ?? ggalOverview?.prevClose ?? null,
-      adrQuote: adrBuilt.quote,
+      adrQuote,
+      adrMarketData,
       adrQuoteSource,
       bymaTimestampSec: ggalLive !== undefined || ggalOverview !== undefined
         ? sanitizeFinite(parseTradierTimestamp(ggalLive?.rawDate).utcSec) ?? bundle.overview.asOfUtcSec : null,
-      adrTimestampSec: tradierNbboValid
-        ? (Number.isFinite(tradierGgal.providerTimestampUtcSec)
-            ? tradierGgal.providerTimestampUtcSec ?? null : sanitizeFinite(tradierGgal.asOfUtcSec))
-        : extendedAdrSpot !== null ? liveUsGgal?.asOfUtcSec ?? null
-        : fmpGgal !== null ? sanitizeFinite(fmpGgal.asOfUtcSec)
-        : bundle.usSnapshot?.asOfUtcSec ?? lastAdrBar?.time ?? null,
+      adrTimestampSec,
       lastAdrBarClose,
       basis,
     };
@@ -2577,11 +2970,7 @@ export class GgalSpecialistRuntime {
     readonly historicalSpreads: readonly GgalHistoricalSpreadPointDto[];
     readonly rates: ReturnType<GgalSpecialistRuntime['resolveSofrAndRateBenchmarks']>;
   } {
-    const isClosed = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosed;
+    const isEodMode = this.resolveMarketEodMode(bundle);
     const marketMode: 'LIVE' | 'EOD_CIERRE' = isEodMode ? 'EOD_CIERRE' : 'LIVE';
 
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
@@ -2637,12 +3026,7 @@ export class GgalSpecialistRuntime {
         spots.bymaPrevClose ??
         bundle.ggalOptions.spot ??
         Number.NaN;
-      const adrMidUsd =
-        Number.isFinite(spots.adrQuote.bid) &&
-        Number.isFinite(spots.adrQuote.ask) &&
-        spots.adrQuote.ask > 0
-          ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
-          : spots.adrQuote.last;
+      const adrIndicativeUsd = spots.adrMarketData.indicativePriceUsd;
       const bondCcls = bonds.displayRows
         .map((r) => r.cclImplied)
         .filter((v): v is number => v !== null && Number.isFinite(v) && v > 0);
@@ -2666,12 +3050,11 @@ export class GgalSpecialistRuntime {
             ? bundle.overview.cclMedian
             : prevCcl;
       const projectedSpotArs =
-        adrMidUsd !== undefined &&
-        Number.isFinite(adrMidUsd) &&
-        adrMidUsd > 0 &&
+        Number.isFinite(adrIndicativeUsd) &&
+        adrIndicativeUsd > 0 &&
         Number.isFinite(cclForReprice) &&
         cclForReprice > 0
-          ? (adrMidUsd * cclForReprice) / GGAL_ADR_RATIO
+          ? (adrIndicativeUsd * cclForReprice) / GGAL_ADR_RATIO
           : Number.NaN;
       const centerStrike =
         Number.isFinite(projectedSpotArs) && projectedSpotArs > 0
@@ -2749,6 +3132,7 @@ export class GgalSpecialistRuntime {
       byma24h: spots.byma24hQuote,
       ...(spots.bymaCiQuote !== undefined ? { bymaCi: spots.bymaCiQuote } : {}),
       adr: spots.adrQuote,
+      adrMarketData: spots.adrMarketData,
       sofrRateAnnual: rates.sofrRateAnnual,
       caucionArsRateTna: Number.isFinite(rates.caucion1dTnaPct) ? rates.caucion1dTnaPct / 100 : Number.NaN,
       sovereignBonds: bonds.quotes,
@@ -3177,11 +3561,7 @@ export class GgalSpecialistRuntime {
     readonly rates: ReturnType<GgalSpecialistRuntime['resolveSofrAndRateBenchmarks']>;
     readonly opraSlices: readonly OpraMaturitySliceInput[];
   } {
-    const isClosed = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosed;
+    const isEodMode = this.resolveMarketEodMode(bundle);
 
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const rates = this.resolveSofrAndRateBenchmarks(bundle);
@@ -3214,7 +3594,7 @@ export class GgalSpecialistRuntime {
     for (const c of [...front.calls, ...front.puts]) {
       if (c.ivStatus !== 'SOLVED_AMERICAN') continue;
       const built = makeBidAskQuote(c.bid, c.ask, c.mark ?? c.last, isEodMode);
-      if (built.basis === 'LIVE_BID_ASK') {
+      if (built.basis === 'LIVE_BID_ASK' && spots.adrMarketData.quoteMode === 'LIVE_BID_ASK') {
         optBasis = 'LIVE_BID_ASK';
       }
       if (Number.isFinite(built.quote.bid) && Number.isFinite(built.quote.ask) && built.quote.bid > 0) {
@@ -3264,10 +3644,7 @@ export class GgalSpecialistRuntime {
       }
 
       if (opraSlices.length === 0 && volSummary.contracts.length > 0) {
-        const spotAdrUsd =
-          Number.isFinite(spots.adrQuote.bid) && Number.isFinite(spots.adrQuote.ask) && spots.adrQuote.ask > 0
-            ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
-            : Number.NaN;
+        const spotAdrUsd = spots.adrMarketData.indicativePriceUsd;
         if (Number.isFinite(spotAdrUsd) && spotAdrUsd > 0) {
           const byExp = new Map<
             string,
@@ -3459,11 +3836,7 @@ export class GgalSpecialistRuntime {
     readonly output: DualProbabilityOutput | null;
     readonly executionPriceBasis: ExecutionPriceBasis;
   } {
-    const isClosed = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosed;
+    const isEodMode = this.resolveMarketEodMode(bundle);
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const rates = this.resolveSofrAndRateBenchmarks(bundle);
     const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
@@ -3472,10 +3845,7 @@ export class GgalSpecialistRuntime {
       Number.isFinite(spots.byma24hQuote.bid) && Number.isFinite(spots.byma24hQuote.ask)
         ? 0.5 * (spots.byma24hQuote.bid + spots.byma24hQuote.ask)
         : Number.NaN;
-    const spotAdrUsd =
-      Number.isFinite(spots.adrQuote.bid) && Number.isFinite(spots.adrQuote.ask)
-        ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
-        : Number.NaN;
+    const spotAdrUsd = spots.adrMarketData.indicativePriceUsd;
 
     const arByDate = new Map(bundle.ggalDetail.historicalBars.map((b) => [b.date, b]));
     const adrByDate = new Map<string, { readonly time: number; readonly close: number }>();
@@ -3783,10 +4153,7 @@ export class GgalSpecialistRuntime {
   ): Promise<GgalStructurePinningResponse> {
     const bundle = await this.loadMarketBundle(forceRefresh);
     const isClosed = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosed;
+    const isEodMode = this.resolveMarketEodMode(bundle);
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const rates = this.resolveSofrAndRateBenchmarks(bundle);
     const requested = options.targetExpiry?.trim().toUpperCase();
@@ -4148,11 +4515,7 @@ export class GgalSpecialistRuntime {
     forceRefresh = false,
   ): Promise<GgalStrategySelectorResponse> {
     const bundle = await this.loadMarketBundle(forceRefresh);
-    const isClosed = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosed;
+    const isEodMode = this.resolveMarketEodMode(bundle);
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const rates = this.resolveSofrAndRateBenchmarks(bundle);
     const { front, back } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
@@ -4171,10 +4534,7 @@ export class GgalSpecialistRuntime {
       Number.isFinite(spots.byma24hQuote.bid) && Number.isFinite(spots.byma24hQuote.ask)
         ? 0.5 * (spots.byma24hQuote.bid + spots.byma24hQuote.ask)
         : Number.NaN;
-    const spotAdrUsd =
-      Number.isFinite(spots.adrQuote.bid) && Number.isFinite(spots.adrQuote.ask)
-        ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
-        : Number.NaN;
+    const spotAdrUsd = spots.adrMarketData.indicativePriceUsd;
 
     const physicalNodes = dual.output?.simulatedNodes ?? [];
     if (
@@ -4210,7 +4570,7 @@ export class GgalSpecialistRuntime {
       for (const c of [...exp.calls, ...exp.puts]) {
         if (c.ivStatus !== 'SOLVED_AMERICAN' || c.iv === null) continue;
         const built = makeBidAskQuote(c.bid, c.ask, c.mark ?? c.last, isEodMode);
-        if (built.basis === 'LIVE_BID_ASK') {
+        if (built.basis === 'LIVE_BID_ASK' && spots.adrMarketData.quoteMode === 'LIVE_BID_ASK') {
           optBasis = 'LIVE_BID_ASK';
         }
         const effectiveOiNom = directOiNominalShares(resolveAnexoBContractOi(partition, c)) ?? 0;
@@ -4255,6 +4615,7 @@ export class GgalSpecialistRuntime {
       spotByma24hQuote: spots.byma24hQuote,
       spotAdrUsd,
       spotAdrQuote: spots.adrQuote,
+      adrQuoteMode: spots.adrMarketData.quoteMode,
       frontExpiryDateKey: front.expirationDate,
       frontExpiry1530UtcSec: computeExpiration1530ArtUtcSec(front.expirationDate),
       ...(back !== null
@@ -4347,11 +4708,7 @@ export class GgalSpecialistRuntime {
         : 20;
     const side: OrderSide = req.side ?? 'BUY';
 
-    const isClosed = bundle.overview.marketState === 'CERRADO';
-    const isEodMode =
-      bundle.overview.feedStatus === 'EOD_CIERRE' ||
-      bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
-      isClosed;
+    const isEodMode = this.resolveMarketEodMode(bundle);
     const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const rates = this.resolveSofrAndRateBenchmarks(bundle);
     const { front } = selectLiquidFrontAndBackExpiries(bundle.ggalOptions);
@@ -4362,10 +4719,20 @@ export class GgalSpecialistRuntime {
       Number.isFinite(spots.byma24hQuote.bid) && Number.isFinite(spots.byma24hQuote.ask)
         ? 0.5 * (spots.byma24hQuote.bid + spots.byma24hQuote.ask)
         : Number.NaN;
-    const spotAdrUsd =
-      Number.isFinite(spots.adrQuote.bid) && Number.isFinite(spots.adrQuote.ask)
-        ? 0.5 * (spots.adrQuote.bid + spots.adrQuote.ask)
-        : Number.NaN;
+    const spotAdrUsd = spots.adrMarketData.indicativePriceUsd;
+    const adrBookDiagFields = {
+      adrBookQuality: spots.adrMarketData.quoteMode,
+      adrBidUsd: sanitizeFinite(spots.adrMarketData.l1Book.bid),
+      adrAskUsd: sanitizeFinite(spots.adrMarketData.l1Book.ask),
+      adrSpreadUsd: sanitizeFinite(spots.adrMarketData.l1Book.spreadUsd),
+      adrExecutableL1: spots.adrMarketData.l1Book.isBilateralExecutable,
+      crossVenueExecutionAllowed: spots.adrMarketData.l1Book.isBilateralExecutable,
+      adrExecutionBlockedReason: spots.adrMarketData.l1Book.isBilateralExecutable
+        ? null
+        : spots.adrMarketData.l1Book.invalidReason === 'NONE'
+          ? 'ADR_NO_BILATERAL_L1_BBO'
+          : spots.adrMarketData.l1Book.invalidReason,
+    } as const;
     const cclArs =
       Number.isFinite(spot24hArs) &&
       spot24hArs > 0 &&
@@ -4425,6 +4792,7 @@ export class GgalSpecialistRuntime {
           optionL1BidSizeLots: null,
           optionL1AskSizeLots: null,
           recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
+          ...adrBookDiagFields,
         },
         positionBasis,
         marginRiskStatus: 'INDETERMINATE_MARGIN',
@@ -4459,6 +4827,7 @@ export class GgalSpecialistRuntime {
       ivStatus: c.ivStatus ?? 'INVALID_INPUT',
       quoteSource: c.quoteSource ?? 'DATA912',
       quoteAsOfUtcSec: c.quoteAsOfUtcSec ?? null,
+      ...(c.strikeResolutionStatus !== undefined ? { strikeResolutionStatus: c.strikeResolutionStatus } : {}),
     });
 
     const nearestIndex = (arr: readonly ArOptionContractDto[], targetStrike: number): number => {
@@ -4572,6 +4941,7 @@ export class GgalSpecialistRuntime {
           optionL1BidSizeLots: null,
           optionL1AskSizeLots: null,
           recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
+          ...adrBookDiagFields,
         },
         positionBasis,
         marginRiskStatus: 'INDETERMINATE_MARGIN',
@@ -4708,6 +5078,10 @@ export class GgalSpecialistRuntime {
       optionIvDecimal: targetContract.iv ?? Number.NaN,
       bymaTicks: recorderBymaTicks,
       adrTicks: recorderAdrTicks,
+      adrQuoteMode: spots.adrMarketData.quoteMode,
+      adrBidUsd: spots.adrMarketData.l1Book.bid,
+      adrAskUsd: spots.adrMarketData.l1Book.ask,
+      adrExecutableL1: spots.adrMarketData.l1Book.isBilateralExecutable,
     });
 
     // Motor 6.3 Stress Test + Jump-Diffusion Overnight + Sizing Kelly-CVaR
@@ -4743,6 +5117,7 @@ export class GgalSpecialistRuntime {
         expiry1530UtcSec,
         spot24hArs,
         spotAdrUsd,
+        spotAdrPriceBasis: spots.adrMarketData.indicativePriceBasis,
         cclArs,
         rateCurveArs: rates.rateCurveArs,
         arHolidays: this.arHolidays,
@@ -4806,6 +5181,7 @@ export class GgalSpecialistRuntime {
         optionL1BidSizeLots: optBidSize,
         optionL1AskSizeLots: optAskSize,
         recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
+        ...adrBookDiagFields,
       },
       positionBasis,
       marginRiskStatus: marginOut.riskStatus,
@@ -4839,6 +5215,12 @@ export class GgalSpecialistRuntime {
         byma24hArs: sanitizeFinite(parity.output.spot.byma24hArs),
         bymaCiArs: sanitizeFinite(parity.output.spot.bymaCiArs),
         adrMidUsd: sanitizeFinite(parity.output.spot.adrMidUsd),
+        adrBidUsd: sanitizeFinite(parity.output.spot.adrBidUsd),
+        adrAskUsd: sanitizeFinite(parity.output.spot.adrAskUsd),
+        adrLastUsd: sanitizeFinite(parity.output.spot.adrLastUsd),
+        adrSpreadUsd: sanitizeFinite(parity.output.spot.adrSpreadUsd),
+        adrIndicativeUsd: sanitizeFinite(parity.output.spot.adrIndicativeUsd),
+        adrQuoteMode: parity.output.spot.adrQuoteMode,
         fairBymaOpenArs: sanitizeFinite(parity.output.spot.fairBymaOpenArs),
         fairAdrUsd: sanitizeFinite(parity.output.spot.fairAdrUsd),
         gapPctVsPrevClose: sanitizeFinite(parity.output.spot.gapPctVsPrevClose),
@@ -4846,6 +5228,7 @@ export class GgalSpecialistRuntime {
         cclSovereignBenchmark: sanitizeFinite(parity.output.ccl.cclSovereignBenchmark),
         parityZScore: sanitizeFinite(parity.output.ccl.zScore),
         paritySignal: parity.output.signal,
+        parityEvaluation: parity.output.parityEvaluation,
       },
       volatility: {
         bymaAtmIvPct: vol.output !== null ? sanitizeFinite(vol.output.bymaAtmIvPct) : null,
@@ -6360,9 +6743,9 @@ export class GgalSpecialistRuntime {
       extendedAdrDual !== null
         ? extendedAdrDual
         : parity !== null &&
-            Number.isFinite(parity.output.spot.adrMidUsd) &&
-            parity.output.spot.adrMidUsd > 0
-          ? parity.output.spot.adrMidUsd
+            Number.isFinite(parity.output.spot.adrIndicativeUsd) &&
+            parity.output.spot.adrIndicativeUsd > 0
+          ? parity.output.spot.adrIndicativeUsd
           : adrLastUsdFromFast;
 
     const fastAl30 = fastLiveBonds.find((r) => r.symbol === 'AL30')?.last;

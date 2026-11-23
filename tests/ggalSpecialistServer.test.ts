@@ -423,7 +423,7 @@ function createOfflineMocks(params: {
             market_status: eodWeekendMode ? 'closed' : 'open',
             session: { price: ggalAdrUsd, close: ggalAdrUsd, previous_close: 52.35, change: 0.65, change_percent: 1.24, volume: 1_900_000 },
             last_trade: { price: ggalAdrUsd, size: 100, sip_timestamp: String(asOfUtcSec * 1_000_000_000) },
-            last_quote: { bid: 52.96, ask: 53.04, midpoint: ggalAdrUsd },
+            last_quote: { bid: 52.96, ask: 53.04, midpoint: ggalAdrUsd, last_updated: asOfUtcSec * 1_000_000_000 },
           },
           { ticker: 'SPY', type: 'stocks', market_status: eodWeekendMode ? 'closed' : 'open', session: { price: 595, previous_close: 592, change_percent: 0.51 } },
           { ticker: 'QQQ', type: 'stocks', market_status: eodWeekendMode ? 'closed' : 'open', session: { price: 510, previous_close: 508, change_percent: 0.39 } },

@@ -205,6 +205,7 @@ def parse_byma_option_reference(
     spot_hint: float | None,
     as_of_utc_sec: int,
 ) -> dict[str, Any] | None:
+    _ = spot_hint  # A5: resolución determinista de strike sin heurística por precio spot
     cleaned = re.sub(r"[^A-Z0-9.]", "", raw_symbol.strip().upper())
     if len(cleaned) < 6:
         return None
@@ -218,18 +219,30 @@ def parse_byma_option_reference(
         return None
 
     contract_type = "call" if opt_char == "C" else "put"
-    strike = float(strike_str)
-    if not math.isfinite(strike) or strike <= 0.0:
-        return None
-
-    if "." not in strike_str and spot_hint is not None and spot_hint > 0.0 and strike > spot_hint * 3.5:
-        if spot_hint * 0.25 <= strike / 10.0 <= spot_hint * 2.5:
-            strike /= 10.0
-        elif spot_hint * 0.25 <= strike / 100.0 <= spot_hint * 2.5:
-            strike /= 100.0
+    has_explicit_decimal = "." in strike_str
+    if has_explicit_decimal:
+        strike = float(strike_str)
+        if not math.isfinite(strike) or strike <= 0.0:
+            return None
+    else:
+        if strike_str.startswith("0"):
+            return None
+        raw_int = int(strike_str)
+        if raw_int <= 0:
+            return None
+        token_len = len(strike_str)
+        is_canonical_grid = (
+            token_len <= 2
+            or ((token_len in (3, 4)) and (raw_int % 10 == 0))
+            or (token_len == 5 and (raw_int % 100 == 0))
+            or (token_len >= 6 and (raw_int % 1000 == 0))
+        )
+        if not is_canonical_grid:
+            return None
+        strike = float(raw_int)
 
     month_info = MONTH_CODES.get(suffix[:2]) or MONTH_CODES.get(suffix[:1])
-    if month_info is None:
+    if month_info is None or suffix not in MONTH_CODES:
         return None
     month_num, label, code = month_info
 

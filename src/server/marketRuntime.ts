@@ -275,7 +275,10 @@ import type {
 } from '../data/macroTypes.js';
 import { interpolateTreasuryYield, TREASURY_TENORS } from '../data/normalizeMacro.js';
 import { toErrorMessage } from '../data/normalizeShared.js';
-import { parseExpirationDate } from '../data/normalizeOptions.js';
+import {
+  parseExpirationDate,
+  parseProviderTimestampSeconds,
+} from '../data/normalizeOptions.js';
 import {
   loadOptionChain,
   loadOptionContracts,
@@ -502,6 +505,11 @@ export interface FmpAdrFallbackQuote {
   readonly extendedPrice: number | null;
   readonly extendedChangePct: number | null;
   readonly sessionPhase: UsEquitySessionPhase;
+  readonly bid?: number | null;
+  readonly ask?: number | null;
+  readonly bidSize?: number | null;
+  readonly askSize?: number | null;
+  readonly quoteTimestampUtcSec?: number | null;
 }
 
 export interface UsTradierProviderStatus {
@@ -901,6 +909,10 @@ export interface SerializedUnifiedQuote {
   readonly extendedPrice?: number | null | undefined;
   readonly extendedChangePct?: number | null | undefined;
   readonly sessionPhase?: UsEquitySessionPhase | undefined;
+  readonly quoteTimestampUtcSec?: number | null | undefined;
+  readonly tradeTimestampUtcSec?: number | null | undefined;
+  readonly lastTradePrice?: number | null | undefined;
+  readonly lastTradeSize?: number | null | undefined;
 }
 
 export interface SerializedMarketContext {
@@ -4191,7 +4203,17 @@ interface V2StockBatchQuote {
   readonly ask: number;
   readonly bidSize: number;
   readonly askSize: number;
+  readonly quoteTimestampUtcSec: number;
+  readonly lastTradePrice: number;
+  readonly lastTradeSize: number;
+  readonly tradeTimestampUtcSec: number;
   readonly marketStatus: string | null;
+}
+
+function asProviderSecOrNaN(raw: unknown): number {
+  const normalized =
+    typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : raw;
+  return parseProviderTimestampSeconds(normalized).value;
 }
 
 function firstPositiveFinite(values: readonly (number | null | undefined)[]): number {
@@ -4242,11 +4264,16 @@ function parseV2StockTickerSnapshot(raw: unknown): V2StockBatchQuote | null {
   const vwap = asPositiveNum(day['vw']);
   const prevClose = asPositiveNum(prevDay['c']);
   const lastTradePx = asPositiveNum(lastTrade['p']);
+  const lastTradeSize = asPositiveNum(lastTrade['s']);
+  const tradeTimestampUtcSec = asProviderSecOrNaN(lastTrade['t'] ?? lastTrade['sip_timestamp']);
   const minClose = asPositiveNum(minBar['c']);
   const bid = asPositiveNum(lastQuote['p']);
   const ask = asPositiveNum(lastQuote['P']);
   const bidSize = asPositiveNum(lastQuote['s']);
   const askSize = asPositiveNum(lastQuote['S']);
+  const quoteTimestampUtcSec = asProviderSecOrNaN(
+    lastQuote['t'] ?? lastQuote['last_updated'] ?? lastQuote['sip_timestamp'],
+  );
   const quoteMid =
     Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid ? 0.5 * (bid + ask) : Number.NaN;
   const price = firstPositiveFinite([dayClose, lastTradePx, minClose, quoteMid]);
@@ -4270,6 +4297,10 @@ function parseV2StockTickerSnapshot(raw: unknown): V2StockBatchQuote | null {
     ask,
     bidSize,
     askSize,
+    quoteTimestampUtcSec,
+    lastTradePrice: lastTradePx,
+    lastTradeSize,
+    tradeTimestampUtcSec,
     marketStatus,
   };
 }
@@ -4448,10 +4479,76 @@ function resolveStockSnapshotWith1dFallback(params: {
       : null;
   const volumeM = tradedVolumeUsd !== null ? sanitizeFinite(tradedVolumeUsd / 1_000_000) : null;
 
-  const qBid = sanitizeFinite(firstPositiveFinite([v2?.bid, v3?.lastQuote?.bid]));
-  const qAsk = sanitizeFinite(firstPositiveFinite([v2?.ask, v3?.lastQuote?.ask]));
-  const qBidSize = sanitizeFinite(firstPositiveFinite([v2?.bidSize, v3?.lastQuote?.bidSize]));
-  const qAskSize = sanitizeFinite(firstPositiveFinite([v2?.askSize, v3?.lastQuote?.askSize]));
+  const v2HasQuote =
+    v2 !== undefined &&
+    ((Number.isFinite(v2.bid) && v2.bid > 0) || (Number.isFinite(v2.ask) && v2.ask > 0));
+  const v3Quote = v3?.lastQuote ?? null;
+  const v3HasQuote =
+    v3Quote !== null &&
+    ((Number.isFinite(v3Quote.bid) && v3Quote.bid > 0) ||
+      (Number.isFinite(v3Quote.ask) && v3Quote.ask > 0));
+  const preferV2Quote =
+    v2HasQuote &&
+    (Number.isFinite(v2.quoteTimestampUtcSec) ||
+      !v3HasQuote ||
+      !Number.isFinite(v3Quote.updatedAt));
+
+  const qBid = sanitizeFinite(
+    preferV2Quote
+      ? (Number.isFinite(v2.bid) && v2.bid > 0 ? v2.bid : null)
+      : v3Quote !== null && Number.isFinite(v3Quote.bid) && v3Quote.bid > 0
+        ? v3Quote.bid
+        : null,
+  );
+  const qAsk = sanitizeFinite(
+    preferV2Quote
+      ? (Number.isFinite(v2.ask) && v2.ask > 0 ? v2.ask : null)
+      : v3Quote !== null && Number.isFinite(v3Quote.ask) && v3Quote.ask > 0
+        ? v3Quote.ask
+        : null,
+  );
+  const qBidSize = sanitizeFinite(
+    preferV2Quote
+      ? (Number.isFinite(v2.bidSize) && v2.bidSize > 0 ? v2.bidSize : null)
+      : v3Quote !== null && Number.isFinite(v3Quote.bidSize) && v3Quote.bidSize > 0
+        ? v3Quote.bidSize
+        : null,
+  );
+  const qAskSize = sanitizeFinite(
+    preferV2Quote
+      ? (Number.isFinite(v2.askSize) && v2.askSize > 0 ? v2.askSize : null)
+      : v3Quote !== null && Number.isFinite(v3Quote.askSize) && v3Quote.askSize > 0
+        ? v3Quote.askSize
+        : null,
+  );
+  const quoteTimestampUtcSec = sanitizeFinite(
+    preferV2Quote ? v2.quoteTimestampUtcSec : v3Quote?.updatedAt,
+  );
+
+  const v2HasTrade = v2 !== undefined && Number.isFinite(v2.lastTradePrice) && v2.lastTradePrice > 0;
+  const v3Trade = v3?.lastTrade ?? null;
+  const v3HasTrade = v3Trade !== null && Number.isFinite(v3Trade.price) && v3Trade.price > 0;
+  const preferV2Trade =
+    v2HasTrade &&
+    (Number.isFinite(v2.tradeTimestampUtcSec) || !v3HasTrade || !Number.isFinite(v3Trade.timestamp));
+  const lastTradePrice = sanitizeFinite(
+    preferV2Trade
+      ? v2.lastTradePrice
+      : v3Trade !== null && Number.isFinite(v3Trade.price) && v3Trade.price > 0
+        ? v3Trade.price
+        : null,
+  );
+  const lastTradeSize = sanitizeFinite(
+    preferV2Trade
+      ? (Number.isFinite(v2.lastTradeSize) && v2.lastTradeSize > 0 ? v2.lastTradeSize : null)
+      : v3Trade !== null && Number.isFinite(v3Trade.size) && v3Trade.size > 0
+        ? v3Trade.size
+        : null,
+  );
+  const tradeTimestampUtcSec = sanitizeFinite(
+    preferV2Trade ? v2.tradeTimestampUtcSec : v3Trade?.timestamp,
+  );
+
   const qSpreadPct =
     qBid !== null && qAsk !== null && qAsk >= qBid && qBid + qAsk > 0
       ? sanitizeFinite(((qAsk - qBid) / (0.5 * (qBid + qAsk))) * 100)
@@ -4477,6 +4574,10 @@ function resolveStockSnapshotWith1dFallback(params: {
     bidSize: qBidSize,
     askSize: qAskSize,
     spreadPct: qSpreadPct,
+    quoteTimestampUtcSec,
+    tradeTimestampUtcSec,
+    lastTradePrice,
+    lastTradeSize,
   };
 }
 
@@ -7285,6 +7386,22 @@ export class MarketRuntime {
             : previousClose !== null && previousClose > 0
               ? ((price - previousClose) / previousClose) * 100
               : null;
+        const extBid =
+          ext?.bid !== null && ext?.bid !== undefined && Number.isFinite(ext.bid) && ext.bid > 0
+            ? ext.bid
+            : null;
+        const extAsk =
+          ext?.ask !== null && ext?.ask !== undefined && Number.isFinite(ext.ask) && ext.ask > 0
+            ? ext.ask
+            : null;
+        const extBidSize =
+          ext?.bidSize !== null && ext?.bidSize !== undefined && Number.isFinite(ext.bidSize) && ext.bidSize > 0
+            ? ext.bidSize
+            : null;
+        const extAskSize =
+          ext?.askSize !== null && ext?.askSize !== undefined && Number.isFinite(ext.askSize) && ext.askSize > 0
+            ? ext.askSize
+            : null;
         outMap.set(symbol, {
           symbol,
           price,
@@ -7294,6 +7411,15 @@ export class MarketRuntime {
           extendedPrice: extPrice,
           extendedChangePct,
           sessionPhase,
+          ...(ext !== undefined && (extBid !== null || extAsk !== null)
+            ? {
+                bid: extBid,
+                ask: extAsk,
+                bidSize: extBidSize,
+                askSize: extAskSize,
+                quoteTimestampUtcSec: ext.asOfUtcSec,
+              }
+            : {}),
         });
       }
     }
