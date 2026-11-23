@@ -24,7 +24,9 @@ import {
 } from './expiryChainMerge';
 import {
   mergeLoadedExpiriesIntoBaseSnapshot,
+  resolveExpiryFactDecision,
   resolvePublicationDecision,
+  type ExpiryFactState,
   type PublicationStamp,
 } from './snapshotPublication';
 import {
@@ -155,6 +157,8 @@ type PendingPointFact =
   | { readonly kind: 'snapshot'; readonly snapshot: UsSnapshotResponseDto }
   | { readonly kind: 'chain'; readonly chain: UsOptionExpiryChainResponseDto };
 const pendingPointFactsBySymbol = new Map<string, Map<string, PendingPointFact>>();
+// Evaluación (asOfUtcSec) de los datos cargados vigentes, por símbolo y fecha.
+const loadedDateEvaluationsBySymbol = new Map<string, Map<string, number>>();
 
 function beginPublication(scopeKey: string): number {
   const next = (publicationRevisions.get(scopeKey) ?? 0) + 1;
@@ -177,23 +181,65 @@ function acceptPublication(
   return true;
 }
 
-/** Aplica al snapshot base los hechos puntuales aceptados (vigente por vencimiento). */
-function applyPendingPointScopes(
-  clean: string,
-  base: UsSnapshotResponseDto,
-): UsSnapshotResponseDto {
-  const facts = pendingPointFactsBySymbol.get(clean);
-  if (facts === undefined) return base;
-  let merged = base;
-  for (const date of [...facts.keys()].sort((a, b) => a.localeCompare(b))) {
-    const fact = facts.get(date);
-    if (fact === undefined) continue;
-    merged =
-      fact.kind === 'snapshot'
-        ? mergeLoadedExpiriesIntoBaseSnapshot(merged, fact.snapshot)
-        : applyUsExpiryChainToSnapshot(merged, fact.chain);
+function loadedDatesOf(snap: UsSnapshotResponseDto): ReadonlySet<string> {
+  const dates = new Set<string>();
+  for (const candidate of snap.optionsChain?.availableExpirations ?? []) {
+    if (candidate.loaded === true) dates.add(candidate.expirationDate);
   }
-  return merged;
+  return dates;
+}
+
+function loadedEntryOf(
+  snap: UsSnapshotResponseDto,
+  date: string,
+): { readonly loaded: boolean } | null {
+  const entry = (snap.optionsChain?.availableExpirations ?? []).find(
+    (candidate) => candidate.expirationDate === date,
+  );
+  return entry === undefined ? null : { loaded: entry.loaded === true };
+}
+
+/** Estado vigente de una fecha: entrada del snapshot visible + su evaluación. */
+function currentFactState(
+  clean: string,
+  previous: UsSnapshotResponseDto | undefined,
+  date: string,
+): ExpiryFactState | null {
+  if (previous === undefined) return null;
+  const entry = loadedEntryOf(previous, date);
+  if (entry === null) return null;
+  return {
+    loaded: entry.loaded,
+    evaluationSec: loadedDateEvaluationsBySymbol.get(clean)?.get(date) ?? null,
+  };
+}
+
+function snapshotFactState(snap: UsSnapshotResponseDto, date: string): ExpiryFactState {
+  const entry = loadedEntryOf(snap, date);
+  return {
+    loaded: entry !== null && entry.loaded,
+    evaluationSec: Number.isFinite(snap.asOfUtcSec) ? snap.asOfUtcSec : null,
+  };
+}
+
+function chainFactState(chain: UsOptionExpiryChainResponseDto): ExpiryFactState {
+  return {
+    loaded: chain.expiryMeta.loaded === true,
+    evaluationSec: Number.isFinite(chain.asOfUtcSec) ? chain.asOfUtcSec : null,
+  };
+}
+
+function pendingFactState(fact: PendingPointFact, date: string): ExpiryFactState {
+  return fact.kind === 'snapshot'
+    ? snapshotFactState(fact.snapshot, date)
+    : chainFactState(fact.chain);
+}
+
+function setLoadedDateEvaluation(clean: string, date: string, evaluationSec: number | null): void {
+  if (evaluationSec === null || !Number.isFinite(evaluationSec)) return;
+  const evaluations = loadedDateEvaluationsBySymbol.get(clean) ?? new Map<string, number>();
+  evaluations.set(date, evaluationSec);
+  loadedDateEvaluationsBySymbol.set(clean, evaluations);
 }
 
 function stashPointSnapshot(clean: string, expirationDate: string, snapshot: UsSnapshotResponseDto): void {
@@ -208,15 +254,70 @@ function stashExpiryChain(clean: string, expirationDate: string, response: UsOpt
   pendingPointFactsBySymbol.set(clean, facts);
 }
 
-/** Publica la base conservando vencimientos puntuales vigentes (agregado de la base). */
+/**
+ * Publica la base: el agregado (exposición, traza, spot de valuación, asOf) es
+ * SIEMPRE de la base; por vencimiento gana el dato más nuevo. La base no pisa
+ * hechos puntuales más nuevos, los hechos retenidos no resucitan versiones
+ * superadas y una fecha cargada que la base omita conserva su información.
+ */
 function publishBaseSnapshot(
   clean: string,
   base: UsSnapshotResponseDto,
   previous: UsSnapshotResponseDto | undefined,
 ): UsSnapshotResponseDto {
-  const withPrevious =
-    previous === undefined ? base : mergeLoadedExpiriesIntoBaseSnapshot(base, previous);
-  return applyPendingPointScopes(clean, withPrevious);
+  const previousEvaluations = loadedDateEvaluationsBySymbol.get(clean);
+  const nextEvaluations = new Map<string, number>();
+  for (const date of loadedDatesOf(base)) {
+    if (Number.isFinite(base.asOfUtcSec)) nextEvaluations.set(date, base.asOfUtcSec);
+  }
+
+  let merged = base;
+  if (previous !== undefined) {
+    for (const date of [...loadedDatesOf(previous)].sort((a, b) => a.localeCompare(b))) {
+      const previousEvaluation = previousEvaluations?.get(date) ?? previous.asOfUtcSec;
+      const baseEntry = loadedEntryOf(base, date);
+      const decision = resolveExpiryFactDecision(
+        {
+          loaded: true,
+          evaluationSec: Number.isFinite(previousEvaluation) ? previousEvaluation : null,
+        },
+        {
+          loaded: baseEntry !== null && baseEntry.loaded,
+          evaluationSec: Number.isFinite(base.asOfUtcSec) ? base.asOfUtcSec : null,
+        },
+      );
+      if (decision !== 'publish') continue;
+      merged = mergeLoadedExpiriesIntoBaseSnapshot(merged, previous, date);
+      if (Number.isFinite(previousEvaluation)) nextEvaluations.set(date, previousEvaluation);
+    }
+  }
+
+  const pending = pendingPointFactsBySymbol.get(clean);
+  if (pending !== undefined) {
+    for (const date of [...pending.keys()].sort((a, b) => a.localeCompare(b))) {
+      const fact = pending.get(date);
+      if (fact === undefined) continue;
+      const factState = pendingFactState(fact, date);
+      const mergedEntry = loadedEntryOf(merged, date);
+      const decision = resolveExpiryFactDecision(factState, {
+        loaded: mergedEntry !== null && mergedEntry.loaded,
+        evaluationSec: nextEvaluations.get(date) ?? null,
+      });
+      if (decision !== 'publish') {
+        pending.delete(date);
+        continue;
+      }
+      merged =
+        fact.kind === 'snapshot'
+          ? mergeLoadedExpiriesIntoBaseSnapshot(merged, fact.snapshot, date)
+          : applyUsExpiryChainToSnapshot(merged, fact.chain);
+      if (factState.evaluationSec !== null) nextEvaluations.set(date, factState.evaluationSec);
+    }
+    if (pending.size === 0) pendingPointFactsBySymbol.delete(clean);
+  }
+
+  loadedDateEvaluationsBySymbol.set(clean, nextEvaluations);
+  return merged;
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 25_000;
@@ -652,14 +753,27 @@ export async function requestOptionsChain(
     const previousSnap = state.usSnapshotsBySymbol[clean];
     let publishedSnap: UsSnapshotResponseDto | null = null;
     if (isPointScope) {
-      // Alcance puntual: se registra el hecho y se publica sobre la base vigente
-      // (el agregado expuesto/traza/spot/asOf se conserva de la base).
-      stashPointSnapshot(clean, expiration, snap);
-      publishedSnap = previousSnap === undefined ? null : mergeLoadedExpiriesIntoBaseSnapshot(previousSnap, snap);
+      // Alcance puntual: SOLO se publica la fecha solicitada (la respuesta puede
+      // traer anclas o curadas cargadas de más) y solo si aporta datos más
+      // nuevos que los vigentes de esa fecha; si no, queda el último válido.
+      const fact = snapshotFactState(snap, expiration);
+      const decision = resolveExpiryFactDecision(
+        fact,
+        currentFactState(clean, previousSnap, expiration),
+      );
+      if (decision === 'publish') {
+        stashPointSnapshot(clean, expiration, snap);
+        if (previousSnap !== undefined) {
+          publishedSnap = mergeLoadedExpiriesIntoBaseSnapshot(previousSnap, snap, expiration);
+          setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
+        }
+      } else {
+        publishedSnap = previousSnap ?? null;
+      }
     } else {
       publishedSnap = publishBaseSnapshot(clean, snap, previousSnap);
     }
-    hydrateFromUsSnapshot(publishedSnap ?? snap);
+    hydrateFromUsSnapshot(publishedSnap ?? previousSnap ?? snap);
     state = {
       ...state,
       isBackendConnected: true,
@@ -741,7 +855,6 @@ export async function requestUsOptionExpiry(
     if (!resp) return;
     // Comprobación antes de mutar estado o hidratar consumidores.
     if (!acceptPublication(pointPublicationStamps, scopeKey, revision, resp.asOfUtcSec)) return;
-    stashExpiryChain(clean, expiration, resp);
     const canonicalKey = selection.canonicalKey;
     const previous = state.optionsByUnderlying[canonicalKey];
     const merged = mergeUsExpiryChainIntoOptions(previous, resp);
@@ -750,19 +863,33 @@ export async function requestUsOptionExpiry(
       syncOptionEngineMarket(merged);
     }
     const previousSnap = state.usSnapshotsBySymbol[clean];
+    const fact = chainFactState(resp);
+    const decision = resolveExpiryFactDecision(
+      fact,
+      currentFactState(clean, previousSnap, expiration),
+    );
+    let nextSnap = previousSnap;
+    if (decision === 'publish') {
+      stashExpiryChain(clean, expiration, resp);
+      if (previousSnap !== undefined) {
+        nextSnap = applyUsExpiryChainToSnapshot(previousSnap, resp);
+        setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
+      }
+    }
     state = {
       ...state,
       isBackendConnected: true,
       optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
       optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       // Alcance puntual: actualiza los hechos de SU vencimiento sobre la base
-      // vigente; exposición agregada, traza, spot de valuación y asOf de la base
-      // no se tocan. Sin base, el hecho queda pendiente hasta que llegue.
-      ...(previousSnap !== undefined
+      // vigente solo si son más nuevos; exposición agregada, traza, spot de
+      // valuación y asOf de la base no se tocan. Sin base, el hecho queda
+      // pendiente hasta que llegue.
+      ...(nextSnap !== undefined
         ? {
             usSnapshotsBySymbol: {
               ...state.usSnapshotsBySymbol,
-              [clean]: applyUsExpiryChainToSnapshot(previousSnap, resp),
+              [clean]: nextSnap,
             },
           }
         : {}),
