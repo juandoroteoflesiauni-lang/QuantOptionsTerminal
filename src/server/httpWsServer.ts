@@ -1331,6 +1331,11 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         }
         const collateralDurationYears = parseOptPosNum(params.get('collateralDurationYears'), 'collateralDurationYears');
         const desiredLots = parseOptPosNum(params.get('desiredLots'), 'desiredLots');
+        const sharesParam = params.get('underlyingSharesHeld');
+        const underlyingSharesHeld = sharesParam === null ? undefined : Number(sharesParam);
+        if (sharesParam !== null && (!/^\d+$/.test(sharesParam) || !Number.isSafeInteger(underlyingSharesHeld))) {
+          throw new RuntimeNoDataError('INVALID_PARAMETER', 'underlyingSharesHeld debe ser un entero no negativo', secrets, 400);
+        }
 
         const report = await ggalRuntime.getMarginAndRiskReport(
           {
@@ -1339,6 +1344,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
             ...(collateralKindParam !== undefined ? { collateralKind: collateralKindParam as NonNullable<Parameters<GgalSpecialistRuntime['getMarginAndRiskReport']>[0]>['collateralKind'] } : {}),
             ...(collateralValueArs !== undefined ? { collateralValueArs } : {}),
             ...(collateralAforo !== undefined ? { collateralAforo } : {}),
+            ...(underlyingSharesHeld !== undefined ? { underlyingSharesHeld } : {}),
             ...(collateralDurationYears !== undefined ? { collateralDurationYears } : {}),
             ...(desiredLots !== undefined ? { desiredLots } : {}),
             ...(sideParam !== undefined ? { side: sideParam } : {}),

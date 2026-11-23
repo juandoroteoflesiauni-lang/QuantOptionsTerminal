@@ -1,3 +1,4 @@
+import type { AmericanIvStatus } from '../options/ivContract.js';
 /**
  * Motor 5 — Selector Especializado de Estrategias GGAL (ARS BYMA vs. OPRA USD).
  *
@@ -111,6 +112,7 @@ export interface StrategySelectorOutput {
 }
 
 export interface BymaStrategyOptionQuote {
+  readonly ivStatus?: AmericanIvStatus;
   readonly ticker: string;
   readonly contractType: OptionContractType;
   readonly strikeArs: number;
@@ -642,6 +644,7 @@ function resolveOptionIvForCalendar(
   rateCurveArs: readonly ContinuousRateCurvePoint[],
   dividendsArs: readonly DiscreteOrdinaryDividend[],
 ): number {
+  if (quote.ivStatus !== undefined && quote.ivStatus !== 'SOLVED_AMERICAN') return Number.NaN;
   if (quote.ivDecimal !== undefined) {
     return isPositiveFinite(quote.ivDecimal) ? quote.ivDecimal : Number.NaN;
   }
@@ -1241,6 +1244,7 @@ export function evaluateStrategySelector(
         opt.expiry1530UtcSec ?? computeExpiration1530ArtUtcSec(opt.expiryDateKey);
       return (
         expSec === frontExpiryUtcSec &&
+        (opt.ivStatus === undefined || opt.ivStatus === 'SOLVED_AMERICAN') &&
         isPositiveFinite(opt.strikeArs) &&
         Number.isFinite(opt.openInterestNom) &&
         opt.openInterestNom >= minBymaOi
@@ -1669,6 +1673,7 @@ export function evaluateStrategySelector(
           : expSec > frontExpiryUtcSec;
     return (
       targetMatches &&
+      (opt.ivStatus === undefined || opt.ivStatus === 'SOLVED_AMERICAN') &&
       isValidUtcSec(expSec) &&
       expSec > frontExpiryUtcSec &&
       isPositiveFinite(opt.strikeArs) &&

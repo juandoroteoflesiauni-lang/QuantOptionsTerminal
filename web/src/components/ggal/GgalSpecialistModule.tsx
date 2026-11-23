@@ -2429,10 +2429,17 @@ export const GgalSpecialistModule: React.FC<{
                 </div>
               )}
 
-              {/* KPIs principales BYMA Clearing */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="flex h-8 items-center gap-3 overflow-hidden text-[11px] text-[#A78BFA]">
+                <span className="truncate">Modelo Interno CCP BS02 · Reglas BYMA Ago-2026</span>
+                <span className="shrink-0" role="status">
+                  {marginRiskData.marginRiskStatus === 'INDETERMINATE_MARGIN' ? 'Margen indeterminado'
+                    : marginRiskData.marginRiskStatus === 'PARTIAL_COVERAGE_CONSERVATIVE' ? 'Cobertura parcial'
+                    : marginRiskData.marginRisk?.strategyValidation?.matchesLegs === false ? 'Estructura no coincide' : ''}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 tabular-nums">
                 <KPICard
-                  title="Margen Total BYMA + Buffers"
+                  title="Margen estimado con buffers"
                   heroValue={fmtCurrency(marginRiskData.marginRisk?.totalRequiredWithBuffersArs, '$ ', 0)}
                   badge={marginRiskData.frontExpiryCode ?? 'BYMA'}
                   subtitle={`Base CCP/Piso: ${fmtCurrency(marginRiskData.marginRisk?.baseRequiredMarginArs, '$ ', 0)}`}
@@ -2498,16 +2505,16 @@ export const GgalSpecialistModule: React.FC<{
                     </span>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left text-[12px]">
+                    <table className="w-full min-w-[600px] table-fixed text-left text-[12px] tabular-nums">
                       <thead>
                         <tr className="border-b border-[#1E1E2B] text-[10.5px] uppercase text-[#787B86]">
-                          <th className="py-1.5 pr-3">Estrategia</th>
+                          <th className="w-[42%] py-1.5 pr-3">Estrategia</th>
                           <th className="py-1.5 px-2 text-right">Riesgo CCP BS02</th>
                           <th className="py-1.5 px-2 text-right">Piso OTM (1/2.5/5%)</th>
                           <th className="py-1.5 pl-2 text-right">Margen Base Req.</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-[#1E1E2B]/70 font-mono-num">
+                      <tbody className="divide-y divide-[#1E1E2B]/70 font-mono-num tabular-nums">
                         {(marginRiskData.marginRisk?.strategyReferenceMatrix ?? []).map((row) => {
                           const isSelected = row.strategyKind === m6StrategyKind;
                           return (
@@ -2520,8 +2527,11 @@ export const GgalSpecialistModule: React.FC<{
                                   : 'hover:bg-[#161622] text-[#D1D5DB]'
                               }`}
                             >
-                              <td className="py-1.5 pr-3 font-sans">
+                              <td className="truncate py-1.5 pr-3 font-sans" title={row.applicabilityReason ?? row.label}>
                                 <span className="font-medium">{row.label}</span>
+                                <span className="ml-2 inline-block w-16 whitespace-nowrap text-[9px] text-[#9CA3AF]">
+                                  {row.applicableToCurrentLegs === false ? 'NO APLICA' : ''}
+                                </span>
                                 {isSelected && (
                                   <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-[#8B7CF6]/20 text-[#A78BFA] border border-[#8B7CF6]/40">
                                     ACTIVA
@@ -2529,13 +2539,13 @@ export const GgalSpecialistModule: React.FC<{
                                 )}
                               </td>
                               <td className="py-1.5 px-2 text-right">
-                                {fmtCurrency(row.ccpRiskArrayLossArs, '$ ', 0)}
+                                {row.applicableToCurrentLegs === false ? '—' : fmtCurrency(row.ccpRiskArrayLossArs, '$ ', 0)}
                               </td>
                               <td className="py-1.5 px-2 text-right">
-                                {fmtCurrency(row.steppedFloorArs, '$ ', 0)}
+                                {row.applicableToCurrentLegs === false ? '—' : fmtCurrency(row.steppedFloorArs, '$ ', 0)}
                               </td>
                               <td className="py-1.5 pl-2 text-right font-bold text-[#FFFFFF]">
-                                {fmtCurrency(row.requiredMarginArs, '$ ', 0)}
+                                {row.applicableToCurrentLegs === false ? '—' : fmtCurrency(row.requiredMarginArs, '$ ', 0)}
                               </td>
                             </tr>
                           );

@@ -43,7 +43,6 @@ DEFAULT_CCP_VOL_SHOCKS = [-0.10, 0.0, 0.10]
 MIN_CCP_STRESS_VOL = 0.05
 DEFAULT_LIQUID_BUFFER_RATE = 0.10
 DEFAULT_WWR_SURCHARGE_RATE = 0.15
-DEFAULT_CROSS_COLLATERAL_OFFSET_RATIO = 0.10
 CIRCULAR_3588_WINDOW_MINUTES = 60.0
 CIRCULAR_3588_ATM_BAND_PCT = 0.005
 
@@ -416,7 +415,12 @@ def ref_evaluate_margin(inp: dict[str, Any]) -> dict[str, Any]:
     def eval_strat(sk: str, cov_shares: float) -> tuple[float, dict[str, Any], float, float]:
         ccp, wnode = eval_ccp_grid(as_of, exp_key, spot, rc, divs, legs)
         fl = compute_stepped_uncovered_floor(spot, legs, cov_shares if sk == "COVERED_CALL" else 0.0)
-        if sk == "UNCOVERED_SHORT" or sk in ("RATIO_SPREAD_1X2", "RATIO_SPREAD_1X3"):
+        if sk in ("RATIO_SPREAD_1X2", "RATIO_SPREAD_1X3"):
+            long, short = legs
+            excess = {**short, "lots": short["lots"] - long["lots"]}
+            ccp, wnode = eval_ccp_grid(as_of, exp_key, spot, rc, divs, [excess])
+            return ccp, wnode, fl, max(ccp, fl)
+        if sk == "UNCOVERED_SHORT":
             return ccp, wnode, fl, max(ccp, fl)
         if sk == "VERTICAL_DEBIT_SPREAD":
             return ccp, wnode, 0.0, 0.0
@@ -447,8 +451,7 @@ def ref_evaluate_margin(inp: dict[str, Any]) -> dict[str, Any]:
             adj_ccp = ccp * ratio
             return adj_ccp, {**wnode, "portfolioMtmLossArs": adj_ccp}, fl, max(adj_ccp, fl)
         if sk == "CROSS_COLLATERAL_STRATEGY":
-            red = ccp * (1.0 - DEFAULT_CROSS_COLLATERAL_OFFSET_RATIO)
-            return red, {**wnode, "portfolioMtmLossArs": red}, fl, max(red, fl)
+            return ccp, wnode, fl, max(ccp, fl)
         raise ValueError(sk)
 
     ccp_loss, wnode, floor_ars, base_req = eval_strat(strat, shares_held)
@@ -486,6 +489,7 @@ def ref_evaluate_margin(inp: dict[str, Any]) -> dict[str, Any]:
 
     liq_buf = base_req * DEFAULT_LIQUID_BUFFER_RATE
     if missing_aforo:
+        base_req = liq_buf = math.nan
         wwr = math.nan
         tot_req = math.nan
         excess = math.nan

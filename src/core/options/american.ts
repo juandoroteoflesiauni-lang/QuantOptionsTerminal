@@ -1236,3 +1236,7 @@ export function solveImpliedVolAmerican(input: SolveImpliedVolAmericanInput): nu
 
   return Math.abs(fb) <= tolerance || Math.abs(c - b) <= tolerance ? b : Number.NaN;
 }
+
+export { computeAmericanArbitrageBounds, solveImpliedVolAmericanDetailed } from './americanIvDiagnostics.js';
+export type { AmericanIvDiagnosticInput } from './americanIvDiagnostics.js';
+export type { AmericanIvStatus, ImpliedVolResolution, ObservedOptionQuote, OptionPricingModelId } from './ivContract.js';

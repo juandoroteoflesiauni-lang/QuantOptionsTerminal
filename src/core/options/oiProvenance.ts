@@ -186,7 +186,8 @@ export function resolveArExposureOiQuality(
   let usedDirect = 0;
   const oiConflicts: OiSourceConflictRecord[] = [];
   for (const { oi, used } of entries) {
-    if ('conflict' in oi) oiConflicts.push(oi.conflict);
+    const conflict = 'conflict' in oi ? oi.conflict : undefined;
+    if (conflict !== undefined) oiConflicts.push(conflict);
     if (oi.status === 'MISSING_OI') missingOiInputs += 1;
     if (oi.status === 'INVALID_OI') invalidOiInputs += 1;
     if (oi.status === 'EXPLICIT_PROXY' && used) proxyOiInputs += 1;

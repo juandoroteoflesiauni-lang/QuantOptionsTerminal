@@ -439,6 +439,7 @@ function legFromRow(
   const ivPct = isCall ? row.callIV : row.putIV;
   const delta = isCall ? row.callDelta : row.putDelta;
   const theta = isCall ? row.callTheta : row.putTheta;
+  const ivStatus = isCall ? row.callIvStatus : row.putIvStatus;
   return {
     id: `leg-${type.toLowerCase()}-${row.strike}-${Date.now()}-${Math.round(Math.random() * 1000)}`,
     side,
@@ -446,9 +447,9 @@ function legFromRow(
     strike: row.strike,
     qty,
     premium: Number.isFinite(rawPx) && rawPx > 0 ? +rawPx.toFixed(2) : 0,
-    iv: Number.isFinite(ivPct) && ivPct > 0 ? +ivPct.toFixed(1) : 45,
-    delta: Number.isFinite(delta) ? +delta.toFixed(2) : isCall ? 0.5 : -0.5,
-    theta: Number.isFinite(theta) ? +theta.toFixed(2) : 0,
+    iv: Number.isFinite(ivPct) && ivPct > 0 ? +ivPct.toFixed(1) : ivStatus !== undefined ? Number.NaN : 45,
+    delta: Number.isFinite(delta) ? +delta.toFixed(2) : ivStatus !== undefined ? Number.NaN : isCall ? 0.5 : -0.5,
+    theta: Number.isFinite(theta) ? +theta.toFixed(2) : ivStatus !== undefined ? Number.NaN : 0,
   };
 }
 
@@ -1227,7 +1228,7 @@ export const OptionsModule: React.FC<{
         strike: l.K,
         qty: l.ratio * units,
         premium: Number.isFinite(l.premium) ? l.premium : 0,
-        iv: Number.isFinite(l.iv) ? +(l.iv * 100).toFixed(1) : 45,
+        iv: Number.isFinite(l.iv) ? +(l.iv * 100).toFixed(1) : Number.NaN,
         delta: Number.isFinite(l.delta) ? +l.delta.toFixed(2) : 0,
         theta: Number.isFinite(l.thetaDay) ? +l.thetaDay.toFixed(2) : 0,
       }))
@@ -1999,7 +2000,7 @@ export const OptionsModule: React.FC<{
         strike: baseStrike,
         qty: 10,
         premium: 0,
-        iv: Number.isFinite(activeAtmIvDec) ? +(activeAtmIvDec * 100).toFixed(1) : 45,
+        iv: Number.isFinite(activeAtmIvDec) ? +(activeAtmIvDec * 100).toFixed(1) : isUsMarket ? 45 : Number.NaN,
         delta: type === 'Call' ? 0.5 : -0.5,
         theta: 0,
       },

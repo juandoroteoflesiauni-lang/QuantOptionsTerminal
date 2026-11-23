@@ -123,6 +123,10 @@ describe('Motor 6 GGAL Specialist — BYMA Clearing 2026, Microestructura L1-L2 
       const frozenInput = deepFreeze(structuredClone(entry.input));
       const actual = evaluateBymaClearingMargin(frozenInput);
       const expected = entry.output as Record<string, unknown>;
+      if (caseName === 'cross_collateral_strategy') {
+        expect(actual.appliedCrossOffsetRatio).toBe(0);
+        expect(actual.strategyValidation.code).toBe('CROSS_COLLATERAL_OFFSET_NOT_VERIFIED');
+      }
 
       expect(actual.status, `${caseName}.status`).toBe(expected['status']);
       expect(actual.strategyKind, `${caseName}.strategyKind`).toBe(expected['strategyKind']);

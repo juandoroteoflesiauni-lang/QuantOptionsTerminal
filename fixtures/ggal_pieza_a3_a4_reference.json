@@ -1,0 +1,290 @@
+{
+  "ivCases": [
+    {
+      "name": "put below intrinsic",
+      "contractType": "put",
+      "spot": 5005.0,
+      "strike": 6000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 973.5,
+      "status": "BELOW_INTRINSIC",
+      "reason": "BELOW_IMMEDIATE_INTRINSIC",
+      "bounds": {
+        "intrinsic": 995.0,
+        "europeanFloor": 659.5373479916632,
+        "lower": 995.0,
+        "upper": 6000.0,
+        "priceMinusLower": -21.5
+      }
+    },
+    {
+      "name": "call below intrinsic",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 4000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 1000.0,
+      "status": "BELOW_INTRINSIC",
+      "reason": "BELOW_IMMEDIATE_INTRINSIC",
+      "bounds": {
+        "intrinsic": 1005.0,
+        "europeanFloor": 1228.6417680055579,
+        "lower": 1228.6417680055579,
+        "upper": 5005.0,
+        "priceMinusLower": -228.6417680055579
+      }
+    },
+    {
+      "name": "call below discounted floor",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 4000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 1050.0,
+      "status": "BELOW_INTRINSIC",
+      "reason": "BELOW_DISCOUNTED_PARITY_FLOOR",
+      "bounds": {
+        "intrinsic": 1005.0,
+        "europeanFloor": 1228.6417680055579,
+        "lower": 1228.6417680055579,
+        "upper": 5005.0,
+        "priceMinusLower": -178.6417680055579
+      }
+    },
+    {
+      "name": "call above cap",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 4000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 5010.0,
+      "status": "ABOVE_UPPER_BOUND",
+      "reason": "EXCEEDS_AMERICAN_UPPER_BOUND",
+      "bounds": {
+        "intrinsic": 1005.0,
+        "europeanFloor": 1228.6417680055579,
+        "lower": 1228.6417680055579,
+        "upper": 5005.0,
+        "priceMinusLower": 3781.358231994442
+      }
+    },
+    {
+      "name": "put above cap",
+      "contractType": "put",
+      "spot": 5005.0,
+      "strike": 6000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 6005.0,
+      "status": "ABOVE_UPPER_BOUND",
+      "reason": "EXCEEDS_AMERICAN_UPPER_BOUND",
+      "bounds": {
+        "intrinsic": 995.0,
+        "europeanFloor": 659.5373479916632,
+        "lower": 995.0,
+        "upper": 6000.0,
+        "priceMinusLower": 5010.0
+      }
+    },
+    {
+      "name": "exercise boundary",
+      "contractType": "put",
+      "spot": 5005.0,
+      "strike": 6000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 995.0,
+      "status": "UNIDENTIFIABLE_AMERICAN_IV",
+      "reason": "AT_LOWER_BOUND_ZERO_VEGA",
+      "bounds": {
+        "intrinsic": 995.0,
+        "europeanFloor": 659.5373479916632,
+        "lower": 995.0,
+        "upper": 6000.0,
+        "priceMinusLower": 0.0
+      }
+    },
+    {
+      "name": "upper boundary",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 4000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 5005.0,
+      "status": "UNIDENTIFIABLE_AMERICAN_IV",
+      "reason": "AT_UPPER_BOUND_INFINITE_VOL",
+      "bounds": {
+        "intrinsic": 1005.0,
+        "europeanFloor": 1228.6417680055579,
+        "lower": 1228.6417680055579,
+        "upper": 5005.0,
+        "priceMinusLower": 3776.358231994442
+      }
+    },
+    {
+      "name": "volatility outside bracket",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 5005.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 5000.0,
+      "status": "UNIDENTIFIABLE_AMERICAN_IV",
+      "reason": "ABOVE_MAX_VOL_DOMAIN",
+      "bounds": {
+        "intrinsic": 0.0,
+        "europeanFloor": 279.83176221695436,
+        "lower": 279.83176221695436,
+        "upper": 5005.0,
+        "priceMinusLower": 4720.168237783046
+      }
+    },
+    {
+      "name": "forced nonconvergence",
+      "contractType": "put",
+      "spot": 5005.0,
+      "strike": 5000.0,
+      "rate": 0.35,
+      "seconds": 5184000,
+      "last": 503.0,
+      "status": "SOLVER_FAILURE",
+      "reason": "NON_CONVERGENCE",
+      "bounds": {
+        "intrinsic": 0.0,
+        "europeanFloor": 0.0,
+        "lower": 0.0,
+        "upper": 5000.0,
+        "priceMinusLower": 503.0
+      },
+      "maxIterations": 2
+    },
+    {
+      "name": "remaining 60 s",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 5005.0,
+      "rate": 0.35,
+      "seconds": 60,
+      "last": 10.0,
+      "status": "UNIDENTIFIABLE_AMERICAN_IV",
+      "reason": "NEAR_EXPIRY_DEGENERATE",
+      "bounds": {
+        "intrinsic": 0.0,
+        "europeanFloor": 0.0033328565767694715,
+        "lower": 0.0033328565767694715,
+        "upper": 5005.0,
+        "priceMinusLower": 9.996667143423231
+      }
+    },
+    {
+      "name": "remaining 30 s",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 5005.0,
+      "rate": 0.35,
+      "seconds": 30,
+      "last": 10.0,
+      "status": "UNIDENTIFIABLE_AMERICAN_IV",
+      "reason": "NEAR_EXPIRY_DEGENERATE",
+      "bounds": {
+        "intrinsic": 0.0,
+        "europeanFloor": 0.0016664285658057314,
+        "lower": 0.0016664285658057314,
+        "upper": 5005.0,
+        "priceMinusLower": 9.998333571434195
+      }
+    },
+    {
+      "name": "remaining 0 s",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 5005.0,
+      "rate": 0.35,
+      "seconds": 0,
+      "last": 10.0,
+      "status": "INVALID_INPUT",
+      "reason": "EXPIRED_OR_NON_POSITIVE_TIME",
+      "bounds": {
+        "intrinsic": 0.0,
+        "europeanFloor": 0.0,
+        "lower": 0.0,
+        "upper": 5005.0,
+        "priceMinusLower": 10.0
+      }
+    },
+    {
+      "name": "remaining -10 s",
+      "contractType": "call",
+      "spot": 5005.0,
+      "strike": 5005.0,
+      "rate": 0.35,
+      "seconds": -10,
+      "last": 10.0,
+      "status": "INVALID_INPUT",
+      "reason": "EXPIRED_OR_NON_POSITIVE_TIME",
+      "bounds": {
+        "intrinsic": 0.0,
+        "europeanFloor": 0.0,
+        "lower": 0.0,
+        "upper": 5005.0,
+        "priceMinusLower": 10.0
+      }
+    }
+  ],
+  "europeanProxy": {
+    "iv": 0.6816737954156007,
+    "repricingAmericanPrice": 1076.9962927442523
+  },
+  "roundTrips": [
+    {
+      "contractType": "put",
+      "spot": 5005,
+      "strike": 5000,
+      "seconds": 5184000,
+      "last": 309.16572531969723,
+      "iv": 0.52,
+      "crr1000": 311.4878537945067
+    },
+    {
+      "contractType": "call",
+      "spot": 6400,
+      "strike": 6400,
+      "seconds": 3024000,
+      "last": 487.9623390292513,
+      "iv": 0.48,
+      "crr1000": 487.8668612178179
+    },
+    {
+      "contractType": "call",
+      "spot": 5005,
+      "strike": 5005,
+      "seconds": 61,
+      "last": 1.3346540491470478,
+      "iv": 0.48,
+      "crr1000": 1.3343208508126536
+    }
+  ],
+  "margin": {
+    "uncovered": {
+      "margin": 2832606.3154243347,
+      "floor": 148400.0
+    },
+    "creditSplit": {
+      "cap": 400000.0,
+      "margin": 1622177.2749987922
+    },
+    "cross": {
+      "offset": 0,
+      "margin": 1866735.6710000376
+    },
+    "fees": {
+      "stockMultiplierTen": 968.0
+    },
+    "intrinsicOnly": 40000.0
+  }
+}

@@ -1,3 +1,4 @@
+import type { AmericanIvStatus, MarginModelBasis, MarginRiskStatus } from '../../../src/core/options/ivContract.js';
 import type { CanonicalOptionIdentity } from '../../../src/core/ggal/anexoBIdentity.js';
 import type { DealerSignBasis, GexComputationStatus, OiQualityTier } from '../../../src/core/options/oiProvenance.js';
 
@@ -184,6 +185,7 @@ export interface GgalSmileComparisonPointDto {
 }
 
 export interface GgalVolTriangleResponseDto {
+  readonly arbViolationsCount?: number;
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -234,6 +236,7 @@ export interface GgalDualDensityOutputDto {
 }
 
 export interface GgalDualDensityResponseDto {
+  readonly arbViolationsCount?: number;
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -298,6 +301,7 @@ interface AnexoBExpiryPartitionDto {
 }
 
 export interface GgalStructurePinningResponseDto {
+  readonly atmFallbackStrikes?: readonly number[];
   readonly gexStatus?: GexComputationStatus;
   readonly oiQuality?: OiQualityTier;
   readonly oiCoverageRatio?: number;
@@ -398,6 +402,7 @@ export interface GgalStrategySelectorRequestDto {
 }
 
 export interface GgalStrategySelectorResponseDto {
+  readonly arbViolationsCount?: number;
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -1138,6 +1143,7 @@ export type CollateralAssetKindDto =
   | 'EQUITY_LOCAL';
 
 export interface GgalMarginRiskQueryDto {
+  readonly underlyingSharesHeld?: number;
   readonly strategyKind?: BymaClearingStrategyKindDto;
   readonly capitalArs?: number;
   readonly collateralKind?: CollateralAssetKindDto;
@@ -1149,6 +1155,8 @@ export interface GgalMarginRiskQueryDto {
 }
 
 export interface GgalMarginRiskResponseDto {
+  readonly marginRiskStatus?: MarginRiskStatus;
+  readonly positionBasis?: 'SIMULATED_STRATEGY_TEMPLATE';
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly requestResolved: {
     readonly strategyKind: BymaClearingStrategyKindDto;
@@ -1157,6 +1165,7 @@ export interface GgalMarginRiskResponseDto {
     readonly collateralValueArs: number;
     readonly collateralAforo: number | null;
     readonly desiredLots: number;
+    readonly underlyingSharesHeld?: number | null;
     readonly side: 'BUY' | 'SELL';
   };
   readonly frontExpiryCode: string | null;
@@ -1169,8 +1178,9 @@ export interface GgalMarginRiskResponseDto {
     readonly side: 'BUY' | 'SELL';
     readonly lots: number;
     readonly strikeArs: number;
-    readonly optionPriceArs: number;
-    readonly ivPct: number;
+    readonly optionPriceArs: number | null;
+    readonly ivPct: number | null;
+    readonly ivStatus?: AmericanIvStatus;
   }[];
   readonly executionBookDiagnostics: {
     readonly bookSource: 'PRIMARY_L2' | 'BYMA_L1_ONLY' | 'NO_DATA';
@@ -1180,6 +1190,16 @@ export interface GgalMarginRiskResponseDto {
     readonly recorderPairsCount: number;
   };
   readonly marginRisk: {
+    readonly riskStatus?: MarginRiskStatus;
+    readonly marginModelBasis?: MarginModelBasis;
+    readonly clearingRuleHierarchy?: readonly { readonly basis: string; readonly source: string; readonly scope: string }[];
+    readonly strategyValidation?: { readonly requestedStrategyKind: string; readonly effectiveStrategyKind: string;
+      readonly matchesLegs: boolean; readonly code: string; readonly detail: string };
+    readonly positionBasis?: 'DECLARED_POSITION' | 'SIMULATED_STRATEGY_TEMPLATE';
+    readonly assumptions?: readonly string[];
+    readonly degradedLegs?: readonly { readonly ticker: string; readonly side: 'BUY' | 'SELL'; readonly reason: string }[];
+    readonly conservativeIntrinsicFloorArs?: number | null;
+    readonly appliedCrossOffsetRatio?: number;
     readonly status: 'OK' | 'NO_DATA';
     readonly reason: string | null;
     readonly strategyKind: BymaClearingStrategyKindDto;
@@ -1227,6 +1247,9 @@ export interface GgalMarginRiskResponseDto {
       readonly reason: string;
     };
     readonly strategyReferenceMatrix: readonly {
+      readonly applicableToCurrentLegs?: boolean;
+      readonly evaluationBasis?: 'ACTUAL_POSITION_MATCH' | 'NOT_APPLICABLE_TO_CURRENT_LEGS';
+      readonly applicabilityReason?: string;
       readonly strategyKind: BymaClearingStrategyKindDto;
       readonly label: string;
       readonly ccpRiskArrayLossArs: number | null;
@@ -1360,6 +1383,7 @@ export function fetchGgalMarginRisk(
   if (query.desiredLots !== undefined && Number.isFinite(query.desiredLots) && query.desiredLots > 0) {
     sp.set('desiredLots', String(query.desiredLots));
   }
+  if (query.underlyingSharesHeld !== undefined) sp.set('underlyingSharesHeld', String(query.underlyingSharesHeld));
   if (query.side !== undefined) sp.set('side', query.side);
 
   const qs = sp.toString();

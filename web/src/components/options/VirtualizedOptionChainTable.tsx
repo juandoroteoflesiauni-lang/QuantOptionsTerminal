@@ -1,3 +1,4 @@
+import type { AmericanIvStatus } from '../../../../src/core/options/ivContract.js';
 import React, { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { normalizeOptionContractKey } from '../../../../src/core/atomicQuoteStore';
@@ -15,6 +16,23 @@ export type OptionChainColMode = 'completa' | 'griegas' | 'valortiempo' | 'liqui
 type ChainVirtualEntry =
   | { readonly kind: 'marker'; readonly key: string; readonly marker: InlineAxisMarker }
   | { readonly kind: 'row'; readonly key: string; readonly item: EnrichedChainRow };
+
+const IV_STATUS_LABEL: Partial<Record<AmericanIvStatus, readonly [string, string]>> = {
+  BELOW_INTRINSIC: ['< INTR', 'Prima por debajo de la cota americana'],
+  ABOVE_UPPER_BOUND: ['> MAX', 'Prima por encima de la cota superior americana'],
+  UNIDENTIFIABLE_AMERICAN_IV: ['N/I', 'La prima no identifica una IV americana única'],
+  SOLVER_FAILURE: ['ERR', 'La inversión americana no convergió'],
+  INVALID_INPUT: ['ERR', 'Cotización o parámetros inválidos'],
+  STALE_INPUT: ['STALE', 'Cotización desactualizada'],
+};
+
+function ivCell(iv: number, status?: AmericanIvStatus) {
+  if (Number.isFinite(iv)) return `${fmtNum(iv, 1)}%`;
+  const label = status === undefined ? undefined : IV_STATUS_LABEL[status];
+  return label ? <span title={label[1]} className="inline-flex w-14 justify-end whitespace-nowrap text-[9px] tabular-nums">
+    — <span className="ml-1">{label[0]}</span>
+  </span> : '—';
+}
 
 const HEADER_GRID_CLASSES: Readonly<Record<OptionChainColMode, string>> = {
   completa:
@@ -209,10 +227,10 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
   const spotValid = Number.isFinite(displaySpot) && displaySpot > 0;
   const callGammaSafe = Number.isFinite(row.callGamma)
     ? row.callGamma
-    : safeAnalyticalBsmGamma(displaySpot, row.strike, row.callIV, daysToExpiry, effectiveRateDec);
+    : row.callIvStatus !== undefined ? Number.NaN : safeAnalyticalBsmGamma(displaySpot, row.strike, row.callIV, daysToExpiry, effectiveRateDec);
   const putGammaSafe = Number.isFinite(row.putGamma)
     ? row.putGamma
-    : safeAnalyticalBsmGamma(displaySpot, row.strike, row.putIV, daysToExpiry, effectiveRateDec);
+    : row.putIvStatus !== undefined ? Number.NaN : safeAnalyticalBsmGamma(displaySpot, row.strike, row.putIV, daysToExpiry, effectiveRateDec);
   const callOiRatio =
     Number.isFinite(row.callOpenInterest) && row.callOpenInterest > 0
       ? (row.callVolumeLots / row.callOpenInterest) * 100
@@ -233,7 +251,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             {fmtNum(row.callDelta, 2)}
           </div>
           <div title={row.callTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
-            {Number.isFinite(row.callIV) ? `${fmtNum(row.callIV, 1)}%` : '—'}
+            {ivCell(row.callIV, row.callIvStatus)}
           </div>
           <TheoCell theo={item.callTheoreticalPrice} ask={callAsk} />
           <ImperativePriceCell
@@ -280,7 +298,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             {Number.isFinite(row.callVega) ? fmtNum(row.callVega, 2) : '—'}
           </div>
           <div title={row.callTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
-            {Number.isFinite(row.callIV) ? `${fmtNum(row.callIV, 1)}%` : '—'}
+            {ivCell(row.callIV, row.callIvStatus)}
           </div>
           <div title={row.callTicker} className="flex h-full items-center justify-end px-2 text-[#E5E7EB]">
             {fmtNum(row.callDelta, 2)}
@@ -393,7 +411,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
           />
           <TheoCell theo={item.putTheoreticalPrice} ask={putAsk} />
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
-            {Number.isFinite(row.putIV) ? `${fmtNum(row.putIV, 1)}%` : '—'}
+            {ivCell(row.putIV, row.putIvStatus)}
           </div>
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
             {fmtNum(row.putDelta, 2)}
@@ -407,7 +425,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             {fmtNum(row.putDelta, 2)}
           </div>
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
-            {Number.isFinite(row.putIV) ? `${fmtNum(row.putIV, 1)}%` : '—'}
+            {ivCell(row.putIV, row.putIvStatus)}
           </div>
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
             {Number.isFinite(row.putVega) ? fmtNum(row.putVega, 2) : '—'}

@@ -1,3 +1,4 @@
+import type { AmericanIvStatus, MarginRiskStatus } from '../core/options/ivContract.js';
 import {
   explicitVolumeOi,
   resolveContractMultiplier,
@@ -310,6 +311,7 @@ export interface GgalSmileComparisonPointDto {
 }
 
 export interface GgalVolTriangleResponse {
+  readonly arbViolationsCount?: number;
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -324,6 +326,7 @@ export interface GgalVolTriangleResponse {
 }
 
 export interface GgalDualDensityResponse {
+  readonly arbViolationsCount?: number;
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -417,6 +420,7 @@ export interface GgalData912OiFallbackItemDto {
 }
 
 export interface GgalStructurePinningResponse {
+  readonly atmFallbackStrikes?: readonly number[];
   readonly gexStatus: GexComputationStatus;
   readonly oiQuality: OiQualityTier;
   readonly oiCoverageRatio: number;
@@ -448,6 +452,7 @@ export interface GgalStrategySelectorRequest {
 }
 
 export interface GgalStrategySelectorResponse {
+  readonly arbViolationsCount?: number;
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly frontExpiryCode: string | null;
   readonly frontExpiryDate: string | null;
@@ -506,6 +511,7 @@ export interface GgalAnexoBIngestResponse {
 }
 
 export interface GgalMarginRiskRequest {
+  readonly underlyingSharesHeld?: number;
   readonly strategyKind?: BymaClearingStrategyKind | undefined;
   readonly capitalArs?: number | undefined;
   readonly collateralKind?: CollateralAssetKind | undefined;
@@ -522,11 +528,15 @@ export interface GgalMarginRiskSelectedLegDto {
   readonly side: OrderSide;
   readonly lots: number;
   readonly strikeArs: number;
-  readonly optionPriceArs: number;
-  readonly ivPct: number;
+  readonly optionPriceArs: number | null;
+  readonly ivPct: number | null;
+  readonly ivStatus?: AmericanIvStatus;
 }
 
 export interface GgalMarginRiskResponse {
+  readonly marginRiskStatus: MarginRiskStatus;
+  readonly positionBasis: 'SIMULATED_STRATEGY_TEMPLATE';
+
   readonly telemetry: GgalTelemetryHeaderDto;
   readonly requestResolved: {
     readonly strategyKind: BymaClearingStrategyKind;
@@ -535,6 +545,7 @@ export interface GgalMarginRiskResponse {
     readonly collateralValueArs: number;
     readonly collateralAforo: number | null;
     readonly desiredLots: number;
+    readonly underlyingSharesHeld: number | null;
     readonly side: OrderSide;
   };
   readonly frontExpiryCode: string | null;
@@ -1094,6 +1105,12 @@ export function parseAnexoBIamcInput(
   };
 }
 
+
+function countAmericanArbitrageViolations(...expiries: readonly (ArOptionExpiryDto | null)[]): number {
+  return expiries.reduce((count, expiry) => count + (expiry === null ? 0 :
+    [...expiry.calls, ...expiry.puts].filter((c) => c.ivStatus === 'BELOW_INTRINSIC' ||
+      c.ivStatus === 'ABOVE_UPPER_BOUND').length), 0);
+}
 
 function selectLiquidFrontAndBackExpiries(
   options: ArOptionsResponse,
@@ -3141,6 +3158,7 @@ export class GgalSpecialistRuntime {
     const bymaOptions: BymaOptionQuoteInput[] = [];
     let optBasis: ExecutionPriceBasis = spots.basis;
     for (const c of [...front.calls, ...front.puts]) {
+      if (c.ivStatus !== 'SOLVED_AMERICAN') continue;
       const built = makeBidAskQuote(c.bid, c.ask, c.mark ?? c.last, isEodMode);
       if (built.basis === 'LIVE_BID_ASK') {
         optBasis = 'LIVE_BID_ASK';
@@ -3364,6 +3382,7 @@ export class GgalSpecialistRuntime {
 
     return {
       telemetry,
+      arbViolationsCount: countAmericanArbitrageViolations(core.front),
       frontExpiryCode: core.front?.expiryCode ?? null,
       frontExpiryDate: core.front?.expirationDate ?? null,
       frontDteCalendar: core.front?.days ?? null,
@@ -3689,6 +3708,7 @@ export class GgalSpecialistRuntime {
 
     return {
       telemetry,
+      arbViolationsCount: countAmericanArbitrageViolations(core.front),
       frontExpiryCode: core.front?.expiryCode ?? null,
       frontExpiryDate: core.front?.expirationDate ?? null,
       dteCalendar: core.front?.days ?? null,
@@ -3939,11 +3959,16 @@ export class GgalSpecialistRuntime {
 
     const fallbackAtmIv = front.ivAtm;
     const strikesInput: AnexoBStrikeChainInput[] = [];
+    const atmFallbackStrikes = new Set<number>();
     for (const row of partition.rows) {
       const c = front.calls.find((x) => x.strike === row.strikeArs);
       const p = front.puts.find((x) => x.strike === row.strikeArs);
-      const callIv = c?.iv !== null && c?.iv !== undefined && Number.isFinite(c.iv) && c.iv > 0 ? c.iv : fallbackAtmIv;
-      const putIv = p?.iv !== null && p?.iv !== undefined && Number.isFinite(p.iv) && p.iv > 0 ? p.iv : fallbackAtmIv;
+      const callIv = c?.ivStatus === 'SOLVED_AMERICAN' ? c.iv ?? fallbackAtmIv : fallbackAtmIv;
+      const putIv = p?.ivStatus === 'SOLVED_AMERICAN' ? p.iv ?? fallbackAtmIv : fallbackAtmIv;
+      if ((c?.ivStatus !== 'SOLVED_AMERICAN' && Object.values(row.callOi).some((oi) => oi > 0)) ||
+          (p?.ivStatus !== 'SOLVED_AMERICAN' && Object.values(row.putOi).some((oi) => oi > 0))) {
+        atmFallbackStrikes.add(row.strikeArs);
+      }
       strikesInput.push({
         strikeArs: row.strikeArs,
         callOi: row.callOi,
@@ -3984,8 +4009,15 @@ export class GgalSpecialistRuntime {
       const iv = call ? row.callIvDecimal : row.putIvDecimal;
       return evalParams !== null && Number.isFinite(greeksBymaAmericanBs02(evalParams, identity.strike, iv, identity.side).gamma);
     });
-    const oiCoverageRatio = identitiesEvaluated.length / partition.identities.length;
-    const modelValid = Number.isFinite(out.netEffectiveGexArsPer1Pct) && oiCoverageRatio > 0;
+    const identified = identitiesEvaluated.filter((identity) => {
+      const chain = identity.side === 'call' ? front.calls : front.puts;
+      const row = rowsByStrike.get(identity.strike);
+      const buckets = identity.side === 'call' ? row?.callOi : row?.putOi;
+      return (buckets !== undefined && Object.values(buckets).every((oi) => oi === 0)) ||
+        chain.some((contract) => contract.strike === identity.strike && contract.ivStatus === 'SOLVED_AMERICAN');
+    });
+    const oiCoverageRatio = identified.length / partition.identities.length;
+    const modelValid = Number.isFinite(out.netEffectiveGexArsPer1Pct) && identitiesEvaluated.length > 0;
 
     const telemetry = this.resolveTelemetryMode(
       bundle,
@@ -3999,6 +4031,7 @@ export class GgalSpecialistRuntime {
       gexStatus: !modelValid ? 'INVALID_DATA_OR_MODEL' : oiCoverageRatio < 1 ? 'PARTIAL_COVERAGE' : 'VALID_IAMC_ANEXO_B',
       oiQuality: !modelValid ? 'INVALID_OI' : oiCoverageRatio < 1 ? 'PARTIAL_DIRECT_OI' : 'IAMC_ANEXO_B_EXACT',
       oiCoverageRatio,
+      atmFallbackStrikes: [...atmFallbackStrikes],
       telemetry,
       frontExpiryCode: front.expiryCode,
       frontExpiryDate: front.expirationDate,
@@ -4058,6 +4091,7 @@ export class GgalSpecialistRuntime {
       const telemetry = this.resolveTelemetryMode(bundle, spots.basis);
       return {
         telemetry,
+        arbViolationsCount: countAmericanArbitrageViolations(front, back),
         frontExpiryCode: front?.expiryCode ?? null,
         frontExpiryDate: front?.expirationDate ?? null,
         backExpiryCode: back?.expiryCode ?? null,
@@ -4076,6 +4110,7 @@ export class GgalSpecialistRuntime {
         contractualExpiry: exp.expirationDate, expiryCode: exp.expiryCode,
       }).partition;
       for (const c of [...exp.calls, ...exp.puts]) {
+        if (c.ivStatus !== 'SOLVED_AMERICAN' || c.iv === null) continue;
         const built = makeBidAskQuote(c.bid, c.ask, c.mark ?? c.last, isEodMode);
         if (built.basis === 'LIVE_BID_ASK') {
           optBasis = 'LIVE_BID_ASK';
@@ -4091,7 +4126,7 @@ export class GgalSpecialistRuntime {
             bidArs: built.quote.bid,
             askArs: built.quote.ask,
             openInterestNom: effectiveOiNom,
-            ...(c.iv !== null && Number.isFinite(c.iv) && c.iv > 0 ? { ivDecimal: c.iv } : {}),
+            ivDecimal: c.iv, ivStatus: c.ivStatus,
           });
         }
       }
@@ -4171,6 +4206,7 @@ export class GgalSpecialistRuntime {
     const telemetry = this.resolveTelemetryMode(bundle, optBasis);
     return {
       telemetry,
+      arbViolationsCount: countAmericanArbitrageViolations(front, back),
       frontExpiryCode: front.expiryCode,
       frontExpiryDate: front.expirationDate,
       backExpiryCode: back?.expiryCode ?? null,
@@ -4240,6 +4276,9 @@ export class GgalSpecialistRuntime {
         ? (spot24hArs / spotAdrUsd) * GGAL_ADR_RATIO
         : Number.NaN;
 
+    const simulatedCoveredShares = strategyKind === 'COVERED_CALL' && req.underlyingSharesHeld === undefined;
+    const underlyingSharesHeld = req.underlyingSharesHeld ?? (simulatedCoveredShares ? 1_000 : undefined);
+    const positionBasis = 'SIMULATED_STRATEGY_TEMPLATE' as const;
     const requestResolved = {
       strategyKind,
       capitalArs,
@@ -4247,6 +4286,7 @@ export class GgalSpecialistRuntime {
       collateralValueArs,
       collateralAforo: collateralAforo ?? null,
       desiredLots,
+      underlyingSharesHeld: underlyingSharesHeld ?? null,
       side,
     };
 
@@ -4288,6 +4328,8 @@ export class GgalSpecialistRuntime {
           optionL1AskSizeLots: null,
           recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
         },
+        positionBasis,
+        marginRiskStatus: 'INDETERMINATE_MARGIN',
         marginRisk: null,
         executionMicrostructure: null,
         tailStress: null,
@@ -4295,13 +4337,10 @@ export class GgalSpecialistRuntime {
       };
     }
 
-    const callsValid = front.calls
-      .filter((c) => buildOptionMid(c) !== null && c.iv !== null && Number.isFinite(c.iv) && c.iv > 0)
-      .slice()
+    // Select the position before judging IV so that a bad quote cannot erase a short leg.
+    const callsValid = front.calls.slice()
       .sort((a, b) => a.strike - b.strike);
-    const putsValid = front.puts
-      .filter((p) => buildOptionMid(p) !== null && p.iv !== null && Number.isFinite(p.iv) && p.iv > 0)
-      .slice()
+    const putsValid = front.puts.slice()
       .sort((a, b) => a.strike - b.strike);
 
     const toLeg = (c: ArOptionContractDto, legSide: OrderSide, lots: number): BymaMarginLegInput => ({
@@ -4310,8 +4349,18 @@ export class GgalSpecialistRuntime {
       side: legSide,
       lots,
       strikeArs: c.strike,
-      optionPriceArs: buildOptionMid(c) as number,
-      ivDecimal: c.iv as number,
+      optionPriceArs: buildOptionMid(c) ?? Number.NaN,
+      ivDecimal: c.ivStatus === 'SOLVED_AMERICAN' ? c.iv ?? Number.NaN : Number.NaN,
+      underlying: c.underlying,
+      expiryDateKey: c.expirationDate,
+      expiryUtcSec: c.expiryUtcSec,
+      contractMultiplier: c.contractMultiplier ?? Number.NaN,
+      multiplierSource: c.multiplierSource ?? 'UNVERIFIED',
+      currency: 'ARS',
+      exerciseStyle: 'AMERICAN',
+      ivStatus: c.ivStatus ?? 'INVALID_INPUT',
+      quoteSource: c.quoteSource ?? 'DATA912',
+      quoteAsOfUtcSec: c.quoteAsOfUtcSec ?? null,
     });
 
     const nearestIndex = (arr: readonly ArOptionContractDto[], targetStrike: number): number => {
@@ -4329,7 +4378,6 @@ export class GgalSpecialistRuntime {
 
     const marginLegs: BymaMarginLegInput[] = [];
     let targetContract: ArOptionContractDto | null = null;
-    let underlyingSharesHeld: number | undefined;
 
     if (callsValid.length > 0 || putsValid.length > 0) {
       const atmCallIdx = callsValid.length > 0 ? nearestIndex(callsValid, spot24hArs) : -1;
@@ -4356,9 +4404,6 @@ export class GgalSpecialistRuntime {
           if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
             marginLegs.push(toLeg(cAtm, 'BUY', 10), toLeg(cUpper, 'SELL', 10));
             targetContract = cAtm;
-          } else if (cAtm) {
-            marginLegs.push(toLeg(cAtm, 'BUY', 10));
-            targetContract = cAtm;
           }
           break;
         }
@@ -4369,12 +4414,6 @@ export class GgalSpecialistRuntime {
           } else if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
             marginLegs.push(toLeg(cAtm, 'SELL', 10), toLeg(cUpper, 'BUY', 10));
             targetContract = cAtm;
-          } else {
-            const fb = pAtm ?? cAtm;
-            if (fb !== undefined) {
-              marginLegs.push(toLeg(fb, 'SELL', 10));
-              targetContract = fb;
-            }
           }
           break;
         }
@@ -4382,9 +4421,6 @@ export class GgalSpecialistRuntime {
           if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
             marginLegs.push(toLeg(cAtm, 'BUY', 10), toLeg(cUpper, 'SELL', 20));
             targetContract = cUpper;
-          } else if (cAtm) {
-            marginLegs.push(toLeg(cAtm, 'SELL', 20));
-            targetContract = cAtm;
           }
           break;
         }
@@ -4392,9 +4428,6 @@ export class GgalSpecialistRuntime {
           if (cAtm && cUpper && cAtm.symbol !== cUpper.symbol) {
             marginLegs.push(toLeg(cAtm, 'BUY', 10), toLeg(cUpper, 'SELL', 30));
             targetContract = cUpper;
-          } else if (cAtm) {
-            marginLegs.push(toLeg(cAtm, 'SELL', 30));
-            targetContract = cAtm;
           }
           break;
         }
@@ -4410,7 +4443,6 @@ export class GgalSpecialistRuntime {
           const shortCall = cUpper ?? cAtm;
           if (shortCall) {
             marginLegs.push(toLeg(shortCall, 'SELL', 10));
-            underlyingSharesHeld = 10 * GGAL_BYMA_LOT_SIZE;
             targetContract = shortCall;
           }
           break;
@@ -4426,7 +4458,8 @@ export class GgalSpecialistRuntime {
       }
     }
 
-    if (marginLegs.length === 0 || targetContract === null) {
+    const requiredLegCount = strategyKind === 'COVERED_CALL' || strategyKind === 'UNCOVERED_SHORT' ? 1 : 2;
+    if (marginLegs.length !== requiredLegCount || targetContract === null) {
       return {
         telemetry,
         requestResolved,
@@ -4442,10 +4475,12 @@ export class GgalSpecialistRuntime {
           optionL1AskSizeLots: null,
           recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
         },
+        positionBasis,
+        marginRiskStatus: 'INDETERMINATE_MARGIN',
         marginRisk: null,
         executionMicrostructure: null,
         tailStress: null,
-        notice: `Sin contratos líquidos con VI válida en ${front.expiryCode} para armar ${strategyKind}.`,
+        notice: `Faltan patas del vencimiento ${front.expiryCode} para armar ${strategyKind}.`,
       };
     }
 
@@ -4459,6 +4494,7 @@ export class GgalSpecialistRuntime {
       arHolidays: this.arHolidays,
       strategyKind,
       legs: marginLegs,
+      positionBasis,
       ...(underlyingSharesHeld !== undefined ? { underlyingSharesHeld } : {}),
       collateralAssets: [
         {
@@ -4553,7 +4589,7 @@ export class GgalSpecialistRuntime {
     }
 
     const quoteAgeSecRef = telemetry.data912TimestampSec ?? bundle.asOfUtcSec;
-    const execOut = evaluateExecutionMicrostructure({
+    const execOut = targetContract.ivStatus !== 'SOLVED_AMERICAN' ? null : evaluateExecutionMicrostructure({
       asOfUtcSec: bundle.asOfUtcSec,
       telemetryMode: telemetry.marketMode,
       side,
@@ -4578,10 +4614,6 @@ export class GgalSpecialistRuntime {
 
     // Motor 6.3 Stress Test + Jump-Diffusion Overnight + Sizing Kelly-CVaR
     const calibratedOvernight = calibrateOvernightJumpDiffusionFromSeries(dual.historicalSeries);
-    const totalLotsInUnit = Math.max(
-      1,
-      marginLegs.reduce((acc, l) => acc + l.lots, 0),
-    );
     const scaleDivisor = Math.max(
       1,
       marginLegs.reduce((acc, l) => Math.min(acc, l.lots), Infinity),
@@ -4602,7 +4634,10 @@ export class GgalSpecialistRuntime {
       spotAdrUsd > 0 &&
       Number.isFinite(cclArs) &&
       cclArs > 0 &&
-      Number.isFinite(marginOut.totalEffectiveCollateralArs)
+      Number.isFinite(marginOut.totalEffectiveCollateralArs) &&
+      Number.isFinite(marginPerUnitArs) &&
+      marginOut.riskStatus !== 'INDETERMINATE_MARGIN' &&
+      marginOut.riskStatus !== 'PARTIAL_COVERAGE_CONSERVATIVE'
     ) {
       tailStressOut = evaluateTailStressAndSizing({
         asOfUtcSec: bundle.asOfUtcSec,
@@ -4616,7 +4651,7 @@ export class GgalSpecialistRuntime {
         bymaLegsPerUnit,
         capitalArs,
         totalEffectiveCollateralArs: marginOut.totalEffectiveCollateralArs,
-        marginRequiredPerUnitArs: Number.isFinite(marginPerUnitArs) ? marginPerUnitArs : 0,
+        marginRequiredPerUnitArs: marginPerUnitArs,
         collateralAssets: [
           {
             id: collateralKind,
@@ -4640,11 +4675,12 @@ export class GgalSpecialistRuntime {
       marginOut.status === 'NO_DATA' && marginOut.collateralStatus === 'MISSING_EXPLICIT_AFORO'
         ? `Colateral ${collateralKind} requiere aforo explícito (0 < aforo ≤ 1) sin valor de respaldo silencioso.`
         : null,
-      execOut.status === 'DEGRADED_L1_ONLY'
+      execOut?.status === 'DEGRADED_L1_ONLY'
         ? `Microestructura L2 degradada (${underlyingBook?.source ?? 'SIN_L2_PRIMARIO'} / sin puntas de tamaño): cota máxima de orden marcada como —.`
         : null,
       tailNotice,
-      totalLotsInUnit > 0 ? null : null,
+      marginOut.reason ?? null,
+      simulatedCoveredShares ? 'La plantilla de lanzamiento cubierto simula 1.000 acciones en tenencia.' : null,
     ]
       .filter((x): x is string => x !== null)
       .join(' ');
@@ -4662,8 +4698,9 @@ export class GgalSpecialistRuntime {
         side: l.side,
         lots: l.lots,
         strikeArs: l.strikeArs,
-        optionPriceArs: l.optionPriceArs,
-        ivPct: l.ivDecimal * 100,
+        optionPriceArs: sanitizeFinite(l.optionPriceArs),
+        ivPct: sanitizeFinite(l.ivDecimal * 100),
+        ...(l.ivStatus !== undefined ? { ivStatus: l.ivStatus } : {}),
       })),
       executionBookDiagnostics: {
         bookSource,
@@ -4672,8 +4709,10 @@ export class GgalSpecialistRuntime {
         optionL1AskSizeLots: optAskSize,
         recorderPairsCount: Math.min(recorderBymaTicks.length, recorderAdrTicks.length),
       },
+      positionBasis,
+      marginRiskStatus: marginOut.riskStatus,
       marginRisk: toJsonSafe(marginOut),
-      executionMicrostructure: toJsonSafe(execOut),
+      executionMicrostructure: execOut === null ? null : toJsonSafe(execOut),
       tailStress: tailStressOut !== null ? toJsonSafe(tailStressOut) : null,
       notice: totalUnitNotice.length > 0 ? totalUnitNotice : null,
     };

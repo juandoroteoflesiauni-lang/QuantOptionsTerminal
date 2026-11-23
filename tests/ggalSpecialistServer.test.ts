@@ -1029,11 +1029,9 @@ describe('GGAL Specialist Backend Integration (Pieza 21)', () => {
     for (const targetStrike of [6800, 7200]) {
       const deepPut = activePuts.find((r) => r.strike === targetStrike);
       expect(deepPut).toBeDefined();
-      expect(Number.isFinite(deepPut?.iv ?? Number.NaN)).toBe(true);
-      expect(deepPut?.iv ?? 0).toBeGreaterThan(0.2);
-      expect(Number.isFinite(deepPut?.delta ?? Number.NaN)).toBe(true);
-      expect(Number.isFinite(deepPut?.gamma ?? Number.NaN)).toBe(true);
-      expect(deepPut?.gamma ?? 0).toBeGreaterThan(0);
+      expect(deepPut).toMatchObject({
+        ivStatus: 'BELOW_INTRINSIC', iv: null, delta: null, gamma: null, bid: 315, ask: 325, last: 320,
+      });
     }
   });
 

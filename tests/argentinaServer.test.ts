@@ -1129,17 +1129,11 @@ describe('Argentina server math, BYMA options, /api/ar/* routes & US options upg
     const juExp = opts.expiries.find((e) => e.expiryCode === 'JU');
     expect(juExp).toBeDefined();
     const put6000 = juExp?.puts.find((p) => p.strike === 6000);
-    expect(put6000?.iv).not.toBeNull();
-    expect(put6000?.delta).not.toBeNull();
-    expect(put6000?.ivOrigin).toBe('SOLVED');
+    expect(put6000).toMatchObject({ ivStatus: 'BELOW_INTRINSIC', ivOrigin: 'NONE', iv: null,
+      delta: null, gamma: null, thetaDaily: null, vegaPer1Pct: null, mark: 973.5 });
     const put6200 = juExp?.puts.find((p) => p.strike === 6200);
-    expect(put6200?.iv).not.toBeNull();
-    expect(put6200?.delta).not.toBeNull();
-    if (put6200?.delta != null) {
-      expect(put6200.delta).toBeLessThan(0);
-    }
-    expect(put6200?.ivOrigin).toBe('INHERITED');
-    expect(put6200?.source).toBe('MODEL');
+    expect(put6200).toMatchObject({ ivStatus: 'BELOW_INTRINSIC', ivOrigin: 'NONE', iv: null,
+      delta: null, gamma: null, mark: 400 });
     const call5000 = juExp?.calls.find((c) => c.strike === 5000);
     expect(call5000?.volumeArs).toBeCloseTo((call5000?.volume ?? 0) * (call5000?.last ?? 0) * 100, 4);
 

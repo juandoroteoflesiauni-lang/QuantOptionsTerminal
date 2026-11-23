@@ -1,3 +1,4 @@
+import type { AmericanIvStatus, ImpliedVolResolution } from '../../../src/core/options/ivContract.js';
 import type {
   ContractMultiplierSource, DealerSignBasis, GexComputationStatus, OiFieldProvenance,
   OiQualityTier, OiSourceConflictRecord, OptionFieldProvenanceMap,
@@ -759,6 +760,9 @@ export interface UsVolAnalyticsSuiteRef {
 }
 
 export interface ArOptionContractDto {
+  readonly ivStatus?: AmericanIvStatus;
+  readonly ivResolution?: ImpliedVolResolution;
+  readonly theoreticalPriceModel?: 'AMERICAN_BS2002_SURFACE';
   readonly fieldProvenance?: OptionFieldProvenanceMap;
   readonly oiProvenance?: OiFieldProvenance;
   readonly contractMultiplier?: number;
@@ -882,6 +886,7 @@ export interface ArOptionsResponse {
       readonly directContractOiInputs?: number;
       readonly oiConflicts?: readonly OiSourceConflictRecord[];
       readonly oiUniverseInputs?: number;
+      readonly ivStatusCounts?: Readonly<Partial<Record<AmericanIvStatus, number>>>;
       readonly directOiInputs: number;
       readonly proxyOiInputs: number;
       readonly oiProxy: boolean | null;

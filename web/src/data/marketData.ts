@@ -1,3 +1,4 @@
+import type { AmericanIvStatus } from '../../../src/core/options/ivContract.js';
 import type {
   ArBondDto,
   ArMacroResponse,
@@ -10,12 +11,12 @@ import type {
   ArStockDto,
   EquityPanelAnalyticsDto,
   UsSnapshotResponseDto,
-} from './liveTypes';
+} from './liveTypes.js';
 import {
   computeFallbackGreeks,
   extrinsicValue,
   isIvUnreliable,
-} from '../../../src/core/options/zeroDteFixes';
+} from '../../../src/core/options/zeroDteFixes.js';
 
 const toNumOrNaN = (v: number | null | undefined): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN;
@@ -255,6 +256,8 @@ export const BONDS_DATA: BondRow[] = [
 ];
 
 export interface OptionChainRow {
+  callIvStatus?: AmericanIvStatus;
+  putIvStatus?: AmericanIvStatus;
   strike: number;
   distancePct: number;
   inOneSigma: boolean;
@@ -577,8 +580,8 @@ export const US_MARKET_DATA: USStockItem[] = [
   makeSkeletonUsStock('EWZ', 'iShares MSCI Brazil', 'Índices / ETF', 'General', '#22C55E', 2),
 ];
 
-export let AR_PANEL_ANALYTICS: import('./liveTypes').EquityPanelAnalyticsDto | null = null;
-export let US_PANEL_ANALYTICS: import('./liveTypes').EquityPanelAnalyticsDto | null = null;
+export let AR_PANEL_ANALYTICS: import('./liveTypes.js').EquityPanelAnalyticsDto | null = null;
+export let US_PANEL_ANALYTICS: import('./liveTypes.js').EquityPanelAnalyticsDto | null = null;
 
 export interface FutureContractRow {
   contract: string;
@@ -1096,6 +1099,13 @@ export function buildOptionExpiryGroupsFromArOptions(
           : Number.NaN;
       const divYield = toNumOrNaN(res.dividendYield);
       const sideQuote = (cc: ArOptionContractDto | undefined, side: 'call' | 'put') => {
+        if (!isUsMarket && cc?.ivStatus !== undefined) {
+          const iv = cc.iv;
+          if (cc.ivStatus === 'SOLVED_AMERICAN' && iv !== null && Number.isFinite(iv) && iv > 0 && iv < 9.99) {
+            return { ivPct: iv * 100, fb: null, suppressGreeks: false };
+          }
+          return { ivPct: Number.NaN, fb: null, suppressGreeks: true };
+        }
         const ivRaw = cc?.iv !== null && cc?.iv !== undefined && Number.isFinite(cc.iv) ? cc.iv : Number.NaN;
         const midRaw = toNumOrNaN(cc?.mark);
         const ext = Number.isFinite(midRaw) ? extrinsicValue(side, spot, strike, midRaw) : toNumOrNaN(cc?.extrinsic);
@@ -1142,7 +1152,7 @@ export function buildOptionExpiryGroupsFromArOptions(
                 ivAtm: atmIvDec,
               })
             : null;
-        return { ivPct, fb };
+        return { ivPct, fb, suppressGreeks: false };
       };
       const cQ = sideQuote(c, 'call');
       const pQ = sideQuote(p, 'put');
@@ -1184,10 +1194,11 @@ export function buildOptionExpiryGroupsFromArOptions(
         callLast: cLast,
         callDeltaPct: toNumOrNaN(c?.changePct),
         callIV: cIvPct,
-        callDelta: cQ.fb ? cQ.fb.delta : toNumOrNaN(c?.delta),
-        callGamma: cQ.fb ? cQ.fb.gamma : toNumOrNaN(c?.gamma),
-        callTheta: cQ.fb ? cQ.fb.theta / 365 : toNumOrNaN(c?.thetaDaily),
-        callVega: cQ.fb ? cQ.fb.vega / 100 : toNumOrNaN(c?.vegaPer1Pct),
+        ...(c?.ivStatus !== undefined ? { callIvStatus: c.ivStatus } : {}),
+        callDelta: cQ.suppressGreeks ? Number.NaN : cQ.fb ? cQ.fb.delta : toNumOrNaN(c?.delta),
+        callGamma: cQ.suppressGreeks ? Number.NaN : cQ.fb ? cQ.fb.gamma : toNumOrNaN(c?.gamma),
+        callTheta: cQ.suppressGreeks ? Number.NaN : cQ.fb ? cQ.fb.theta / 365 : toNumOrNaN(c?.thetaDaily),
+        callVega: cQ.suppressGreeks ? Number.NaN : cQ.fb ? cQ.fb.vega / 100 : toNumOrNaN(c?.vegaPer1Pct),
         callTimeValue: cExtrinsic,
         callTimeValuePct:
           Number.isFinite(cExtrinsic) && Number.isFinite(spot) && spot > 0 ? (cExtrinsic / spot) * 100 : Number.NaN,
@@ -1200,10 +1211,11 @@ export function buildOptionExpiryGroupsFromArOptions(
         putLast: pLast,
         putDeltaPct: toNumOrNaN(p?.changePct),
         putIV: pIvPct,
-        putDelta: pQ.fb ? pQ.fb.delta : toNumOrNaN(p?.delta),
-        putGamma: pQ.fb ? pQ.fb.gamma : toNumOrNaN(p?.gamma),
-        putTheta: pQ.fb ? pQ.fb.theta / 365 : toNumOrNaN(p?.thetaDaily),
-        putVega: pQ.fb ? pQ.fb.vega / 100 : toNumOrNaN(p?.vegaPer1Pct),
+        ...(p?.ivStatus !== undefined ? { putIvStatus: p.ivStatus } : {}),
+        putDelta: pQ.suppressGreeks ? Number.NaN : pQ.fb ? pQ.fb.delta : toNumOrNaN(p?.delta),
+        putGamma: pQ.suppressGreeks ? Number.NaN : pQ.fb ? pQ.fb.gamma : toNumOrNaN(p?.gamma),
+        putTheta: pQ.suppressGreeks ? Number.NaN : pQ.fb ? pQ.fb.theta / 365 : toNumOrNaN(p?.thetaDaily),
+        putVega: pQ.suppressGreeks ? Number.NaN : pQ.fb ? pQ.fb.vega / 100 : toNumOrNaN(p?.vegaPer1Pct),
         putTimeValue: pExtrinsic,
         putTimeValuePct:
           Number.isFinite(pExtrinsic) && Number.isFinite(spot) && spot > 0 ? (pExtrinsic / spot) * 100 : Number.NaN,

@@ -84,10 +84,11 @@ import {
 import {
   greeksAmericanFiniteDiffOrAnalytical,
   priceAmericanBjerksund2002,
-  solveImpliedVolAmerican,
+  solveImpliedVolAmericanDetailed,
+  type AmericanIvStatus,
+  type ImpliedVolResolution,
 } from '../core/options/american.js';
-import { greeksBsm, priceBsm } from '../core/options/blackScholes.js';
-import { solveImpliedVolBsm } from '../core/options/impliedVol.js';
+import { MIN_CONTRACTUAL_EXPIRY_SEC } from '../core/options/blackScholes.js';
 import {
   resolveArOiProvenance,
   type ArOiProvenanceInput,
@@ -840,6 +841,9 @@ export interface ArStockDetailResponse {
 }
 
 export interface ArOptionContractDto {
+  readonly ivStatus?: AmericanIvStatus;
+  readonly ivResolution?: ImpliedVolResolution;
+  readonly theoreticalPriceModel?: 'AMERICAN_BS2002_SURFACE';
   readonly fieldProvenance?: OptionFieldProvenanceMap;
   readonly oiProvenance?: OiFieldProvenance;
   readonly contractMultiplier?: number;
@@ -988,6 +992,7 @@ export interface ArOptionsResponse {
       readonly directContractOiInputs?: number;
       readonly oiConflicts?: readonly OiSourceConflictRecord[];
       readonly oiUniverseInputs?: number;
+      readonly ivStatusCounts?: Readonly<Partial<Record<AmericanIvStatus, number>>>;
       readonly directOiInputs: number;
       readonly proxyOiInputs: number;
       /** `true` si el motor usó OI proxy de volumen nominal; `null` sin inputs acreditables. */
@@ -1739,96 +1744,6 @@ function sanitizeJsonPayload<T>(value: T): JsonSafe<T> {
 
 /** Mínimo de bases con VI invertida para considerar líquido un vencimiento. */
 const MIN_LIQUID_IV_STRIKES = 5;
-
-/**
- * Cascada de inversión de VI por contrato:
- *  1) Americano (Bjerksund-Stensland 2002) sobre `mid` (o `last` si falta una punta).
- *  2) Americano sobre `ask` cuando `mid` queda por debajo de la cota intrínseca (puts/calls ITM).
- *  3) BSM europeo (forward F = S·e^{(r-q)T} implícito en el solver) sobre `mid` y luego `ask`.
- * Devuelve `NaN` si ningún precio ejecutable es invertible (sin valores inventados).
- */
-function solveContractIvCascade(p: {
-  readonly spot: number;
-  readonly strike: number;
-  readonly timeToExpiry: number;
-  readonly rate: number;
-  readonly dividendYield: number;
-  readonly contractType: 'call' | 'put';
-  readonly mid: number | null;
-  readonly ask: number | null;
-  readonly intrinsic: number;
-}): number {
-  const prices: number[] = [];
-  if (p.mid !== null && p.mid > 0) {
-    prices.push(p.mid);
-  }
-  if (p.ask !== null && p.ask > 0 && p.ask > p.intrinsic && p.ask !== p.mid) {
-    prices.push(p.ask);
-  }
-  for (const price of prices) {
-    // Pieza 50.3: descartar soluciones explosivas >= 999 % (jamás IV 1.000%).
-    // Nota: un mid por debajo del intrínseco americano pero sobre la cota europea sigue
-    // resolviéndose por la cascada BSM (feature BYMA documentada en argentinaServer.test).
-    const iv = solveImpliedVolAmerican({
-      spot: p.spot,
-      strike: p.strike,
-      timeToExpiry: p.timeToExpiry,
-      rate: p.rate,
-      dividendYield: p.dividendYield,
-      contractType: p.contractType,
-      marketPrice: price,
-    });
-    if (Number.isFinite(iv) && iv > 0 && iv < IV_CAP_DECIMAL) {
-      return iv;
-    }
-  }
-  for (const price of prices) {
-    const iv = solveImpliedVolBsm({
-      spot: p.spot,
-      strike: p.strike,
-      timeToExpiry: p.timeToExpiry,
-      rate: p.rate,
-      dividendYield: p.dividendYield,
-      contractType: p.contractType,
-      price,
-    });
-    if (Number.isFinite(iv) && iv > 0 && iv < IV_CAP_DECIMAL) {
-      return iv;
-    }
-  }
-  return Number.NaN;
-}
-
-/** Interpolación lineal en strike sobre IVs invertidas con extensión plana en extremos cuando la superficie tiene soporte. */
-function interpolateIvByStrike(
-  sortedPoints: readonly { readonly strike: number; readonly iv: number }[],
-  strike: number,
-): number {
-  if (sortedPoints.length === 0) {
-    return Number.NaN;
-  }
-  let lower: { readonly strike: number; readonly iv: number } | undefined;
-  let upper: { readonly strike: number; readonly iv: number } | undefined;
-  for (const pt of sortedPoints) {
-    if (pt.strike <= strike) {
-      lower = pt;
-    }
-    if (pt.strike >= strike && upper === undefined) {
-      upper = pt;
-    }
-  }
-  if (lower === undefined) {
-    return upper !== undefined ? upper.iv : Number.NaN;
-  }
-  if (upper === undefined) {
-    return lower.iv;
-  }
-  if (upper.strike === lower.strike) {
-    return lower.iv;
-  }
-  const w = (strike - lower.strike) / (upper.strike - lower.strike);
-  return lower.iv + w * (upper.iv - lower.iv);
-}
 
 function computeArOptionsTickAggression(
   contracts: readonly ArOptionContractDto[],
@@ -2820,6 +2735,7 @@ export function parseBymaOptionSymbol(
   rawSymbol: string,
   spotHint: number | null,
   asOfUtcSec: number,
+  includeNearExpiry = false,
 ): ParsedBymaOptionSymbol | null {
   const cleaned = rawSymbol.trim().toUpperCase().replace(/[^A-Z0-9.]/g, '');
   if (cleaned.length < 6) {
@@ -2871,7 +2787,7 @@ export function parseBymaOptionSymbol(
   if (expSec <= asOfUtcSec - 86_400) {
     expSec = thirdFridayUtcSec(baseYear + 1, monthInfo.month);
   }
-  if (expSec <= asOfUtcSec + 60) {
+  if (expSec <= asOfUtcSec || (!includeNearExpiry && expSec - asOfUtcSec <= MIN_CONTRACTUAL_EXPIRY_SEC)) {
     return null;
   }
 
@@ -3245,7 +3161,7 @@ export function mergeBmbOptionQuotes(input: MergeBmbOptionQuotesInput): readonly
     ) {
       continue;
     }
-    const parsed = parseBymaOptionSymbol(symbol, input.spotHint, input.nowUtcSec);
+    const parsed = parseBymaOptionSymbol(symbol, input.spotHint, input.nowUtcSec, input.trackFieldProvenance === true);
     if (parsed === null || parsed.underlying !== underlying) {
       continue;
     }
@@ -7802,7 +7718,7 @@ export class ArgentinaMarketRuntime {
         }[] = [];
         const rawRowBySymbol = new Map<string, NormalizedQuoteRow>();
         for (const row of mergedOptionRows) {
-          const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec);
+          const parsed = parseBymaOptionSymbol(row.symbol, spot, nowSec, true);
           if (parsed !== null && parsed.underlying === underlying) {
             parsedContracts.push({ parsed, row });
             rawRowBySymbol.set(parsed.symbol, row);
@@ -7841,7 +7757,7 @@ export class ArgentinaMarketRuntime {
           ? resolveContractMultiplier(OPTION_LOT_SIZE, 'BYMA_STANDARD_TABLE')
           : null;
         const evalRate = continuousRate ?? Number.NaN;
-        const inheritedIvSymbols = new Set<string>();
+        const ivStatusCounts: Partial<Record<AmericanIvStatus, number>> = {};
 
         for (const expKey of sortedExpKeys) {
           const bucket = byExpiry.get(expKey);
@@ -7852,101 +7768,26 @@ export class ArgentinaMarketRuntime {
           if (sample === undefined) {
             continue;
           }
-          const tExp = Math.max(1 / 365, (sample.expiryUtcSec - nowSec) / (365 * 86_400));
+          const tExp = (sample.expiryUtcSec - nowSec) / 31_536_000;
           const calls: ArOptionContractDto[] = [];
           const puts: ArOptionContractDto[] = [];
           const volQuotes: VolQuoteInput[] = [];
           const strikeSet = new Set<number>();
 
-          const quoteMid = (row: NormalizedQuoteRow): number | null => {
-            const b = row.bid;
-            const a = row.ask;
-            const l = row.last;
-            return b !== null && a !== null && b > 0 && a >= b
-              ? 0.5 * (b + a)
-              : l !== null && l > 0
-                ? l
-                : a !== null && a > 0 && b !== null && b > 0
-                  ? 0.5 * (b + a)
-                  : null;
-          };
-
-          // Pasada 1: cascada de inversión de VI (Americano mid -> Americano ask -> BSM europeo)
-          const ivBySymbol = new Map<string, number>();
-          const solvedSymbols = new Set<string>();
-          if (spot !== null && spot > 0 && Number.isFinite(evalRate)) {
-            for (const { parsed, row } of bucket) {
-              const intrinsicPx =
-                parsed.contractType === 'call'
-                  ? Math.max(0, spot - parsed.strike)
-                  : Math.max(0, parsed.strike - spot);
-              const solved = solveContractIvCascade({
-                spot,
-                strike: parsed.strike,
-                timeToExpiry: tExp,
-                rate: evalRate,
-                dividendYield,
-                contractType: parsed.contractType,
-                mid: quoteMid(row),
-                ask: row.ask,
-                intrinsic: intrinsicPx,
-              });
-              if (Number.isFinite(solved) && solved > 0) {
-                ivBySymbol.set(parsed.symbol, solved);
-                solvedSymbols.add(parsed.symbol);
-              }
-            }
-
-            // Pasada 2: herencia de VI (mismo strike en la pata opuesta; si no, interpolación en la superficie)
-            const solvedByKey = new Map<string, number>();
-            for (const { parsed } of bucket) {
-              const v = ivBySymbol.get(parsed.symbol);
-              if (v !== undefined && solvedSymbols.has(parsed.symbol)) {
-                solvedByKey.set(`${String(parsed.strike)}|${parsed.contractType}`, v);
-              }
-            }
-            const surfacePoints: { strike: number; iv: number }[] = [];
-            for (const k of new Set(bucket.map((b) => b.parsed.strike))) {
-              const otm = k >= spot ? 'call' : 'put';
-              const inn = otm === 'call' ? 'put' : 'call';
-              const v = solvedByKey.get(`${String(k)}|${otm}`) ?? solvedByKey.get(`${String(k)}|${inn}`);
-              if (v !== undefined) {
-                surfacePoints.push({ strike: k, iv: v });
-              }
-            }
-            surfacePoints.sort((a, b) => a.strike - b.strike);
-            for (const { parsed, row } of bucket) {
-              if (solvedSymbols.has(parsed.symbol)) {
-                continue;
-              }
-              const opposite = parsed.contractType === 'call' ? 'put' : 'call';
-              const oppositeIv = solvedByKey.get(`${String(parsed.strike)}|${opposite}`);
-              if (quoteMid(row) === null && oppositeIv === undefined && surfacePoints.length < 2) {
-                continue;
-              }
-              const inherited =
-                oppositeIv ??
-                interpolateIvByStrike(surfacePoints, parsed.strike);
-              if (Number.isFinite(inherited) && inherited > 0) {
-                ivBySymbol.set(parsed.symbol, inherited);
-                inheritedIvSymbols.add(parsed.symbol);
-              }
-            }
-          }
-
           for (const { parsed, row } of bucket) {
             strikeSet.add(parsed.strike);
-            const bid = row.bid;
-            const ask = row.ask;
-            const last = row.last;
-            const mid =
-              bid !== null && ask !== null && bid > 0 && ask >= bid
-                ? 0.5 * (bid + ask)
-                : last !== null && last > 0
-                  ? last
-                  : ask !== null && ask > 0 && bid !== null && bid > 0
-                    ? 0.5 * (bid + ask)
-                    : null;
+            const { bid, ask, last } = row;
+            const resolution = solveImpliedVolAmericanDetailed({
+              instrumentId: parsed.symbol, spot: spot ?? Number.NaN, strike: parsed.strike,
+              rate: evalRate, dividendYield, contractType: parsed.contractType,
+              asOfUtcSec: nowSec, expiryUtcSec: parsed.expiryUtcSec, bid, ask, last,
+              source: row.quoteSource ?? 'DATA912', quoteAsOfUtcSec: row.quoteAsOfUtcSec ?? null,
+              maxQuoteAgeSec: 30, bypassStaleness: overview.feedStatus === 'EOD_CIERRE',
+              currency: 'ARS', exerciseStyle: 'AMERICAN', ...(multiplier ?? {}),
+            });
+            const ivStatus = resolution.modelStatus;
+            ivStatusCounts[ivStatus] = (ivStatusCounts[ivStatus] ?? 0) + 1;
+            const mid = resolution.observedQuote.referencePrice ?? (last !== null && last > 0 ? last : null);
 
             const feedOi = row.fieldProvenance?.openInterest ?? missingOi('FIELD_ABSENT_IN_FEED');
             const anexoOi = anexoB?.byContract.get(
@@ -7972,61 +7813,15 @@ export class ArgentinaMarketRuntime {
                   : Math.max(0, parsed.strike - spot)
                 : 0;
 
-            const iv = ivBySymbol.get(parsed.symbol) ?? Number.NaN;
-            const ivIsSolved = solvedSymbols.has(parsed.symbol);
+            const iv = resolution.impliedVol;
+            const greeks = spot !== null && iv !== null
+              ? greeksAmericanFiniteDiffOrAnalytical({
+                  spot, strike: parsed.strike, timeToExpiry: tExp,
+                  rate: evalRate, dividendYield, volatility: iv, contractType: parsed.contractType,
+                })
+              : null;
 
-            const effTExp = Math.max(tExp, 1e-4);
-            const effIv = Number.isFinite(iv) && iv > 0 ? Math.max(iv, 1e-4) : Number.NaN;
-            const rawAmGreeks =
-              spot !== null && spot > 0 && Number.isFinite(effIv) && Number.isFinite(evalRate)
-                ? greeksAmericanFiniteDiffOrAnalytical({
-                    spot,
-                    strike: parsed.strike,
-                    timeToExpiry: effTExp,
-                    rate: evalRate,
-                    dividendYield,
-                    volatility: effIv,
-                    contractType: parsed.contractType,
-                  })
-                : null;
-            const needsBsmFallback =
-              rawAmGreeks !== null &&
-              (!Number.isFinite(rawAmGreeks.gamma) ||
-                !Number.isFinite(rawAmGreeks.delta) ||
-                !Number.isFinite(rawAmGreeks.thetaDaily) ||
-                !Number.isFinite(rawAmGreeks.vegaPer1Pct));
-            const bsmFallback =
-              spot !== null && spot > 0 && Number.isFinite(effIv) && Number.isFinite(evalRate) && needsBsmFallback
-                ? greeksBsm({
-                    spot,
-                    strike: parsed.strike,
-                    timeToExpiry: effTExp,
-                    rate: evalRate,
-                    dividendYield,
-                    volatility: effIv,
-                    contractType: parsed.contractType,
-                  })
-                : null;
-            const greeks =
-              rawAmGreeks === null
-                ? null
-                : bsmFallback === null
-                  ? rawAmGreeks
-                  : {
-                      delta: Number.isFinite(rawAmGreeks.delta) ? rawAmGreeks.delta : bsmFallback.delta,
-                      gamma: Number.isFinite(rawAmGreeks.gamma) ? rawAmGreeks.gamma : bsmFallback.gamma,
-                      thetaDaily: Number.isFinite(rawAmGreeks.thetaDaily)
-                        ? rawAmGreeks.thetaDaily
-                        : bsmFallback.thetaDaily,
-                      vegaPer1Pct: Number.isFinite(rawAmGreeks.vegaPer1Pct)
-                        ? rawAmGreeks.vegaPer1Pct
-                        : bsmFallback.vegaPer1Pct,
-                      rho: Number.isFinite(rawAmGreeks.rho) ? rawAmGreeks.rho : bsmFallback.rho,
-                      vanna: Number.isFinite(rawAmGreeks.vanna) ? rawAmGreeks.vanna : bsmFallback.vanna,
-                      charm: Number.isFinite(rawAmGreeks.charm) ? rawAmGreeks.charm : bsmFallback.charm,
-                    };
-
-            if (ivIsSolved && Number.isFinite(iv) && iv > 0 && mid !== null && mid > 0) {
+            if (iv !== null && mid !== null && mid > 0) {
               const effBid = bid !== null && bid > 0 ? bid : mid * 0.98;
               const effAsk = ask !== null && ask >= effBid ? ask : mid * 1.02;
               volQuotes.push({
@@ -8053,7 +7848,7 @@ export class ArgentinaMarketRuntime {
               spot > 0 &&
               Number.isFinite(evalRate) &&
               Number.isFinite(forward) &&
-              (modelOpenInterest === 0 || Number.isFinite(iv) || (mid !== null && mid > 0))
+              iv !== null
             ) {
               exposureIndex = allExposureInputs.length;
               allExposureInputs.push({
@@ -8067,8 +7862,7 @@ export class ArgentinaMarketRuntime {
                 forward,
                 rate: evalRate,
                 dividendYield,
-                ...(Number.isFinite(iv) && iv > 0 ? { iv } : {}),
-                ...(mid !== null && mid > 0 ? { midPrice: mid } : {}),
+                iv,
                 ...(bid !== null && bid >= 0 ? { bid } : {}),
                 ...(ask !== null && ask > 0 ? { ask } : {}),
               });
@@ -8118,8 +7912,10 @@ export class ArgentinaMarketRuntime {
                   ? sanitizeFinite(row.nominalVol * refPx * OPTION_LOT_SIZE)
                   : null;
               })(),
-              ivOrigin: ivIsSolved ? ('SOLVED' as const) : Number.isFinite(iv) ? ('INHERITED' as const) : ('NONE' as const),
-              source: Number.isFinite(iv) && !ivIsSolved ? ('MODEL' as const) : ('DATA912' as const),
+              ivStatus,
+              ivResolution: resolution,
+              ivOrigin: iv === null ? 'NONE' : 'SOLVED',
+              source: 'DATA912',
               quoteSource: row.quoteSource ?? 'DATA912',
               quoteAsOfUtcSec: row.quoteAsOfUtcSec ?? null,
             };
@@ -8204,32 +8000,14 @@ export class ArgentinaMarketRuntime {
             if (!Number.isFinite(modelVol) || modelVol <= 0) {
               return c;
             }
-            const effT = Math.max(tExp, 1e-4);
-            const effSig = Math.max(modelVol, 1e-4);
-            let theo = priceAmericanBjerksund2002({
-              spot,
-              strike: c.strike,
-              timeToExpiry: effT,
-              rate: evalRate,
-              dividendYield,
-              volatility: effSig,
-              contractType: c.contractType,
+            if (sample.expiryUtcSec - nowSec <= MIN_CONTRACTUAL_EXPIRY_SEC) return c;
+            const theo = priceAmericanBjerksund2002({
+              spot, strike: c.strike, timeToExpiry: tExp, rate: evalRate,
+              dividendYield, volatility: modelVol, contractType: c.contractType,
             });
-            if (!Number.isFinite(theo)) {
-              theo = priceBsm({
-                spot,
-                strike: c.strike,
-                timeToExpiry: effT,
-                rate: evalRate,
-                dividendYield,
-                volatility: effSig,
-                contractType: c.contractType,
-              });
-            }
-            return {
-              ...c,
-              theoreticalPrice: Number.isFinite(theo) && theo >= 0 ? Math.round(theo * 100) / 100 : null,
-            };
+            return Number.isFinite(theo) && theo >= 0
+              ? { ...c, theoreticalPrice: Math.round(theo * 100) / 100, theoreticalPriceModel: 'AMERICAN_BS2002_SURFACE' }
+              : c;
           };
 
           const pricedCalls = calls.map(computeTheoForDto);
@@ -8298,7 +8076,7 @@ export class ArgentinaMarketRuntime {
         const liquidIvStrikeCount = (e: ArOptionExpiryDto): number =>
           new Set(
             [...e.calls, ...e.puts]
-              .filter((c) => c.iv !== null && c.iv > 0 && !inheritedIvSymbols.has(c.symbol))
+              .filter((c) => c.ivStatus === 'SOLVED_AMERICAN')
               .map((c) => c.strike),
           ).size;
         const expiryVolumeLots = (e: ArOptionExpiryDto): number =>
@@ -8320,12 +8098,6 @@ export class ArgentinaMarketRuntime {
         const termExpiries = expiries.filter(
           (e) => e.ivAtm !== null && (liquidIvStrikeCount(e) >= 3 || e === primaryExp),
         );
-        if (inheritedIvSymbols.size > 0) {
-          providerErrors.push(
-            `IV heredada (paridad put-call / superficie) en ${String(inheritedIvSymbols.size)} contratos cuyo mid cae bajo la cota intrínseca; marcados como source=MODEL.`,
-          );
-        }
-
         let exposureSummary: ArOptionsResponse['exposureSummary'] = null;
         if (expiries.length > 0) {
           const frontExp = primaryExp;
@@ -8338,7 +8110,7 @@ export class ArgentinaMarketRuntime {
               dividendYield,
               forward:
                 frontExp !== undefined && spot !== null
-                  ? spot * Math.exp((evalRate - dividendYield) * (frontExp.days / 365))
+                  ? spot * Math.exp((evalRate - dividendYield) * ((frontExp.expiryUtcSec - nowSec) / 31_536_000))
                   : spot ?? Number.NaN,
             },
             {
@@ -8348,7 +8120,7 @@ export class ArgentinaMarketRuntime {
               gammaFlipHalfWidth: 0.2,
               gammaFlipGridSteps: 80,
               gammaFlipMultiRootPolicy: 'nearestSpot',
-              ivResolutionMode: 'ivThenMidPrice',
+              ivResolutionMode: 'ivOnly',
               ...(frontExp !== undefined ? { expectedMoveExpirySec: frontExp.expiryUtcSec } : {}),
               ...(frontExp?.ivAtm !== null && frontExp?.ivAtm !== undefined
                 ? { expectedMoveIvAtmOverride: frontExp.ivAtm }
@@ -8434,7 +8206,7 @@ export class ArgentinaMarketRuntime {
               },
               byStrikeCount: expResult.byStrike.length,
               missingOiInputs, invalidOiInputs, observedZeroOiInputs, iamcOiInputs, directContractOiInputs,
-              oiConflicts, oiUniverseInputs: oiEntries.length,
+              oiConflicts, oiUniverseInputs: oiEntries.length, ivStatusCounts,
               directOiInputs: arOiSummary.directOiInputs,
               proxyOiInputs: arOiSummary.proxyOiInputs,
               oiProxy: arOiSummary.oiProxy,
@@ -8597,7 +8369,7 @@ export class ArgentinaMarketRuntime {
             dividendYield,
             forward:
               frontExp !== undefined
-                ? spot * Math.exp((evalRate - dividendYield) * Math.max(1 / 365, frontExp.days / 365))
+                ? spot * Math.exp((evalRate - dividendYield) * (frontExp.expiryUtcSec - nowSec) / 31_536_000)
                 : spot,
           };
 
@@ -8618,7 +8390,7 @@ export class ArgentinaMarketRuntime {
           // 3) Divergencia Probabilística Q vs P & Cono Vol (Pieza 17 + Pieza 45 PCHIP)
           let qDistribution: RiskNeutralDistributionResult | null = null;
           if (frontExp !== undefined) {
-            const frontTExp = Math.max(1 / 365, frontExp.days / 365);
+            const frontTExp = (frontExp.expiryUtcSec - nowSec) / 31_536_000;
             const nodeMap = new Map<number, RiskNeutralInputNode>();
             for (const c of [...frontExp.calls, ...frontExp.puts]) {
               if (c.iv !== null && c.iv > 0 && c.iv < IV_CAP_DECIMAL) {
@@ -8732,7 +8504,7 @@ export class ArgentinaMarketRuntime {
           let calendarRoll: CalendarRollResult | null = null;
 
           if (frontExp !== undefined && frontExp.days > 0) {
-            const frontTExp = Math.max(1 / 365, frontExp.days / 365);
+            const frontTExp = (frontExp.expiryUtcSec - nowSec) / 31_536_000;
             const callByStrike = new Map(frontExp.calls.map((c) => [c.strike, c]));
             const putByStrike = new Map(frontExp.puts.map((p) => [p.strike, p]));
             const pairs: { strike: number; callMid: number; putMid: number }[] = [];
@@ -8849,8 +8621,8 @@ export class ArgentinaMarketRuntime {
                     strike: sharedCall.strike,
                     nearAsk: sharedCall.ask,
                     farBid: farC.bid,
-                    nearTimeToExpiry: Math.max(1 / 365, frontExp.days / 365),
-                    farTimeToExpiry: Math.max(1 / 365, secondExp.days / 365),
+                    nearTimeToExpiry: (frontExp.expiryUtcSec - nowSec) / 31_536_000,
+                    farTimeToExpiry: (secondExp.expiryUtcSec - nowSec) / 31_536_000,
                     nearThetaDaily: sharedCall.thetaDaily,
                     farThetaDaily: farC.thetaDaily,
                     nearVegaPer1Pct: sharedCall.vegaPer1Pct,

@@ -1,3 +1,6 @@
+import { isIsoContractDate } from './anexoBIdentity.js';
+import type { AmericanIvStatus, MarginModelBasis, MarginRiskStatus } from '../options/ivContract.js';
+import type { ArMarketFieldSource, ContractMultiplierSource } from '../options/oiProvenance.js';
 /**
  * Motor 6 — Márgenes BYMA Clearing 2026, Microestructura Asíncrona L1–L2
  * y Riesgo de Cola Jump-Diffusion / Kelly-CVaR (Pieza 25).
@@ -43,7 +46,7 @@ export const DEFAULT_CCP_VOL_SHOCKS: readonly number[] = [-0.10, 0, 0.10];
 export const MIN_CCP_STRESS_VOL = 0.05;
 export const DEFAULT_LIQUID_BUFFER_RATE = 0.10;
 export const DEFAULT_WWR_SURCHARGE_RATE = 0.15;
-export const DEFAULT_CROSS_COLLATERAL_OFFSET_RATIO = 0.10;
+export const DEFAULT_CROSS_COLLATERAL_OFFSET_RATIO = 0;
 export const CIRCULAR_3588_WINDOW_MINUTES = 60;
 export const CIRCULAR_3588_ATM_BAND_PCT = 0.005;
 
@@ -85,6 +88,16 @@ export type CollateralAssetKind =
   | 'EQUITY_LOCAL';
 
 export interface BymaMarginLegInput {
+  readonly underlying?: string;
+  readonly expiryDateKey?: string;
+  readonly expiryUtcSec?: number;
+  readonly contractMultiplier?: number;
+  readonly multiplierSource?: ContractMultiplierSource;
+  readonly currency?: 'ARS' | 'USD';
+  readonly exerciseStyle?: 'AMERICAN' | 'EUROPEAN';
+  readonly ivStatus?: AmericanIvStatus;
+  readonly quoteSource?: ArMarketFieldSource;
+  readonly quoteAsOfUtcSec?: number | null;
   readonly ticker: string;
   readonly contractType: OptionContractType;
   readonly side: OrderSide;
@@ -125,6 +138,12 @@ export interface BymaClearingMarginInput {
   readonly liquidBufferRate?: number;
   readonly wrongWayRiskSurchargeRate?: number;
   readonly crossCollateralOffsetRatio?: number;
+  readonly crossCollateralEligibility?: {
+    readonly verifiedByClearingRule: boolean;
+    readonly maxOffsetRatio: number;
+    readonly offsetRatio?: number;
+  };
+  readonly positionBasis?: 'DECLARED_POSITION' | 'SIMULATED_STRATEGY_TEMPLATE';
 }
 
 export interface CcpGridNodeResult {
@@ -153,7 +172,29 @@ export interface Circular3588AlertOutput {
   readonly reason: string;
 }
 
+const CLEARING_RULE_HIERARCHY = [
+  { basis: 'OFFICIAL_CLEARING_RULE_OR_TARIFF', source: 'Tarifario BYMA Ago-2026 y Circular 3588 §1.3',
+    scope: 'Derechos + IVA, lotes BYMA, liquidación T+0/T+1 y corte 15:30 ART' },
+  { basis: 'BROKER_OR_USER_DECLARED', source: 'Insumos declarados por usuario o ALyC',
+    scope: 'Aforos locales, acciones en tenencia y elegibilidad de compensación' },
+  { basis: 'INTERNAL_RISK_MODEL_ESTIMATE', source: 'Modelo interno CCP BS02',
+    scope: 'Grilla spot/volatilidad, piso escalonado, buffers y aforos no locales' },
+  { basis: 'SIMULATION_OR_STRESS_PROXY', source: 'Motor 6',
+    scope: 'Plantillas de posición, escenarios de estrés y sizing' },
+] as const;
+
+interface StrategyValidation {
+  readonly requestedStrategyKind: BymaClearingStrategyKind;
+  readonly effectiveStrategyKind: BymaClearingStrategyKind;
+  readonly matchesLegs: boolean;
+  readonly code: string;
+  readonly detail: string;
+}
+
 export interface StrategyMarginBreakdownItem {
+  readonly applicableToCurrentLegs: boolean;
+  readonly evaluationBasis: 'ACTUAL_POSITION_MATCH' | 'NOT_APPLICABLE_TO_CURRENT_LEGS';
+  readonly applicabilityReason: string;
   readonly strategyKind: BymaClearingStrategyKind;
   readonly label: string;
   readonly ccpRiskArrayLossArs: number;
@@ -162,6 +203,16 @@ export interface StrategyMarginBreakdownItem {
 }
 
 export interface MarginAndRiskOutput {
+  readonly riskStatus: MarginRiskStatus;
+  readonly marginModelBasis: MarginModelBasis;
+  readonly clearingRuleHierarchy: typeof CLEARING_RULE_HIERARCHY;
+  readonly strategyValidation: StrategyValidation;
+  readonly positionBasis: NonNullable<BymaClearingMarginInput['positionBasis']>;
+  readonly assumptions: readonly string[];
+  readonly degradedLegs: readonly { readonly ticker: string; readonly side: OrderSide; readonly reason: string }[];
+  readonly conservativeIntrinsicFloorArs: number;
+  readonly conservativeIntrinsicFloorBasis: 'LOWER_BOUND_DIAGNOSTIC_ONLY';
+  readonly appliedCrossOffsetRatio: number;
   readonly status: 'OK' | 'NO_DATA';
   readonly reason?: string;
   readonly strategyKind: BymaClearingStrategyKind;
@@ -456,6 +507,7 @@ const STRATEGY_LABELS: Readonly<Record<BymaClearingStrategyKind, string>> = {
   COVERED_CALL: 'Lanzamiento Cubierto',
   CROSS_COLLATERAL_STRATEGY: 'Estrategia Cruzada / Cross-Collateral',
 };
+const CLEARING_STRATEGIES = Object.keys(STRATEGY_LABELS) as BymaClearingStrategyKind[];
 
 const FIXED_DEFAULT_AFORO: Readonly<Partial<Record<CollateralAssetKind, number>>> = {
   US_TREASURY_BILL: 0.98,
@@ -532,286 +584,234 @@ function computeOtmSteppedFloorRate(
   return 0.05;
 }
 
-/**
- * Empareja lotes largos contra lotes cortos del mismo tipo (conservadoramente empezando
- * por patas de menor piso primero) y calcula el piso escalonado sobre los lotes descubiertos.
- */
-function computeSteppedUncoveredFloorArs(
-  spot24hArs: number,
-  legs: readonly BymaMarginLegInput[],
-  coveredCallShares = 0,
-): number {
-  let remainingCoveredCallLots = Math.max(0, coveredCallShares) / GGAL_BYMA_LOT_SIZE;
+type VerifiedMarginLeg = BymaMarginLegInput & {
+  readonly underlying: string;
+  readonly expiryDateKey: string;
+  readonly expiryUtcSec: number;
+  readonly contractMultiplier: number;
+};
+type LegPair = readonly [VerifiedMarginLeg, VerifiedMarginLeg];
 
-  const computeTypeFloor = (contractType: OptionContractType): number => {
-    const typeLegs = legs.filter((leg) => leg.contractType === contractType);
-    const totalLongLots = typeLegs
-      .filter((leg) => leg.side === 'BUY')
-      .reduce((acc, leg) => acc + leg.lots, 0);
-    let longCredit = totalLongLots + (contractType === 'call' ? remainingCoveredCallLots : 0);
-    if (contractType === 'call') {
-      remainingCoveredCallLots = 0;
+export function classifyAndValidateMarginStructure(input: BymaClearingMarginInput) {
+  const verified: VerifiedMarginLeg[] = [];
+  const invalid: { ticker: string; side: OrderSide; reason: string }[] = [];
+  const degraded: typeof invalid = [];
+  const allImplicit = input.legs.every((leg) => leg.underlying === undefined);
+  const underlyings = new Set(input.legs.map((leg) => leg.underlying?.trim().toUpperCase()));
+  const mixedUnderlying = !allImplicit && (underlyings.size !== 1 || underlyings.has(undefined));
+  const shares = input.underlyingSharesHeld ?? 0;
+  for (const leg of input.legs) {
+    const underlying = allImplicit ? 'GGAL' : leg.underlying?.trim().toUpperCase() ?? '';
+    const expiryDateKey = leg.expiryDateKey ?? input.expiryDateKey;
+    const expiryUtcSec = leg.expiryUtcSec ?? (expiryDateKey === input.expiryDateKey ? input.expiry1530UtcSec : undefined)
+      ?? computeExpiration1530ArtUtcSec(expiryDateKey);
+    const contractMultiplier = leg.contractMultiplier ?? (underlying === 'GGAL' ? GGAL_BYMA_LOT_SIZE : Number.NaN);
+    const multiplierSource = leg.multiplierSource ??
+      (underlying === 'GGAL' && contractMultiplier === GGAL_BYMA_LOT_SIZE ? 'BYMA_STANDARD_TABLE' : 'UNVERIFIED');
+    const reason = mixedUnderlying || underlying === '' ? 'MIXED_UNDERLYING'
+      : leg.currency !== undefined && leg.currency !== 'ARS' ? 'CURRENCY_MISMATCH'
+      : leg.exerciseStyle !== undefined && leg.exerciseStyle !== 'AMERICAN' ? 'UNSUPPORTED_EXERCISE_STYLE'
+      : multiplierSource === 'UNVERIFIED' || !Number.isSafeInteger(contractMultiplier) || contractMultiplier <= 0
+        ? 'UNVERIFIED_MULTIPLIER'
+      : !isIsoContractDate(expiryDateKey) || !isValidUtcSec(expiryUtcSec) || expiryUtcSec <= input.asOfUtcSec ||
+        expiryUtcSec !== computeExpiration1530ArtUtcSec(expiryDateKey) ? 'INVALID_CONTRACTUAL_EXPIRY'
+      : !Number.isSafeInteger(leg.lots) || leg.lots <= 0 || !isPositiveFinite(leg.strikeArs) ||
+        !Number.isSafeInteger(shares) || shares < 0 ? 'INVALID_LEG_OR_HOLDING' : null;
+    if (reason !== null) {
+      invalid.push({ ticker: leg.ticker, side: leg.side, reason });
+      continue;
     }
-
-    const shortItems = typeLegs
-      .filter((leg) => leg.side === 'SELL')
-      .map((leg) => ({
-        lots: leg.lots,
-        floorRate: computeOtmSteppedFloorRate(spot24hArs, leg.strikeArs, contractType),
-      }))
-      .sort((a, b) => a.floorRate - b.floorRate);
-
-    let floorSum = 0;
-    for (const item of shortItems) {
-      if (!Number.isFinite(item.floorRate)) {
-        return Number.NaN;
+    const ivReason = leg.ivStatus !== undefined && leg.ivStatus !== 'SOLVED_AMERICAN' ? leg.ivStatus
+      : !isPositiveFinite(leg.ivDecimal) ? 'INVALID_IV'
+      : !isPositiveFinite(leg.optionPriceArs) ? 'MISSING_OBSERVED_PRICE' : null;
+    if (ivReason !== null) {
+      (leg.side === 'SELL' ? invalid : degraded).push({ ticker: leg.ticker, side: leg.side, reason: ivReason });
+    } else {
+      verified.push({ ...leg, underlying, expiryDateKey, expiryUtcSec, contractMultiplier, multiplierSource });
+    }
+  }
+  const queue = (side: OrderSide) => verified.filter((leg) => leg.side === side)
+    .map((leg) => ({ leg, remaining: leg.lots }))
+    .sort((a, b) => a.leg.expiryUtcSec - b.leg.expiryUtcSec || a.leg.strikeArs - b.leg.strikeArs ||
+      a.leg.ticker.localeCompare(b.leg.ticker));
+  const longs = queue('BUY');
+  const shorts = queue('SELL');
+  const debitCoveredPairs: LegPair[] = [];
+  const creditSpreadPairs: LegPair[] = [];
+  for (const protective of [true, false]) {
+    for (const short of shorts) {
+      const { leg } = short;
+      const candidates = longs.filter(({ leg: long, remaining }) =>
+        remaining > 0 && long.contractType === leg.contractType && long.expiryUtcSec >= leg.expiryUtcSec &&
+        long.contractMultiplier === leg.contractMultiplier &&
+        (leg.contractType === 'call' ? long.strikeArs <= leg.strikeArs : long.strikeArs >= leg.strikeArs) === protective,
+      ).sort((a, b) => a.leg.expiryUtcSec - b.leg.expiryUtcSec ||
+        Math.abs(a.leg.strikeArs - leg.strikeArs) - Math.abs(b.leg.strikeArs - leg.strikeArs));
+      for (const long of candidates) {
+        if (short.remaining === 0) break;
+        const lots = Math.min(short.remaining, long.remaining);
+        short.remaining -= lots;
+        long.remaining -= lots;
+        (protective ? debitCoveredPairs : creditSpreadPairs).push([{ ...leg, lots }, { ...long.leg, lots }]);
       }
-      const covered = Math.min(longCredit, item.lots);
-      longCredit -= covered;
-      const uncoveredLots = Math.max(0, item.lots - covered);
-      floorSum += uncoveredLots * GGAL_BYMA_LOT_SIZE * spot24hArs * item.floorRate;
     }
-    return floorSum;
+  }
+  let remainingShares = shares;
+  let shareCoveredCallLots = 0;
+  for (const short of shorts) {
+    if (short.leg.contractType !== 'call') continue;
+    const lots = Math.min(short.remaining, Math.floor(remainingShares / short.leg.contractMultiplier));
+    remainingShares -= lots * short.leg.contractMultiplier;
+    short.remaining -= lots;
+    shareCoveredCallLots += lots;
+  }
+  const uncoveredShortLegs = shorts.filter(({ remaining }) => remaining > 0)
+    .map(({ leg, remaining }) => ({ ...leg, lots: remaining }));
+  const hasStrangle = uncoveredShortLegs.some((call) => call.contractType === 'call' &&
+    uncoveredShortLegs.some((put) => put.contractType === 'put' && put.expiryUtcSec === call.expiryUtcSec &&
+      put.contractMultiplier === call.contractMultiplier));
+  const shortLots = shorts.reduce((sum, { leg }) => sum + leg.lots, 0);
+  const longLots = longs.reduce((sum, { leg }) => sum + leg.lots, 0);
+  const debitLots = debitCoveredPairs.reduce((sum, [leg]) => sum + leg.lots, 0);
+  const creditLots = creditSpreadPairs.reduce((sum, [leg]) => sum + leg.lots, 0);
+  const twoLeg = verified.length === 2 && shortLots > 0 && longLots > 0;
+  const applicable: Record<BymaClearingStrategyKind, boolean> = {
+    UNCOVERED_SHORT: uncoveredShortLegs.length > 0 && debitLots === 0 && creditLots === 0 && shareCoveredCallLots === 0,
+    VERTICAL_DEBIT_SPREAD: twoLeg && debitLots === shortLots && shortLots === longLots,
+    VERTICAL_CREDIT_SPREAD: creditLots > 0,
+    RATIO_SPREAD_1X2: twoLeg && debitLots === longLots && shortLots === 2 * longLots,
+    RATIO_SPREAD_1X3: twoLeg && debitLots === longLots && shortLots === 3 * longLots,
+    SHORT_STRADDLE_STRANGLE: hasStrangle,
+    COVERED_CALL: shareCoveredCallLots > 0 && uncoveredShortLegs.length === 0 && debitLots === 0 && creditLots === 0,
+    CROSS_COLLATERAL_STRATEGY: verified.length > 1 && shortLots > 0 && longLots > 0,
   };
-
-  return computeTypeFloor('call') + computeTypeFloor('put');
+  return { verified, invalid, degraded, debitCoveredPairs, creditSpreadPairs, shareCoveredCallLots, uncoveredShortLegs, applicable };
 }
 
+function computeSteppedUncoveredFloorArs(spot: number, shorts: readonly VerifiedMarginLeg[]): number {
+  return shorts.reduce((sum, leg) =>
+    sum + leg.lots * leg.contractMultiplier * spot * computeOtmSteppedFloorRate(spot, leg.strikeArs, leg.contractType), 0);
+}
+
+type CcpGrid = { readonly worstLossArs: number; readonly worstNode: CcpGridNodeResult; readonly oppositeAtWorst: boolean };
 function evaluatePortfolioCcpGrid(
   baseInput: Parameters<typeof buildEvalParamsForSpot>[0],
-  spot24hArs: number,
-  legs: readonly BymaMarginLegInput[],
+  spot: number,
+  legs: readonly VerifiedMarginLeg[],
   spotShocks: readonly number[],
   volShocks: readonly number[],
   minStressVol: number,
-): {
-  readonly worstLossArs: number;
-  readonly worstNode: CcpGridNodeResult;
-} | null {
-  const baseEval = buildEvalParamsForSpot(baseInput, spot24hArs);
-  if (!baseEval) {
-    return null;
-  }
-
-  let basePortfolioValueArs = 0;
-  for (const leg of legs) {
-    const sigmaBase = Math.max(minStressVol, leg.ivDecimal);
-    const pBase = priceBymaAmericanBs02(baseEval, leg.strikeArs, sigmaBase, leg.contractType);
-    if (!Number.isFinite(pBase)) {
-      return null;
-    }
-    const sign = leg.side === 'BUY' ? 1 : -1;
-    basePortfolioValueArs += sign * leg.lots * GGAL_BYMA_LOT_SIZE * pBase;
-  }
-
-  let worstLossArs = -Infinity;
-  let worstNode: CcpGridNodeResult = {
-    spotShockPct: 0,
-    volShockDecimal: 0,
-    shockedSpotArs: spot24hArs,
-    portfolioMtmLossArs: Number.NaN,
-  };
-
+): CcpGrid | null {
+  const values = (currentSpot: number, volShock: number) => legs.map((leg) => {
+    const params = buildEvalParamsForSpot({
+      ...baseInput, expiryDateKey: leg.expiryDateKey, expiry1530UtcSec: leg.expiryUtcSec,
+    }, currentSpot);
+    const price = params === null ? Number.NaN
+      : priceBymaAmericanBs02(params, leg.strikeArs, Math.max(minStressVol, leg.ivDecimal + volShock), leg.contractType);
+    return (leg.side === 'BUY' ? 1 : -1) * leg.lots * leg.contractMultiplier * price;
+  });
+  const baseValues = values(spot, 0);
+  if (!baseValues.every(Number.isFinite)) return null;
+  let worst: CcpGrid | null = null;
   for (const ds of spotShocks) {
-    const shockedSpotArs = spot24hArs * (1 + ds);
-    if (!isPositiveFinite(shockedSpotArs)) {
-      continue;
-    }
-    const shockedEval = buildEvalParamsForSpot(baseInput, shockedSpotArs);
-    if (!shockedEval) {
-      return null;
-    }
+    const shockedSpotArs = spot * (1 + ds);
+    if (!isPositiveFinite(shockedSpotArs)) continue;
     for (const dv of volShocks) {
-      let nodeValueArs = 0;
-      for (const leg of legs) {
-        const sigmaNode = Math.max(minStressVol, leg.ivDecimal + dv);
-        const pNode = priceBymaAmericanBs02(shockedEval, leg.strikeArs, sigmaNode, leg.contractType);
-        if (!Number.isFinite(pNode)) {
-          return null;
-        }
-        const sign = leg.side === 'BUY' ? 1 : -1;
-        nodeValueArs += sign * leg.lots * GGAL_BYMA_LOT_SIZE * pNode;
-      }
-      const mtmLossArs = Math.max(0, basePortfolioValueArs - nodeValueArs);
-      if (mtmLossArs > worstLossArs) {
-        worstLossArs = mtmLossArs;
-        worstNode = {
-          spotShockPct: ds,
-          volShockDecimal: dv,
-          shockedSpotArs,
-          portfolioMtmLossArs: mtmLossArs,
-        };
+      const losses = values(shockedSpotArs, dv).map((value, index) => (baseValues[index] ?? Number.NaN) - value);
+      if (!losses.every(Number.isFinite)) return null;
+      const loss = Math.max(0, losses.reduce((sum, amount) => sum + amount, 0));
+      if (worst === null || loss > worst.worstLossArs) {
+        worst = { worstLossArs: loss,
+          worstNode: { spotShockPct: ds, volShockDecimal: dv, shockedSpotArs, portfolioMtmLossArs: loss },
+          oppositeAtWorst: losses.some((value) => value > 0) && losses.some((value) => value < 0) };
       }
     }
   }
-
-  if (!Number.isFinite(worstLossArs)) {
-    return null;
-  }
-  return { worstLossArs, worstNode };
+  return worst;
 }
 
 function evaluateStrategyRequiredMargin(
-  strategyKind: BymaClearingStrategyKind,
+  input: BymaClearingMarginInput,
+  structure: ReturnType<typeof classifyAndValidateMarginStructure>,
   baseInput: Parameters<typeof buildEvalParamsForSpot>[0],
-  spot24hArs: number,
-  legs: readonly BymaMarginLegInput[],
-  underlyingSharesHeld: number,
-  spotShocks: readonly number[],
-  volShocks: readonly number[],
-  minStressVol: number,
-  crossCollateralOffsetRatio: number,
-): {
-  readonly ccpRiskArrayLossArs: number;
-  readonly worstNode: CcpGridNodeResult;
-  readonly steppedFloorArs: number;
-  readonly requiredMarginArs: number;
-} | null {
-  const ccpEval = evaluatePortfolioCcpGrid(
-    baseInput,
-    spot24hArs,
-    legs,
-    spotShocks,
-    volShocks,
-    minStressVol,
+) {
+  const spot = input.spot24hArs;
+  const grid = (legs: readonly VerifiedMarginLeg[]) => evaluatePortfolioCcpGrid(
+    baseInput, spot, legs, input.spotShocks ?? DEFAULT_CCP_SPOT_SHOCKS, input.volShocks ?? DEFAULT_CCP_VOL_SHOCKS,
+    input.minStressVol ?? MIN_CCP_STRESS_VOL,
   );
-  if (!ccpEval) {
-    return null;
+  const portfolio = grid(structure.verified);
+  if (portfolio === null) return null;
+  let ccp = 0;
+  let floor = 0;
+  let required = 0;
+  let worstNode = portfolio.worstNode;
+  const uncovered = structure.uncoveredShortLegs.map((leg) => ({ leg, lots: leg.lots }));
+  for (const pair of structure.creditSpreadPairs) {
+    const result = grid(pair);
+    if (result === null) return null;
+    const [short, long] = pair;
+    const cap = Math.abs(short.strikeArs - long.strikeArs) * short.contractMultiplier * short.lots;
+    const pairCcp = Math.min(result.worstLossArs, cap);
+    const pairFloor = Math.min(computeSteppedUncoveredFloorArs(spot, [short]), cap);
+    ccp += pairCcp;
+    floor += pairFloor;
+    required += Math.max(pairCcp, pairFloor);
   }
-  const steppedFloorUncovered = computeSteppedUncoveredFloorArs(
-    spot24hArs,
-    legs,
-    strategyKind === 'COVERED_CALL' ? underlyingSharesHeld : 0,
-  );
-  if (!Number.isFinite(steppedFloorUncovered)) {
-    return null;
-  }
-
-  switch (strategyKind) {
-    case 'UNCOVERED_SHORT': {
-      return {
-        ccpRiskArrayLossArs: ccpEval.worstLossArs,
-        worstNode: ccpEval.worstNode,
-        steppedFloorArs: steppedFloorUncovered,
-        requiredMarginArs: Math.max(ccpEval.worstLossArs, steppedFloorUncovered),
-      };
-    }
-    case 'VERTICAL_DEBIT_SPREAD': {
-      return {
-        ccpRiskArrayLossArs: ccpEval.worstLossArs,
-        worstNode: ccpEval.worstNode,
-        steppedFloorArs: 0,
-        requiredMarginArs: 0,
-      };
-    }
-    case 'VERTICAL_CREDIT_SPREAD': {
-      const shortLegs = legs.filter((l) => l.side === 'SELL');
-      const longLegs = legs.filter((l) => l.side === 'BUY');
-      let maxLossCapArs = Infinity;
-      const sLeg = shortLegs[0];
-      const lLeg = longLegs[0];
-      if (sLeg !== undefined && lLeg !== undefined && sLeg.contractType === lLeg.contractType) {
-        const pairedLots = Math.min(sLeg.lots, lLeg.lots);
-        maxLossCapArs =
-          Math.abs(sLeg.strikeArs - lLeg.strikeArs) * GGAL_BYMA_LOT_SIZE * pairedLots;
+  if (input.strategyKind === 'SHORT_STRADDLE_STRANGLE') {
+    for (const call of uncovered.filter(({ leg }) => leg.contractType === 'call')) {
+      for (const put of uncovered.filter(({ leg }) => leg.contractType === 'put' &&
+        leg.expiryUtcSec === call.leg.expiryUtcSec && leg.contractMultiplier === call.leg.contractMultiplier)) {
+        const lots = Math.min(call.lots, put.lots);
+        if (lots === 0) continue;
+        call.lots -= lots;
+        put.lots -= lots;
+        const callLeg = { ...call.leg, lots };
+        const putLeg = { ...put.leg, lots };
+        const callGrid = grid([callLeg]);
+        const putGrid = grid([putLeg]);
+        if (callGrid === null || putGrid === null) return null;
+        const callFloor = computeSteppedUncoveredFloorArs(spot, [callLeg]);
+        const putFloor = computeSteppedUncoveredFloorArs(spot, [putLeg]);
+        const callMargin = Math.max(callGrid.worstLossArs, callFloor);
+        const putMargin = Math.max(putGrid.worstLossArs, putFloor);
+        const opposite = callMargin >= putMargin ? putLeg : callLeg;
+        const intrinsic = Math.max(0, opposite.contractType === 'call' ? spot - opposite.strikeArs : opposite.strikeArs - spot);
+        required += Math.max(callMargin, putMargin) +
+          Math.max(intrinsic, opposite.optionPriceArs) * opposite.contractMultiplier * lots;
+        floor += callFloor + putFloor;
       }
-      const cappedCcp = Math.min(ccpEval.worstLossArs, maxLossCapArs);
-      const rawShortFloor = computeSteppedUncoveredFloorArs(spot24hArs, shortLegs, 0);
-      const cappedFloor = Math.min(rawShortFloor, maxLossCapArs);
-      return {
-        ccpRiskArrayLossArs: cappedCcp,
-        worstNode: { ...ccpEval.worstNode, portfolioMtmLossArs: cappedCcp },
-        steppedFloorArs: cappedFloor,
-        requiredMarginArs: Math.max(cappedCcp, cappedFloor),
-      };
-    }
-    case 'RATIO_SPREAD_1X2':
-    case 'RATIO_SPREAD_1X3': {
-      return {
-        ccpRiskArrayLossArs: ccpEval.worstLossArs,
-        worstNode: ccpEval.worstNode,
-        steppedFloorArs: steppedFloorUncovered,
-        requiredMarginArs: Math.max(ccpEval.worstLossArs, steppedFloorUncovered),
-      };
-    }
-    case 'SHORT_STRADDLE_STRANGLE': {
-      const callLegs = legs.filter((l) => l.contractType === 'call');
-      const putLegs = legs.filter((l) => l.contractType === 'put');
-      const callCcp =
-        callLegs.length > 0
-          ? evaluatePortfolioCcpGrid(
-              baseInput,
-              spot24hArs,
-              callLegs,
-              spotShocks,
-              volShocks,
-              minStressVol,
-            )
-          : null;
-      const putCcp =
-        putLegs.length > 0
-          ? evaluatePortfolioCcpGrid(
-              baseInput,
-              spot24hArs,
-              putLegs,
-              spotShocks,
-              volShocks,
-              minStressVol,
-            )
-          : null;
-      const callFloor = computeSteppedUncoveredFloorArs(spot24hArs, callLegs, 0);
-      const putFloor = computeSteppedUncoveredFloorArs(spot24hArs, putLegs, 0);
-      const marginCall = Math.max(callCcp?.worstLossArs ?? 0, callFloor);
-      const marginPut = Math.max(putCcp?.worstLossArs ?? 0, putFloor);
-      const callMarkTotal = callLegs
-        .filter((l) => l.side === 'SELL')
-        .reduce((acc, l) => acc + l.optionPriceArs * GGAL_BYMA_LOT_SIZE * l.lots, 0);
-      const putMarkTotal = putLegs
-        .filter((l) => l.side === 'SELL')
-        .reduce((acc, l) => acc + l.optionPriceArs * GGAL_BYMA_LOT_SIZE * l.lots, 0);
-      const requiredMarginArs =
-        marginCall >= marginPut ? marginCall + putMarkTotal : marginPut + callMarkTotal;
-      return {
-        ccpRiskArrayLossArs: ccpEval.worstLossArs,
-        worstNode: ccpEval.worstNode,
-        steppedFloorArs: steppedFloorUncovered,
-        requiredMarginArs,
-      };
-    }
-    case 'COVERED_CALL': {
-      const totalShortCallShares = legs
-        .filter((l) => l.contractType === 'call' && l.side === 'SELL')
-        .reduce((acc, l) => acc + l.lots * GGAL_BYMA_LOT_SIZE, 0);
-      if (underlyingSharesHeld >= totalShortCallShares && totalShortCallShares > 0) {
-        return {
-          ccpRiskArrayLossArs: 0,
-          worstNode: { ...ccpEval.worstNode, portfolioMtmLossArs: 0 },
-          steppedFloorArs: 0,
-          requiredMarginArs: 0,
-        };
-      }
-      const uncoveredRatio =
-        totalShortCallShares > 0
-          ? clamp((totalShortCallShares - Math.max(0, underlyingSharesHeld)) / totalShortCallShares, 0, 1)
-          : 1;
-      const adjCcp = ccpEval.worstLossArs * uncoveredRatio;
-      return {
-        ccpRiskArrayLossArs: adjCcp,
-        worstNode: { ...ccpEval.worstNode, portfolioMtmLossArs: adjCcp },
-        steppedFloorArs: steppedFloorUncovered,
-        requiredMarginArs: Math.max(adjCcp, steppedFloorUncovered),
-      };
-    }
-    case 'CROSS_COLLATERAL_STRATEGY': {
-      const reducedCcp = ccpEval.worstLossArs * (1 - clamp(crossCollateralOffsetRatio, 0, 0.5));
-      return {
-        ccpRiskArrayLossArs: reducedCcp,
-        worstNode: { ...ccpEval.worstNode, portfolioMtmLossArs: reducedCcp },
-        steppedFloorArs: steppedFloorUncovered,
-        requiredMarginArs: Math.max(reducedCcp, steppedFloorUncovered),
-      };
     }
   }
+  const remainder = uncovered.filter(({ lots }) => lots > 0).map(({ leg, lots }) => ({ ...leg, lots }));
+  if (remainder.length > 0) {
+    const result = grid(remainder);
+    if (result === null) return null;
+    const remainderFloor = computeSteppedUncoveredFloorArs(spot, remainder);
+    ccp += result.worstLossArs;
+    floor += remainderFloor;
+    required += Math.max(result.worstLossArs, remainderFloor);
+    worstNode = result.worstNode;
+  }
+  const eligibility = input.crossCollateralEligibility;
+  let appliedCrossOffsetRatio = 0;
+  if (input.strategyKind === 'CROSS_COLLATERAL_STRATEGY' && structure.applicable.CROSS_COLLATERAL_STRATEGY) {
+    const requested = eligibility?.offsetRatio ?? input.crossCollateralOffsetRatio ?? DEFAULT_CROSS_COLLATERAL_OFFSET_RATIO;
+    if (eligibility?.verifiedByClearingRule === true && portfolio.oppositeAtWorst &&
+        Number.isFinite(requested) && Number.isFinite(eligibility.maxOffsetRatio)) {
+      appliedCrossOffsetRatio = clamp(requested, 0, clamp(eligibility.maxOffsetRatio, 0, 1));
+    }
+    const portfolioLoss = portfolio.worstLossArs * (1 - appliedCrossOffsetRatio);
+    ccp = appliedCrossOffsetRatio > 0 ? portfolioLoss : Math.max(ccp, portfolioLoss);
+    required = appliedCrossOffsetRatio > 0 ? Math.max(floor, portfolioLoss) : Math.max(required, portfolioLoss);
+    worstNode = portfolio.worstNode;
+  }
+  if (structure.applicable.VERTICAL_DEBIT_SPREAD || structure.applicable.SHORT_STRADDLE_STRANGLE) {
+    ccp = Math.max(ccp, portfolio.worstLossArs);
+    worstNode = portfolio.worstNode;
+  }
+  return { ccpRiskArrayLossArs: ccp, worstNode: { ...worstNode, portfolioMtmLossArs: ccp },
+    steppedFloorArs: floor, requiredMarginArs: required, appliedCrossOffsetRatio };
 }
 
 function evaluateCollateralPortfolio(assets: readonly BymaCollateralAssetInput[]): {
@@ -998,7 +998,48 @@ function buildCircular3588Alert(
 export function evaluateBymaClearingMargin(
   input: BymaClearingMarginInput,
 ): MarginAndRiskOutput {
+  const structure = classifyAndValidateMarginStructure(input);
+  const positionBasis = input.positionBasis ?? 'DECLARED_POSITION';
+  const assumptions: string[] = [];
+  if (positionBasis === 'SIMULATED_STRATEGY_TEMPLATE') {
+    assumptions.push('Patas elegidas por la plantilla del simulador.');
+    if (input.strategyKind === 'COVERED_CALL') {
+      assumptions.push(`Tenencia evaluada: ${String(input.underlyingSharesHeld)} acciones.`);
+    }
+  }
+  if (input.collateralAssets.some((asset) => asset.explicitAforo === undefined &&
+      asset.kind !== 'CASH_ARS' && FIXED_DEFAULT_AFORO[asset.kind] !== undefined)) {
+    assumptions.push('Aforos del modelo interno para colateral no local.');
+  }
+  const invalidUnits = structure.invalid.some(({ reason }) =>
+    ['MIXED_UNDERLYING', 'CURRENCY_MISMATCH', 'UNVERIFIED_MULTIPLIER', 'UNSUPPORTED_EXERCISE_STYLE'].includes(reason));
+  const conservativeIntrinsicFloorArs = invalidUnits || !isPositiveFinite(input.spot24hArs)
+    ? Number.NaN : input.legs.reduce((sum, leg) => {
+    if (leg.side !== 'SELL' || !isPositiveFinite(leg.strikeArs) || !isPositiveFinite(leg.lots)) return sum;
+    const multiplier = leg.contractMultiplier ?? GGAL_BYMA_LOT_SIZE;
+    const intrinsic = Math.max(0, leg.contractType === 'call'
+      ? input.spot24hArs - leg.strikeArs : leg.strikeArs - input.spot24hArs);
+    return sum + intrinsic * multiplier * leg.lots;
+  }, 0);
+  const matchesLegs = structure.applicable[input.strategyKind];
+  const effectiveStrategyKind = matchesLegs ? input.strategyKind : CLEARING_STRATEGIES
+    .find((kind) => structure.applicable[kind]) ?? 'UNCOVERED_SHORT';
+  const strategyValidation = {
+    requestedStrategyKind: input.strategyKind, effectiveStrategyKind, matchesLegs,
+    code: matchesLegs ? 'MATCHES_POSITION' : structure.uncoveredShortLegs.length > 0
+      ? 'STRATEGY_MISMATCH_UNCOVERED_SHORT_DETECTED' : 'STRATEGY_MISMATCH',
+    detail: matchesLegs ? 'Estructura acreditada por las patas.' : 'Se aplican las garantías de las patas y la tenencia verificadas.',
+  };
+  const evidence = {
+    marginModelBasis: 'INTERNAL_CCP_BS02_MODEL' as const,
+    clearingRuleHierarchy: CLEARING_RULE_HIERARCHY, positionBasis, assumptions,
+    strategyValidation, degradedLegs: [...structure.invalid, ...structure.degraded],
+    conservativeIntrinsicFloorArs, conservativeIntrinsicFloorBasis: 'LOWER_BOUND_DIAGNOSTIC_ONLY' as const,
+  };
   const makeNoData = (reason: string): MarginAndRiskOutput => ({
+    ...evidence,
+    riskStatus: 'INDETERMINATE_MARGIN',
+    appliedCrossOffsetRatio: 0,
     status: 'NO_DATA',
     reason,
     strategyKind: input.strategyKind,
@@ -1037,7 +1078,11 @@ export function evaluateBymaClearingMargin(
       blockingAtmStrikes: [],
       reason,
     },
-    strategyReferenceMatrix: [],
+    strategyReferenceMatrix: CLEARING_STRATEGIES.map((strategyKind) => ({
+      strategyKind, label: STRATEGY_LABELS[strategyKind], applicableToCurrentLegs: false,
+      evaluationBasis: 'NOT_APPLICABLE_TO_CURRENT_LEGS', applicabilityReason: reason,
+      ccpRiskArrayLossArs: Number.NaN, steppedFloorArs: Number.NaN, requiredMarginArs: Number.NaN,
+    })),
   });
 
   if (
@@ -1048,15 +1093,8 @@ export function evaluateBymaClearingMargin(
   ) {
     return makeNoData('Entradas inválidas o vacías en evaluateBymaClearingMargin.');
   }
-  for (const leg of input.legs) {
-    if (
-      !isPositiveFinite(leg.lots) ||
-      !isPositiveFinite(leg.strikeArs) ||
-      !isFiniteNonNegative(leg.optionPriceArs) ||
-      !isPositiveFinite(leg.ivDecimal)
-    ) {
-      return makeNoData(`Pata inválida en ${leg.ticker || 'OPCIÓN'}.`);
-    }
+  if (structure.invalid.length > 0 || structure.verified.length === 0) {
+    return makeNoData(structure.invalid[0]?.reason ?? 'NO_VALID_LEGS');
   }
   if (input.strategyKind === 'COVERED_CALL' && input.underlyingSharesHeld === undefined) {
     return makeNoData('COVERED_CALL exige especificar underlyingSharesHeld explícitamente.');
@@ -1082,31 +1120,18 @@ export function evaluateBymaClearingMargin(
     ...(input.dividendsArs !== undefined ? { dividends: input.dividendsArs } : {}),
   };
 
-  const spotShocks = input.spotShocks ?? DEFAULT_CCP_SPOT_SHOCKS;
-  const volShocks = input.volShocks ?? DEFAULT_CCP_VOL_SHOCKS;
-  const minStressVol = input.minStressVol ?? MIN_CCP_STRESS_VOL;
   const liquidBufferRate = input.liquidBufferRate ?? DEFAULT_LIQUID_BUFFER_RATE;
   const wwrSurchargeRate = input.wrongWayRiskSurchargeRate ?? DEFAULT_WWR_SURCHARGE_RATE;
-  const crossOffsetRatio = input.crossCollateralOffsetRatio ?? DEFAULT_CROSS_COLLATERAL_OFFSET_RATIO;
   const sharesHeld = input.underlyingSharesHeld ?? 0;
-
-  const activeStrategyMargin = evaluateStrategyRequiredMargin(
-    input.strategyKind,
-    evalBaseInput,
-    input.spot24hArs,
-    input.legs,
-    sharesHeld,
-    spotShocks,
-    volShocks,
-    minStressVol,
-    crossOffsetRatio,
-  );
+  const activeStrategyMargin = evaluateStrategyRequiredMargin(input, structure, evalBaseInput);
   if (!activeStrategyMargin) {
     return makeNoData('No pudo evaluarse la grilla BS02 CCP BYMA.');
   }
 
   const collateralEval = evaluateCollateralPortfolio(input.collateralAssets);
-  const liquidBufferArs = activeStrategyMargin.requiredMarginArs * liquidBufferRate;
+  const baseRequiredMarginArs = collateralEval.status === 'OK'
+    ? activeStrategyMargin.requiredMarginArs : Number.NaN;
+  const liquidBufferArs = baseRequiredMarginArs * liquidBufferRate;
 
   let wrongWayRiskSurchargeArs = 0;
   let totalRequiredWithBuffersArs = Number.NaN;
@@ -1134,11 +1159,12 @@ export function evaluateBymaClearingMargin(
   let grossOptionNotionalArs = 0;
   let grossStrikeExerciseNotionalArs = 0;
   for (const leg of input.legs) {
-    const premNotional = leg.optionPriceArs * GGAL_BYMA_LOT_SIZE * leg.lots;
+    const multiplier = leg.contractMultiplier ?? GGAL_BYMA_LOT_SIZE;
+    const premNotional = isFiniteNonNegative(leg.optionPriceArs) ? leg.optionPriceArs * multiplier * leg.lots : Number.NaN;
     const sign = leg.side === 'SELL' ? 1 : -1;
     t0GrossPremiumCashflowArs += sign * premNotional;
     grossOptionNotionalArs += premNotional;
-    grossStrikeExerciseNotionalArs += leg.strikeArs * GGAL_BYMA_LOT_SIZE * leg.lots;
+    grossStrikeExerciseNotionalArs += leg.strikeArs * multiplier * leg.lots;
   }
   const t0OptionFeesDmIvaArs = grossOptionNotionalArs * BYMA_OPTION_PREMIUM_DM_RATE_WITH_IVA;
   const t0NetCashflowArs = t0GrossPremiumCashflowArs - t0OptionFeesDmIvaArs;
@@ -1163,49 +1189,32 @@ export function evaluateBymaClearingMargin(
   );
 
   // Matriz comparativa determinista de referencia para las 8 estrategias sobre las mismas patas
-  const allKinds: readonly BymaClearingStrategyKind[] = [
-    'UNCOVERED_SHORT',
-    'VERTICAL_DEBIT_SPREAD',
-    'VERTICAL_CREDIT_SPREAD',
-    'RATIO_SPREAD_1X2',
-    'RATIO_SPREAD_1X3',
-    'SHORT_STRADDLE_STRANGLE',
-    'COVERED_CALL',
-    'CROSS_COLLATERAL_STRATEGY',
-  ];
-  const strategyReferenceMatrix: StrategyMarginBreakdownItem[] = [];
-  for (const kind of allKinds) {
-    const res =
-      kind === input.strategyKind
-        ? activeStrategyMargin
-        : evaluateStrategyRequiredMargin(
-            kind,
-            evalBaseInput,
-            input.spot24hArs,
-            input.legs,
-            kind === 'COVERED_CALL'
-              ? input.underlyingSharesHeld ??
-                  input.legs
-                    .filter((l) => l.contractType === 'call' && l.side === 'SELL')
-                    .reduce((acc, l) => acc + l.lots * GGAL_BYMA_LOT_SIZE, 0)
-              : sharesHeld,
-            spotShocks,
-            volShocks,
-            minStressVol,
-            crossOffsetRatio,
-          );
-    if (res) {
-      strategyReferenceMatrix.push({
-        strategyKind: kind,
-        label: STRATEGY_LABELS[kind],
-        ccpRiskArrayLossArs: res.ccpRiskArrayLossArs,
-        steppedFloorArs: res.steppedFloorArs,
-        requiredMarginArs: res.requiredMarginArs,
-      });
-    }
-  }
-
+  const strategyReferenceMatrix = CLEARING_STRATEGIES.map((kind): StrategyMarginBreakdownItem => {
+    const applicable = structure.applicable[kind] &&
+      (kind !== 'CROSS_COLLATERAL_STRATEGY' || activeStrategyMargin.appliedCrossOffsetRatio > 0);
+    const res = applicable ? kind === input.strategyKind ? activeStrategyMargin
+      : evaluateStrategyRequiredMargin({ ...input, strategyKind: kind }, structure, evalBaseInput) : null;
+    return {
+      strategyKind: kind,
+      label: STRATEGY_LABELS[kind],
+      applicableToCurrentLegs: applicable,
+      evaluationBasis: applicable ? 'ACTUAL_POSITION_MATCH' : 'NOT_APPLICABLE_TO_CURRENT_LEGS',
+      applicabilityReason: applicable ? 'Patas y tenencia compatibles.' : 'Las patas o la tenencia no acreditan la regla.',
+      ccpRiskArrayLossArs: res?.ccpRiskArrayLossArs ?? Number.NaN,
+      steppedFloorArs: res?.steppedFloorArs ?? Number.NaN,
+      requiredMarginArs: collateralEval.status === 'OK' ? res?.requiredMarginArs ?? Number.NaN : Number.NaN,
+    };
+  });
+  if (activeStrategyMargin.appliedCrossOffsetRatio > 0) assumptions.push('Compensación con elegibilidad declarada.');
+  const crossUnverified = input.strategyKind === 'CROSS_COLLATERAL_STRATEGY' && activeStrategyMargin.appliedCrossOffsetRatio === 0;
   return {
+    ...evidence,
+    strategyValidation: crossUnverified ? { ...strategyValidation,
+      code: 'CROSS_COLLATERAL_OFFSET_NOT_VERIFIED', detail: 'Sin compensación acreditada en el peor nodo.' } : strategyValidation,
+    appliedCrossOffsetRatio: activeStrategyMargin.appliedCrossOffsetRatio,
+    riskStatus: collateralEval.status !== 'OK' ? 'INDETERMINATE_MARGIN'
+      : structure.degraded.length > 0 ? 'PARTIAL_COVERAGE_CONSERVATIVE'
+      : assumptions.length > 0 ? 'ESTIMATED_WITH_ASSUMPTIONS' : 'VALID_MODEL_MARGIN',
     status: collateralEval.status === 'OK' ? 'OK' : 'NO_DATA',
     strategyKind: input.strategyKind,
     spot24hArs: input.spot24hArs,
@@ -1213,7 +1222,7 @@ export function evaluateBymaClearingMargin(
     ccpRiskArrayLossArs: activeStrategyMargin.ccpRiskArrayLossArs,
     worstCcpNode: activeStrategyMargin.worstNode,
     steppedFloorArs: activeStrategyMargin.steppedFloorArs,
-    baseRequiredMarginArs: activeStrategyMargin.requiredMarginArs,
+    baseRequiredMarginArs,
     liquidBufferArs,
     wrongWayRiskSurchargeArs,
     totalRequiredWithBuffersArs,
@@ -1696,7 +1705,7 @@ function priceUnitPortfolioArs(
       return null;
     }
     const sign = leg.side === 'BUY' ? 1 : -1;
-    totalArs += sign * leg.lots * GGAL_BYMA_LOT_SIZE * pxArs;
+    totalArs += sign * leg.lots * (leg.contractMultiplier ?? GGAL_BYMA_LOT_SIZE) * pxArs;
   }
   for (const opra of opraLegs) {
     const tExp = Math.max(1 / (24 * DAYS_PER_YEAR), (opra.expiryUtcSec - bymaEval.asOfUtcSec) / (DAYS_PER_YEAR * 86_400));
@@ -1811,7 +1820,7 @@ export function evaluateTailStressAndSizing(
   const unitPremiumFeeRoundTripArs =
     2 *
     input.bymaLegsPerUnit.reduce(
-      (acc, l) => acc + l.optionPriceArs * GGAL_BYMA_LOT_SIZE * l.lots * BYMA_OPTION_PREMIUM_DM_RATE_WITH_IVA,
+      (acc, l) => acc + l.optionPriceArs * (l.contractMultiplier ?? GGAL_BYMA_LOT_SIZE) * l.lots * BYMA_OPTION_PREMIUM_DM_RATE_WITH_IVA,
       0,
     );
 
