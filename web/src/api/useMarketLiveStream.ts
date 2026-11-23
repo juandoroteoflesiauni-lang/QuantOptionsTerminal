@@ -1,3 +1,4 @@
+import type { CclTemporalValuation } from '../../../src/core/temporalFeedIntegrity';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   L2_THROTTLE_MS,
@@ -916,17 +917,48 @@ function parseQuote(raw: unknown, previous: MarketLiveQuote | null, partial = fa
   };
 }
 
+function parseCclTemporal(raw: unknown): CclTemporalValuation | undefined {
+  if (!isRecord(raw) || typeof raw['livePublishable'] !== 'boolean' ||
+      !['CONTEMPORANEOUS', 'SKEW_DEGRADED', 'STALE_LEG', 'MISSING_LEG', 'EOD_CLOSE_REF'].includes(String(raw['cclQuality'])) ||
+      !['OVERLAP', 'BYMA_ONLY', 'NASDAQ_SOLO_17_18', 'PREMARKET_REPRICE', 'EXTENDED_US', 'CLOSED'].includes(String(raw['marketRegime']))) return undefined;
+  const nullableInt = (value: unknown): number | null => typeof value === 'number' && Number.isInteger(value) ? value : null;
+  const reasons = [
+    'MISSING_BYMA_LEG', 'MISSING_ADR_LEG', 'INVALID_TIMESTAMP', 'FUTURE_CLOCK_SKEW', 'CROSS_SESSION_DAY_MISMATCH',
+    'LEG_SKEW_EXCEEDED', 'BYMA_LEG_STALE', 'ADR_LEG_STALE', 'NON_OVERLAP_REGIME',
+  ];
+  return {
+    value: finitePositive(raw['value']) ?? Number.NaN,
+    livePublishable: raw['livePublishable'],
+    bymaTimestamp: nullableInt(raw['bymaTimestamp']),
+    adrTimestamp: nullableInt(raw['adrTimestamp']),
+    bymaReceivedAt: nullableInt(raw['bymaReceivedAt']),
+    adrReceivedAt: nullableInt(raw['adrReceivedAt']),
+    legSkewSec: nullableInt(raw['legSkewSec']),
+    bymaAgeSec: nullableInt(raw['bymaAgeSec']),
+    adrAgeSec: nullableInt(raw['adrAgeSec']),
+    valuationTimestamp: nullableInt(raw['valuationTimestamp']),
+    cclQuality: raw['cclQuality'] as CclTemporalValuation['cclQuality'],
+    marketRegime: raw['marketRegime'] as CclTemporalValuation['marketRegime'],
+    sameTradingDay: typeof raw['sameTradingDay'] === 'boolean' ? raw['sameTradingDay'] : null,
+    maxAllowedSkewSec: nullableInt(raw['maxAllowedSkewSec']),
+    rejectReason: reasons.includes(String(raw['rejectReason'])) ? raw['rejectReason'] as CclTemporalValuation['rejectReason'] : null,
+  };
+}
+
 function parseLiveFx(raw: unknown): LiveFxSnapshot | null {
   if (!isRecord(raw)) return null;
   const mepMedian = finitePositive(raw['mepMedian']);
   const cclMedian = finitePositive(raw['cclMedian']);
   const cclImplicitGgal = finitePositive(raw['cclImplicitGgal']);
+  const cclGgalTemporal = parseCclTemporal(raw['cclGgalTemporal']);
   const canjePctRaw = raw['canjePct'];
   const canjePct = typeof canjePctRaw === 'number' && Number.isFinite(canjePctRaw) ? canjePctRaw : null;
-  if (mepMedian === null && cclMedian === null && cclImplicitGgal === null && canjePct === null) {
+  if (mepMedian === null && cclMedian === null && cclImplicitGgal === null && canjePct === null && cclGgalTemporal === undefined) {
     return null;
   }
-  return { mepMedian, cclMedian, cclImplicitGgal, canjePct };
+  return { mepMedian, cclMedian, cclImplicitGgal, canjePct,
+    ...(cclGgalTemporal === undefined ? {} : { cclGgalTemporal }),
+  };
 }
 
 function parseOrderBook(raw: unknown): MarketLiveOrderBook | null {
@@ -1673,6 +1705,12 @@ export interface GgalBarTickEventDto {
     readonly avwapMinus1Sigma: number | null;
   };
   readonly serverTimeSec: number;
+  readonly updateKind?: 'ACTIVE' | 'HISTORICAL_REVISION';
+  readonly isRevision?: boolean;
+  readonly bucketRevision?: number;
+  readonly streamSeq?: number;
+  readonly resolutionSec?: number;
+  readonly cclMeta?: CclTemporalValuation;
 }
 
 type GgalBarTickListener = (event: GgalBarTickEventDto) => void;
@@ -1705,7 +1743,19 @@ function dispatchGgalBarTick(parsed: Record<string, unknown>): void {
   ) {
     return;
   }
+  const updateKind = parsed['updateKind'];
+  const isRevision = parsed['isRevision'];
+  const bucketRevision = parsed['bucketRevision'];
+  const streamSeq = parsed['streamSeq'];
+  const resolutionSec = parsed['resolutionSec'];
+  const cclMeta = parseCclTemporal(parsed['cclMeta']);
   const event: GgalBarTickEventDto = {
+    ...(updateKind === 'ACTIVE' || updateKind === 'HISTORICAL_REVISION' ? { updateKind } : {}),
+    ...(typeof isRevision === 'boolean' ? { isRevision } : {}),
+    ...(typeof bucketRevision === 'number' && Number.isInteger(bucketRevision) && bucketRevision > 0 ? { bucketRevision } : {}),
+    ...(typeof streamSeq === 'number' && Number.isInteger(streamSeq) && streamSeq > 0 ? { streamSeq } : {}),
+    ...(typeof resolutionSec === 'number' && Number.isInteger(resolutionSec) && resolutionSec > 0 ? { resolutionSec } : {}),
+    ...(cclMeta === undefined ? {} : { cclMeta }),
     type: 'ggal_bar_tick',
     symbol: 'GGAL',
     mode,

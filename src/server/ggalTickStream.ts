@@ -22,9 +22,16 @@
  *   (la UI muestra "—"). Sin datos simulados.
  */
 
-import { calculateEma } from '../core/ema.js';
 import { getBuenosAiresParts, GGAL_ADR_RATIO } from '../core/ggal/types.js';
 import { getMarketParts } from '../core/sessions.js';
+import { classifySessionRegime } from '../core/ggal/parityGap.js';
+import {
+  compareBucketTrades,
+  evaluateCclContemporaneity,
+  MAX_PLAUSIBLE_EPOCH_SEC,
+  resolveGgalMarketSessionDateKey,
+  type CclTemporalValuation,
+} from '../core/temporalFeedIntegrity.js';
 
 export type GgalTickMode = 'ADR' | 'ARS' | 'CCL';
 export type GgalTickTimeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1D';
@@ -89,6 +96,12 @@ export interface GgalBarTickEvent {
   readonly bar: GgalTickBar;
   readonly indicatorsPoint: GgalTickIndicatorPoint;
   readonly serverTimeSec: number;
+  readonly updateKind?: 'ACTIVE' | 'HISTORICAL_REVISION';
+  readonly isRevision?: boolean;
+  readonly bucketRevision?: number;
+  readonly streamSeq?: number;
+  readonly resolutionSec?: number;
+  readonly cclMeta?: CclTemporalValuation;
 }
 
 export type GgalBarTickEmit = (event: GgalBarTickEvent) => void;
@@ -137,6 +150,7 @@ export function applyGgalTickToBar(
       }
     );
   }
+  if (bar !== null && bucketStartSec < bar.timeSec) return bar;
   const volume = Number.isFinite(size) && size > 0 ? size : 0;
   if (bar === null || bucketStartSec > bar.timeSec) {
     return { timeSec: bucketStartSec, open: price, high: price, low: price, close: price, volume };
@@ -231,63 +245,74 @@ export function isGgalTickInSession(timeSec: number, mode: GgalTickMode): boolea
   );
 }
 
-function utcDayKey(timeSec: number): string {
-  return new Date(timeSec * 1_000).toISOString().slice(0, 10);
-}
-
 function typicalPriceOf(bar: GgalTickBar): number {
   return (bar.high + bar.low + bar.close) / 3;
 }
 
-interface EmaClosedState {
-  readonly period: 9 | 21 | 50 | 200;
-  value: number | null;
+const LATE_REVISION_WINDOW_SEC: Readonly<Record<GgalTickTimeframe, number>> = {
+  '1m': 900, '5m': 1_800, '15m': 3_600, '1h': 14_400, '4h': 43_200, '1D': 86_400,
+};
+const MAX_RETAINED_BUCKETS = 64;
+const EMA_PERIODS = [9, 21, 50, 200] as const;
+type EmaPeriod = typeof EMA_PERIODS[number];
+
+export interface GgalTradeTick {
+  readonly price: number;
+  readonly size: number;
+  readonly timeSec: number;
+  readonly eventTimeMs?: number;
+  readonly sequence?: number;
+  readonly tradeId?: string;
+  readonly volumeMode?: 'INCREMENTAL' | 'CUMULATIVE_SESSION';
 }
 
-interface TfSideState {
-  /** Minutos 1m contribuyentes del bucket abierto (upsert idempotente). */
-  contributingMinutes: Map<number, GgalTickMinuteBar>;
-  openBar: GgalTickBar | null;
-  /** VWAP de sesión de buckets cerrados de la sesión actual (TRADE_VWAP). */
-  closedSessionPv: number;
-  closedSessionVolume: number;
-  closedSessionDayKey: string | null;
-  /** Sumas vivas del bucket abierto (derivadas de contributingMinutes). */
-  formingPv: number;
-  formingVolume: number;
-  /** EMA de barras cerradas. */
-  ema: Record<9 | 21 | 50 | 200, EmaClosedState>;
-  avwap: AvwapAccState | null;
+interface TradeRecord {
+  readonly price: number;
+  readonly volume: number;
+  readonly eventTimeMs: number;
+  readonly arrivalOrder: number;
+  readonly sequence?: number;
+  readonly tradeId?: string;
+}
+
+interface BucketEntry {
+  readonly timeSec: number;
+  readonly session: string;
+  readonly seed: GgalTickMinuteBar | null;
+  readonly trades: TradeRecord[];
+  readonly minutes: Map<number, GgalTickMinuteBar>;
+  readonly seen: Set<string>;
+  bar: GgalTickBar | null;
+  pv: number;
+  revision: number;
   lastEmitAtMs: number | null;
 }
 
-interface ModeSideState {
-  lastPrice: number | null;
-  lastTickTimeSec: number | null;
-  perTimeframe: Map<GgalTickTimeframe, TfSideState>;
-  /** Dedupe de minutos consolidados ADR: firma por `timeSec`. */
-  minuteSignatures: Map<number, string>;
-  lastFedMinuteSec: number | null;
+interface IndicatorCheckpoint {
+  readonly ema: Record<EmaPeriod, number | null>;
+  readonly count: number;
+  readonly warmupSum: number;
+  readonly session: string | null;
+  readonly sessionPv: number;
+  readonly sessionVolume: number;
+  readonly avwap: AvwapAccState | null;
 }
 
-function newTfSideState(): TfSideState {
-  return {
-    contributingMinutes: new Map(),
-    openBar: null,
-    closedSessionPv: 0,
-    closedSessionVolume: 0,
-    closedSessionDayKey: null,
-    formingPv: 0,
-    formingVolume: 0,
-    ema: {
-      9: { period: 9, value: null },
-      21: { period: 21, value: null },
-      50: { period: 50, value: null },
-      200: { period: 200, value: null },
-    },
-    avwap: null,
-    lastEmitAtMs: null,
-  };
+interface TfSideState {
+  readonly buckets: Map<number, BucketEntry>;
+  checkpoint: IndicatorCheckpoint;
+  activeTime: number | null;
+  activeSession: string | null;
+  streamSeq: number;
+}
+
+interface ModeSideState {
+  lastPrice: number;
+  lastTickTimeSec: number | null;
+  lastReceivedAtSec: number | null;
+  lastTradeOrder: TradeRecord | null;
+  readonly perTimeframe: Map<GgalTickTimeframe, TfSideState>;
+  cumulative: { session: string; lastCumVol: number; watermarkSec: number } | null;
 }
 
 export interface GgalTickStreamEngineDeps {
@@ -295,402 +320,377 @@ export interface GgalTickStreamEngineDeps {
   readonly emit?: GgalBarTickEmit;
   readonly ratio?: number;
   readonly minEmitIntervalMs?: number;
+  readonly dedupeWithoutId?: 'CANONICAL_EXACT' | 'OFF';
+  readonly arHolidays?: readonly string[];
+  readonly usHolidays?: readonly string[];
 }
 
-const EMA_ALPHA: Readonly<Record<9 | 21 | 50 | 200, number>> = {
-  9: 2 / 10,
-  21: 2 / 22,
-  50: 2 / 51,
-  200: 2 / 201,
-};
+function newSideState(): ModeSideState {
+  return {
+    lastPrice: Number.NaN, lastTickTimeSec: null, lastReceivedAtSec: null, lastTradeOrder: null,
+    perTimeframe: new Map(), cumulative: null,
+  };
+}
+
+function emptyCheckpoint(anchorSec: number | null): IndicatorCheckpoint {
+  return {
+    ema: { 9: null, 21: null, 50: null, 200: null }, count: 0, warmupSum: 0,
+    session: null, sessionPv: 0, sessionVolume: 0,
+    avwap: anchorSec === null ? null : { anchorSec, cumPv: 0, cumVol: 0, mean: 0, m2: 0 },
+  };
+}
+
+function newBucket(timeSec: number, session: string, seed: GgalTickMinuteBar | null = null): BucketEntry {
+  return {
+    timeSec, session, seed, trades: [], minutes: new Map(), seen: new Set(),
+    bar: null, pv: 0, revision: 0, lastEmitAtMs: null,
+  };
+}
+
+function minutePv(minute: GgalTickMinuteBar): number {
+  const price = minute.vw !== undefined && finitePositive(minute.vw) ? minute.vw : typicalPriceOf(minute);
+  return price * minute.volume;
+}
+
+function normalizeMinute(minute: GgalTickMinuteBar): GgalTickMinuteBar | null {
+  if (!Number.isInteger(minute.timeSec) || minute.timeSec <= 0 || minute.timeSec > MAX_PLAUSIBLE_EPOCH_SEC ||
+      !finitePositive(minute.open) || !finitePositive(minute.high) ||
+      !finitePositive(minute.low) || !finitePositive(minute.close)) return null;
+  return { ...minute, volume: Number.isFinite(minute.volume) && minute.volume >= 0 ? minute.volume : 0 };
+}
+
+function aggregateBucket(entry: BucketEntry): { bar: GgalTickBar | null; pv: number } {
+  // Un minuto consolidado reemplaza a la semilla del mismo minuto. Los
+  // minutos de un timeframe superior se agregan por orden de evento.
+  const minutes = [...entry.minutes.values()].sort((a, b) => a.timeSec - b.timeSec);
+  const seed = entry.seed !== null && !entry.minutes.has(entry.seed.timeSec) ? entry.seed : null;
+  const trades = [...entry.trades].sort(compareBucketTrades);
+  const observations = [
+    ...minutes.map((minute) => ({ ...minute, pv: minutePv(minute), eventTimeMs: minute.timeSec * 1_000 })),
+    ...trades.map((trade) => ({
+      eventTimeMs: trade.eventTimeMs, open: trade.price, high: trade.price, low: trade.price, close: trade.price,
+      volume: trade.volume, pv: trade.price * trade.volume,
+    })),
+  ].sort((a, b) => a.eventTimeMs - b.eventTimeMs);
+  let bar: GgalTickBar | null = seed === null ? null : { ...seed, timeSec: entry.timeSec };
+  let pv = seed === null ? 0 : minutePv(seed);
+  for (const item of observations) {
+    bar = {
+      timeSec: entry.timeSec,
+      open: bar?.open ?? item.open,
+      high: bar === null ? item.high : Math.max(bar.high, item.high),
+      low: bar === null ? item.low : Math.min(bar.low, item.low),
+      close: item.close,
+      volume: (bar?.volume ?? 0) + item.volume,
+    };
+    pv += item.pv;
+  }
+  return { bar, pv };
+}
+
+function sameBar(a: GgalTickBar | null, b: GgalTickBar): boolean {
+  return a !== null && a.open === b.open && a.high === b.high && a.low === b.low &&
+    a.close === b.close && a.volume === b.volume;
+}
+
+function foldBucket(before: IndicatorCheckpoint, bar: GgalTickBar, pv: number, session: string, mode: GgalTickMode): IndicatorCheckpoint {
+  const count = before.count + 1;
+  const warmupSum = count <= 200 ? before.warmupSum + bar.close : before.warmupSum;
+  const ema = { ...before.ema };
+  for (const period of EMA_PERIODS) {
+    const previous = before.ema[period];
+    const alpha = 2 / (period + 1);
+    ema[period] = previous !== null ? alpha * bar.close + (1 - alpha) * previous
+      : count === period ? warmupSum / period : null;
+  }
+  const inSession = isGgalTickInSession(bar.timeSec, mode);
+  const sameSession = before.session === session;
+  return {
+    count, warmupSum, ema, session,
+    sessionPv: (sameSession ? before.sessionPv : 0) + (inSession ? pv : 0),
+    sessionVolume: (sameSession ? before.sessionVolume : 0) + (inSession ? bar.volume : 0),
+    avwap: before.avwap !== null && bar.timeSec >= before.avwap.anchorSec
+      ? applyAvwapAccumulation(before.avwap, typicalPriceOf(bar), bar.volume) : before.avwap,
+  };
+}
 
 export class GgalTickStreamEngine {
   private readonly nowMsFn: () => number;
   private readonly emitFn: GgalBarTickEmit | null;
   private readonly ratio: number;
   private readonly minEmitIntervalMs: number;
-  private readonly sides: Record<GgalTickMode, ModeSideState> = {
-    ADR: { lastPrice: null, lastTickTimeSec: null, perTimeframe: new Map(), minuteSignatures: new Map(), lastFedMinuteSec: null },
-    ARS: { lastPrice: null, lastTickTimeSec: null, perTimeframe: new Map(), minuteSignatures: new Map(), lastFedMinuteSec: null },
-    CCL: { lastPrice: null, lastTickTimeSec: null, perTimeframe: new Map(), minuteSignatures: new Map(), lastFedMinuteSec: null },
-  };
+  private readonly dedupeWithoutId: 'CANONICAL_EXACT' | 'OFF';
+  private readonly arHolidays: readonly string[];
+  private readonly usHolidays: readonly string[];
+  private readonly sides = { ADR: newSideState(), ARS: newSideState(), CCL: newSideState() };
   private readonly avwapAnchors = new Map<string, number>();
+  private readonly metrics = { duplicatesIgnored: 0, fallbackFingerprintDedupes: 0, lateEventsOutOfWindow: 0 };
+  private lastCclValuation: CclTemporalValuation | null = null;
+  private arrivalOrder = 0;
 
   public constructor(deps: GgalTickStreamEngineDeps = {}) {
-    this.nowMsFn = deps.nowMsFn ?? (() => Date.now());
+    this.nowMsFn = deps.nowMsFn ?? Date.now;
     this.emitFn = deps.emit ?? null;
     this.ratio = deps.ratio ?? GGAL_ADR_RATIO;
     this.minEmitIntervalMs = deps.minEmitIntervalMs ?? GGAL_TICK_MIN_EMIT_INTERVAL_MS;
+    this.dedupeWithoutId = deps.dedupeWithoutId ?? 'CANONICAL_EXACT';
+    this.arHolidays = deps.arHolidays ?? [];
+    this.usHolidays = deps.usHolidays ?? [];
   }
 
-  /** Ancla AVWAP resuelta por la carga de historial (por modo+timeframe). */
+  public getLastCclValuation(): CclTemporalValuation | null {
+    return this.lastCclValuation;
+  }
+
+  public getMetrics() {
+    return { ...this.metrics };
+  }
+
   public setAvwapAnchor(mode: GgalTickMode, timeframe: GgalTickTimeframe, anchorSec: number | null): void {
-    const key = `${mode}:${timeframe}`;
-    if (anchorSec === null || !Number.isInteger(anchorSec) || anchorSec <= 0) {
-      this.avwapAnchors.delete(key);
-      const state = this.sides[mode].perTimeframe.get(timeframe);
-      if (state !== undefined) {
-        state.avwap = null;
-      }
-      return;
-    }
-    this.avwapAnchors.set(key, anchorSec);
+    const key = mode + ':' + timeframe;
+    const valid = anchorSec !== null && Number.isInteger(anchorSec) && anchorSec > 0;
+    if (valid) this.avwapAnchors.set(key, anchorSec);
+    else this.avwapAnchors.delete(key);
     const state = this.sides[mode].perTimeframe.get(timeframe);
     if (state !== undefined) {
-      state.avwap = { anchorSec, cumPv: 0, cumVol: 0, mean: 0, m2: 0 };
+      state.checkpoint = { ...state.checkpoint, avwap: emptyCheckpoint(valid ? anchorSec : null).avwap };
     }
   }
 
   private tfState(mode: GgalTickMode, timeframe: GgalTickTimeframe): TfSideState {
     const side = this.sides[mode];
     const existing = side.perTimeframe.get(timeframe);
-    if (existing !== undefined) {
-      return existing;
-    }
-    const created = newTfSideState();
-    const anchor = this.avwapAnchors.get(`${mode}:${timeframe}`);
-    if (anchor !== undefined) {
-      created.avwap = { anchorSec: anchor, cumPv: 0, cumVol: 0, mean: 0, m2: 0 };
-    }
-    side.perTimeframe.set(timeframe, created);
-    return created;
+    if (existing !== undefined) return existing;
+    const state: TfSideState = {
+      buckets: new Map(), checkpoint: emptyCheckpoint(this.avwapAnchors.get(mode + ':' + timeframe) ?? null),
+      activeTime: null, activeSession: null, streamSeq: 0,
+    };
+    side.perTimeframe.set(timeframe, state);
+    return state;
   }
 
-  /**
-   * Siembra el estado desde el historial cerrado (paginación profunda de ADR o
-   * agregados 1m). Barras ASC; la última barra se adopta como vela abierta si
-   * su bucket es el actual. `avwapAnchorUtcSec` es el ancla resuelta por la
-   * carga del gráfico (timestamp histórico arbitrario del rango extendido).
-   */
   public seedHistory(
     mode: GgalTickMode,
     timeframe: GgalTickTimeframe,
     bars: readonly GgalTickMinuteBar[],
     avwapAnchorUtcSec?: number | null,
   ): void {
+    if (avwapAnchorUtcSec !== undefined) this.setAvwapAnchor(mode, timeframe, avwapAnchorUtcSec);
     const state = this.tfState(mode, timeframe);
-    state.contributingMinutes = new Map();
-    state.formingPv = 0;
-    state.formingVolume = 0;
-    if (avwapAnchorUtcSec !== undefined) {
-      this.setAvwapAnchor(mode, timeframe, avwapAnchorUtcSec);
-    }
-    const closed = bars.filter(
-      (bar) =>
-        Number.isInteger(bar.timeSec) &&
-        bar.timeSec > 0 &&
-        finitePositive(bar.open) &&
-        finitePositive(bar.high) &&
-        finitePositive(bar.low) &&
-        finitePositive(bar.close),
-    );
-    const closes = closed.map((bar) => bar.close);
-    for (const period of [9, 21, 50, 200] as const) {
-      const series = calculateEma(closes, period);
-      const last = series[series.length - 1];
-      state.ema[period].value = last !== undefined && Number.isFinite(last) ? last : null;
-    }
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
-    const currentDayKey = utcDayKey(nowSec);
-    state.closedSessionPv = 0;
-    state.closedSessionVolume = 0;
-    state.closedSessionDayKey = currentDayKey;
-    for (const bar of closed) {
-      if (!isGgalTickInSession(bar.timeSec, mode) || utcDayKey(bar.timeSec) !== currentDayKey) {
-        continue;
-      }
-      if (bar.volume > 0) {
-        const price = bar.vw !== undefined && finitePositive(bar.vw) ? bar.vw : typicalPriceOf(bar);
-        state.closedSessionPv += price * bar.volume;
-        state.closedSessionVolume += bar.volume;
-      }
-    }
-    const anchor = state.avwap?.anchorSec ?? null;
-    state.avwap = anchor !== null ? { anchorSec: anchor, cumPv: 0, cumVol: 0, mean: 0, m2: 0 } : null;
-    for (const bar of closed) {
-      if (anchor === null || bar.timeSec < anchor) {
-        continue;
-      }
-      state.avwap = applyAvwapAccumulation(state.avwap, typicalPriceOf(bar), bar.volume);
-    }
-    const lastBar = closed[closed.length - 1];
-    if (lastBar === undefined) {
-      state.openBar = null;
-      return;
-    }
     const nowBucket = ggalTickBucketStartSec(nowSec, timeframe);
-    const lastBucket = ggalTickBucketStartSec(lastBar.timeSec, timeframe);
-    if (Number.isFinite(nowBucket) && lastBucket === nowBucket) {
-      const openBar: GgalTickBar = {
-        timeSec: lastBucket,
-        open: lastBar.open,
-        high: lastBar.high,
-        low: lastBar.low,
-        close: lastBar.close,
-        volume: lastBar.volume,
-      };
-      state.openBar = openBar;
-      state.contributingMinutes.set(lastBar.timeSec, lastBar);
-      this.recomputeFormingSums(state);
-    } else {
-      state.openBar = null;
+    const previousRevisions = new Map([...state.buckets].map(([time, entry]) => [time, entry.revision]));
+    state.buckets.clear();
+    state.checkpoint = emptyCheckpoint(this.avwapAnchors.get(mode + ':' + timeframe) ?? null);
+    state.activeTime = null;
+    state.activeSession = null;
+    const sorted = bars.map(normalizeMinute).filter((bar) => bar !== null).sort((a, b) => a.timeSec - b.timeSec);
+    const seeds = new Map(sorted.map((bar) => [ggalTickBucketStartSec(bar.timeSec, timeframe), bar]));
+    for (const [timeSec, bar] of seeds) {
+      const session = resolveGgalMarketSessionDateKey(bar.timeSec, mode);
+      state.activeTime = timeSec;
+      state.activeSession = session;
+      if (nowBucket - timeSec > LATE_REVISION_WINDOW_SEC[timeframe]) {
+        state.checkpoint = foldBucket(state.checkpoint, bar, minutePv(bar), session, mode);
+        continue;
+      }
+      const entry = newBucket(timeSec, session, bar);
+      Object.assign(entry, aggregateBucket(entry));
+      entry.revision = previousRevisions.get(timeSec) ?? 0;
+      state.buckets.set(timeSec, entry);
     }
+    this.evictBuckets(mode, timeframe, state);
   }
 
-  /**
-   * Lado ADR: consume el minuto consolidado de Massive WS (`liveStates1m` de
-   * `GGAL`, con dedupe T/A/AM). Upsert idempotente por minuto; la vela abierta
-   * del bucket se reconstruye desde los minutos contribuyentes.
-   */
-  public applyAdrMinute(minute: GgalTickMinuteBar): void {
-    if (
-      !Number.isInteger(minute.timeSec) ||
-      minute.timeSec <= 0 ||
-      !finitePositive(minute.open) ||
-      !finitePositive(minute.high) ||
-      !finitePositive(minute.low) ||
-      !finitePositive(minute.close)
-    ) {
-      return;
-    }
-    const volume = Number.isFinite(minute.volume) && minute.volume > 0 ? minute.volume : 0;
-    // Dedupe: el consolidador rebroadcastea el mismo minuto con datos idénticos.
-    const signature = String(minute.close) + '|' + String(volume);
-    const side = this.sides.ADR;
-    if (side.minuteSignatures.get(minute.timeSec) === signature) {
-      return;
-    }
-    if (side.minuteSignatures.size > 720) {
-      side.minuteSignatures.clear();
-    }
-    side.minuteSignatures.set(minute.timeSec, signature);
-    side.lastPrice = minute.close;
-    side.lastTickTimeSec = minute.timeSec;
+  public applyAdrMinute(input: GgalTickMinuteBar): void {
+    const minute = normalizeMinute(input);
+    if (minute === null) return;
     const nowMs = this.nowMsFn();
+    let accepted = false;
+    let outOfWindow = false;
+    const session = resolveGgalMarketSessionDateKey(minute.timeSec, 'ADR');
     for (const timeframe of GGAL_TICK_TIMEFRAMES) {
       const state = this.tfState('ADR', timeframe);
-      const bucket = ggalTickBucketStartSec(minute.timeSec, timeframe);
-      if (!Number.isInteger(bucket)) {
+      const entry = this.bucketForEvent(timeframe, state, minute.timeSec, session);
+      if (entry === null) {
+        outOfWindow = true;
         continue;
       }
-      if (state.openBar !== null && bucket > state.openBar.timeSec) {
-        this.rollOpenBar('ADR', state);
-      }
-      state.contributingMinutes.set(minute.timeSec, { ...minute, volume });
-      this.rebuildOpenBar('ADR', timeframe, state, bucket);
-      this.emitTick('ADR', timeframe, state, nowMs);
+      const old = entry.minutes.get(minute.timeSec);
+      if (old !== undefined && sameBar(old, minute) && Object.is(old.vw, minute.vw)) continue;
+      accepted = true;
+      entry.minutes.set(minute.timeSec, minute);
+      this.applyBucket('ADR', timeframe, state, entry, nowMs);
     }
-    this.deriveCclTick();
+    if (outOfWindow) this.metrics.lateEventsOutOfWindow += 1;
+    if (accepted && this.updateLatest('ADR', minute.close, minute.timeSec, nowMs, null)) this.deriveCclTick(nowMs);
   }
 
-  /** Pieza 41: trade por trade del stream Tradier ADR (sin minutos intermedios). */
-  public applyAdrTick(input: { readonly price: number; readonly size: number; readonly timeSec: number }): void {
-    this.applySideTick('ADR', input.price, input.size, input.timeSec);
-    this.deriveCclTick();
+  public applyAdrTick(input: GgalTradeTick): void {
+    const nowMs = this.nowMsFn();
+    if (this.applySideTick('ADR', input, nowMs)) this.deriveCclTick(nowMs);
   }
 
-  /** Tick del lado ARS (BMB SignalR SendPrices / IOL REST). */
-  public applyArsTick(input: { readonly price: number; readonly size: number; readonly timeSec: number }): void {
-    this.applySideTick('ARS', input.price, input.size, input.timeSec);
-    this.deriveCclTick();
+  public applyArsTick(input: GgalTradeTick): void {
+    const nowMs = this.nowMsFn();
+    if (this.applySideTick('ARS', input, nowMs)) this.deriveCclTick(nowMs);
   }
 
-  private applySideTick(mode: GgalTickMode, price: number, size: number, timeSec: number): void {
-    if (!finitePositive(price) || !Number.isInteger(timeSec) || timeSec <= 0) {
-      return;
-    }
+  private updateLatest(mode: GgalTickMode, price: number, timeSec: number, nowMs: number, order: TradeRecord | null): boolean {
     const side = this.sides[mode];
+    if (side.lastTickTimeSec !== null && timeSec < side.lastTickTimeSec) return false;
+    if (timeSec === side.lastTickTimeSec && side.lastTradeOrder !== null && order !== null &&
+        compareBucketTrades(order, side.lastTradeOrder) < 0) return false;
     side.lastPrice = price;
     side.lastTickTimeSec = timeSec;
-    const volume = Number.isFinite(size) && size > 0 ? size : 0;
-    const nowMs = this.nowMsFn();
+    side.lastReceivedAtSec = Math.floor(nowMs / 1_000);
+    side.lastTradeOrder = order;
+    return true;
+  }
+
+  private applySideTick(mode: GgalTickMode, input: GgalTradeTick, nowMs: number): boolean {
+    const { price, timeSec, size } = input;
+    if (!finitePositive(price) || !Number.isInteger(timeSec) || timeSec <= 0 || timeSec > MAX_PLAUSIBLE_EPOCH_SEC) return false;
+    const side = this.sides[mode];
+    const eventTimeMs = input.eventTimeMs !== undefined && Number.isInteger(input.eventTimeMs) &&
+      Math.floor(input.eventTimeMs / 1_000) === timeSec ? input.eventTimeMs : timeSec * 1_000;
+    const sequence = input.sequence !== undefined && Number.isInteger(input.sequence) && input.sequence > 0
+      ? input.sequence : undefined;
+    const tradeId = input.tradeId?.trim();
+    const rawVolume = Number.isFinite(size) && size >= 0 ? size : 0;
+    const session = resolveGgalMarketSessionDateKey(timeSec, mode);
+    const key = tradeId ? 'id:' + tradeId : sequence !== undefined ? 'seq:' + String(sequence)
+      : this.dedupeWithoutId === 'CANONICAL_EXACT' ? ['fp', eventTimeMs, price, rawVolume].join('|') : null;
+    let accepted = false;
+    let duplicate = false;
+    let outOfWindow = false;
+    let record: TradeRecord | null = null;
     for (const timeframe of GGAL_TICK_TIMEFRAMES) {
       const state = this.tfState(mode, timeframe);
-      const bucket = ggalTickBucketStartSec(timeSec, timeframe);
-      if (!Number.isInteger(bucket)) {
+      const entry = this.bucketForEvent(timeframe, state, timeSec, session);
+      if (entry === null) {
+        outOfWindow = true;
         continue;
       }
-      if (state.openBar !== null && bucket > state.openBar.timeSec) {
-        this.rollOpenBar(mode, state);
-      }
-      const previousBarTime = state.openBar?.timeSec ?? null;
-      const nextBar = applyGgalTickToBar(state.openBar, bucket, price, volume);
-      state.openBar = nextBar;
-      if (nextBar.timeSec !== previousBarTime) {
-        state.formingPv = price * nextBar.volume;
-        state.formingVolume = nextBar.volume;
-      } else {
-        state.formingPv += price * volume;
-        state.formingVolume += volume;
-      }
-      this.emitTick(mode, timeframe, state, nowMs);
-    }
-  }
-
-  private deriveCclTick(): void {
-    const ars = this.sides.ARS.lastPrice;
-    const adr = this.sides.ADR.lastPrice;
-    const ccl = deriveGgalCclPrice(ars ?? Number.NaN, adr ?? Number.NaN, this.ratio);
-    if (!finitePositive(ccl)) {
-      return;
-    }
-    const timeSec = Math.max(this.sides.ARS.lastTickTimeSec ?? 0, this.sides.ADR.lastTickTimeSec ?? 0);
-    if (timeSec <= 0) {
-      return;
-    }
-    this.applySideTick('CCL', ccl, 0, timeSec);
-  }
-
-  /** Reconstrucción idempotente de la vela abierta desde los minutos. */
-  private rebuildOpenBar(
-    _mode: GgalTickMode,
-    timeframe: GgalTickTimeframe,
-    state: TfSideState,
-    bucket: number,
-  ): void {
-    const minutes = [...state.contributingMinutes.values()]
-      .filter((minute) => ggalTickBucketStartSec(minute.timeSec, timeframe) === bucket)
-      .sort((a, b) => a.timeSec - b.timeSec);
-    if (minutes.length === 0) {
-      state.openBar = null;
-      state.formingPv = 0;
-      state.formingVolume = 0;
-      return;
-    }
-    let open = Number.NaN;
-    let high = Number.NaN;
-    let low = Number.NaN;
-    let close = Number.NaN;
-    let volume = 0;
-    for (const minute of minutes) {
-      open = Number.isFinite(open) ? open : minute.open;
-      high = Number.isFinite(high) ? Math.max(high, minute.high) : minute.high;
-      low = Number.isFinite(low) ? Math.min(low, minute.low) : minute.low;
-      close = minute.close;
-      volume += minute.volume;
-    }
-    state.openBar = { timeSec: bucket, open, high, low, close, volume };
-    this.recomputeFormingSums(state);
-  }
-
-  private recomputeFormingSums(state: TfSideState): void {
-    let pv = 0;
-    let volume = 0;
-    for (const minute of state.contributingMinutes.values()) {
-      if (minute.volume <= 0) {
+      if (key !== null && entry.seen.has(key)) {
+        duplicate = true;
         continue;
       }
-      const price =
-        minute.vw !== undefined && Number.isFinite(minute.vw) && minute.vw > 0
-          ? minute.vw
-          : typicalPriceOf(minute);
-      pv += price * minute.volume;
-      volume += minute.volume;
-    }
-    state.formingPv = pv;
-    state.formingVolume = volume;
-  }
-
-  /** Pliegue de la vela abierta al cerrar su bucket (estados persistentes). */
-  private rollOpenBar(mode: GgalTickMode, state: TfSideState): void {
-    const bar = state.openBar;
-    if (bar === null || !finitePositive(bar.close)) {
-      state.openBar = null;
-      state.contributingMinutes = new Map();
-      state.formingPv = 0;
-      state.formingVolume = 0;
-      return;
-    }
-    const dayKey = utcDayKey(bar.timeSec);
-    if (state.closedSessionDayKey !== dayKey) {
-      state.closedSessionPv = 0;
-      state.closedSessionVolume = 0;
-      state.closedSessionDayKey = dayKey;
-    }
-    if (isGgalTickInSession(bar.timeSec, mode) && bar.volume > 0) {
-      const price = state.formingVolume > 0 ? state.formingPv / state.formingVolume : typicalPriceOf(bar);
-      state.closedSessionPv += price * bar.volume;
-      state.closedSessionVolume += bar.volume;
-    }
-    for (const period of [9, 21, 50, 200] as const) {
-      const alpha = EMA_ALPHA[period];
-      const current = state.ema[period].value;
-      state.ema[period].value =
-        current === null || !Number.isFinite(current) ? bar.close : alpha * bar.close + (1 - alpha) * current;
-    }
-    if (state.avwap !== null) {
-      state.avwap = applyAvwapAccumulation(state.avwap, typicalPriceOf(bar), bar.volume);
-    }
-    state.contributingMinutes = new Map();
-    state.formingPv = 0;
-    state.formingVolume = 0;
-    state.openBar = null;
-  }
-
-  private buildIndicatorPoint(mode: GgalTickMode, state: TfSideState, bar: GgalTickBar): GgalTickIndicatorPoint {
-    const price = bar.close;
-    const liveEma = (period: 9 | 21 | 50 | 200): number | null => {
-      const closed = state.ema[period].value;
-      if (closed === null || !Number.isFinite(closed)) {
-        return null;
+      if (record === null) {
+        let volume = rawVolume;
+        if (input.volumeMode === 'CUMULATIVE_SESSION') {
+          volume = 0;
+          const saved = side.cumulative;
+          if (saved === null || session > saved.session) {
+            side.cumulative = { session, lastCumVol: rawVolume, watermarkSec: timeSec };
+          } else if (session === saved.session && timeSec >= saved.watermarkSec) {
+            volume = Math.max(0, rawVolume - saved.lastCumVol);
+            side.cumulative = { session, lastCumVol: Math.max(rawVolume, saved.lastCumVol), watermarkSec: timeSec };
+          }
+        }
+        record = {
+          price, volume, eventTimeMs, arrivalOrder: ++this.arrivalOrder,
+          ...(sequence === undefined ? {} : { sequence }), ...(tradeId ? { tradeId } : {}),
+        };
       }
-      const alpha = EMA_ALPHA[period];
-      const projected = alpha * price + (1 - alpha) * closed;
-      return Number.isFinite(projected) ? projected : null;
-    };
-    const dayKey = utcDayKey(bar.timeSec);
-    let closedPv = state.closedSessionPv;
-    let closedVolume = state.closedSessionVolume;
-    if (state.closedSessionDayKey !== dayKey) {
-      closedPv = 0;
-      closedVolume = 0;
+      if (key !== null) entry.seen.add(key);
+      entry.trades.push(record);
+      this.applyBucket(mode, timeframe, state, entry, nowMs);
+      accepted = true;
     }
-    const totalVolume = closedVolume + state.formingVolume;
-    const sessionVwap =
-      isGgalTickInSession(bar.timeSec, mode) && totalVolume > 0
-        ? (closedPv + state.formingPv) / totalVolume
-        : null;
-    const projectedAvwap =
-      state.avwap !== null
-        ? avwapPointFromState(
-            applyAvwapAccumulation(state.avwap, typicalPriceOf(bar), state.formingVolume),
-          )
-        : { avwap: null, plus1Sigma: null, minus1Sigma: null };
-    return {
-      timeSec: bar.timeSec,
-      ema9: liveEma(9),
-      ema21: liveEma(21),
-      ema50: liveEma(50),
-      ema200: liveEma(200),
-      sessionVwap: Number.isFinite(sessionVwap) ? sessionVwap : null,
-      avwap: projectedAvwap.avwap,
-      avwapPlus1Sigma: projectedAvwap.plus1Sigma,
-      avwapMinus1Sigma: projectedAvwap.minus1Sigma,
-    };
+    if (duplicate) {
+      this.metrics.duplicatesIgnored += 1;
+      if (key?.startsWith('fp|') === true) this.metrics.fallbackFingerprintDedupes += 1;
+    }
+    if (outOfWindow) this.metrics.lateEventsOutOfWindow += 1;
+    return accepted && this.updateLatest(mode, price, timeSec, nowMs, record);
   }
 
-  private emitTick(
-    mode: GgalTickMode,
-    timeframe: GgalTickTimeframe,
-    state: TfSideState,
-    nowMs: number,
-  ): void {
-    const bar = state.openBar;
-    if (bar === null || this.emitFn === null || !finitePositive(bar.close)) {
-      return;
+  private bucketForEvent(timeframe: GgalTickTimeframe, state: TfSideState, timeSec: number, session: string): BucketEntry | null {
+    const time = ggalTickBucketStartSec(timeSec, timeframe);
+    const active = state.activeTime;
+    const existing = state.buckets.get(time);
+    if (state.activeSession !== null && session < state.activeSession) return null;
+    if (active !== null && time < active &&
+        (active - time > LATE_REVISION_WINDOW_SEC[timeframe] || session !== state.activeSession)) return null;
+    if (existing !== undefined && existing.session !== session) {
+      const next = newBucket(time, session);
+      next.revision = existing.revision;
+      return next;
     }
-    if (state.lastEmitAtMs !== null && nowMs - state.lastEmitAtMs < this.minEmitIntervalMs) {
-      return;
+    return existing ?? newBucket(time, session);
+  }
+
+  private deriveCclTick(nowMs: number): void {
+    const { ARS, ADR } = this.sides;
+    const evaluationNowSec = Math.floor(nowMs / 1_000);
+    const { sessionRegime } = classifySessionRegime(evaluationNowSec, this.arHolidays, this.usHolidays);
+    const valuation = evaluateCclContemporaneity({
+      byma: { price: ARS.lastPrice, timeSec: ARS.lastTickTimeSec, receivedAtSec: ARS.lastReceivedAtSec },
+      adr: { price: ADR.lastPrice, timeSec: ADR.lastTickTimeSec, receivedAtSec: ADR.lastReceivedAtSec },
+      evaluationNowSec, marketRegime: sessionRegime, ratio: this.ratio,
+    });
+    this.lastCclValuation = valuation;
+    if (valuation.livePublishable && valuation.valuationTimestamp !== null) {
+      this.applySideTick('CCL', { price: valuation.value, size: 0, timeSec: valuation.valuationTimestamp }, nowMs);
     }
-    state.lastEmitAtMs = nowMs;
+  }
+
+  private evictBuckets(mode: GgalTickMode, timeframe: GgalTickTimeframe, state: TfSideState): void {
+    const active = state.activeTime;
+    if (active === null) return;
+    for (const entry of this.sortedBuckets(state)) {
+      if (state.buckets.size <= MAX_RETAINED_BUCKETS && active - entry.timeSec <= LATE_REVISION_WINDOW_SEC[timeframe]) break;
+      if (entry.bar !== null) state.checkpoint = foldBucket(state.checkpoint, entry.bar, entry.pv, entry.session, mode);
+      state.buckets.delete(entry.timeSec);
+    }
+  }
+
+  private sortedBuckets(state: TfSideState): BucketEntry[] {
+    return [...state.buckets.values()].sort((a, b) => a.timeSec - b.timeSec);
+  }
+
+  private applyBucket(mode: GgalTickMode, timeframe: GgalTickTimeframe, state: TfSideState, entry: BucketEntry, nowMs: number): void {
+    const { bar, pv } = aggregateBucket(entry);
+    if (bar === null) return;
+    const historical = state.activeTime !== null && entry.timeSec < state.activeTime;
+    const changed = !sameBar(entry.bar, bar);
+    entry.bar = bar;
+    entry.pv = pv;
+    if (changed) entry.revision += 1;
+    state.buckets.set(entry.timeSec, entry);
+    if (!historical) {
+      state.activeTime = entry.timeSec;
+      state.activeSession = entry.session;
+    }
+    this.evictBuckets(mode, timeframe, state);
+    if (!changed || this.emitFn === null) return;
+    if (!historical && entry.lastEmitAtMs !== null && nowMs - entry.lastEmitAtMs < this.minEmitIntervalMs) return;
+    entry.lastEmitAtMs = nowMs;
+
+    let before = state.checkpoint;
+    for (const closed of this.sortedBuckets(state)) {
+      if (closed.timeSec >= entry.timeSec) break;
+      if (closed.bar !== null) before = foldBucket(before, closed.bar, closed.pv, closed.session, mode);
+    }
+    const projected = foldBucket(before, bar, pv, entry.session, mode);
+    const avwap = avwapPointFromState(projected.avwap);
     this.emitFn({
-      type: 'ggal_bar_tick',
-      symbol: 'GGAL',
-      mode,
-      timeframe,
-      bar: { ...bar },
-      indicatorsPoint: this.buildIndicatorPoint(mode, state, bar),
+      type: 'ggal_bar_tick', symbol: 'GGAL', mode, timeframe, bar,
       serverTimeSec: Math.floor(nowMs / 1_000),
+      isRevision: historical, updateKind: historical ? 'HISTORICAL_REVISION' : 'ACTIVE',
+      bucketRevision: entry.revision, streamSeq: ++state.streamSeq,
+      resolutionSec: GGAL_TICK_TIMEFRAME_SECONDS[timeframe],
+      ...(mode === 'CCL' && this.lastCclValuation !== null ? { cclMeta: this.lastCclValuation } : {}),
+      indicatorsPoint: {
+        timeSec: bar.timeSec,
+        ema9: before.ema[9] === null ? null : projected.ema[9],
+        ema21: before.ema[21] === null ? null : projected.ema[21],
+        ema50: before.ema[50] === null ? null : projected.ema[50],
+        ema200: before.ema[200] === null ? null : projected.ema[200],
+        sessionVwap: projected.sessionVolume > 0 ? projected.sessionPv / projected.sessionVolume : null,
+        avwap: avwap.avwap, avwapPlus1Sigma: avwap.plus1Sigma, avwapMinus1Sigma: avwap.minus1Sigma,
+      },
     });
   }
 }

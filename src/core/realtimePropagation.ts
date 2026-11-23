@@ -8,6 +8,9 @@
  *  - inputs are never mutated.
  */
 
+import { classifySessionRegime } from './ggal/parityGap.js';
+import { evaluateCclContemporaneity, type CclTemporalValuation } from './temporalFeedIntegrity.js';
+import { GGAL_ADR_RATIO } from './ggal/types.js';
 import { getMarketParts } from './sessions.js';
 import { getCalendarWeekMondayKey } from './resampleWeekly.js';
 
@@ -56,6 +59,7 @@ export interface LiveFxSnapshot {
   readonly mepMedian: number | null;
   readonly cclMedian: number | null;
   readonly cclImplicitGgal: number | null;
+  readonly cclGgalTemporal?: CclTemporalValuation;
   readonly canjePct: number | null;
 }
 
@@ -183,6 +187,7 @@ function adrImpliedRate(
  */
 export function computeLiveFxFromQuotes(
   quotes: readonly PropagationQuote[],
+  evaluationNowSec?: number,
 ): LiveFxSnapshot {
   const index = buildQuoteIndex(quotes);
   const mepValues = MEP_BOND_PAIRS.map((pair) => bondImpliedRate(index, pair.local, pair.foreign)).filter(
@@ -200,9 +205,27 @@ export function computeLiveFxFromQuotes(
   const ggalLocal = index.get(quoteKey('AR', 'GGAL'));
   const ggalForeign = index.get(quoteKey('US', 'GGAL'));
   let cclImplicitGgal: number | null = null;
+  let cclGgalTemporal: CclTemporalValuation | undefined;
   if (ggalLocal !== undefined && ggalForeign !== undefined) {
-    const implied = (ggalLocal.price * 10) / ggalForeign.price;
-    cclImplicitGgal = isFinitePositive(implied) ? implied : null;
+    const bymaTime = ggalLocal.asOfUtcSec;
+    const adrTime = ggalForeign.asOfUtcSec;
+    if (typeof bymaTime === 'number' && Number.isInteger(bymaTime) && bymaTime > 0 &&
+        typeof adrTime === 'number' && Number.isInteger(adrTime) && adrTime > 0) {
+      const now = evaluationNowSec ?? Math.max(bymaTime, adrTime);
+      cclGgalTemporal = evaluateCclContemporaneity({
+        byma: { price: ggalLocal.price, timeSec: bymaTime },
+        adr: { price: ggalForeign.price, timeSec: adrTime },
+        evaluationNowSec: now,
+        marketRegime: classifySessionRegime(now).sessionRegime,
+      });
+      // La matriz conserva referencias de cierre. Un par desalineado queda sin CCL.
+      if (cclGgalTemporal.livePublishable || cclGgalTemporal.cclQuality === 'EOD_CLOSE_REF') {
+        cclImplicitGgal = cclGgalTemporal.value;
+      }
+    } else {
+      const implied = (ggalLocal.price * GGAL_ADR_RATIO) / ggalForeign.price;
+      cclImplicitGgal = isFinitePositive(implied) ? implied : null;
+    }
   }
 
   let canjePct: number | null = null;
@@ -215,6 +238,7 @@ export function computeLiveFxFromQuotes(
     mepMedian,
     cclMedian,
     cclImplicitGgal,
+    ...(cclGgalTemporal === undefined ? {} : { cclGgalTemporal }),
     canjePct,
   };
 }

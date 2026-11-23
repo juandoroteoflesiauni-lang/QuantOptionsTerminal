@@ -22,6 +22,8 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { AlertTriangle, Layers, RefreshCw } from 'lucide-react';
+import { classifySessionRegime } from '../../../../src/core/ggal/parityGap';
+import { evaluateCclContemporaneity, MAX_PLAUSIBLE_EPOCH_SEC } from '../../../../src/core/temporalFeedIntegrity';
 import { projectLiveEma } from '../../../../src/core/ema';
 import {
   appendLiveTapeTick,
@@ -62,6 +64,7 @@ import {
   useLivePriceFlash,
   useMarketStreamMeta,
   type MarketLiveQuote,
+  type GgalBarTickEventDto,
 } from '../../api/useMarketLiveStream';
 
 export interface GgalDualChartViewProps {
@@ -1170,6 +1173,7 @@ export function GgalDualChartView({
 }: GgalDualChartViewProps) {
   const lastBarRef = useRef<LiveChartBar | null>(null);
   const closedBarsRef = useRef<readonly LiveChartBar[]>([]);
+  const appliedBucketRevisionRef = useRef(new Map<number, number>());
   const emaBaselinesRef = useRef<{ 9: number; 21: number; 50: number; 200: number } | null>(null);
   const emaEndRef = useRef<{ 9: number; 21: number; 50: number; 200: number } | null>(null);
   const emaSeriesRefs = useRef<Partial<Record<9 | 21 | 50 | 200, ISeriesApi<'Line'>>>>({});
@@ -1661,6 +1665,7 @@ export function GgalDualChartView({
       }
       lastFitKeyRef.current = null;
       lastBarRef.current = null;
+      appliedBucketRevisionRef.current.clear();
       closedBarsRef.current = [];
       emaBaselinesRef.current = null;
       emaEndRef.current = null;
@@ -1698,6 +1703,7 @@ export function GgalDualChartView({
 
     const lastBar = bars[bars.length - 1];
     lastBarRef.current = lastBar ?? null;
+    appliedBucketRevisionRef.current.clear();
     closedBarsRef.current = bars.slice(0, Math.max(0, bars.length - 1));
     emaBaselinesRef.current = {
       9: safePayload.ema9 !== undefined && safePayload.ema9.length > 1 ? (safePayload.ema9[safePayload.ema9.length - 2]?.value ?? Number.NaN) : Number.NaN,
@@ -1844,14 +1850,15 @@ export function GgalDualChartView({
     }
   }, [safePayload, levelVisibility]);
 
-  // 5) Bus imperativo 60 FPS en rAF: coalescing de ticks WS/quotes sin setState ni setData().
+  // 5) Bus imperativo en rAF. Las revisiones se aplican al historial con el rango visible guardado.
   useEffect(() => {
     const mode = coordMode === 'USD_ADR_NASDAQ' ? 'ADR' : coordMode === 'ARS_BYMA' ? 'ARS' : 'CCL';
     let latestArQuote: MarketLiveQuote | null = null;
     let latestUsQuote: MarketLiveQuote | null = null;
     let prevActiveQuote: MarketLiveQuote | null = null;
     let pendingQuoteDirty = false;
-    let pendingBarTick: Parameters<Parameters<typeof subscribeGgalBarTick>[0]>[0] | null = null;
+    const pendingTicksByTime = new Map<number, GgalBarTickEventDto>();
+    const streamTimeframe = timeframe === '1H' ? '1h' : timeframe === '4H' ? '4h' : timeframe;
 
     const updateLine = (series: ISeriesApi<'Line'> | null | undefined, value: number | null, timeSec: number): void => {
       if (series === null || series === undefined || value === null || !Number.isFinite(value)) return;
@@ -1860,59 +1867,92 @@ export function GgalDualChartView({
 
     const flushFrame = (): void => {
       tickRafIdRef.current = null;
-      const barTick = pendingBarTick;
-      pendingBarTick = null;
-      if (barTick !== null) {
+      const barTicks = [...pendingTicksByTime.values()].sort((a, b) => a.bar.timeSec - b.bar.timeSec);
+      pendingTicksByTime.clear();
+      let historicalBarsChanged = false;
+      for (const barTick of barTicks) {
         const b = barTick.bar;
+        if (!Number.isInteger(b.timeSec) || b.timeSec <= 0 ||
+            ![b.open, b.high, b.low, b.close, b.volume].every(Number.isFinite)) continue;
+        const revisions = appliedBucketRevisionRef.current;
+        const revision = barTick.bucketRevision;
+        if (revision !== undefined && revision <= (revisions.get(b.timeSec) ?? 0)) continue;
         const currentLast = lastBarRef.current;
-        if (
-          Number.isFinite(b.close) &&
-          Number.isFinite(b.timeSec) &&
-          b.timeSec > 0 &&
-          (currentLast === null || b.timeSec >= currentLast.timeSec)
-        ) {
-          if (currentLast !== null && b.timeSec > currentLast.timeSec) {
-            closedBarsRef.current = [...closedBarsRef.current, currentLast];
-            if (emaEndRef.current !== null) {
-              emaBaselinesRef.current = { ...emaEndRef.current };
-            }
-          }
-          lastBarRef.current = {
-            timeSec: b.timeSec,
-            open: b.open,
-            high: b.high,
-            low: b.low,
-            close: b.close,
-            volume: b.volume,
-          };
-          candleSeriesRef.current?.update({
-            time: b.timeSec as UTCTimestamp,
-            open: b.open,
-            high: b.high,
-            low: b.low,
-            close: b.close,
-          });
-          volumeSeriesRef.current?.update({
-            time: b.timeSec as UTCTimestamp,
-            value: b.volume,
-            color: b.close >= b.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
-          });
-          const pt = barTick.indicatorsPoint;
-          updateLine(emaSeriesRefs.current[9], pt.ema9, pt.timeSec);
-          updateLine(emaSeriesRefs.current[21], pt.ema21, pt.timeSec);
-          updateLine(emaSeriesRefs.current[50], pt.ema50, pt.timeSec);
-          updateLine(emaSeriesRefs.current[200], pt.ema200, pt.timeSec);
-          updateLine(vwapSeriesRef.current, pt.sessionVwap, pt.timeSec);
-          updateLine(avwapSeriesRef.current, pt.avwap, pt.timeSec);
-          updateLine(avwapPlus1SeriesRef.current, pt.avwapPlus1Sigma, pt.timeSec);
-          updateLine(avwapMinus1SeriesRef.current, pt.avwapMinus1Sigma, pt.timeSec);
+        if (currentLast !== null && b.timeSec < currentLast.timeSec) {
+          if (barTick.isRevision !== true && barTick.updateKind !== 'HISTORICAL_REVISION') continue;
+          if (revision !== undefined) revisions.set(b.timeSec, revision);
+          closedBarsRef.current = [...closedBarsRef.current.filter((bar) => bar.timeSec !== b.timeSec), b]
+            .sort((a, b) => a.timeSec - b.timeSec);
+          historicalBarsChanged = true;
+          continue;
+        }
+        if (revision !== undefined) revisions.set(b.timeSec, revision);
+        if (currentLast !== null && b.timeSec > currentLast.timeSec) {
+          closedBarsRef.current = [...closedBarsRef.current, currentLast];
           if (emaEndRef.current !== null) {
-            emaEndRef.current = {
-              9: pt.ema9 ?? emaEndRef.current[9],
-              21: pt.ema21 ?? emaEndRef.current[21],
-              50: pt.ema50 ?? emaEndRef.current[50],
-              200: pt.ema200 ?? emaEndRef.current[200],
-            };
+            emaBaselinesRef.current = { ...emaEndRef.current };
+          }
+        }
+        lastBarRef.current = {
+          timeSec: b.timeSec,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+          volume: b.volume,
+        };
+        candleSeriesRef.current?.update({
+          time: b.timeSec as UTCTimestamp,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        });
+        volumeSeriesRef.current?.update({
+          time: b.timeSec as UTCTimestamp,
+          value: b.volume,
+          color: b.close >= b.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
+        });
+        const pt = barTick.indicatorsPoint;
+        updateLine(emaSeriesRefs.current[9], pt.ema9, pt.timeSec);
+        updateLine(emaSeriesRefs.current[21], pt.ema21, pt.timeSec);
+        updateLine(emaSeriesRefs.current[50], pt.ema50, pt.timeSec);
+        updateLine(emaSeriesRefs.current[200], pt.ema200, pt.timeSec);
+        updateLine(vwapSeriesRef.current, pt.sessionVwap, pt.timeSec);
+        updateLine(avwapSeriesRef.current, pt.avwap, pt.timeSec);
+        updateLine(avwapPlus1SeriesRef.current, pt.avwapPlus1Sigma, pt.timeSec);
+        updateLine(avwapMinus1SeriesRef.current, pt.avwapMinus1Sigma, pt.timeSec);
+        if (emaEndRef.current !== null) {
+          emaEndRef.current = {
+            9: pt.ema9 ?? emaEndRef.current[9],
+            21: pt.ema21 ?? emaEndRef.current[21],
+            50: pt.ema50 ?? emaEndRef.current[50],
+            200: pt.ema200 ?? emaEndRef.current[200],
+          };
+        }
+      }
+      if (historicalBarsChanged) {
+        const chart = mainChartRef.current;
+        const currentLast = lastBarRef.current;
+        if (chart !== null && currentLast !== null) {
+          const scale = chart.timeScale();
+          const visibleRange = scale.getVisibleLogicalRange();
+          const subScale = subChartRef.current?.timeScale();
+          const subVisibleRange = subScale?.getVisibleLogicalRange();
+          const bars = [...closedBarsRef.current, currentLast];
+          isSyncingRef.current = true;
+          try {
+            candleSeriesRef.current?.setData(bars.map((bar) => ({
+              time: bar.timeSec as UTCTimestamp, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+            })));
+            volumeSeriesRef.current?.setData(bars.map((bar) => ({
+              time: bar.timeSec as UTCTimestamp, value: bar.volume,
+              color: bar.close >= bar.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
+            })));
+            if (visibleRange !== null) scale.setVisibleLogicalRange(visibleRange);
+            if (subVisibleRange != null) subScale?.setVisibleLogicalRange(subVisibleRange);
+          } finally {
+            isSyncingRef.current = false;
           }
         }
       }
@@ -1922,15 +1962,25 @@ export function GgalDualChartView({
       const activeQuote = coordMode === 'USD_ADR_NASDAQ' ? latestUsQuote : latestArQuote;
       const previousQuote = prevActiveQuote;
       prevActiveQuote = activeQuote;
-      const activePrice =
-        coordMode === 'ARS_BYMA'
-          ? latestArQuote?.price ?? null
-          : coordMode === 'USD_ADR_NASDAQ'
-            ? latestUsQuote?.price ?? null
-            : latestArQuote !== null && latestUsQuote !== null && latestUsQuote.price > 0
-              ? (latestArQuote.price * 10) / latestUsQuote.price
-              : null;
-      const activeTimeSec = activeQuote?.asOfUtcSec ?? null;
+      let activePrice = activeQuote?.price ?? null;
+      let activeTimeSec = activeQuote?.asOfUtcSec ?? null;
+      if (coordMode === 'RATIO_CCL') {
+        const arTime = latestArQuote?.asOfUtcSec;
+        const usTime = latestUsQuote?.asOfUtcSec;
+        if (typeof arTime !== 'number' || typeof usTime !== 'number' || !Number.isInteger(arTime) ||
+            !Number.isInteger(usTime) || arTime <= 0 || usTime <= 0 ||
+            arTime > MAX_PLAUSIBLE_EPOCH_SEC || usTime > MAX_PLAUSIBLE_EPOCH_SEC) return;
+        const evaluationNowSec = Math.floor(Date.now() / 1_000);
+        const valuation = evaluateCclContemporaneity({
+          byma: { price: latestArQuote?.price ?? Number.NaN, timeSec: arTime },
+          adr: { price: latestUsQuote?.price ?? Number.NaN, timeSec: usTime },
+          evaluationNowSec,
+          marketRegime: classifySessionRegime(evaluationNowSec).sessionRegime,
+        });
+        if (!valuation.livePublishable) return;
+        activePrice = valuation.value;
+        activeTimeSec = valuation.valuationTimestamp;
+      }
       const bar = lastBarRef.current;
       if (
         activePrice === null ||
@@ -1942,7 +1992,7 @@ export function GgalDualChartView({
         return;
       }
       const volumeDelta =
-        activeQuote !== null &&
+        coordMode !== 'RATIO_CCL' && activeQuote !== null &&
         previousQuote !== null &&
         activeQuote.volume !== null &&
         previousQuote.volume !== null
@@ -1953,7 +2003,8 @@ export function GgalDualChartView({
         { price: activePrice, timeSec: activeTimeSec, volumeDelta },
         resolveBarSeconds(timeframe),
       );
-      if (projectedBar === null || projectedBar.timeSec < bar.timeSec) {
+      if (projectedBar === null || projectedBar.timeSec < bar.timeSec ||
+          appliedBucketRevisionRef.current.has(projectedBar.timeSec)) {
         return;
       }
       if (projectedBar.timeSec > bar.timeSec) {
@@ -2034,8 +2085,10 @@ export function GgalDualChartView({
     };
 
     const unsubBar = subscribeGgalBarTick((event) => {
-      if (event.mode !== mode || event.timeframe !== timeframe) return;
-      pendingBarTick = event;
+      if (event.mode !== mode || event.timeframe !== streamTimeframe) return;
+      const existing = pendingTicksByTime.get(event.bar.timeSec);
+      if ((existing?.bucketRevision ?? 0) > (event.bucketRevision ?? 0)) return;
+      pendingTicksByTime.set(event.bar.timeSec, event);
       scheduleFlush();
     });
 
@@ -2337,7 +2390,7 @@ export function GgalDualChartView({
       <div className="relative w-full overflow-hidden rounded-lg border border-[#1C1C24] bg-[#0A0A0D]">
         <div
           ref={crosshairLegendRef}
-          className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-[#0A0A0D]/85 px-2 py-1 font-mono text-[10px] text-[#E5E7EB]"
+          className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-[#0A0A0D]/85 px-2 py-1 font-mono text-[10px] tabular-nums text-[#E5E7EB]"
         />
         <div ref={mainContainerRef} className="h-[640px] w-full" />
       </div>

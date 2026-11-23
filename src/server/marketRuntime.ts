@@ -231,6 +231,8 @@ import {
 } from '../data/liveBarConsolidator.js';
 import {
   GgalTickStreamEngine,
+  type GgalBarTickEvent,
+  type GgalTradeTick,
 } from './ggalTickStream.js';
 import {
   extractOptionUnderlying,
@@ -1184,34 +1186,7 @@ export type RuntimeWsBroadcast =
       readonly message: string;
       readonly time: number;
     }
-  | {
-      /** Pieza 39: tick-by-tick GGAL (ADR/ARS/CCL) con vela abierta mutada e
-       * indicadores proyectados (EMA 9/21/50/200, VWAP sesión, AVWAP anclado). */
-      readonly type: 'ggal_bar_tick';
-      readonly symbol: 'GGAL';
-      readonly mode: 'ADR' | 'ARS' | 'CCL';
-      readonly timeframe: '1m' | '5m' | '15m' | '1h' | '4h' | '1D';
-      readonly bar: {
-        readonly timeSec: number;
-        readonly open: number;
-        readonly high: number;
-        readonly low: number;
-        readonly close: number;
-        readonly volume: number;
-      };
-      readonly indicatorsPoint: {
-        readonly timeSec: number;
-        readonly ema9: number | null;
-        readonly ema21: number | null;
-        readonly ema50: number | null;
-        readonly ema200: number | null;
-        readonly sessionVwap: number | null;
-        readonly avwap: number | null;
-        readonly avwapPlus1Sigma: number | null;
-        readonly avwapMinus1Sigma: number | null;
-      };
-      readonly serverTimeSec: number;
-    };
+  | GgalBarTickEvent;
 
 export interface MassiveWsClientLike {
   connect(): Promise<void>;
@@ -2706,20 +2681,14 @@ function resolveRthCloseSpot(
   return Number.NaN;
 }
 
-function resolveQuoteMid(contract: OptionSnapshotContract): number {
+export function resolveQuoteMid(contract: OptionSnapshotContract): number {
   const { bid, ask, midpoint } = contract.lastQuote;
-  if (Number.isFinite(midpoint) && midpoint > 0) {
-    if (Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid) {
-      const tol = 1e-9 * Math.max(1, midpoint);
-      if (midpoint >= bid - tol && midpoint <= ask + tol) {
-        return midpoint;
-      }
-    } else {
-      return midpoint;
-    }
-  }
-  if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask >= bid) {
-    return 0.5 * (bid + ask);
+  if (Number.isFinite(bid) && Number.isFinite(ask)) {
+    if (bid > ask || ask <= 0 || bid < 0) return Number.NaN;
+    if (bid > 0) return (bid + ask) / 2;
+    if (Number.isFinite(midpoint) && midpoint > 0 && midpoint <= ask) return midpoint;
+  } else if (Number.isFinite(midpoint) && midpoint > 0) {
+    return midpoint;
   }
   const lastPx = contract.lastTrade.price;
   if (Number.isFinite(lastPx) && lastPx > 0) {
@@ -5358,7 +5327,7 @@ export class MarketRuntime {
 
   /** Pieza 39: fuente de ticks ARS (BMB SignalR SendPrices / IOL REST). */
   public attachGgalArsTickSource(
-    source: { readonly setGgalArsTickListener: (listener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null) => void } | null,
+    source: { readonly setGgalArsTickListener: (listener: ((tick: GgalTradeTick) => void) | null) => void } | null,
   ): void {
     if (source === null) {
       return;
@@ -5722,7 +5691,7 @@ export class MarketRuntime {
       if (isExtendedHoursPhase(phase) && !tradierLiveConnected && priceChanged) {
         const size = quote.tradeSize ?? 0;
         this.ingestLiveTradeInto1m(quote.symbol, quote.price, size, extTimeSec);
-        if (quote.symbol === 'GGAL' && this.massiveStocksStream === null) {
+        if (quote.symbol === 'GGAL' && this.massiveStocksStream === null && quote.asOfUtcSec !== null) {
           this.ggalTickEngine.applyAdrTick({
             price: quote.price,
             size,
@@ -6005,11 +5974,21 @@ export class MarketRuntime {
         ? 0.5 * (tick.bid + tick.ask)
         : Number.NaN;
     const price = Number.isFinite(tick.price) && tick.price > 0 ? tick.price : bidAskMid;
-    const asOfUtcSec = Number.isFinite(tick.asOfUtcSec) ? tick.asOfUtcSec : null;
-    if (existing !== null && asOfUtcSec !== null && existing.asOfUtcSec !== null && asOfUtcSec < existing.asOfUtcSec) {
-      return;
+    const tickTimeSec = tick.asOfUtcSec;
+    if (!Number.isInteger(tickTimeSec) || tickTimeSec <= 0) return;
+    const isTradeLike = tick.event === 'trade' || tick.event === 'timesale';
+    const size = Number.isFinite(tick.size) && tick.size >= 0 ? tick.size : 0;
+    if (isTradeLike && symbol === 'GGAL' && this.massiveStocksStream === null &&
+        Number.isFinite(price) && price > 0) {
+      this.ggalTickEngine.applyAdrTick({
+        price,
+        size,
+        timeSec: tickTimeSec,
+        ...(tick.sequence === undefined ? {} : { sequence: tick.sequence }),
+        ...(tick.eventTimeMs === undefined ? {} : { eventTimeMs: tick.eventTimeMs }),
+      });
     }
-    const tickTimeSec = asOfUtcSec ?? Math.floor(this.nowMsFn() / 1_000);
+    if (existing?.asOfUtcSec != null && tickTimeSec < existing.asOfUtcSec) return;
     const phase = tick.sessionPhase ?? getUsEquitySessionPhase(tickTimeSec);
     if (!Number.isFinite(price) || price <= 0) {
       if (tick.event === 'quote' && Number.isFinite(tick.bid) && Number.isFinite(tick.ask)) {
@@ -6065,17 +6044,8 @@ export class MarketRuntime {
       sessionPhase: phase,
     };
     this.tradierQuoteTicks.set(symbol, quote);
-    const isTradeLike = tick.event === 'trade' || tick.event === 'timesale';
     if (isTradeLike) {
-      const size = Number.isFinite(tick.size) && tick.size >= 0 ? tick.size : 0;
       this.ingestLiveTradeInto1m(symbol, price, size, tickTimeSec);
-      if (symbol === 'GGAL' && this.massiveStocksStream === null) {
-        this.ggalTickEngine.applyAdrTick({
-          price,
-          size,
-          timeSec: tickTimeSec,
-        });
-      }
       this.emitBroadcast({
         type: 'trade',
         cluster: 'stocks',
@@ -7913,16 +7883,17 @@ export class MarketRuntime {
     readonly contracts: readonly OptionSnapshotContract[];
     readonly summary: TradierChainOverlaySummary | null;
     readonly quoteSubstitutedTickers: ReadonlySet<string>;
+    readonly verifiedQuoteTimeTickers: ReadonlySet<string>;
   }> {
     if (!this.tradierConfig.configured || this.isTradierAuthInvalid() || isIndex || contracts.length === 0) {
-      return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>() };
+      return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>(), verifiedQuoteTimeTickers: new Set<string>() };
     }
     const expirations = [...new Set(contracts.map((c) => c.expirationDate))]
       .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
       .sort()
       .slice(0, TRADIER_MAX_CHAIN_EXPIRIES);
     if (expirations.length === 0) {
-      return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>() };
+      return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>(), verifiedQuoteTimeTickers: new Set<string>() };
     }
 
     const chainParts: TradierOptionContractNormalized[] = [];
@@ -7937,7 +7908,7 @@ export class MarketRuntime {
         }
       } catch (err: unknown) {
         if (err instanceof TradierAuthInvalidError) {
-          return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>() };
+          return { contracts, summary: null, quoteSubstitutedTickers: new Set<string>(), verifiedQuoteTimeTickers: new Set<string>() };
         }
         errors.push(
           `Tradier chain ${expiration}: ${redactSecrets(extractErrorMessage(err, 'tradier chain failed'), this.secrets)}`,
@@ -7969,6 +7940,7 @@ export class MarketRuntime {
           lastError,
         },
         quoteSubstitutedTickers: new Set<string>(),
+        verifiedQuoteTimeTickers: new Set<string>(),
       };
     }
     warnings.push(...errors);
@@ -7982,6 +7954,7 @@ export class MarketRuntime {
         lastError,
       },
       quoteSubstitutedTickers: overlay.quoteSubstitutedTickers,
+      verifiedQuoteTimeTickers: overlay.verifiedQuoteTimeTickers,
     };
   }
 
@@ -8757,7 +8730,7 @@ export class MarketRuntime {
         contracts.map((c) => {
           const substituted = tradierOverlay.quoteSubstitutedTickers.has(c.ticker);
           return {
-            updatedAtSec: substituted ? null : c.lastQuote.updatedAt,
+            updatedAtSec: substituted && !tradierOverlay.verifiedQuoteTimeTickers.has(c.ticker) ? null : c.lastQuote.updatedAt,
             fromOverlay: substituted,
             eodReference: eodQuotesRes.eodFixedTickers.has(c.ticker),
           };
@@ -9907,13 +9880,11 @@ export class MarketRuntime {
         ? {
             usOptionsFeed: {
               provider:
-                tradierOverlay.summary.tradierContracts > 0 &&
-                tradierOverlay.summary.matchedByOcc + tradierOverlay.summary.matchedByStrikeType > 0
+                tradierOverlay.quoteSubstitutedTickers.size > 0
                   ? ('TRADIER' as const)
                   : ('MASSIVE' as const),
               badge:
-                tradierOverlay.summary.tradierContracts > 0 &&
-                tradierOverlay.summary.matchedByOcc + tradierOverlay.summary.matchedByStrikeType > 0
+                tradierOverlay.quoteSubstitutedTickers.size > 0
                   ? ('TRADIER LIVE + ORATS' as const)
                   : ('MASSIVE + ORATS' as const),
               tradierOverlay: tradierOverlay.summary,
@@ -10493,13 +10464,11 @@ export class MarketRuntime {
         ? {
             usOptionsFeed: {
               provider:
-                tradierOverlay.summary.tradierContracts > 0 &&
-                tradierOverlay.summary.matchedByOcc + tradierOverlay.summary.matchedByStrikeType > 0
+                tradierOverlay.quoteSubstitutedTickers.size > 0
                   ? ('TRADIER' as const)
                   : ('MASSIVE' as const),
               badge:
-                tradierOverlay.summary.tradierContracts > 0 &&
-                tradierOverlay.summary.matchedByOcc + tradierOverlay.summary.matchedByStrikeType > 0
+                tradierOverlay.quoteSubstitutedTickers.size > 0
                   ? ('TRADIER LIVE + ORATS' as const)
                   : ('MASSIVE + ORATS' as const),
               tradierOverlay: tradierOverlay.summary,

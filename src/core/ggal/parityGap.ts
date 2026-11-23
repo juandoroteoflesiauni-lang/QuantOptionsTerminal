@@ -6,6 +6,7 @@
  * Funciones 100 % puras: cero red, cero E/S, cero UI y cero mutación de argumentos.
  */
 
+import { evaluateCclContemporaneity, type CclTemporalValuation } from '../temporalFeedIntegrity.js';
 import { normCdf } from '../options/math.js';
 import { greeksBsm, priceBsm } from '../options/blackScholes.js';
 import {
@@ -185,6 +186,7 @@ export interface ParityGapInput {
 }
 
 export interface ParityGapOutput {
+  readonly cclTemporal: CclTemporalValuation;
   readonly timestampUtc: string;
   readonly asOfUtcSec: number;
   readonly sessionRegime: SessionRegime;
@@ -735,6 +737,16 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
   const byma24hMid = quoteMid(input.byma24h);
   const bymaCiMid = input.bymaCi !== undefined ? quoteMid(input.bymaCi) : Number.NaN;
   const adrMid = quoteMid(input.adr);
+  const cclTemporal = evaluateCclContemporaneity({
+    byma: { price: byma24hMid, timeSec: input.data912TimestampSec },
+    adr: { price: adrMid, timeSec: input.massiveTimestampSec },
+    evaluationNowSec: input.asOfUtcSec,
+    marketRegime: session.sessionRegime,
+    isEodMode,
+    ...(input.maxSyncSkewSec === undefined ? {} : { maxAllowedSkewSec: input.maxSyncSkewSec }),
+    ...(input.maxData912StalenessSec === undefined && input.maxMassiveStalenessSec === undefined
+      ? {} : { maxLegAgeSec: Math.min(input.maxData912StalenessSec ?? Infinity, input.maxMassiveStalenessSec ?? Infinity) }),
+  });
 
   let cclGgal24h = Number.NaN;
   let cclGgalCiTo24h = Number.NaN;
@@ -1004,6 +1016,7 @@ export function evaluateParityGap(input: ParityGapInput): ParityGapOutput {
       netEdgeAfterCostsBps,
       closeProbability5d,
     },
+    cclTemporal: { ...cclTemporal, value: cclTemporal.cclQuality === 'MISSING_LEG' ? Number.NaN : cclGgal24h },
     ouCalibration,
     signal,
     preOpenOptionRepricing,

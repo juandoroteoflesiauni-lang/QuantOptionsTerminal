@@ -1,3 +1,4 @@
+import type { CclTemporalValuation } from '../../../src/core/temporalFeedIntegrity.js';
 import type { AmericanIvStatus, MarginModelBasis, MarginRiskStatus } from '../../../src/core/options/ivContract.js';
 import type { CanonicalOptionIdentity } from '../../../src/core/ggal/anexoBIdentity.js';
 import type { DealerSignBasis, GexComputationStatus, OiQualityTier } from '../../../src/core/options/oiProvenance.js';
@@ -56,6 +57,7 @@ export interface GgalTelemetryHeaderDto {
 }
 
 export interface GgalParityGapOutputDto {
+  readonly cclTemporal?: Omit<CclTemporalValuation, 'value'> & { readonly value: number | null };
   readonly timestampUtc: string;
   readonly asOfUtcSec: number;
   readonly sessionRegime: GgalSessionRegime;

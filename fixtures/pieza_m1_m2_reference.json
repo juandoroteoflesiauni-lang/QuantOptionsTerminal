@@ -1,0 +1,744 @@
+{
+  "ccl": [
+    {
+      "cclQuality": "CONTEMPORANEOUS",
+      "input": {
+        "adr": {
+          "price": 50,
+          "timeSec": 1794927585
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794927600
+        },
+        "evaluationNowSec": 1794927600,
+        "isEodMode": false,
+        "marketRegime": "OVERLAP"
+      },
+      "legSkewSec": 15,
+      "livePublishable": true,
+      "rejectReason": null,
+      "valuationTimestamp": 1794927585,
+      "value": "1200"
+    },
+    {
+      "cclQuality": "SKEW_DEGRADED",
+      "input": {
+        "adr": {
+          "price": 50,
+          "timeSec": 1794927600
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794858600
+        },
+        "evaluationNowSec": 1794927600,
+        "isEodMode": false,
+        "marketRegime": "OVERLAP"
+      },
+      "legSkewSec": 69000,
+      "livePublishable": false,
+      "rejectReason": "CROSS_SESSION_DAY_MISMATCH",
+      "valuationTimestamp": null,
+      "value": "1200"
+    },
+    {
+      "cclQuality": "SKEW_DEGRADED",
+      "input": {
+        "adr": {
+          "price": 50,
+          "timeSec": 1794947400
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794947400
+        },
+        "evaluationNowSec": 1794947400,
+        "isEodMode": false,
+        "marketRegime": "NASDAQ_SOLO_17_18"
+      },
+      "legSkewSec": 0,
+      "livePublishable": false,
+      "rejectReason": "NON_OVERLAP_REGIME",
+      "valuationTimestamp": null,
+      "value": "1200"
+    },
+    {
+      "cclQuality": "STALE_LEG",
+      "input": {
+        "adr": {
+          "price": 50,
+          "timeSec": 1794927295
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794927300
+        },
+        "evaluationNowSec": 1794927600,
+        "isEodMode": false,
+        "marketRegime": "OVERLAP"
+      },
+      "legSkewSec": 5,
+      "livePublishable": false,
+      "rejectReason": "BYMA_LEG_STALE",
+      "valuationTimestamp": null,
+      "value": "1200"
+    },
+    {
+      "cclQuality": "EOD_CLOSE_REF",
+      "input": {
+        "adr": {
+          "price": 50,
+          "timeSec": 1794927585
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794927600
+        },
+        "evaluationNowSec": 1795273200,
+        "isEodMode": true,
+        "marketRegime": "CLOSED"
+      },
+      "legSkewSec": 15,
+      "livePublishable": false,
+      "rejectReason": null,
+      "valuationTimestamp": 1794927585,
+      "value": "1200"
+    },
+    {
+      "cclQuality": "SKEW_DEGRADED",
+      "input": {
+        "adr": {
+          "price": 50,
+          "timeSec": 1794927600
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794858600
+        },
+        "evaluationNowSec": 1795273200,
+        "isEodMode": true,
+        "marketRegime": "CLOSED"
+      },
+      "legSkewSec": 69000,
+      "livePublishable": false,
+      "rejectReason": "CROSS_SESSION_DAY_MISMATCH",
+      "valuationTimestamp": null,
+      "value": "1200"
+    },
+    {
+      "cclQuality": "MISSING_LEG",
+      "input": {
+        "adr": {
+          "price": 0,
+          "timeSec": null
+        },
+        "byma": {
+          "price": 6000,
+          "timeSec": 1794927600
+        },
+        "evaluationNowSec": 1794927600,
+        "isEodMode": false,
+        "marketRegime": "OVERLAP"
+      },
+      "legSkewSec": null,
+      "livePublishable": false,
+      "rejectReason": "MISSING_ADR_LEG",
+      "valuationTimestamp": null,
+      "value": null
+    }
+  ],
+  "cumulative": {
+    "expectedVolume": 600,
+    "ticks": [
+      {
+        "price": 50,
+        "size": 10000,
+        "timeSec": 1794927600,
+        "volumeMode": "CUMULATIVE_SESSION"
+      },
+      {
+        "price": 50,
+        "size": 10250,
+        "timeSec": 1794927601,
+        "volumeMode": "CUMULATIVE_SESSION"
+      },
+      {
+        "price": 50,
+        "size": 10250,
+        "timeSec": 1794927602,
+        "volumeMode": "CUMULATIVE_SESSION"
+      },
+      {
+        "price": 50,
+        "size": 10100,
+        "timeSec": 1794927603,
+        "volumeMode": "CUMULATIVE_SESSION"
+      },
+      {
+        "price": 50,
+        "size": 10600,
+        "timeSec": 1794927604,
+        "volumeMode": "CUMULATIVE_SESSION"
+      }
+    ]
+  },
+  "duplicates": {
+    "expectedVolume": 9,
+    "ticks": [
+      {
+        "price": 50,
+        "size": 2,
+        "timeSec": 1794927600,
+        "tradeId": "GGAL1"
+      },
+      {
+        "price": 51,
+        "sequence": 2,
+        "size": 3,
+        "timeSec": 1794927601
+      },
+      {
+        "price": 52,
+        "size": 4,
+        "timeSec": 1794927602
+      }
+    ]
+  },
+  "intrabucket": [
+    {
+      "expected": {
+        "close": 52,
+        "high": 55,
+        "low": 48,
+        "open": 48,
+        "timeSec": 1794927600,
+        "volume": 10
+      },
+      "ticks": [
+        {
+          "price": 52,
+          "size": 2,
+          "timeSec": 1794927640
+        },
+        {
+          "price": 48,
+          "size": 5,
+          "timeSec": 1794927610
+        },
+        {
+          "price": 55,
+          "size": 3,
+          "timeSec": 1794927625
+        }
+      ]
+    },
+    {
+      "expected": {
+        "close": 53,
+        "high": 53,
+        "low": 51,
+        "open": 51,
+        "timeSec": 1794927600,
+        "volume": 3
+      },
+      "ticks": [
+        {
+          "price": 53,
+          "sequence": 20,
+          "size": 2,
+          "timeSec": 1794927625
+        },
+        {
+          "price": 51,
+          "sequence": 10,
+          "size": 1,
+          "timeSec": 1794927625
+        }
+      ]
+    }
+  ],
+  "late": {
+    "active": {
+      "close": 50,
+      "high": 50,
+      "low": 50,
+      "open": 50,
+      "timeSec": 1794927600,
+      "volume": 3
+    },
+    "revision": {
+      "close": 40,
+      "high": 40,
+      "low": 40,
+      "open": 40,
+      "timeSec": 1794927540,
+      "volume": 8
+    },
+    "revision2": {
+      "close": 42,
+      "high": 42,
+      "low": 40,
+      "open": 40,
+      "timeSec": 1794927540,
+      "volume": 10
+    },
+    "ticks": [
+      {
+        "price": 50,
+        "size": 3,
+        "timeSec": 1794927600
+      },
+      {
+        "price": 40,
+        "size": 8,
+        "timeSec": 1794927540
+      },
+      {
+        "price": 42,
+        "size": 2,
+        "timeSec": 1794927545
+      }
+    ]
+  },
+  "massive": {
+    "ask": 2,
+    "askSize": 20,
+    "bid": 1,
+    "bidSize": 15,
+    "gamma": "0.05",
+    "midpoint": "1.5",
+    "updatedAt": 1794927595
+  },
+  "now": 1794927600,
+  "outOfWindow": {
+    "expectedLateCount": 1,
+    "ticks": [
+      {
+        "price": 50,
+        "size": 3,
+        "timeSec": 1794927600
+      },
+      {
+        "price": 40,
+        "size": 8,
+        "timeSec": 1794926400
+      }
+    ]
+  },
+  "overlays": [
+    {
+      "accepted": false,
+      "count": "rejectedRowStructural",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.05",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "name": "critical partial",
+      "raw": {
+        "ask": 0,
+        "ask_date": null,
+        "bid": 4,
+        "bid_date": 0,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.99,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T15:00:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": null
+      }
+    },
+    {
+      "accepted": false,
+      "count": "rejectedCrossedBook",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.05",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "name": "crossed",
+      "raw": {
+        "ask": 2.1,
+        "ask_date": 1794927599000,
+        "ask_size": 12,
+        "bid": 2.5,
+        "bid_date": 1794927598000,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    },
+    {
+      "accepted": true,
+      "count": "overlaidBidAsk",
+      "expected": {
+        "ask": 1.3,
+        "askSize": 12,
+        "bid": 1.1,
+        "bidSize": 8,
+        "gamma": "0.06",
+        "midpoint": "1.2",
+        "updatedAt": 1794927598
+      },
+      "name": "valid independent clocks",
+      "raw": {
+        "ask": 1.3,
+        "ask_date": 1794927599000,
+        "ask_size": 12,
+        "bid": 1.1,
+        "bid_date": 1794927598000,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    },
+    {
+      "accepted": false,
+      "count": "rejectedInvalidTimestamp",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.05",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "name": "trade and Greeks cannot timestamp the book",
+      "raw": {
+        "ask": 1.3,
+        "ask_date": null,
+        "ask_size": 12,
+        "bid": 1.1,
+        "bid_date": null,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927599
+      }
+    },
+    {
+      "accepted": true,
+      "count": "overlaidBidAsk",
+      "expected": {
+        "ask": 1.3,
+        "askSize": 12,
+        "bid": 1.1,
+        "bidSize": 8,
+        "gamma": "0.05",
+        "midpoint": "1.2",
+        "updatedAt": 1794927598
+      },
+      "name": "fresh BBO with stale Greeks",
+      "raw": {
+        "ask": 1.3,
+        "ask_date": 1794927599000,
+        "ask_size": 12,
+        "bid": 1.1,
+        "bid_date": 1794927598000,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:48:20+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    },
+    {
+      "accepted": false,
+      "count": "overlaidGreeksIndependent",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.06",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "greeksMissing": true,
+      "name": "independent Greeks",
+      "raw": {
+        "ask": 0,
+        "ask_date": 1794927599000,
+        "ask_size": 12,
+        "bid": 0,
+        "bid_date": 1794927598000,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    },
+    {
+      "accepted": false,
+      "count": "skippedStaleQuotes",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.05",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "name": "stale BBO",
+      "raw": {
+        "ask": 1.3,
+        "ask_date": 1794927575,
+        "ask_size": 12,
+        "bid": 1.1,
+        "bid_date": 1794927575,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    },
+    {
+      "accepted": false,
+      "count": "rejectedBidAskSkew",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.05",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "name": "incoherent side times",
+      "raw": {
+        "ask": 1.3,
+        "ask_date": 1794927599000,
+        "ask_size": 12,
+        "bid": 1.1,
+        "bid_date": 1794927585,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    },
+    {
+      "accepted": false,
+      "count": "rejectedFutureSkew",
+      "expected": {
+        "ask": 2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 15,
+        "gamma": "0.05",
+        "midpoint": "1.5",
+        "updatedAt": 1794927595
+      },
+      "name": "future BBO",
+      "raw": {
+        "ask": 1.3,
+        "ask_date": 1794927599000,
+        "ask_size": 12,
+        "bid": 1.1,
+        "bid_date": 1794927610,
+        "bid_size": 8,
+        "greeks": {
+          "delta": 0.45,
+          "gamma": 0.06,
+          "theta": -0.025,
+          "updated_at": "2026-11-17T14:58:00+00:00",
+          "vega": 0.11
+        },
+        "trade_date": 1794927300000
+      }
+    }
+  ],
+  "rejectedTimestamps": [
+    {
+      "reason": "MISSING",
+      "value": null
+    },
+    {
+      "reason": "MISSING",
+      "value": ""
+    },
+    {
+      "reason": "INVALID_TYPE",
+      "value": false
+    },
+    {
+      "reason": "OUT_OF_RANGE",
+      "value": 0
+    },
+    {
+      "reason": "OUT_OF_RANGE",
+      "value": -100
+    },
+    {
+      "reason": "OUT_OF_RANGE",
+      "value": 12345
+    },
+    {
+      "reason": "AMBIGUOUS_UNIT",
+      "value": 10000000000
+    },
+    {
+      "reason": "AMBIGUOUS_UNIT",
+      "value": 100000000000
+    },
+    {
+      "reason": "OUT_OF_RANGE",
+      "value": 1763049600000000
+    },
+    {
+      "reason": "OUT_OF_RANGE",
+      "value": "1763049600000000000"
+    },
+    {
+      "reason": "NON_INTEGER_EPOCH",
+      "value": 1763049600.5
+    },
+    {
+      "reason": "MISSING_TIMEZONE",
+      "value": "2026-11-13T16:00:00"
+    },
+    {
+      "reason": "MISSING_TIMEZONE",
+      "value": "2026-11-13 16:00:00"
+    },
+    {
+      "reason": "INVALID_CALENDAR_DATE",
+      "value": "2026-02-30T12:00:00Z"
+    }
+  ],
+  "session": {
+    "expectedVwaps": [
+      "50",
+      "50",
+      "50",
+      "60"
+    ],
+    "ticks": [
+      {
+        "price": 50,
+        "size": 3,
+        "timeSec": 1794949080
+      },
+      {
+        "price": 52,
+        "size": 1,
+        "timeSec": 1794959940
+      },
+      {
+        "price": 53,
+        "size": 1,
+        "timeSec": 1794960060
+      },
+      {
+        "price": 60,
+        "size": 5,
+        "timeSec": 1795012200
+      },
+      {
+        "price": 40,
+        "size": 5,
+        "timeSec": 1794959970
+      }
+    ]
+  },
+  "validTimestamps": [
+    {
+      "hint": "GENERIC",
+      "nativeMs": 1763049600000,
+      "unit": "EPOCH_SEC",
+      "utcSec": 1763049600,
+      "value": 1763049600
+    },
+    {
+      "hint": "GENERIC",
+      "nativeMs": 1763049600000,
+      "unit": "EPOCH_SEC",
+      "utcSec": 1763049600,
+      "value": "1763049600"
+    },
+    {
+      "hint": "GENERIC",
+      "nativeMs": 1763049600789,
+      "unit": "EPOCH_MS",
+      "utcSec": 1763049600,
+      "value": 1763049600789
+    },
+    {
+      "hint": "GENERIC",
+      "nativeMs": 1763049600789,
+      "unit": "EPOCH_MS",
+      "utcSec": 1763049600,
+      "value": "1763049600789"
+    },
+    {
+      "hint": "GENERIC",
+      "nativeMs": 1794585600250,
+      "unit": "ISO_8601_TZ",
+      "utcSec": 1794585600,
+      "value": "2026-11-13T16:00:00.250Z"
+    },
+    {
+      "hint": "GENERIC",
+      "nativeMs": 1794585600000,
+      "unit": "ISO_8601_TZ",
+      "utcSec": 1794585600,
+      "value": "2026-11-13T11:00:00-05:00"
+    },
+    {
+      "hint": "GREEKS_UPDATED_AT",
+      "nativeMs": 1794585600000,
+      "unit": "TRADIER_GREEKS_UTC_SPACE",
+      "utcSec": 1794585600,
+      "value": "2026-11-13 16:00:00"
+    }
+  ]
+}

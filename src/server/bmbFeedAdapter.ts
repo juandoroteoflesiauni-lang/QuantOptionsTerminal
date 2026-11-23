@@ -17,6 +17,7 @@
  * - authentication/dependency/network failures remain explicit for Data912 EOD routing.
  */
 
+import type { GgalTradeTick } from './ggalTickStream.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import { getBuenosAiresParts } from '../core/ggal/types.js';
@@ -361,7 +362,7 @@ export class BmbFeedAdapter {
   private readonly signalRMode: boolean;
   private liveL2Books: Readonly<Record<string, BmbBridgeBookEntry>> = {};
   /** Pieza 39: fuente de ticks ARS para el GGAL Specialist (trades GGAL). */
-  private ggalArsTickListener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null = null;
+  private ggalArsTickListener: ((tick: GgalTradeTick) => void) | null = null;
   private lastArsTickSequence = 0;
   private readonly httpTelemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
@@ -577,7 +578,7 @@ export class BmbFeedAdapter {
 
   /** Pieza 39: registra la fuente de ticks ARS (GGAL Specialist runtime). */
   public setGgalArsTickListener(
-    listener: ((tick: { readonly price: number; readonly size: number; readonly timeSec: number }) => void) | null,
+    listener: ((tick: GgalTradeTick) => void) | null,
   ): void {
     this.ggalArsTickListener = listener;
     if (listener === null) {
@@ -612,6 +613,7 @@ export class BmbFeedAdapter {
         price: trade.price,
         size: Number.isFinite(trade.size) && trade.size > 0 ? trade.size : 0,
         timeSec: trade.timeSec,
+        sequence: trade.sequence,
       });
     }
   }

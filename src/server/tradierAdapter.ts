@@ -25,11 +25,11 @@
  */
 
 import './envBootstrap.js';
+import { parseTradierTimestamp } from '../core/temporalFeedIntegrity.js';
 
 import { WebSocket } from 'ws';
 import type {
   OptionDaySummary,
-  OptionGreeks,
   OptionLastQuote,
   OptionSnapshotContract,
 } from '../data/optionsTypes.js';
@@ -370,34 +370,6 @@ function countNum(value: unknown): number {
   return n >= 0 ? n : Number.NaN;
 }
 
-/** ISO o epoch ms/seg de Tradier -> segundos UTC enteros. */
-function tradierEventTimeToUtcSec(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (value >= 1e11) return Math.floor(value / 1_000);
-    if (value >= 1e9) return Math.floor(value);
-    return Number.NaN;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed === '') return Number.NaN;
-    if (/^\d{10,13}(?:\.\d+)?$/.test(trimmed)) {
-      const parsed = Number(trimmed);
-      if (Number.isFinite(parsed)) {
-        return parsed >= 1e11 ? Math.floor(parsed / 1_000) : Math.floor(parsed);
-      }
-    }
-    return isoToUtcSec(trimmed);
-  }
-  return Number.NaN;
-}
-
-/** ISO de Tradier (`2026-11-13T16:00:00.000Z`) -> segundos UTC enteros. */
-function isoToUtcSec(value: unknown): number {
-  if (typeof value !== 'string' || value.trim() === '') return Number.NaN;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? Math.floor(ms / 1_000) : Number.NaN;
-}
-
 function buildAuthHeaders(config: TradierConfig): Record<string, string> {
   return {
     Authorization: `Bearer ${String(config.accessToken)}`,
@@ -512,7 +484,7 @@ function parseGreeks(raw: unknown): TradierGreeks {
     midIv: num(raw['mid_iv']),
     askIv: num(raw['ask_iv']),
     smvVol: num(raw['smv_vol']),
-    updatedAtUtcSec: isoToUtcSec(raw['updated_at']),
+    updatedAtUtcSec: parseTradierTimestamp(raw['updated_at'], 'GREEKS_UPDATED_AT').utcSec,
   };
 }
 
@@ -527,7 +499,31 @@ function hasAnyFiniteGreeks(g: TradierGreeks): boolean {
   );
 }
 
-export interface TradierQuoteNormalized {
+interface TradierFieldTimes {
+  readonly bidTimeUtcSec?: number;
+  readonly bidTimeNativeMs?: number;
+  readonly askTimeUtcSec?: number;
+  readonly askTimeNativeMs?: number;
+  readonly tradeTimeUtcSec?: number;
+  readonly tradeTimeNativeMs?: number;
+  readonly greeksTimeUtcSec?: number;
+  readonly providerTimestampUtcSec?: number;
+  readonly receivedAtUtcSec?: number;
+}
+
+function parseFieldTimes(raw: Record<string, unknown>, greeksTimeUtcSec: number, receivedAtUtcSec: number) {
+  const bid = parseTradierTimestamp(raw['bid_date'], 'BID_DATE');
+  const ask = parseTradierTimestamp(raw['ask_date'], 'ASK_DATE');
+  const trade = parseTradierTimestamp(raw['trade_date'], 'TRADE_DATE');
+  return {
+    bidTimeUtcSec: bid.utcSec, bidTimeNativeMs: bid.nativeMs,
+    askTimeUtcSec: ask.utcSec, askTimeNativeMs: ask.nativeMs,
+    tradeTimeUtcSec: trade.utcSec, tradeTimeNativeMs: trade.nativeMs,
+    greeksTimeUtcSec, providerTimestampUtcSec: Math.min(bid.utcSec, ask.utcSec), receivedAtUtcSec,
+  };
+}
+
+export interface TradierQuoteNormalized extends TradierFieldTimes {
   readonly symbol: string;
   readonly description: string | null;
   readonly type: string | null;
@@ -564,18 +560,16 @@ export interface TradierQuotesResult {
   readonly provenance: TradierProvenance;
 }
 
-function parseQuoteRow(raw: unknown): TradierQuoteNormalized | null {
+function parseQuoteRow(raw: unknown, receivedAtUtcSec: number): TradierQuoteNormalized | null {
   if (!isRecord(raw)) return null;
   const symbol = typeof raw['symbol'] === 'string' ? raw['symbol'].trim().toUpperCase() : '';
   if (symbol === '') return null;
-  const tradeDateSec = isoToUtcSec(raw['trade_date']);
-  const quoteDateSec = isoToUtcSec(raw['quote_date']);
-  const asOfUtcSec = Math.max(
-    Number.isFinite(tradeDateSec) ? tradeDateSec : Number.NEGATIVE_INFINITY,
-    Number.isFinite(quoteDateSec) ? quoteDateSec : Number.NEGATIVE_INFINITY,
-  );
   const greeks = parseGreeks(raw['greeks']);
+  const times = parseFieldTimes(raw, greeks.updatedAtUtcSec, receivedAtUtcSec);
+  const asOfUtcSec = Number.isFinite(times.providerTimestampUtcSec)
+    ? times.providerTimestampUtcSec : parseTradierTimestamp(raw['quote_date'], 'QUOTE_DATE').utcSec;
   return {
+    ...times,
     symbol,
     description: typeof raw['description'] === 'string' ? raw['description'] : null,
     type: typeof raw['type'] === 'string' ? raw['type'] : null,
@@ -624,13 +618,14 @@ export async function fetchTradierQuotes(
       throw new Error(`Tradier quotes HTTP ${String(response.status)}`);
     }
     const body = parseJsonBody(response.text);
+    const receivedAtUtcSec = Math.floor((deps.nowMsFn ?? Date.now)() / 1_000);
     const quotesRaw =
       isRecord(body) && isRecord(body['quotes']) ? body['quotes']['quote'] : undefined;
     const rows: TradierQuoteNormalized[] = [];
     let parseDiscarded = 0;
     if (Array.isArray(quotesRaw)) {
       for (const row of quotesRaw) {
-        const parsed = parseQuoteRow(row);
+        const parsed = parseQuoteRow(row, receivedAtUtcSec);
         if (parsed === null) {
           parseDiscarded += 1;
           continue;
@@ -638,7 +633,7 @@ export async function fetchTradierQuotes(
         rows.push(parsed);
       }
     } else if (isRecord(quotesRaw)) {
-      const parsed = parseQuoteRow(quotesRaw);
+      const parsed = parseQuoteRow(quotesRaw, receivedAtUtcSec);
       if (parsed === null) {
         parseDiscarded += 1;
       } else {
@@ -672,7 +667,9 @@ export async function fetchTradierQuotes(
 // Cadena de opciones REST
 // ---------------------------------------------------------------------------
 
-export interface TradierOptionContractNormalized {
+export interface TradierOptionContractNormalized extends TradierFieldTimes {
+  readonly rawBidPrice?: number;
+  readonly rawAskPrice?: number;
   /** Símbolo OCC tal como lo entrega Tradier (`GGAL250620C00025000`). */
   readonly occSymbol: string;
   readonly underlying: string;
@@ -715,7 +712,7 @@ export interface TradierOptionChainResult {
   readonly provenance: TradierProvenance;
 }
 
-function parseChainRow(raw: unknown, parseDiscarded: { count: number }): TradierOptionContractNormalized | null {
+function parseChainRow(raw: unknown, parseDiscarded: { count: number }, receivedAtUtcSec: number): TradierOptionContractNormalized | null {
   if (!isRecord(raw)) {
     parseDiscarded.count += 1;
     return null;
@@ -739,12 +736,12 @@ function parseChainRow(raw: unknown, parseDiscarded: { count: number }): Tradier
     parseDiscarded.count += 1;
     return null;
   }
-  const tradeDateSec = isoToUtcSec(raw['trade_date']);
   const greeks = parseGreeks(raw['greeks']);
-  const quoteAsOf = Number.isFinite(greeks.updatedAtUtcSec)
-    ? Math.max(greeks.updatedAtUtcSec, Number.isFinite(tradeDateSec) ? tradeDateSec : Number.NaN)
-    : tradeDateSec;
+  const times = parseFieldTimes(raw, greeks.updatedAtUtcSec, receivedAtUtcSec);
   return {
+    ...times,
+    rawBidPrice: num(raw['bid']),
+    rawAskPrice: num(raw['ask']),
     occSymbol,
     underlying:
       typeof raw['root_symbols'] === 'string' && raw['root_symbols'].trim() !== ''
@@ -765,7 +762,7 @@ function parseChainRow(raw: unknown, parseDiscarded: { count: number }): Tradier
     previousClose: priceNum(raw['prevclose']),
     changePercentage: num(raw['change_percentage']),
     greeks,
-    asOfUtcSec: quoteAsOf,
+    asOfUtcSec: times.providerTimestampUtcSec,
     provider: 'TRADIER',
     sharesPerContract: 100,
   };
@@ -799,17 +796,18 @@ export async function fetchTradierOptionChain(
       throw new Error(`Tradier option chain HTTP ${String(response.status)}`);
     }
     const body = parseJsonBody(response.text);
+    const receivedAtUtcSec = Math.floor((deps.nowMsFn ?? Date.now)() / 1_000);
     const optionsRaw =
       isRecord(body) && isRecord(body['options']) ? body['options']['option'] : undefined;
     const contracts: TradierOptionContractNormalized[] = [];
     const parseDiscarded = { count: 0 };
     if (Array.isArray(optionsRaw)) {
       for (const row of optionsRaw) {
-        const parsed = parseChainRow(row, parseDiscarded);
+        const parsed = parseChainRow(row, parseDiscarded, receivedAtUtcSec);
         if (parsed !== null) contracts.push(parsed);
       }
     } else if (isRecord(optionsRaw)) {
-      const parsed = parseChainRow(optionsRaw, parseDiscarded);
+      const parsed = parseChainRow(optionsRaw, parseDiscarded, receivedAtUtcSec);
       if (parsed !== null) contracts.push(parsed);
     } else if (optionsRaw !== undefined) {
       parseDiscarded.count += 1;
@@ -844,6 +842,13 @@ export const TRADIER_MAX_QUOTE_AGE_SEC = 20;
 const MASSIVE_FRESHER_TOLERANCE_SEC = 2;
 
 export interface TradierChainOverlaySummary {
+  readonly rejectedRowStructural?: number;
+  readonly rejectedInvalidBbo?: number;
+  readonly rejectedCrossedBook?: number;
+  readonly rejectedInvalidTimestamp?: number;
+  readonly rejectedBidAskSkew?: number;
+  readonly rejectedFutureSkew?: number;
+  readonly overlaidGreeksIndependent?: number;
   readonly provider: 'TRADIER';
   readonly requestedExpirations: readonly string[];
   readonly tradierContracts: number;
@@ -902,100 +907,117 @@ function overlayFlowFields(
   };
 }
 
+const TRADIER_MAX_FUTURE_SKEW_SEC = 2;
+const TRADIER_MAX_BID_ASK_SKEW_SEC = 10;
+const TRADIER_MAX_GREEKS_AGE_SEC = 600;
+
+interface TradierOverlayOptions {
+  readonly nowSec: number;
+  readonly maxQuoteAgeSec?: number;
+  readonly maxFutureSkewSec?: number;
+  readonly maxBidAskSkewSec?: number;
+  readonly maxGreeksAgeSec?: number;
+  readonly allowIndependentGreeksWhenBboRejected?: boolean;
+}
+
 function overlayQuote(
   contract: OptionSnapshotContract,
   tradier: TradierOptionContractNormalized,
   summary: MutableOverlaySummary,
+  options: TradierOverlayOptions,
 ): OptionSnapshotContract {
-  let changed = false;
-  let nextLastQuote: OptionLastQuote = contract.lastQuote;
-  let nextDay: OptionDaySummary = contract.day;
-  let nextGreeks: OptionGreeks = contract.greeks;
-  let nextOpenInterest = contract.openInterest;
-  let nextIv = contract.impliedVolatility;
-  // Puntas y tamaños (Tradier 0 = sin punta -> se mantiene el valor canónico).
-  const bidValid = Number.isFinite(tradier.bid) && tradier.bid > 0;
-  const askValid = Number.isFinite(tradier.ask) && tradier.ask > 0 && tradier.ask >= tradier.bid;
-  if (bidValid || askValid) {
-    const bid = bidValid ? tradier.bid : contract.lastQuote.bid;
-    const ask = askValid ? tradier.ask : contract.lastQuote.ask;
-    const bidSize = Number.isFinite(tradier.bidSize) ? tradier.bidSize : contract.lastQuote.bidSize;
-    const askSize = Number.isFinite(tradier.askSize) ? tradier.askSize : contract.lastQuote.askSize;
-    if (bid !== contract.lastQuote.bid || ask !== contract.lastQuote.ask) summary.overlaidBidAsk += 1;
-    if (bidSize !== contract.lastQuote.bidSize || askSize !== contract.lastQuote.askSize) summary.overlaidSizes += 1;
-    // Pieza 50.9: la sustitución se registra por rama efectiva, sin depender de
-    // que precio o timestamp cambien (una hora Tradier puede derivar de trade o griegas).
+  const { bid, ask } = tradier;
+  const bidValid = Number.isFinite(bid) && bid > 0;
+  const askValid = Number.isFinite(ask) && ask > 0;
+  const crossed = Number.isFinite(bid) && Number.isFinite(ask) && bid > ask;
+  const verified = tradier.bidTimeUtcSec !== undefined || tradier.askTimeUtcSec !== undefined;
+  const bidTime = verified ? tradier.bidTimeUtcSec ?? Number.NaN : tradier.asOfUtcSec;
+  const askTime = verified ? tradier.askTimeUtcSec ?? Number.NaN : tradier.asOfUtcSec;
+  const invalidTime = !Number.isInteger(bidTime) || !Number.isInteger(askTime) || bidTime <= 0 || askTime <= 0;
+  if (crossed || (tradier.rawBidPrice ?? bid) < 0 || (tradier.rawAskPrice ?? ask) < 0 ||
+      (bidValid && !askValid) || (!bidValid && askValid && invalidTime)) {
+    summary.rejectedRowStructural += 1;
+    if (crossed) summary.rejectedCrossedBook += 1;
+    return contract;
+  }
+
+  let next = overlayFlowFields(contract, tradier, summary);
+  const updatedAt = Math.min(bidTime, askTime);
+  const futureTolerance = options.maxFutureSkewSec ?? TRADIER_MAX_FUTURE_SKEW_SEC;
+  const { nowSec } = options;
+  let bboAccepted = false;
+  if (!bidValid || !askValid) {
+    summary.rejectedInvalidBbo += 1;
+  } else if (invalidTime) {
+    summary.rejectedInvalidTimestamp += 1;
+  } else if (Math.max(bidTime, askTime) > nowSec + futureTolerance) {
+    summary.rejectedFutureSkew += 1;
+  } else if (Math.abs(bidTime - askTime) > (options.maxBidAskSkewSec ?? TRADIER_MAX_BID_ASK_SKEW_SEC)) {
+    summary.rejectedBidAskSkew += 1;
+  } else if (nowSec - updatedAt > (options.maxQuoteAgeSec ?? TRADIER_MAX_QUOTE_AGE_SEC) ||
+             (Number.isFinite(contract.lastQuote.updatedAt) &&
+              updatedAt + MASSIVE_FRESHER_TOLERANCE_SEC < contract.lastQuote.updatedAt)) {
+    summary.skippedStaleQuotes += 1;
+  } else {
+    const bidSize = countNum(tradier.bidSize);
+    const askSize = countNum(tradier.askSize);
+    const lastQuote: OptionLastQuote = {
+      bid, ask, midpoint: (bid + ask) / 2, bidSize, askSize,
+      bidExchange: null, askExchange: null, updatedAt, timeframe: null,
+      source: 'TRADIER', quoteQuality: 'LIVE_ATOMIC',
+      ...(verified ? { bidTimeUtcSec: bidTime, askTimeUtcSec: askTime } : {}),
+      ...(tradier.receivedAtUtcSec === undefined ? {} : { receivedAtUtcSec: tradier.receivedAtUtcSec }),
+    };
+    bboAccepted = true;
+    summary.overlaidBidAsk += 1;
+    if (!Object.is(bidSize, contract.lastQuote.bidSize) || !Object.is(askSize, contract.lastQuote.askSize)) {
+      summary.overlaidSizes += 1;
+    }
     summary.quoteSubstitutedTickers.add(contract.ticker);
-    const updatedAt = Number.isFinite(tradier.asOfUtcSec)
-      ? Math.max(contract.lastQuote.updatedAt, tradier.asOfUtcSec)
-      : contract.lastQuote.updatedAt;
-    nextLastQuote = { ...contract.lastQuote, bid, ask, bidSize, askSize, updatedAt };
-    changed = true;
+    if (verified) summary.verifiedQuoteTimeTickers.add(contract.ticker);
+    next = { ...next, lastQuote };
+    const { previousClose, changePercentage } = tradier;
+    if (!Number.isFinite(next.day.previousClose) && previousClose !== undefined && previousClose > 0) {
+      next = { ...next, day: { ...next.day, previousClose } };
+    }
+    if (!Number.isFinite(next.day.changePercent) && changePercentage !== undefined && Number.isFinite(changePercentage)) {
+      next = { ...next, day: { ...next.day, changePercent: changePercentage } };
+    }
   }
 
-  // Volumen del día (0 legítimo; solo avanza si Tradier observa más).
-  if (Number.isFinite(tradier.volume) && tradier.volume > contract.day.volume) {
-    nextDay = { ...nextDay, volume: tradier.volume };
-    summary.overlaidVolume += 1;
-    changed = true;
-  }
-
-  // Pieza 50.1: variación % / cierre previo de Tradier solo si Massive no los trae.
-  if (
-    !Number.isFinite(nextDay.previousClose) &&
-    Number.isFinite(tradier.previousClose ?? Number.NaN) &&
-    (tradier.previousClose ?? 0) > 0
-  ) {
-    nextDay = { ...nextDay, previousClose: tradier.previousClose ?? Number.NaN };
-    changed = true;
-  }
-  if (!Number.isFinite(nextDay.changePercent) && Number.isFinite(tradier.changePercentage ?? Number.NaN)) {
-    nextDay = { ...nextDay, changePercent: tradier.changePercentage ?? Number.NaN };
-    changed = true;
-  }
-
-  // Open interest (solo avanza si Tradier observa más).
-  if (Number.isFinite(tradier.openInterest) && tradier.openInterest > contract.openInterest) {
-    nextOpenInterest = tradier.openInterest;
-    summary.overlaidOpenInterest += 1;
-    changed = true;
-  }
-
-  // Griegas campo a campo (solo valores finitos).
-  const delta = Number.isFinite(tradier.greeks.delta) ? tradier.greeks.delta : contract.greeks.delta;
-  const gamma = Number.isFinite(tradier.greeks.gamma) ? tradier.greeks.gamma : contract.greeks.gamma;
-  const theta = Number.isFinite(tradier.greeks.theta) ? tradier.greeks.theta : contract.greeks.theta;
-  const vega = Number.isFinite(tradier.greeks.vega) ? tradier.greeks.vega : contract.greeks.vega;
-  if (
-    delta !== contract.greeks.delta ||
-    gamma !== contract.greeks.gamma ||
-    theta !== contract.greeks.theta ||
-    vega !== contract.greeks.vega
-  ) {
-    nextGreeks = { delta, gamma, theta, vega };
+  const { updatedAtUtcSec, delta, gamma, theta, vega, midIv } = tradier.greeks;
+  const freshGreeks = Number.isInteger(updatedAtUtcSec) && updatedAtUtcSec > 0 &&
+    updatedAtUtcSec <= nowSec + TRADIER_MAX_FUTURE_SKEW_SEC &&
+    nowSec - updatedAtUtcSec <= (options.maxGreeksAgeSec ?? TRADIER_MAX_GREEKS_AGE_SEC);
+  if (!freshGreeks) return next;
+  if ((bboAccepted || contract.greeksMissing || options.allowIndependentGreeksWhenBboRejected === true) &&
+      Number.isFinite(delta) && Math.abs(delta) <= 1.0001 &&
+      Number.isFinite(gamma) && gamma >= 0 && Number.isFinite(vega) && vega >= 0 && Number.isFinite(theta)) {
     summary.overlaidGreeks += 1;
-    changed = true;
+    if (!bboAccepted) summary.overlaidGreeksIndependent += 1;
+    next = {
+      ...next,
+      greeks: { delta, gamma, theta, vega },
+      greeksMissing: false,
+      greeksProvenance: { source: 'TRADIER_ORATS', model: 'ORATS_PROVIDER', updatedAtUtcSec, acceptedIndependentlyOfBbo: !bboAccepted },
+    };
   }
-
-  // IV de proveedor: solo completa cuando Massive no trajo IV explícita.
-  if (!Number.isFinite(contract.impliedVolatility) && Number.isFinite(tradier.greeks.midIv) && tradier.greeks.midIv > 0) {
-    nextIv = tradier.greeks.midIv;
+  if (!Number.isFinite(next.impliedVolatility) && Number.isFinite(midIv) && midIv > 0) {
     summary.overlaidMidIv += 1;
-    changed = true;
+    next = { ...next, impliedVolatility: midIv };
   }
-
-  if (!changed) return contract;
-  return {
-    ...contract,
-    lastQuote: nextLastQuote,
-    day: nextDay,
-    greeks: nextGreeks,
-    openInterest: nextOpenInterest,
-    impliedVolatility: nextIv,
-  };
+  return next;
 }
 
 interface MutableOverlaySummary {
+  verifiedQuoteTimeTickers: Set<string>;
+  rejectedRowStructural: number;
+  rejectedInvalidBbo: number;
+  rejectedCrossedBook: number;
+  rejectedInvalidTimestamp: number;
+  rejectedBidAskSkew: number;
+  rejectedFutureSkew: number;
+  overlaidGreeksIndependent: number;
   overlaidBidAsk: number;
   overlaidSizes: number;
   overlaidVolume: number;
@@ -1011,32 +1033,27 @@ interface MutableOverlaySummary {
   quoteSubstitutedTickers: Set<string>;
 }
 
-/**
- * Aplica puntas/griegas Tradier sobre la cadena canónica de Massive.
- *
- * Reglas explícitas (cero fallbacks silenciosos):
- *  - Matching por OCC normalizado; si difiere, por `expirationDate|tipo|strike`.
- *  - Un contrato Tradier más viejo que `maxQuoteAgeSec` o más viejo que el
- *    `updatedAt` de Massive (+2s de tolerancia) NO sobreescribe nada y se
- *    contabiliza en `skippedStaleQuotes`.
- *  - Campos no calculables en Tradier mantienen el valor canónico previo; el
- *    overlay solo avanza datos con valor finito y válido.
- */
+/** Fusiona libros completos y evalúa las griegas con su propio reloj. */
 export function overlayTradierChainOnCanonicalContracts(
   contracts: readonly OptionSnapshotContract[],
   tradierChain: readonly TradierOptionContractNormalized[],
-  options: {
-    readonly nowSec: number;
-    readonly maxQuoteAgeSec?: number;
-  },
+  options: TradierOverlayOptions,
 ): {
   readonly contracts: readonly OptionSnapshotContract[];
   readonly summary: TradierChainOverlaySummary;
   /** Pieza 50.9: tickers con punta efectivamente sustituida por Tradier. */
   readonly quoteSubstitutedTickers: ReadonlySet<string>;
+  readonly verifiedQuoteTimeTickers: ReadonlySet<string>;
 } {
-  const maxQuoteAgeSec = options.maxQuoteAgeSec ?? TRADIER_MAX_QUOTE_AGE_SEC;
   const summary: MutableOverlaySummary = {
+    verifiedQuoteTimeTickers: new Set<string>(),
+    rejectedRowStructural: 0,
+    rejectedInvalidBbo: 0,
+    rejectedCrossedBook: 0,
+    rejectedInvalidTimestamp: 0,
+    rejectedBidAskSkew: 0,
+    rejectedFutureSkew: 0,
+    overlaidGreeksIndependent: 0,
     overlaidBidAsk: 0,
     overlaidSizes: 0,
     overlaidVolume: 0,
@@ -1073,24 +1090,7 @@ export function overlayTradierChainOnCanonicalContracts(
       continue;
     }
     consumed.add(matched);
-    const tradierAsOf = matched.asOfUtcSec;
-    const massiveUpdatedAt = contract.lastQuote.updatedAt;
-    const tradierTooOld =
-      Number.isFinite(tradierAsOf) && options.nowSec - tradierAsOf > maxQuoteAgeSec;
-    const massiveFresher =
-      Number.isFinite(tradierAsOf) &&
-      Number.isFinite(massiveUpdatedAt) &&
-      tradierAsOf + MASSIVE_FRESHER_TOLERANCE_SEC < massiveUpdatedAt;
-    if (tradierTooOld || massiveFresher) {
-      // Una punta stale no descarta el flujo del día ni el OI: se fusionan campo
-      // por campo, mientras que puntas/griegas/IV quedan explícitamente sin tocar.
-      const flowOnly = overlayFlowFields(contract, matched, summary);
-      if (flowOnly !== contract) summary.overlaidContracts += 1;
-      summary.skippedStaleQuotes += 1;
-      out.push(flowOnly);
-      continue;
-    }
-    const next = overlayQuote(contract, matched, summary);
+    const next = overlayQuote(contract, matched, summary, options);
     if (next !== contract) summary.overlaidContracts += 1;
     out.push(next);
   }
@@ -1101,6 +1101,13 @@ export function overlayTradierChainOnCanonicalContracts(
     summary: {
       provider: 'TRADIER',
       requestedExpirations: [],
+      rejectedRowStructural: summary.rejectedRowStructural,
+      rejectedInvalidBbo: summary.rejectedInvalidBbo,
+      rejectedCrossedBook: summary.rejectedCrossedBook,
+      rejectedInvalidTimestamp: summary.rejectedInvalidTimestamp,
+      rejectedBidAskSkew: summary.rejectedBidAskSkew,
+      rejectedFutureSkew: summary.rejectedFutureSkew,
+      overlaidGreeksIndependent: summary.overlaidGreeksIndependent,
       tradierContracts: tradierChain.length,
       matchedByOcc: summary.matchedByOcc,
       matchedByStrikeType: summary.matchedByStrikeType,
@@ -1117,6 +1124,7 @@ export function overlayTradierChainOnCanonicalContracts(
       lastError: null,
     },
     quoteSubstitutedTickers: summary.quoteSubstitutedTickers,
+    verifiedQuoteTimeTickers: summary.verifiedQuoteTimeTickers,
   };
 }
 
@@ -1176,6 +1184,8 @@ export const TRADIER_WS_STREAM_FILTERS = ['trade', 'quote', 'timesale', 'summary
 export type TradierStreamEventKind = 'trade' | 'quote' | 'timesale' | 'summary';
 
 export interface TradierStreamTick {
+  readonly sequence?: number;
+  readonly eventTimeMs?: number;
   readonly symbol: string;
   readonly event: TradierStreamEventKind;
   readonly price: number;
@@ -1702,12 +1712,21 @@ export class TradierLiveManager {
     eventName: TradierStreamEventKind,
     event: Record<string, unknown>,
   ): void {
-    const nowSec = Math.floor(this.nowMsFn() / 1_000);
-    const eventAsOfSec = tradierEventTimeToUtcSec(
-      event['date'] ?? event['biddate'] ?? event['askdate'],
-    );
+    const receivedAtMs = this.nowMsFn();
+    const nowSec = Math.floor(receivedAtMs / 1_000);
+    const date = parseTradierTimestamp(event['date'], 'STREAM_EVENT_DATE');
+    const bidDate = parseTradierTimestamp(event['biddate'], 'BID_DATE');
+    const askDate = parseTradierTimestamp(event['askdate'], 'ASK_DATE');
+    const hasSideDate = event['biddate'] !== undefined || event['askdate'] !== undefined;
+    const eventTimeMs = eventName === 'quote' && hasSideDate
+      ? Math.min(bidDate.nativeMs, askDate.nativeMs) : date.nativeMs;
+    const eventAsOfSec = Math.floor(eventTimeMs / 1_000);
+    const bid = priceNum(event['bid']);
+    const ask = priceNum(event['ask']);
+    if (!Number.isFinite(eventAsOfSec) ||
+        (eventName === 'quote' && (!Number.isFinite(bid) || !Number.isFinite(ask) || bid > ask))) return;
     const existing = this.latest.get(symbol);
-    const next: MutableLiveQuoteState = existing ?? {
+    const next: MutableLiveQuoteState = existing !== undefined ? { ...existing } : {
       symbol,
       price: Number.NaN,
       bid: Number.NaN,
@@ -1721,11 +1740,8 @@ export class TradierLiveManager {
 
     if (eventName === 'trade' || eventName === 'timesale') {
       const price = priceNum(event['last'] ?? event['price']);
-      if (Number.isFinite(price)) next.price = price;
-      const bid = priceNum(event['bid']);
-      const ask = priceNum(event['ask']);
-      if (Number.isFinite(bid)) next.bid = bid;
-      if (Number.isFinite(ask)) next.ask = ask;
+      if (!Number.isFinite(price)) return;
+      next.price = price;
       const size = countNum(event['size']);
       const cumVol = countNum(event['cumvol'] ?? event['cumsize']);
       if (Number.isFinite(cumVol) && (!Number.isFinite(next.cumulativeVolume) || cumVol >= next.cumulativeVolume)) {
@@ -1734,18 +1750,12 @@ export class TradierLiveManager {
         next.cumulativeVolume = size;
       }
     } else if (eventName === 'quote') {
-      const bid = priceNum(event['bid']);
-      const ask = priceNum(event['ask']);
-      if (Number.isFinite(bid)) next.bid = bid;
-      if (Number.isFinite(ask)) next.ask = ask;
-      const bidSize = countNum(event['bidsz']);
-      const askSize = countNum(event['asksz']);
-      if (Number.isFinite(bidSize)) next.bidSize = bidSize;
-      if (Number.isFinite(askSize)) next.askSize = askSize;
-      const mid = Number.isFinite(next.bid) && Number.isFinite(next.ask) && next.ask >= next.bid && next.bid > 0
-        ? 0.5 * (next.bid + next.ask)
-        : Number.NaN;
-      if (Number.isFinite(mid)) next.price = mid;
+      if (Number.isFinite(next.asOfUtcSec) && eventAsOfSec < next.asOfUtcSec) return;
+      next.bid = bid;
+      next.ask = ask;
+      next.bidSize = countNum(event['bidsz']);
+      next.askSize = countNum(event['asksz']);
+      next.price = (bid + ask) / 2;
     } else {
       const last = priceNum(event['last']);
       if (Number.isFinite(last)) next.price = last;
@@ -1755,27 +1765,23 @@ export class TradierLiveManager {
       if (Number.isFinite(volume) && !Number.isFinite(next.cumulativeVolume)) next.cumulativeVolume = volume;
     }
 
-    next.asOfUtcSec =
-      Number.isFinite(eventAsOfSec) && eventAsOfSec > 0
-        ? eventAsOfSec
-        : Number.isFinite(next.asOfUtcSec) && next.asOfUtcSec > 0
-          ? next.asOfUtcSec
-          : nowSec;
-    this.latest.set(symbol, next);
+    next.asOfUtcSec = eventAsOfSec;
+    if (existing === undefined || eventAsOfSec >= existing.asOfUtcSec) {
+      this.latest.set(symbol, next);
+    }
     this.lastTickAtUtcSec = nowSec;
-    const receivedAtMs = this.nowMsFn();
     this.telemetry.record({
       atMs: receivedAtMs,
-      latencyMs:
-        Number.isFinite(eventAsOfSec) && eventAsOfSec > 0
-          ? receivedAtMs - eventAsOfSec * 1_000
-          : null,
-      isValidTick: true,
+      latencyMs: Number.isFinite(eventTimeMs) ? receivedAtMs - eventTimeMs : null,
+      isValidTick: Number.isFinite(eventTimeMs),
     });
 
+    const sequence = countNum(event['seq']);
     const tick: TradierStreamTick = {
       symbol,
       event: eventName,
+      ...(Number.isInteger(sequence) && sequence > 0 ? { sequence } : {}),
+      ...(Number.isFinite(eventTimeMs) ? { eventTimeMs } : {}),
       price: next.price,
       size: countNum(event['size']),
       bid: next.bid,

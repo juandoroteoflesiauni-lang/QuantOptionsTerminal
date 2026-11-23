@@ -89,6 +89,11 @@ export interface OptionDaySummary {
 }
 
 export interface OptionLastQuote {
+  readonly source?: 'MASSIVE' | 'TRADIER' | 'EOD_CLOSE_REF';
+  readonly bidTimeUtcSec?: number;
+  readonly askTimeUtcSec?: number;
+  readonly receivedAtUtcSec?: number;
+  readonly quoteQuality?: 'LIVE_ATOMIC' | 'EOD_CLOSE_REF' | 'STALE' | 'INVALID';
   readonly bid: number;
   readonly ask: number;
   readonly midpoint: number;
@@ -135,6 +140,12 @@ export interface OptionSnapshotContract {
   readonly greeks: OptionGreeks;
   /** `true` si `greeks` faltaba, venía vacío `{}` o sin ningún valor finito. */
   readonly greeksMissing: boolean;
+  readonly greeksProvenance?: {
+    readonly source: 'MASSIVE' | 'TRADIER_ORATS';
+    readonly model: 'PROVIDER_MASSIVE' | 'ORATS_PROVIDER';
+    readonly updatedAtUtcSec: number;
+    readonly acceptedIndependentlyOfBbo: boolean;
+  };
   readonly day: OptionDaySummary;
   readonly lastQuote: OptionLastQuote;
   readonly lastTrade: OptionLastTrade;

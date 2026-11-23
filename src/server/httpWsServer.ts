@@ -308,14 +308,25 @@ function shouldSendBroadcast(
 }
 
 /** Pieza 40: clave estable para latest-write-wins dentro de cada ciclo. */
-function coalesceEventKey(event: RuntimeWsBroadcast): string {
+export function coalesceEventKey(event: RuntimeWsBroadcast): string {
   if (event.type === 'ggal_bar_tick') {
-    return `${event.type}:${event.mode}:${event.timeframe}:${event.symbol}`;
+    return `${event.type}:${event.mode}:${event.timeframe}:${event.symbol}:${String(event.bar.timeSec)}`;
   }
   if (event.type === 'status') {
     return `${event.type}:${event.cluster}`;
   }
   return `${event.type}:${event.cluster}:${event.symbol}`;
+}
+
+export function enqueueCoalescedEvent(
+  pending: Map<string, RuntimeWsBroadcast>,
+  key: string,
+  event: RuntimeWsBroadcast,
+): void {
+  const existing = pending.get(key);
+  if (event.type === 'ggal_bar_tick' && existing?.type === 'ggal_bar_tick' &&
+      (existing.bucketRevision ?? 0) > (event.bucketRevision ?? 0)) return;
+  pending.set(key, event);
 }
 
 function extractErrorMessage(err: unknown, fallback: string): string {
@@ -1659,11 +1670,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         }
         state.lastSentStockQuotes.set(event.symbol, sig);
       }
-      if (state.focusSymbol !== null && event.symbol === state.focusSymbol) {
-        state.focusEvents.set(key, event);
-      } else {
-        state.marketEvents.set(key, event);
-      }
+      const pending = state.focusSymbol !== null && event.symbol === state.focusSymbol
+        ? state.focusEvents : state.marketEvents;
+      enqueueCoalescedEvent(pending, key, event);
     }
   });
 

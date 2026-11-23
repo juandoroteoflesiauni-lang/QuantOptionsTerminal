@@ -1,4 +1,5 @@
 import type { AmericanIvStatus, MarginRiskStatus } from '../core/options/ivContract.js';
+import { parseTradierTimestamp, resolveGgalMarketSessionDateKey } from '../core/temporalFeedIntegrity.js';
 import {
   explicitVolumeOi,
   resolveContractMultiplier,
@@ -2199,10 +2200,11 @@ export class GgalSpecialistRuntime {
       bundle.usSnapshot?.feedMode === 'EOD_CIERRE' ||
       isClosedSession;
 
+    const spots = this.resolveSpotQuotes(bundle, isEodMode);
     const parity = evaluateParityGap({
       asOfUtcSec,
-      data912TimestampSec: bundle.overview.asOfUtcSec,
-      massiveTimestampSec: bundle.usSnapshot?.asOfUtcSec ?? bundle.overview.asOfUtcSec,
+      data912TimestampSec: spots.bymaTimestampSec ?? Number.NaN,
+      massiveTimestampSec: spots.adrTimestampSec ?? Number.NaN,
       marketMode: isEodMode ? 'EOD_CIERRE' : 'LIVE',
       byma24h: { bid: Number.NaN, ask: Number.NaN },
       adr: { bid: Number.NaN, ask: Number.NaN },
@@ -2214,9 +2216,9 @@ export class GgalSpecialistRuntime {
       usHolidays: this.usHolidays,
     });
 
-    const d912Ts = bundle.overview.asOfUtcSec;
-    const massiveTs = bundle.usSnapshot?.asOfUtcSec ?? bundle.usBars?.asOfUtcSec ?? null;
-    const data912AgeSec = asOfUtcSec - d912Ts;
+    const d912Ts = spots.bymaTimestampSec;
+    const massiveTs = spots.adrTimestampSec;
+    const data912AgeSec = d912Ts === null ? Number.NaN : asOfUtcSec - d912Ts;
     const massiveAgeSec = massiveTs !== null ? asOfUtcSec - massiveTs : null;
 
     const hasAnexoB =
@@ -2555,10 +2557,8 @@ export class GgalSpecialistRuntime {
       liveUsGgal.extendedPrice > 0
         ? liveUsGgal.extendedPrice
         : null;
-    const lastAdrBarClose =
-      bundle.usBars !== null && bundle.usBars.bars.length > 0
-        ? (bundle.usBars.bars[bundle.usBars.bars.length - 1]?.close ?? null)
-        : null;
+    const lastAdrBar = bundle.usBars?.bars.at(-1);
+    const lastAdrBarClose = lastAdrBar?.close ?? null;
     const adrSpot =
       extendedAdrSpot ??
       fmpGgalPrice ??
@@ -2593,6 +2593,14 @@ export class GgalSpecialistRuntime {
       bymaPrevClose: ggalLive?.prevClose ?? ggalOverview?.prevClose ?? null,
       adrQuote: adrBuilt.quote,
       adrQuoteSource,
+      bymaTimestampSec: ggalLive !== undefined || ggalOverview !== undefined
+        ? sanitizeFinite(parseTradierTimestamp(ggalLive?.rawDate).utcSec) ?? bundle.overview.asOfUtcSec : null,
+      adrTimestampSec: tradierNbboValid
+        ? (Number.isFinite(tradierGgal.providerTimestampUtcSec)
+            ? tradierGgal.providerTimestampUtcSec ?? null : sanitizeFinite(tradierGgal.asOfUtcSec))
+        : extendedAdrSpot !== null ? liveUsGgal?.asOfUtcSec ?? null
+        : fmpGgal !== null ? sanitizeFinite(fmpGgal.asOfUtcSec)
+        : bundle.usSnapshot?.asOfUtcSec ?? lastAdrBar?.time ?? null,
       lastAdrBarClose,
       basis,
     };
@@ -2767,8 +2775,8 @@ export class GgalSpecialistRuntime {
 
     const input: ParityGapInput = {
       asOfUtcSec: bundle.asOfUtcSec,
-      data912TimestampSec: bundle.overview.asOfUtcSec,
-      massiveTimestampSec: bundle.usSnapshot?.asOfUtcSec ?? bundle.usBars?.asOfUtcSec ?? bundle.overview.asOfUtcSec,
+      data912TimestampSec: spots.bymaTimestampSec ?? Number.NaN,
+      massiveTimestampSec: spots.adrTimestampSec ?? Number.NaN,
       marketMode,
       maxData912StalenessSec: this.maxData912StalenessSec,
       maxMassiveStalenessSec: this.maxMassiveStalenessSec,
@@ -6023,17 +6031,18 @@ export class GgalSpecialistRuntime {
       bymaDailyBars[bymaDailyBars.length - 1]?.timeSec ??
       Math.floor(this.nowMsFn() / 1_000);
 
-    const lastByma = bymaDailyBars[bymaDailyBars.length - 1];
-    const lastAdr = adrDailyBars[adrDailyBars.length - 1];
-    const historicalCcl =
-      lastByma !== undefined &&
-      lastAdr !== undefined &&
-      Number.isFinite(lastByma.close) &&
-      lastByma.close > 0 &&
-      Number.isFinite(lastAdr.close) &&
-      lastAdr.close > 0
-        ? (lastByma.close * GGAL_ADR_RATIO) / lastAdr.close
-        : Number.NaN;
+    const lastAdr = adrDailyBars.at(-1);
+    const adrByDate = new Map(adrDailyBars
+      .filter((bar) => Number.isFinite(bar.close) && bar.close > 0)
+      .map((bar) => [resolveGgalMarketSessionDateKey(bar.time, 'ADR'), bar.close]));
+    let historicalCcl = Number.NaN;
+    for (const bar of [...bymaDailyBars].reverse()) {
+      const adrClose = adrByDate.get(resolveGgalMarketSessionDateKey(bar.timeSec, 'ARS'));
+      if (adrClose !== undefined && Number.isFinite(bar.close) && bar.close > 0) {
+        historicalCcl = (bar.close * GGAL_ADR_RATIO) / adrClose;
+        break;
+      }
+    }
 
     const convertedBars: GgalChartBarPoint[] = [];
     if (opts.coordMode === 'ARS_BYMA') {
@@ -6398,15 +6407,6 @@ export class GgalSpecialistRuntime {
           ? parity.output.spot.adrMidUsd
           : adrLastUsdFromFast;
 
-    const ggalLiveFast = fastLiveStocks.find((r) => r.symbol === 'GGAL');
-    const bymaLastFast =
-      ggalLiveFast?.last ??
-      bymaEffectiveDailyBars[bymaEffectiveDailyBars.length - 1]?.close ??
-      Number.NaN;
-    const fastGgalCcl =
-      Number.isFinite(bymaLastFast) && bymaLastFast > 0 && Number.isFinite(adrLastUsd) && adrLastUsd > 0
-        ? (bymaLastFast * GGAL_ADR_RATIO) / adrLastUsd
-        : Number.NaN;
     const fastAl30 = fastLiveBonds.find((r) => r.symbol === 'AL30')?.last;
     const fastAl30c = fastLiveBonds.find((r) => r.symbol === 'AL30C')?.last;
     const fastBondCcl =
@@ -6419,26 +6419,18 @@ export class GgalSpecialistRuntime {
         ? fastAl30 / fastAl30c
         : Number.NaN;
 
-    const cclRate =
-      parity !== null &&
-      Number.isFinite(parity.output.ccl.cclGgal24h) &&
-      parity.output.ccl.cclGgal24h > 0
-        ? parity.output.ccl.cclGgal24h
-        : (bundle?.macro.variables.ccl ??
-          (Number.isFinite(fastGgalCcl) ? fastGgalCcl : fastBondCcl));
-
     // Construir mapa histórico CCL diario por fecha YYYY-MM-DD para escalado fiel intradiario ARS
     const adrDailyBars = opts.timeframe === '1D' ? adrRawBars : (adrDailyRes?.bars ?? bundle?.usBars?.bars ?? []);
     const adrCloseByDate = new Map<string, number>();
     for (const ab of adrDailyBars) {
       if (Number.isFinite(ab.close) && ab.close > 0) {
-        adrCloseByDate.set(formatIsoUtcFromSec(ab.time).slice(0, 10), ab.close);
+        adrCloseByDate.set(resolveGgalMarketSessionDateKey(ab.time, 'ADR'), ab.close);
       }
     }
     const cclByDate = new Map<string, number>();
     let lastBymaDateKey = '';
     for (const bb of bymaEffectiveDailyBars) {
-      const dateKey = formatIsoUtcFromSec(bb.timeSec).slice(0, 10);
+      const dateKey = resolveGgalMarketSessionDateKey(bb.timeSec, 'ARS');
       if (dateKey > lastBymaDateKey) {
         lastBymaDateKey = dateKey;
       }
@@ -6447,6 +6439,13 @@ export class GgalSpecialistRuntime {
         cclByDate.set(dateKey, (bb.close * GGAL_ADR_RATIO) / adrClose);
       }
     }
+
+    const temporal = parity?.output.cclTemporal;
+    const pairedClose = [...cclByDate.values()].at(-1);
+    const cclRate =
+      temporal !== undefined && (temporal.livePublishable || temporal.cclQuality === 'EOD_CLOSE_REF') &&
+      Number.isFinite(temporal.value) && temporal.value > 0
+        ? temporal.value : (bundle?.macro.variables.ccl ?? pairedClose ?? fastBondCcl);
 
     const convertedBars: GgalChartBarPoint[] = [];
     if (opts.coordMode === 'ARS_BYMA') {
@@ -6459,7 +6458,7 @@ export class GgalSpecialistRuntime {
         }
       } else if (adrRawBars.length > 0 && Number.isFinite(cclRate) && cclRate > 0) {
         for (const b of adrRawBars) {
-          const dateKey = formatIsoUtcFromSec(b.time).slice(0, 10);
+          const dateKey = resolveGgalMarketSessionDateKey(b.time, 'ADR');
           const effectiveCcl =
             dateKey <= lastBymaDateKey ? (cclByDate.get(dateKey) ?? cclRate) : cclRate;
           const factor = effectiveCcl / GGAL_ADR_RATIO;
