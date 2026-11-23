@@ -1,3 +1,4 @@
+import type { OratsMetadata } from '../oratsIntegrity.js';
 /**
  * Institutional TypeScript contracts for GGAL Specialist (Pieza 28).
  *
@@ -304,11 +305,11 @@ export interface OratsSurfaceStrikeRow {
   readonly vega: number;
 }
 
-export interface OratsHybridSurfaceOperational {
+export interface OratsHybridSurfaceOperational extends OratsMetadata {
   readonly status: 'OPERATIONAL';
   readonly source: 'ORATS_DELAYED_CORE';
   readonly ticker: string;
-  readonly tradeDate: string;
+  readonly tradeDate: string | null;
   readonly asOfUtcSec: number;
   readonly stockPrice: number;
   readonly massiveSpotPrice: number | null;
@@ -339,7 +340,12 @@ export interface OratsHybridSurfaceOperational {
   readonly reason: null;
 }
 
-export interface OratsHybridSurfaceUnavailable {
+export interface OratsHybridSurfaceDegraded extends Omit<OratsHybridSurfaceOperational, 'status' | 'reason'> {
+  readonly status: 'PARTIAL_FAILURE' | 'STALE_CACHE';
+  readonly reason: string;
+}
+
+export interface OratsHybridSurfaceUnavailable extends OratsMetadata {
   readonly status: 'UNAVAILABLE';
   readonly source: 'ORATS_DELAYED_CORE';
   readonly ticker: string;
@@ -352,6 +358,7 @@ export interface OratsHybridSurfaceUnavailable {
 
 export type OratsHybridSurfacePayload =
   | OratsHybridSurfaceOperational
+  | OratsHybridSurfaceDegraded
   | OratsHybridSurfaceUnavailable;
 
 export interface GgalClearingRiskOperational {

@@ -2043,7 +2043,12 @@ export const GgalSpecialistModule: React.FC<{
                       : `Indisponible: ${surfaceData.otmWingCclVol.reason ?? '—'}`
                   }
                 />
-                {surfaceData.surface.status === 'OPERATIONAL' ? (
+                <div className="col-span-full h-5 truncate text-xs tabular-nums" title={surfaceData.surface.reason ?? undefined}>
+                  ORATS · {surfaceData.surface.status === 'STALE_CACHE' ? 'STALE CACHE' : surfaceData.surface.status === 'PARTIAL_FAILURE' ? 'DEGRADADO' : surfaceData.surface.status}
+                  {' · '}{surfaceData.surface.status === 'UNAVAILABLE' ? '—' : surfaceData.surface.tradeDate ?? '—'}
+                  {surfaceData.surface.status === 'STALE_CACHE' && surfaceData.surface.cacheAgeMs != null ? ` · ${Math.floor(surfaceData.surface.cacheAgeMs / 1000)} s` : ''} {surfaceData.surface.reason}
+                </div>
+                {surfaceData.surface.status !== 'UNAVAILABLE' ? (
                   <>
                     <KPICard
                       title="ORATS smvVol / Ex-Ern IV30"

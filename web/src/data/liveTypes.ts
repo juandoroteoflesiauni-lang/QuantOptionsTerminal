@@ -1,3 +1,4 @@
+import type { OratsMetadata } from '../../../src/core/oratsIntegrity.js';
 import type { AmericanIvStatus, ImpliedVolResolution } from '../../../src/core/options/ivContract.js';
 import type {
   ContractMultiplierSource, DealerSignBasis, GexComputationStatus, OiFieldProvenance,
@@ -1315,7 +1316,7 @@ export interface UsSnapshotResponseDto {
   } | null;
 }
 
-export interface UsVolSurfaceResponseDto {
+export interface UsVolSurfaceResponseDto extends OratsMetadata {
   readonly status: 'OK' | 'PARTIAL' | 'NO_DATA';
   readonly symbol: string;
   readonly asOfUtcSec: number;
@@ -1324,7 +1325,7 @@ export interface UsVolSurfaceResponseDto {
   readonly reason: string | null;
   readonly surface?:
     | {
-        readonly status: 'OPERATIONAL';
+        readonly status: 'OPERATIONAL' | 'STALE_CACHE' | 'PARTIAL_FAILURE';
         readonly source: 'ORATS_DELAYED_CORE';
         readonly ticker: string;
         readonly tradeDate?: string | null;
@@ -1359,7 +1360,7 @@ export interface UsVolSurfaceResponseDto {
           readonly theta: number;
           readonly vega: number;
         }[];
-        readonly reason?: null;
+        readonly reason?: string | null;
       }
     | {
         readonly status: 'UNAVAILABLE';
@@ -1370,11 +1371,11 @@ export interface UsVolSurfaceResponseDto {
     | null;
   readonly ivRank?:
     | {
-        readonly status: 'OPERATIONAL';
+        readonly status: 'OPERATIONAL' | 'STALE_CACHE' | 'PARTIAL_FAILURE';
         readonly source: 'ORATS_IV_RANK';
         readonly row: {
           readonly ticker: string;
-          readonly tradeDate: string;
+          readonly tradeDate: string | null;
           readonly iv: number;
           readonly ivRank1m: number;
           readonly ivPct1m: number;

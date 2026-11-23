@@ -17,16 +17,8 @@ export interface ClientViewScope {
   readonly focusMarket: 'AR' | 'US' | null;
 }
 
-export interface LiveOptionQuoteSnapshot {
-  readonly symbol: string;
-  readonly underlying: string;
-  readonly time: number;
-  readonly bid: number | null;
-  readonly ask: number | null;
-  readonly mid: number | null;
-  readonly last: number | null;
-  readonly size: number | null;
-}
+import type { LiveOptionQuoteSnapshot } from '../core/opraOptionIntegrity.js';
+export type { LiveOptionQuoteSnapshot } from '../core/opraOptionIntegrity.js';
 
 export interface BackpressureDecision {
   readonly action: 'SEND' | 'COALESCE' | 'KILL';
@@ -212,7 +204,20 @@ export function hasOptionQuoteChanged(
     sameNullableNumber(prev.ask, next.ask) &&
     sameNullableNumber(prev.mid, next.mid) &&
     sameNullableNumber(prev.last, next.last) &&
-    sameNullableNumber(prev.size, next.size)
+    sameNullableNumber(prev.size, next.size) &&
+    prev.bidSize === next.bidSize &&
+    prev.askSize === next.askSize &&
+    prev.lastSize === next.lastSize &&
+    prev.quoteTimestampMs === next.quoteTimestampMs &&
+    prev.tradeTimestampMs === next.tradeTimestampMs &&
+    prev.quoteTimestamp === next.quoteTimestamp &&
+    prev.tradeTimestamp === next.tradeTimestamp &&
+    prev.quoteSeq === next.quoteSeq &&
+    prev.tradeSeq === next.tradeSeq &&
+    prev.tradeId === next.tradeId &&
+    prev.tradeVolume === next.tradeVolume &&
+    prev.quoteSource === next.quoteSource &&
+    prev.tradeSource === next.tradeSource
   );
 }
 

@@ -124,7 +124,7 @@ const BidAskCell: React.FC<{
 }> = ({ strike, optType, isBid, px, size, ticker }) => {
   const cellRef = useRef<HTMLDivElement | null>(null);
   const hasPx = Number.isFinite(px) && px > 0;
-  const hasSize = Number.isFinite(size) && size > 0;
+  const hasSize = Number.isFinite(size) && size >= 0;
   const actionSide: 'Compra' | 'Venta' = isBid ? 'Venta' : 'Compra';
   const contractSym = normalizeOptionContractKey(ticker);
   const handleMutate = useCallback(
@@ -176,15 +176,15 @@ const BidAskCell: React.FC<{
           textClassName={
             hasPx
               ? isBid
-                ? 'text-[#22C55E] font-medium'
-                : 'text-[#EF4444] font-medium'
-              : 'text-[#6B7280]'
+                ? 'w-full text-left text-[#22C55E] font-medium'
+                : 'w-full text-left text-[#EF4444] font-medium'
+              : 'w-full text-left text-[#6B7280]'
           }
           onMutate={handleMutate}
         />
-        {hasPx && hasSize && (
-          <span className="text-[10.5px] text-[#6B7280]">×{fmtNum(size, 0)}</span>
-        )}
+        <span className="w-9 shrink-0 truncate text-left text-[10.5px] tabular-nums text-[#6B7280]">
+          {hasPx && hasSize ? `×${fmtNum(size, 0)}` : '—'}
+        </span>
       </span>
     </div>
   );
@@ -209,20 +209,18 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
   const liveCall = useAtomicOptionQuote(row.callTicker, 250);
   const livePut = useAtomicOptionQuote(row.putTicker, 250);
 
-  const callBid = resolvePriceOrFallback(liveCall?.bid, row.callBid);
-  const callAsk = resolvePriceOrFallback(liveCall?.ask, row.callAsk);
-  const callLast = resolvePriceOrFallback(liveCall?.last ?? liveCall?.mid, row.callLast);
-  const callBidSize =
-    liveCall !== null && liveCall.size !== null && Number.isFinite(liveCall.size) && liveCall.size > 0
-      ? liveCall.size
-      : item.callBidSize;
-  const putBid = resolvePriceOrFallback(livePut?.bid, row.putBid);
-  const putAsk = resolvePriceOrFallback(livePut?.ask, row.putAsk);
-  const putLast = resolvePriceOrFallback(livePut?.last ?? livePut?.mid, row.putLast);
-  const putBidSize =
-    livePut !== null && livePut.size !== null && Number.isFinite(livePut.size) && livePut.size > 0
-      ? livePut.size
-      : item.putBidSize;
+  const callBook = liveCall?.quoteQuality === 'VALID_TWO_SIDED' ? liveCall : null;
+  const callBid = resolvePriceOrFallback(callBook?.bid, row.callBid);
+  const callAsk = resolvePriceOrFallback(callBook?.ask, row.callAsk);
+  const callLast = resolvePriceOrFallback(liveCall?.last, row.callLast);
+  const callBidSize = callBook?.bidSize ?? item.callBidSize;
+  const callAskSize = callBook?.askSize ?? item.callAskSize;
+  const putBook = livePut?.quoteQuality === 'VALID_TWO_SIDED' ? livePut : null;
+  const putBid = resolvePriceOrFallback(putBook?.bid, row.putBid);
+  const putAsk = resolvePriceOrFallback(putBook?.ask, row.putAsk);
+  const putLast = resolvePriceOrFallback(livePut?.last, row.putLast);
+  const putBidSize = putBook?.bidSize ?? item.putBidSize;
+  const putAskSize = putBook?.askSize ?? item.putAskSize;
 
   const spotValid = Number.isFinite(displaySpot) && displaySpot > 0;
   const callGammaSafe = Number.isFinite(row.callGamma)
@@ -263,7 +261,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             decimals={2}
             title={row.callTicker}
             className="w-full h-full px-2 rounded-[4px]"
-            textClassName="text-[#E5E7EB]"
+            textClassName="w-[7ch] max-w-full text-left text-[#E5E7EB]"
           />
           <VarCell valPct={item.callChangePct} />
           <BidAskCell
@@ -279,7 +277,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             optType="Call"
             isBid={false}
             px={callAsk}
-            size={item.callAskSize}
+            size={callAskSize}
             ticker={row.callTicker}
           />
           <HoldingsCell holdings={item.callHoldings} ticker={row.callTicker} />
@@ -327,7 +325,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             decimals={2}
             title={row.callTicker}
             className="w-full h-full px-2 rounded-[4px]"
-            textClassName="text-[#E5E7EB]"
+            textClassName="w-[7ch] max-w-full text-left text-[#E5E7EB]"
           />
         </>
       )}
@@ -356,7 +354,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             optType="Call"
             isBid={false}
             px={callAsk}
-            size={item.callAskSize}
+            size={callAskSize}
             ticker={row.callTicker}
           />
         </>
@@ -394,7 +392,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             optType="Put"
             isBid={false}
             px={putAsk}
-            size={item.putAskSize}
+            size={putAskSize}
             ticker={row.putTicker}
           />
           <VarCell valPct={item.putChangePct} />
@@ -407,7 +405,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             decimals={2}
             title={row.putTicker}
             className="w-full h-full px-2 rounded-[4px]"
-            textClassName="text-[#E5E7EB]"
+            textClassName="w-[7ch] max-w-full text-left text-[#E5E7EB]"
           />
           <TheoCell theo={item.putTheoreticalPrice} ask={putAsk} />
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
@@ -450,7 +448,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             decimals={2}
             title={row.putTicker}
             className="w-full h-full px-2 rounded-[4px]"
-            textClassName="text-[#E5E7EB]"
+            textClassName="w-[7ch] max-w-full text-left text-[#E5E7EB]"
           />
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#9CA3AF]">
             {Number.isFinite(row.putTimeValuePct) ? `${fmtNum(row.putTimeValuePct, 2)}%` : '—'}
@@ -480,7 +478,7 @@ const OptionChainVirtualRow = memo(function OptionChainVirtualRow({
             optType="Put"
             isBid={false}
             px={putAsk}
-            size={item.putAskSize}
+            size={putAskSize}
             ticker={row.putTicker}
           />
           <div title={row.putTicker} className="flex h-full items-center justify-end px-2 text-[#E5E7EB]">
@@ -544,7 +542,7 @@ export const VirtualizedOptionChainTable: React.FC<VirtualizedOptionChainTablePr
       for (let idx = 0; idx < filteredRows.length; idx += 1) {
         const item = filteredRows[idx]!;
         map.set(item.row.strike, item);
-        list.push({ kind: 'row', key: `row:${String(item.row.strike)}`, item });
+        list.push({ kind: 'row', key: `row:${item.row.callTicker}:${item.row.putTicker}:${String(item.row.strike)}`, item });
         const trailing = afterIndex.get(idx);
         if (trailing !== undefined) {
           for (const m of trailing) {

@@ -769,10 +769,12 @@ export interface GgalOptionsSurfaceResponseDto {
   readonly routerStatus: ArFeedRouterStatusSnapshotDto;
   readonly surface:
     | {
-        readonly status: 'OPERATIONAL';
+        readonly status: 'OPERATIONAL' | 'PARTIAL_FAILURE' | 'STALE_CACHE';
+        readonly reason?: string | null;
+        readonly cacheAgeMs?: number;
         readonly source: 'ORATS_DELAYED_CORE';
         readonly ticker: string;
-        readonly tradeDate: string;
+        readonly tradeDate: string | null;
         readonly asOfUtcSec: number;
         readonly stockPrice: number | null;
         readonly massiveSpotPrice: number | null;

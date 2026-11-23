@@ -1,3 +1,4 @@
+import type { OratsMetadata } from '../core/oratsIntegrity.js';
 /**
  * Unified real-time feeds health monitor (Pieza 33).
  *
@@ -317,7 +318,8 @@ export interface OratsCircuitBreakerDetails {
   readonly openedAtMs: number | null;
 }
 
-export interface OratsFeedDetails {
+export interface OratsFeedDetails extends Pick<OratsMetadata, 'providerTradeDate' | 'healthStatus' | 'endpoints'> {
+  readonly lastError?: string | null;
   readonly planTier: string | null;
   readonly quotaRemaining: number | null;
   readonly quotaLimit: number | null;
@@ -721,7 +723,8 @@ export interface FmpEnterpriseFeedHealthSource {
   readonly staleThresholdMs?: number | null;
 }
 
-export interface OratsFeedHealthSource {
+export interface OratsFeedHealthSource extends Pick<OratsMetadata, 'providerTradeDate' | 'healthStatus' | 'endpoints'> {
+  readonly lastError?: string | null;
   readonly configured: boolean;
   readonly connected: boolean | null;
   readonly lastFetchAtUtcSec: number | null;
@@ -984,14 +987,21 @@ export class FeedsHealthMonitor {
         sessionMode: usSession,
         telemetry: orats.telemetry,
         latencyKind: 'HTTP_ROUND_TRIP',
-        lastError: orats.lastStatus === null ? null : `ORATS_STATUS_${orats.lastStatus}`,
+        lastError: orats.lastError ?? (orats.lastStatus && !['OPERATIONAL', 'OK'].includes(orats.lastStatus) ? `ORATS_STATUS_${orats.lastStatus}` : null),
         activeSymbolCount: null,
         subscribedSymbols: [],
         reconnectable: true,
         nowMs,
         secrets: this.secrets,
       }),
+      ...(orats.configured && (orats.circuitBreaker.state !== 'CLOSED'
+        || (orats.healthStatus && orats.healthStatus !== 'OPERATIONAL' && orats.lastFetchAtUtcSec !== null)
+        || (orats.lastStatus && ['PARTIAL_FAILURE', 'STALE_CACHE', 'UNAVAILABLE', 'RECOVERING'].includes(orats.lastStatus))
+        || Object.values(orats.endpoints ?? {}).some(e => e.ok === false)) ? { state: 'DEGRADED' as const } : {}),
       orats: {
+        ...(orats.healthStatus ? { healthStatus: orats.healthStatus } : {}),
+        ...(orats.endpoints ? { endpoints: orats.endpoints } : {}),
+        providerTradeDate: orats.providerTradeDate ?? null,
         planTier: orats.planTier,
         quotaRemaining: orats.quotaRemaining,
         quotaLimit: orats.quotaLimit,

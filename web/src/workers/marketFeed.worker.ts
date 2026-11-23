@@ -1,3 +1,4 @@
+import { parseOpraWireRow, coalesceOptionQuoteUpdate, type LiveOptionQuoteSnapshot } from '../../../src/core/opraOptionIntegrity.js';
 /**
  * Pieza 49 (Fase 2): Dedicated Web Worker de ingesta WebSocket de mercado.
  *
@@ -15,18 +16,20 @@ import {
   BitmaskConflationEngine,
   DEFAULT_SOA_CAPACITY,
   DELTA_FRAME_BUFFER_BYTES,
-  MAX_DELTA_ITEMS_PER_FRAME,
+  MAX_DELTA_ITEMS_PER_FRAME_V2,
   MarketStoreSoA,
-  SOA_DELTA_STRIDE,
+  SOA_DELTA_STRIDE_V2,
   normalizeSoaSymbol,
 } from '../store/marketStoreSoa';
 
 export type WorkerInboundMessage =
   | { readonly type: 'CONNECT'; readonly url: string }
+  | { readonly type: 'CLEAR_OPTION_SLOTS' }
   | { readonly type: 'DISCONNECT' }
   | { readonly type: 'RESYNC_WS'; readonly reason?: string }
   | {
       readonly type: 'SET_VIEW_SCOPE';
+      readonly optionScopeEpoch: number;
       readonly view: string;
       readonly focusSymbol: string | null;
       readonly focusMarket: 'AR' | 'US' | null;
@@ -55,6 +58,7 @@ export type WorkerOutboundMessage =
   | { readonly type: 'DELTAS_READY' }
   | {
       readonly type: 'DELTA_BATCH';
+      readonly optionScopeEpoch: number;
       readonly count: number;
       readonly stride: number;
       readonly buffer: ArrayBuffer;
@@ -63,10 +67,12 @@ export type WorkerOutboundMessage =
     }
   | {
       readonly type: 'SYMBOL_BINDINGS';
+      readonly optionScopeEpoch: number;
       readonly bindings: readonly WorkerSymbolBinding[];
     }
   | {
       readonly type: 'PARSED_WS_MESSAGE';
+      readonly optionScopeEpoch: number;
       readonly payload: Record<string, unknown>;
     };
 
@@ -100,6 +106,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let hasReceivedAnyBatch = false;
 let readySignalPending = false;
 
+let optionScopeEpoch = 0;
 let focusSymbol: string | null = null;
 let viewScope: {
   readonly view: string;
@@ -182,8 +189,8 @@ function dispatchDeltaBatch(): boolean {
   const count = conflation.packVisibleDirtyDelta(
     workerStore,
     view,
-    MAX_DELTA_ITEMS_PER_FRAME,
-    SOA_DELTA_STRIDE,
+    MAX_DELTA_ITEMS_PER_FRAME_V2,
+    SOA_DELTA_STRIDE_V2,
   );
   if (count <= 0) {
     availableBuffers.push(buffer);
@@ -195,9 +202,9 @@ function dispatchDeltaBatch(): boolean {
   readySignalPending = false;
   workerSelf.postMessage(
     {
-      type: 'DELTA_BATCH',
+      type: 'DELTA_BATCH', optionScopeEpoch,
       count,
-      stride: SOA_DELTA_STRIDE,
+      stride: SOA_DELTA_STRIDE_V2,
       buffer,
       bindings,
       hasMore,
@@ -232,35 +239,28 @@ function ingestMarketQuoteArray(rawQuotes: unknown, fallbackTs: number): void {
   }
 }
 
-function ingestOptionQuoteArray(rawQuotes: unknown, fallbackTs: number): void {
+const optionRows = new Map<string, LiveOptionQuoteSnapshot>();
+
+function clearOptionSlots(): void {
+  optionRows.clear();
+  workerStore.resetOptionSlots((id) => {
+    conflation.clearDirty(id);
+    announcedIds[id] = 0;
+  });
+}
+
+function ingestOptionQuoteArray(rawQuotes: unknown): void {
   if (!Array.isArray(rawQuotes)) return;
-  for (let i = 0; i < rawQuotes.length; i += 1) {
-    const raw = rawQuotes[i];
+  for (const raw of rawQuotes) {
     if (!isRecord(raw) || typeof raw['symbol'] !== 'string') continue;
     const key = normalizeOptionKey(raw['symbol']);
-    if (key === '') continue;
+    const previous = optionRows.get(key);
+    const next = coalesceOptionQuoteUpdate(previous, parseOpraWireRow(raw, key));
+    if (next === previous || !next.updatedChannels?.length) continue;
     const id = registerAndTrack(key);
     if (id < 0) continue;
-    const bidVal = finitePositive(raw['bid']) ?? Number.NaN;
-    const askVal = finitePositive(raw['ask']) ?? Number.NaN;
-    const lastVal = finitePositive(raw['last']) ?? finitePositive(raw['mid']) ?? Number.NaN;
-    const sz = finiteNumber(raw['size']) ?? Number.NaN;
-    const ts = finitePositive(raw['time']) ?? fallbackTs;
-    const ivVal = finiteNumber(raw['iv']) ?? Number.NaN;
-    const deltaVal = finiteNumber(raw['delta']) ?? Number.NaN;
-    const gammaVal = finiteNumber(raw['gamma']) ?? Number.NaN;
-    workerStore.writeQuoteInPlace(
-      id,
-      bidVal,
-      askVal,
-      lastVal,
-      sz,
-      sz,
-      ts,
-      ivVal,
-      deltaVal,
-      gammaVal,
-    );
+    optionRows.set(key, next);
+    workerStore.writeOptionSnapshot(id, next);
     conflation.markDirty(id);
   }
 }
@@ -326,7 +326,7 @@ function handleParsedFrame(parsed: Record<string, unknown>): void {
     ingestMarketQuoteArray(parsed['quotes'], nowSec);
     ingestOrderBookToSoa(parsed['liveOrderBook'], nowSec);
     workerSelf.postMessage({ type: 'WS_STOP_POLL' });
-    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', payload: parsed });
+    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     notifyDeltasReady();
     return;
   }
@@ -346,26 +346,27 @@ function handleParsedFrame(parsed: Record<string, unknown>): void {
       }
     }
     workerSelf.postMessage({ type: 'WS_STOP_POLL' });
-    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', payload: parsed });
+    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     notifyDeltasReady();
     return;
   }
 
   if (type === 'option_quotes_batch') {
-    ingestOptionQuoteArray(parsed['quotes'], nowSec);
+    if (viewScope && (viewScope.view !== 'options' || viewScope.focusSymbol !== parsed['underlying'])) return;
+    ingestOptionQuoteArray(parsed['quotes']);
     workerSelf.postMessage({ type: 'WS_STOP_POLL' });
-    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', payload: parsed });
+    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     notifyDeltasReady();
     return;
   }
 
   if (type === 'ggal_bar_tick') {
-    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', payload: parsed });
+    workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     return;
   }
 
   ingestLegacyEventToSoa(parsed, nowSec);
-  workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', payload: parsed });
+  workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
   notifyDeltasReady();
 }
 
@@ -538,7 +539,7 @@ function handleSetVisibleIds(
   conflation.setVisibleIds(resolvedIds);
   const newBindings = drainPendingBindings();
   if (newBindings.length > 0) {
-    workerSelf.postMessage({ type: 'SYMBOL_BINDINGS', bindings: newBindings });
+    workerSelf.postMessage({ type: 'SYMBOL_BINDINGS', optionScopeEpoch, bindings: newBindings });
   }
   notifyDeltasReady();
 }
@@ -573,7 +574,10 @@ workerSelf.onmessage = (event: MessageEvent<WorkerInboundMessage>): void => {
     }
     return;
   }
+  if (msg.type === 'CLEAR_OPTION_SLOTS') { clearOptionSlots(); return; }
   if (msg.type === 'SET_VIEW_SCOPE') {
+    optionScopeEpoch = msg.optionScopeEpoch;
+    if (viewScope?.view === 'options' && (viewScope.focusSymbol !== msg.focusSymbol || msg.view !== 'options')) clearOptionSlots();
     viewScope = {
       view: msg.view,
       focusSymbol: msg.focusSymbol,

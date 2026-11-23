@@ -1,3 +1,4 @@
+import type { OratsMetadata } from '../../../src/core/oratsIntegrity.js';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, Activity } from 'lucide-react';
 
@@ -62,7 +63,7 @@ interface OratsCircuitBreakerDetails {
   readonly openedAtMs: number | null;
 }
 
-interface OratsFeedDetails {
+interface OratsFeedDetails extends Pick<OratsMetadata, 'endpoints' | 'healthStatus' | 'providerTradeDate'> {
   readonly planTier: string | null;
   readonly quotaRemaining: number | null;
   readonly quotaLimit: number | null;
@@ -570,6 +571,11 @@ const ProviderCard: React.FC<{
 
       {provider.orats !== undefined && (
         <div className="mt-2.5 border-t border-[#1C1C24] pt-2">
+          <DetailRow label="ORATS / Fecha" value={`${provider.orats.healthStatus ?? '—'} · ${provider.orats.providerTradeDate ?? '—'}`} />
+          {(['cores', 'strikes', 'ivrank'] as const).map(name => {
+            const e = provider.orats?.endpoints?.[name];
+            return <DetailRow key={name} label={'/' + name} value={e?.ok == null ? '—' : `${e.httpStatus ?? '—'} · ${e.errorKind ?? e.payloadState} · ${e.circuitState}`} />;
+          })}
           <DetailRow label="Tier / Cuota" value={`${provider.orats.planTier ?? '—'} · ${provider.orats.quotaRemaining === null || provider.orats.quotaLimit === null ? '—' : `${String(provider.orats.quotaRemaining)}/${String(provider.orats.quotaLimit)}`}`} />
           <DetailRow label="Circuit breaker" value={`${provider.orats.circuitBreaker.state} · ${String(provider.orats.circuitBreaker.consecutiveFailures)} fallos`} />
           <DetailRow label="Último fetch" value={formatAgeMs(provider.orats.lastFetchAgeMs)} />

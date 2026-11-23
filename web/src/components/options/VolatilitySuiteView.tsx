@@ -249,9 +249,9 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
   const marketTag = suite?.market ?? (usSnapshot ? 'US' : 'BYMA');
   const currencyPrefix = marketTag === 'US' ? 'US$' : '$';
   const oratsSurface =
-    usVolSurface?.surface?.status === 'OPERATIONAL' ? usVolSurface.surface : null;
+    usVolSurface?.surface && usVolSurface.surface.status !== 'UNAVAILABLE' ? usVolSurface.surface : null;
   const oratsIvRank =
-    usVolSurface?.ivRank?.status === 'OPERATIONAL' ? usVolSurface.ivRank.row : null;
+    usVolSurface?.ivRank && usVolSurface.ivRank.status !== 'UNAVAILABLE' ? usVolSurface.ivRank.row : null;
 
   // Pieza 50: régimen de skew 25Δ (RR/BF) e IVR/IVP 1Y del vencimiento activo.
   // `row.callIV` / `row.putIV` ya vienen en puntos porcentuales (28.5) -> decimal exacto /100.
@@ -577,8 +577,11 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
                   : '—'}
               </div>
               <div className="text-[10px] font-mono-num tabular-nums text-[#9CA3AF]">
-                {usVolSurface?.cacheState ?? '—'}
-                {usVolSurface?.stale === true ? ' · stale' : ''}
+                {usVolSurface?.healthStatus === 'STALE_CACHE' ? 'STALE CACHE' : usVolSurface?.healthStatus === 'PARTIAL_FAILURE' ? 'DEGRADADO' : usVolSurface?.healthStatus ?? '—'}
+                {' · '}{usVolSurface?.providerTradeDate ?? '—'}
+              </div>
+              <div className="h-4 truncate text-[10px] tabular-nums text-[#9CA3AF]" title={usVolSurface?.reason ?? undefined}>
+                {usVolSurface?.dataProvenance ?? '—'} {usVolSurface?.stale && usVolSurface.cacheAgeMs != null ? `· ${Math.floor(usVolSurface.cacheAgeMs / 1000)} s` : ''} {usVolSurface?.reason}
               </div>
             </div>
           </div>

@@ -1,3 +1,4 @@
+import type { LiveOptionQuoteSnapshot } from '../../../src/core/opraOptionIntegrity.js';
 /**
  * Pieza 49 (Fase 2): Almacén Zero-Allocation Structure-of-Arrays (SoA),
  * Ring Buffer O(1) para cinta de trades, motor de conflación por bitmask
@@ -31,6 +32,12 @@ export const SOA_COL_TIMESTAMP = 6;
 export const SOA_COL_IV = 7;
 export const SOA_COL_DELTA = 8;
 export const SOA_COL_GAMMA = 9;
+export const SOA_DELTA_STRIDE_V2 = 12;
+export const MAX_DELTA_ITEMS_PER_FRAME_V2 = 100;
+// Both option clock columns carry exact integer milliseconds on the binary wire.
+export const SOA_COL_QUOTE_TIMESTAMP = SOA_COL_TIMESTAMP;
+export const SOA_COL_LAST_SIZE = 10;
+export const SOA_COL_TRADE_TIMESTAMP = 11;
 
 export type SoaPriceField = 'bid' | 'ask' | 'last' | 'mid';
 export type VisualPulseTier = 'l2' | 'table';
@@ -112,6 +119,14 @@ export function isDedicatedWorkerSupported(): boolean {
 
 export class MarketStoreSoA {
   public readonly capacity: number;
+  public readonly quoteTimestamp: Float64Array;
+  public readonly tradeTimestamp: Float64Array;
+  public readonly quoteTimestampMs: Float64Array;
+  public readonly tradeTimestampMs: Float64Array;
+  public readonly lastSize: Uint32Array;
+  public readonly hasLastSize: Uint8Array;
+  public readonly hasBidSize: Uint8Array;
+  public readonly hasAskSize: Uint8Array;
   public readonly bid: Float64Array;
   public readonly ask: Float64Array;
   public readonly last: Float64Array;
@@ -131,6 +146,14 @@ export class MarketStoreSoA {
       throw new RangeError(`Invalid MarketStoreSoA capacity: ${String(capacity)}`);
     }
     this.capacity = capacity;
+    this.quoteTimestamp = new Float64Array(capacity);
+    this.tradeTimestamp = new Float64Array(capacity);
+    this.quoteTimestampMs = new Float64Array(capacity);
+    this.tradeTimestampMs = new Float64Array(capacity);
+    this.lastSize = new Uint32Array(capacity);
+    this.hasLastSize = new Uint8Array(capacity);
+    this.hasBidSize = new Uint8Array(capacity);
+    this.hasAskSize = new Uint8Array(capacity);
     this.bid = new Float64Array(capacity);
     this.ask = new Float64Array(capacity);
     this.last = new Float64Array(capacity);
@@ -145,15 +168,38 @@ export class MarketStoreSoA {
   }
 
   public clearValues(): void {
-    this.bid.fill(Number.NaN);
-    this.ask.fill(Number.NaN);
-    this.last.fill(Number.NaN);
-    this.timestamp.fill(Number.NaN);
-    this.bidSize.fill(0);
-    this.askSize.fill(0);
-    this.iv.fill(Number.NaN);
-    this.delta.fill(Number.NaN);
-    this.gamma.fill(Number.NaN);
+    for (let id = 0; id < this.capacity; id++) this.clearSlot(id);
+  }
+
+  public clearSlot(id: number): void {
+    this.bid[id] = Number.NaN;
+    this.ask[id] = Number.NaN;
+    this.last[id] = Number.NaN;
+    this.timestamp[id] = Number.NaN;
+    this.iv[id] = Number.NaN;
+    this.delta[id] = Number.NaN;
+    this.gamma[id] = Number.NaN;
+    this.quoteTimestamp[id] = Number.NaN;
+    this.tradeTimestamp[id] = Number.NaN;
+    this.quoteTimestampMs[id] = Number.NaN;
+    this.tradeTimestampMs[id] = Number.NaN;
+    this.bidSize[id] = 0;
+    this.askSize[id] = 0;
+    this.lastSize[id] = 0;
+    this.hasLastSize[id] = 0;
+    this.hasBidSize[id] = 0;
+    this.hasAskSize[id] = 0;
+  }
+
+  public resetOptionSlots(onClear?: (id: number) => void): void {
+    for (const [symbol, id] of this.symbolToId) {
+      if (!/\d{6}[CP]\d{8}$/.test(symbol)) continue;
+      this.clearSlot(id);
+      this.symbolToId.delete(symbol);
+      this.idToSymbol[id] = undefined;
+      this.nextId = Math.min(this.nextId, id);
+      onClear?.(id);
+    }
   }
 
   public resetAll(): void {
@@ -186,10 +232,13 @@ export class MarketStoreSoA {
     const prevIdForSym = this.symbolToId.get(symbol);
     if (prevIdForSym !== undefined && prevIdForSym !== id) {
       this.idToSymbol[prevIdForSym] = undefined;
+      this.clearSlot(prevIdForSym);
+      this.nextId = Math.min(this.nextId, prevIdForSym);
     }
     const prevSymAtId = this.idToSymbol[id];
     if (prevSymAtId !== undefined && prevSymAtId !== symbol) {
       this.symbolToId.delete(prevSymAtId);
+      this.clearSlot(id);
     }
     this.symbolToId.set(symbol, id);
     this.idToSymbol[id] = symbol;
@@ -209,6 +258,38 @@ export class MarketStoreSoA {
 
   public getCount(): number {
     return this.symbolToId.size;
+  }
+
+  public writeNbboQuoteInPlace(id: number, bid: number, ask: number, bidSize: number, askSize: number, sec: number, ms: number,
+    iv = Number.NaN, delta = Number.NaN, gamma = Number.NaN): boolean {
+    if (!Number.isInteger(id) || id < 0 || id >= this.capacity || !Number.isFinite(ask) || !(bid > 0 && ask >= bid)
+      || !Number.isSafeInteger(ms) || ms <= 0 || ms > 4_102_444_800_000 || Math.floor(ms / 1000) !== sec
+      || ms < (this.quoteTimestampMs[id] ?? Number.NaN)) return false;
+    this.quoteTimestamp[id] = sec;
+    this.quoteTimestampMs[id] = ms;
+    this.hasBidSize[id] = Number.isSafeInteger(bidSize) && bidSize >= 0 ? 1 : 0;
+    this.hasAskSize[id] = Number.isSafeInteger(askSize) && askSize >= 0 ? 1 : 0;
+    this.bidSize[id] = this.hasBidSize[id] ? bidSize : 0;
+    this.askSize[id] = this.hasAskSize[id] ? askSize : 0;
+    return this.writeQuoteInPlace(id, bid, ask, Number.NaN, Number.NaN, Number.NaN, sec, iv, delta, gamma);
+  }
+
+  public writeTradeInPlace(id: number, last: number, size: number, sec: number, ms: number): boolean {
+    if (!Number.isInteger(id) || id < 0 || id >= this.capacity || !Number.isFinite(last) || last <= 0
+      || !Number.isSafeInteger(ms) || ms <= 0 || ms > 4_102_444_800_000 || Math.floor(ms / 1000) !== sec
+      || ms < (this.tradeTimestampMs[id] ?? Number.NaN)) return false;
+    this.last[id] = last;
+    this.hasLastSize[id] = Number.isSafeInteger(size) && size >= 0 ? 1 : 0;
+    this.lastSize[id] = this.hasLastSize[id] ? size : 0;
+    this.tradeTimestamp[id] = sec;
+    this.tradeTimestampMs[id] = ms;
+    return true;
+  }
+
+  public writeOptionSnapshot(id: number, row: LiveOptionQuoteSnapshot): void {
+    this.writeNbboQuoteInPlace(id, row.bid ?? Number.NaN, row.ask ?? Number.NaN, row.bidSize ?? Number.NaN, row.askSize ?? Number.NaN,
+      row.quoteTimestamp ?? Number.NaN, row.quoteTimestampMs ?? Number.NaN, row.iv, row.delta, row.gamma);
+    this.writeTradeInPlace(id, row.last ?? Number.NaN, row.lastSize ?? Number.NaN, row.tradeTimestamp ?? Number.NaN, row.tradeTimestampMs ?? Number.NaN);
   }
 
   public writeQuoteInPlace(
@@ -272,6 +353,16 @@ export class MarketStoreSoA {
       const deltaVal = view[base + SOA_COL_DELTA];
       const gammaVal = view[base + SOA_COL_GAMMA];
 
+      // Non-option market rows retain the v1 timestamp and independent L1 fields.
+      if (stride >= SOA_DELTA_STRIDE_V2 && view[base + SOA_COL_TRADE_TIMESTAMP] !== -1) {
+        const qMs = tsVal ?? Number.NaN;
+        const tMs = view[base + SOA_COL_TRADE_TIMESTAMP] ?? Number.NaN;
+        this.writeNbboQuoteInPlace(id, bidVal ?? Number.NaN, askVal ?? Number.NaN, bidSizeVal ?? Number.NaN, askSizeVal ?? Number.NaN,
+          Math.floor(qMs / 1000), qMs, ivVal, deltaVal, gammaVal);
+        this.writeTradeInPlace(id, lastVal ?? Number.NaN, view[base + SOA_COL_LAST_SIZE] ?? Number.NaN, Math.floor(tMs / 1000), tMs);
+        applied++;
+        continue;
+      }
       if (bidVal !== undefined && !Number.isNaN(bidVal)) this.bid[id] = bidVal;
       if (askVal !== undefined && !Number.isNaN(askVal)) this.ask[id] = askVal;
       if (lastVal !== undefined && !Number.isNaN(lastVal)) this.last[id] = lastVal;
@@ -297,10 +388,10 @@ export class MarketStoreSoA {
     if (field === 'last') return this.last[id] ?? Number.NaN;
     const b = this.bid[id] ?? Number.NaN;
     const a = this.ask[id] ?? Number.NaN;
-    if (Number.isFinite(b) && Number.isFinite(a) && b > 0 && a > 0) {
+    if (Number.isFinite(b) && Number.isFinite(a) && b > 0 && a >= b) {
       return 0.5 * (b + a);
     }
-    return this.last[id] ?? Number.NaN;
+    return Number.NaN;
   }
 }
 
@@ -555,6 +646,16 @@ export class BitmaskConflationEngine {
         outView[base + SOA_COL_IV] = store.iv[id] ?? Number.NaN;
         outView[base + SOA_COL_DELTA] = store.delta[id] ?? Number.NaN;
         outView[base + SOA_COL_GAMMA] = store.gamma[id] ?? Number.NaN;
+        if (stride >= SOA_DELTA_STRIDE_V2) {
+          const option = Number.isFinite(store.quoteTimestampMs[id]) || Number.isFinite(store.tradeTimestampMs[id]);
+          outView[base + SOA_COL_LAST_SIZE] = store.hasLastSize[id] ? store.lastSize[id]! : Number.NaN;
+          outView[base + SOA_COL_TRADE_TIMESTAMP] = option ? store.tradeTimestampMs[id]! : -1;
+          if (option) {
+            outView[base + SOA_COL_QUOTE_TIMESTAMP] = store.quoteTimestampMs[id]!;
+            if (!store.hasBidSize[id]) outView[base + SOA_COL_BID_SIZE] = Number.NaN;
+            if (!store.hasAskSize[id]) outView[base + SOA_COL_ASK_SIZE] = Number.NaN;
+          }
+        }
         count += 1;
       }
       this.dirtyMask[w] = dirtyWord;

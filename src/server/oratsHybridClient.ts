@@ -23,9 +23,12 @@ export type { OratsHybridSurfacePayload };
 import {
   RollingFeedTelemetry,
   type FeedTelemetrySnapshot,
-  type OratsCircuitBreakerDetails,
 } from './feedsHealthMonitor.js';
-import { redactSecrets } from './runtimeCache.js';
+import {
+  aggregateOratsGlobalHealth, createEndpointHealth, evaluateEndpointCircuitBeforeCall, extractStrictOratsRows,
+  parseOratsTradeDate, parseOratsUpdatedAtUtcSec, recordEndpointOutcome, type EndpointOutcome, type OratsEndpoint,
+  type OratsEndpointHealth, type OratsEndpoints, type OratsError, type OratsMetadata,
+} from '../core/oratsIntegrity.js';
 import {
   normalizeOratsSignedRateToDecimal,
   normalizeOratsVolToDecimal,
@@ -66,9 +69,6 @@ export interface FetchOratsHybridInput {
 
 const DEFAULT_ORATS_BASE_URL = 'https://api.orats.io/datav2';
 const DEFAULT_ORATS_CACHE_TTL_MS = 30_000;
-const ORATS_CIRCUIT_FAILURE_THRESHOLD = 3;
-const ORATS_CIRCUIT_COOLDOWN_MS = 30_000;
-
 async function defaultOratsFetch(
   url: string,
   init?: {
@@ -96,36 +96,16 @@ async function defaultOratsFetch(
       reqInit.headers = init.headers;
     }
     const resp = await fetch(url, reqInit);
+    const body = resp.ok ? await resp.text() : null;
     return {
       ok: resp.ok,
       status: resp.status,
-      json: async (): Promise<unknown> => {
-        const parsed: unknown = await resp.json();
-        return parsed;
-      },
-      text: () => resp.text(),
+      json: () => Promise.resolve(JSON.parse(body ?? '') as unknown),
+      text: () => Promise.resolve(body ?? ''),
     };
   } finally {
     clearTimeout(timer);
   }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return null;
-}
-
-function extractDataRows(payload: unknown): readonly Record<string, unknown>[] {
-  if (Array.isArray(payload)) {
-    return payload.map(asRecord).filter((r): r is Record<string, unknown> => r !== null);
-  }
-  const obj = asRecord(payload);
-  if (obj !== null && Array.isArray(obj['data'])) {
-    return obj['data'].map(asRecord).filter((r): r is Record<string, unknown> => r !== null);
-  }
-  return obj !== null ? [obj] : [];
 }
 
 /** Pieza 46.1/50.3: volatilidades ORATS siempre en decimal (0.3582 = 35.82 %), nunca en % (evita 3.582 %). */
@@ -193,7 +173,7 @@ export function parseOratsStrikeRow(row: Record<string, unknown>): OratsSurfaceS
 
 export interface OratsIvRankRow {
   readonly ticker: string;
-  readonly tradeDate: string;
+  readonly tradeDate: string | null;
   readonly iv: number;
   readonly ivRank1m: number;
   readonly ivPct1m: number;
@@ -202,29 +182,29 @@ export interface OratsIvRankRow {
   readonly updatedAtUtcSec: number;
 }
 
-export type OratsIvRankPayload =
+export type OratsIvRankPayload = OratsMetadata & (
   | ({
       readonly status: 'OPERATIONAL';
+      readonly reason?: null;
       readonly source: 'ORATS_IV_RANK';
       readonly row: OratsIvRankRow;
     })
+  | { readonly status: 'STALE_CACHE' | 'PARTIAL_FAILURE'; readonly source: 'ORATS_IV_RANK'; readonly row: OratsIvRankRow; readonly reason: string }
   | {
       readonly status: 'UNAVAILABLE';
       readonly source: 'ORATS_IV_RANK';
       readonly ticker: string;
       readonly reason: string;
-    };
+    });
 
 export function parseOratsIvRankRow(row: Record<string, unknown>): OratsIvRankRow | null {
   const ticker = readStr(row, 'ticker').toUpperCase();
-  const tradeDate = readStr(row, 'tradeDate');
+  const tradeDate = parseOratsTradeDate(row['tradeDate']);
   const iv = readVol(row, 'iv');
   const ivRank1y = readNum(row, 'ivRank1y');
   const ivPct1y = readNum(row, 'ivPct1y');
-  const updatedAtMs = Date.parse(readStr(row, 'updatedAt'));
   if (
     ticker === '' ||
-    tradeDate === '' ||
     !Number.isFinite(iv) ||
     !Number.isFinite(ivRank1y) ||
     !Number.isFinite(ivPct1y)
@@ -239,7 +219,7 @@ export function parseOratsIvRankRow(row: Record<string, unknown>): OratsIvRankRo
     ivPct1m: readNum(row, 'ivPct1m'),
     ivRank1y,
     ivPct1y,
-    updatedAtUtcSec: Number.isFinite(updatedAtMs) ? Math.floor(updatedAtMs / 1_000) : Number.NaN,
+    updatedAtUtcSec: parseOratsUpdatedAtUtcSec(row['updatedAt']) ?? Number.NaN,
   };
 }
 
@@ -257,17 +237,21 @@ export class OratsHybridClient {
   private readonly telemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
   });
-  private circuitState: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
-  private consecutiveFailures = 0;
-  private circuitOpenedAtMs: number | null = null;
+  private readonly endpoints: Record<OratsEndpoint, OratsEndpointHealth> = {
+    cores: createEndpointHealth('cores'), strikes: createEndpointHealth('strikes'), ivrank: createEndpointHealth('ivrank'),
+  };
+  private readonly servingStale = new Set<OratsEndpoint>();
+  private readonly jitterUnit: number;
 
   public constructor(opts?: {
+    readonly jitterUnit?: number;
     readonly env?: NodeJS.ProcessEnv;
     readonly fetchFn?: OratsHttpFn;
     readonly nowMsFn?: () => number;
     readonly cacheTtlMs?: number;
     readonly secrets?: readonly string[];
   }) {
+    this.jitterUnit = opts?.jitterUnit ?? 0;
     const env = opts?.env ?? {};
     const cfg = loadOratsClientConfigFromEnv(env);
     const secrets = [...(opts?.secrets ?? [])];
@@ -292,34 +276,75 @@ export class OratsHybridClient {
     return this.telemetry.snapshot(nowMs);
   }
 
-  public getCircuitBreaker(nowMs: number): OratsCircuitBreakerDetails {
-    if (
-      this.circuitState === 'OPEN' &&
-      this.circuitOpenedAtMs !== null &&
-      Number.isFinite(nowMs) &&
-      nowMs - this.circuitOpenedAtMs >= ORATS_CIRCUIT_COOLDOWN_MS
-    ) {
-      this.circuitState = 'HALF_OPEN';
-    }
-    return {
-      state: this.circuitState,
-      consecutiveFailures: this.consecutiveFailures,
-      openedAtMs: this.circuitOpenedAtMs,
-    };
+  public getCircuitBreaker(nowMs: number) {
+    const endpoints: OratsEndpoints = { ...this.endpoints };
+    const all = Object.values(endpoints);
+    const open = all.filter(e => e.circuitState === 'OPEN');
+    const state = open.some(e => e.nextRetryAtMs !== null && nowMs < e.nextRetryAtMs) ? 'OPEN' as const
+      : open.length || all.some(e => e.halfOpenProbeInFlight) ? 'HALF_OPEN' as const : 'CLOSED' as const;
+    const started = all.flatMap(e => e.circuitOpenedAtMs === null ? [] : [e.circuitOpenedAtMs]);
+    return { state, consecutiveFailures: Math.max(...all.map(e => e.consecutiveFailures)), openedAtMs: started.length ? Math.min(...started) : null, endpoints };
   }
 
-  private recordHttpFailure(): void {
-    this.consecutiveFailures += 1;
-    if (this.consecutiveFailures >= ORATS_CIRCUIT_FAILURE_THRESHOLD) {
-      this.circuitState = 'OPEN';
-      this.circuitOpenedAtMs = this.deps.nowMsFn();
-    }
+  public getHealthSnapshot(now = this.deps.nowMsFn()) {
+    const circuitBreaker = this.getCircuitBreaker(now);
+    const endpoints = circuitBreaker.endpoints;
+    const healthStatus = aggregateOratsGlobalHealth(endpoints, this.servingStale.size > 0);
+    const all = Object.values(endpoints).sort((a, b) => (b.receivedAtMs ?? 0) - (a.receivedAtMs ?? 0));
+    const received = all[0]?.receivedAtMs;
+    const configured = this.isConfigured();
+    return { configured, healthStatus, connected: configured && received == null ? null : healthStatus === 'OPERATIONAL',
+      providerTradeDate: endpoints.cores.providerTradeDate ?? endpoints.ivrank.providerTradeDate,
+      endpoints, circuitBreaker, lastError: all.find(e => e.ok === false)?.errorMessage ?? null,
+      lastFetchAtUtcSec: received == null ? null : Math.floor(received / 1000), lastStatus: received == null ? null : healthStatus,
+      planTier: null, quotaRemaining: null, quotaLimit: null, quotaResetAtUtcSec: null, telemetry: this.telemetry.snapshot(now) };
   }
 
-  private recordHttpSuccess(): void {
-    this.consecutiveFailures = 0;
-    this.circuitState = 'CLOSED';
-    this.circuitOpenedAtMs = null;
+  private async fetchEndpoint(endpoint: OratsEndpoint, ticker: string) {
+    const start = this.deps.nowMsFn();
+    const gate = evaluateEndpointCircuitBeforeCall(this.endpoints[endpoint], start);
+    let rows: Record<string, unknown>[] = [];
+    if (gate.blocked) {
+      const health = { ...gate.state, ok: false, errorKind: gate.blocked, errorMessage: `ORATS_${endpoint.toUpperCase()}_${gate.blocked}` };
+      return { rows, health };
+    }
+    this.endpoints[endpoint] = gate.state;
+    let httpStatus: number | null = null;
+    let errorKind: OratsError | null = null;
+    try {
+      const url = new URL(this.deps.baseUrl + '/' + endpoint);
+      url.searchParams.set('token', this.deps.apiKey ?? '');
+      url.searchParams.set('ticker', ticker);
+      const resp = await this.timedFetch(url.href, 10_000);
+      httpStatus = resp.status;
+      if (!resp.ok) errorKind = resp.status === 429 ? 'HTTP_429' : resp.status >= 500 ? 'HTTP_5XX' : 'HTTP_4XX';
+      else {
+        const json = await resp.json();
+        const parsed = extractStrictOratsRows(json, row => {
+          if (row['ticker'] !== undefined && readStr(row, 'ticker').toUpperCase() !== ticker) return false;
+          if (endpoint === 'ivrank') return parseOratsIvRankRow(row) !== null;
+          if (endpoint === 'strikes') return parseOratsStrikeRow(row) !== null;
+          return ['stockPrice', 'smvVol', 'iv10d', 'iv20d', 'iv30d', 'iv60d', 'iv90d', 'iv6m', 'iv1y', 'exErnIv30d'].some(key => Number.isFinite(readNum(row, key)));
+        });
+        if (parsed === null) errorKind = 'INVALID_SCHEMA';
+        else if (!parsed.length && endpoint !== 'strikes') errorKind = 'UNEXPECTED_EMPTY';
+        else rows = parsed;
+      }
+    } catch (err) {
+      errorKind = err instanceof Error && err.name === 'AbortError' ? 'TIMEOUT'
+        : httpStatus !== null ? 'INVALID_JSON' : 'NETWORK_ERROR';
+    }
+    const providerTradeDate = parseOratsTradeDate(rows[0]?.['tradeDate']);
+    if (!errorKind && endpoint !== 'strikes' && !providerTradeDate) errorKind = 'INVALID_SCHEMA';
+    const outcome: EndpointOutcome = { httpStatus, errorKind, providerTradeDate, asOf: parseOratsUpdatedAtUtcSec(rows[0]?.['updatedAt']),
+      payloadState: errorKind ? 'ERROR' : rows.length ? 'VALID_DATA' : 'EMPTY_VALID' };
+    const health = recordEndpointOutcome(this.endpoints[endpoint], outcome, start, this.deps.nowMsFn(), this.jitterUnit);
+    // Requests already in flight when the circuit opened cannot act as recovery probes.
+    if (gate.state.halfOpenProbeInFlight || this.endpoints[endpoint].circuitState === 'CLOSED') {
+      this.endpoints[endpoint] = health;
+      if (health.ok) this.servingStale.delete(endpoint);
+    }
+    return { rows, health };
   }
 
   private async timedFetch(
@@ -376,8 +401,9 @@ export class OratsHybridClient {
 
     if (!forceRefresh) {
       const cached = this.ivRankCache.get(ticker);
-      if (cached !== undefined && nowMs - cached.fetchedAtMs < this.deps.cacheTtlMs) {
-        return { status: 'OPERATIONAL', source: 'ORATS_IV_RANK', row: cached.row };
+      if (this.endpoints.ivrank.ok && cached !== undefined && nowMs - cached.fetchedAtMs < this.deps.cacheTtlMs) {
+        return { status: 'OPERATIONAL', source: 'ORATS_IV_RANK', row: cached.row, providerTradeDate: cached.row.tradeDate,
+          tradeDateVerified: true, cachedAtUtcSec: Math.floor(cached.fetchedAtMs / 1000), cacheAgeMs: nowMs - cached.fetchedAtMs };
       }
       const inflight = this.ivRankInFlight.get(ticker);
       if (inflight !== undefined) {
@@ -386,65 +412,31 @@ export class OratsHybridClient {
     }
 
     const request = (async (): Promise<OratsIvRankPayload> => {
-      const circuit = this.getCircuitBreaker(nowMs);
-      if (circuit.state === 'OPEN') {
-        return {
-          status: 'UNAVAILABLE',
-          source: 'ORATS_IV_RANK',
-          ticker,
-          reason: 'ORATS_CIRCUIT_OPEN',
-        };
+      const { rows, health } = await this.fetchEndpoint('ivrank', ticker);
+      const row = rows[0] && parseOratsIvRankRow(rows[0]);
+      const source = 'ORATS_IV_RANK' as const;
+      const receivedMs = this.deps.nowMsFn();
+      const meta = { receivedAtUtcSec: Math.floor(receivedMs / 1000), endpoints: { ...this.endpoints, ivrank: health } };
+      if (health.ok && row) {
+        this.ivRankCache.set(ticker, { fetchedAtMs: receivedMs, row });
+        return { ...meta, source, row, status: 'OPERATIONAL', providerTradeDate: row.tradeDate, tradeDateVerified: true };
       }
-      const token = encodeURIComponent(this.deps.apiKey ?? '');
-      const symbolEnc = encodeURIComponent(ticker);
-      const url = `${this.deps.baseUrl}/ivrank?token=${token}&ticker=${symbolEnc}`;
-      try {
-        const response = await this.timedFetch(url, 10_000);
-        if (!response.ok) {
-          this.recordHttpFailure();
-          return {
-            status: 'UNAVAILABLE',
-            source: 'ORATS_IV_RANK',
-            ticker,
-            reason: `ORATS_IV_RANK_HTTP_${String(response.status)}`,
-          };
-        }
-        const json = await response.json();
-        const rows = extractDataRows(json);
-        const rawRow = rows[0];
-        const parsed = rawRow === undefined ? null : parseOratsIvRankRow(rawRow);
-        if (parsed === null) {
-          this.recordHttpFailure();
-          return {
-            status: 'UNAVAILABLE',
-            source: 'ORATS_IV_RANK',
-            ticker,
-            reason: 'ORATS_IV_RANK_EMPTY_OR_INVALID_RESPONSE',
-          };
-        }
-        this.recordHttpSuccess();
-        this.ivRankCache.set(ticker, { fetchedAtMs: this.deps.nowMsFn(), row: parsed });
-        return { status: 'OPERATIONAL', source: 'ORATS_IV_RANK', row: parsed };
-      } catch (err: unknown) {
-        this.recordHttpFailure();
-        return {
-          status: 'UNAVAILABLE',
-          source: 'ORATS_IV_RANK',
-          ticker,
-          reason: `ORATS_IV_RANK_FETCH_ERROR: ${redactSecrets(
-            err instanceof Error ? err.message : String(err),
-            this.deps.secrets,
-          )}`,
-        };
-      } finally {
-        this.ivRankInFlight.delete(ticker);
+      const reason = health.errorMessage ?? 'ORATS_IVRANK_INVALID_SCHEMA';
+      const cached = this.ivRankCache.get(ticker);
+      if (cached) {
+        this.servingStale.add('ivrank');
+        return { ...meta, source, status: 'STALE_CACHE', dataProvenance: 'STALE_CACHE', stale: true, row: cached.row,
+          providerTradeDate: cached.row.tradeDate, cacheAgeMs: receivedMs - cached.fetchedAtMs, reason };
       }
+      return row ? { ...meta, source, status: 'PARTIAL_FAILURE', row, tradeDateVerified: false, reason }
+        : { ...meta, source, status: 'UNAVAILABLE', ticker, reason };
     })();
 
     if (!forceRefresh) {
       this.ivRankInFlight.set(ticker, request);
     }
-    return request;
+    try { return await request; }
+    finally { if (this.ivRankInFlight.get(ticker) === request) this.ivRankInFlight.delete(ticker); }
   }
 
   public async fetchHybridSurface(
@@ -452,14 +444,14 @@ export class OratsHybridClient {
   ): Promise<OratsHybridSurfacePayload> {
     const ticker = input.ticker.trim().toUpperCase();
     const nowMs = this.deps.nowMsFn();
-    const asOfUtcSec = Math.floor(nowMs / 1000);
+    const receivedAtUtcSecOnEntry = Math.floor(nowMs / 1000);
 
     if (this.deps.apiKey === null) {
       return {
         status: 'UNAVAILABLE',
         source: 'ORATS_DELAYED_CORE',
         ticker,
-        asOfUtcSec,
+        asOfUtcSec: Number.NaN, receivedAtUtcSec: receivedAtUtcSecOnEntry, providerTradeDate: null, healthStatus: 'UNAVAILABLE',
         reason: 'ORATS_API_KEY_NOT_CONFIGURED',
         massiveSpotPrice: input.massiveSpotPrice,
         massiveSpotSourceMode: input.massiveSpotSourceMode,
@@ -468,7 +460,7 @@ export class OratsHybridClient {
     }
 
     const cached = this.surfaceCache.get(ticker);
-    if (!input.forceRefresh && cached !== undefined && nowMs - cached.fetchedAtMs < this.deps.cacheTtlMs) {
+    if (!input.forceRefresh && this.endpoints.cores.ok && this.endpoints.strikes.ok && cached !== undefined && nowMs - cached.fetchedAtMs < this.deps.cacheTtlMs) {
       return {
         ...cached.payload,
         massiveSpotPrice: input.massiveSpotPrice,
@@ -477,122 +469,76 @@ export class OratsHybridClient {
       };
     }
 
-    const token = encodeURIComponent(this.deps.apiKey);
-    const symbolEnc = encodeURIComponent(ticker);
-    const coresUrl = `${this.deps.baseUrl}/cores?token=${token}&ticker=${symbolEnc}`;
-    const strikesUrl = `${this.deps.baseUrl}/strikes?token=${token}&ticker=${symbolEnc}`;
-
-    const circuit = this.getCircuitBreaker(nowMs);
-    if (circuit.state === 'OPEN') {
-      return {
-        status: 'UNAVAILABLE',
-        source: 'ORATS_DELAYED_CORE',
-        ticker,
-        asOfUtcSec,
-        reason: 'ORATS_CIRCUIT_OPEN',
-        massiveSpotPrice: input.massiveSpotPrice,
-        massiveSpotSourceMode: input.massiveSpotSourceMode,
-        yangZhangAdrVol: input.yangZhangAdrVol,
-      };
+    // Each request classifies its own transport, JSON and schema failures.
+    const results = await Promise.allSettled([this.fetchEndpoint('cores', ticker), this.fetchEndpoint('strikes', ticker)]);
+    const resultFor = (result: (typeof results)[number], endpoint: OratsEndpoint) => {
+      if (result.status === 'fulfilled') return result.value;
+      const now = this.deps.nowMsFn();
+      const health = recordEndpointOutcome(this.endpoints[endpoint], {
+        httpStatus: null, errorKind: 'NETWORK_ERROR', asOf: null, providerTradeDate: null, payloadState: 'ERROR',
+      }, nowMs, now, this.jitterUnit);
+      this.endpoints[endpoint] = health;
+      return { rows: [], health };
+    };
+    const cores = resultFor(results[0], 'cores');
+    const strikes = resultFor(results[1], 'strikes');
+    const endpoints = { ...this.endpoints, cores: cores.health, strikes: strikes.health };
+    const receivedMs = this.deps.nowMsFn();
+    const receivedAtUtcSec = Math.floor(receivedMs / 1000);
+    const coreRow = cores.rows[0];
+    const failure = !cores.health.ok ? cores.health : !strikes.health.ok ? strikes.health : null;
+    const reason = failure?.errorMessage ?? 'ORATS_INVALID_SCHEMA';
+    const lastHealthy = this.surfaceCache.get(ticker);
+    if (failure && lastHealthy) {
+      this.servingStale.add(failure.endpoint);
+      return { ...lastHealthy.payload, status: 'STALE_CACHE', healthStatus: 'STALE_CACHE', dataProvenance: 'STALE_CACHE',
+        surfaceCompleteness: 'STALE_CACHE_SERVED', stale: true, endpoints, reason, receivedAtUtcSec,
+        cacheAgeMs: receivedMs - lastHealthy.fetchedAtMs };
     }
+    if (coreRow === undefined) return {
+      status: 'UNAVAILABLE', healthStatus: 'UNAVAILABLE', source: 'ORATS_DELAYED_CORE', dataProvenance: 'UNAVAILABLE', ticker,
+      asOfUtcSec: Number.NaN, receivedAtUtcSec, providerTradeDate: null, tradeDateVerified: false, endpoints, reason,
+      massiveSpotPrice: input.massiveSpotPrice, massiveSpotSourceMode: input.massiveSpotSourceMode, yangZhangAdrVol: input.yangZhangAdrVol,
+    };
+    const tradeDate = cores.health.providerTradeDate;
+    const operational: OratsHybridSurfaceOperational = {
+      status: 'OPERATIONAL', healthStatus: 'OPERATIONAL', source: 'ORATS_DELAYED_CORE', ticker,
+      tradeDate, providerTradeDate: tradeDate, tradeDateVerified: tradeDate !== null, providerUpdatedAtUtcSec: cores.health.asOf,
+      asOfUtcSec: cores.health.asOf ?? Number.NaN, receivedAtUtcSec, endpoints, stale: false, dataProvenance: 'LIVE',
+      surfaceCompleteness: strikes.rows.length ? 'COMPLETE' : 'EMPTY_STRIKES_VALID',
+      stockPrice: readNum(coreRow, 'stockPrice'),
+      massiveSpotPrice: input.massiveSpotPrice,
+      massiveSpotSourceMode: input.massiveSpotSourceMode,
+      smvVol: readVol(coreRow, 'smvVol'),
+      iv10d: readVol(coreRow, 'iv10d'),
+      iv20d: readVol(coreRow, 'iv20d'),
+      iv30d: readVol(coreRow, 'iv30d'),
+      iv60d: readVol(coreRow, 'iv60d'),
+      iv90d: readVol(coreRow, 'iv90d'),
+      iv6m: readVol(coreRow, 'iv6m'),
+      iv1y: readVol(coreRow, 'iv1y'),
+      exErnIv10d: readVol(coreRow, 'exErnIv10d'),
+      exErnIv20d: readVol(coreRow, 'exErnIv20d'),
+      exErnIv30d: readVol(coreRow, 'exErnIv30d'),
+      exErnIv60d: readVol(coreRow, 'exErnIv60d'),
+      exErnIv90d: readVol(coreRow, 'exErnIv90d'),
+      fwd30_20: readVol(coreRow, 'fwd30_20'),
+      fwd60_30: readVol(coreRow, 'fwd60_30'),
+      fwd90_60: readVol(coreRow, 'fwd90_60'),
+      impliedMove: readVol(coreRow, 'impliedMove'),
+      annIdiv: readNum(coreRow, 'annIdiv'),
+      impliedNextDiv: readNum(coreRow, 'impliedNextDiv'),
+      borrow30: normalizeOratsSignedRateToDecimal(readNum(coreRow, 'borrow30')),
+      yieldRate: readVol(coreRow, 'yieldRate'),
+      yangZhangAdrVol: input.yangZhangAdrVol,
+      strikes: strikes.rows.map(parseOratsStrikeRow).filter((row): row is OratsSurfaceStrikeRow => row !== null),
+      reason: null,
+    };
 
-    try {
-      const [coresResp, strikesResp] = await Promise.all([
-        this.timedFetch(coresUrl, 10_000),
-        this.timedFetch(strikesUrl, 10_000),
-      ]);
-
-      if (!coresResp.ok) {
-        this.recordHttpFailure();
-        return {
-          status: 'UNAVAILABLE',
-          source: 'ORATS_DELAYED_CORE',
-          ticker,
-          asOfUtcSec,
-          reason: `ORATS_CORES_HTTP_${String(coresResp.status)}`,
-          massiveSpotPrice: input.massiveSpotPrice,
-          massiveSpotSourceMode: input.massiveSpotSourceMode,
-          yangZhangAdrVol: input.yangZhangAdrVol,
-        };
-      }
-
-      const coresJson = await coresResp.json();
-      const coreRows = extractDataRows(coresJson);
-      const coreRow = coreRows[0];
-      if (coreRow === undefined) {
-        this.recordHttpFailure();
-        return {
-          status: 'UNAVAILABLE',
-          source: 'ORATS_DELAYED_CORE',
-          ticker,
-          asOfUtcSec,
-          reason: 'ORATS_CORES_EMPTY_RESPONSE',
-          massiveSpotPrice: input.massiveSpotPrice,
-          massiveSpotSourceMode: input.massiveSpotSourceMode,
-          yangZhangAdrVol: input.yangZhangAdrVol,
-        };
-      }
-
-      let strikeRows: readonly OratsSurfaceStrikeRow[] = [];
-      if (strikesResp.ok) {
-        const strikesJson = await strikesResp.json();
-        strikeRows = extractDataRows(strikesJson)
-          .map(parseOratsStrikeRow)
-          .filter((r): r is OratsSurfaceStrikeRow => r !== null);
-      }
-
-      const tradeDateRaw = readStr(coreRow, 'tradeDate');
-      const operational: OratsHybridSurfaceOperational = {
-        status: 'OPERATIONAL',
-        source: 'ORATS_DELAYED_CORE',
-        ticker,
-        tradeDate: tradeDateRaw.length > 0 ? tradeDateRaw : new Date(nowMs).toISOString().slice(0, 10),
-        asOfUtcSec,
-        stockPrice: readNum(coreRow, 'stockPrice'),
-        massiveSpotPrice: input.massiveSpotPrice,
-        massiveSpotSourceMode: input.massiveSpotSourceMode,
-        smvVol: readVol(coreRow, 'smvVol'),
-        iv10d: readVol(coreRow, 'iv10d'),
-        iv20d: readVol(coreRow, 'iv20d'),
-        iv30d: readVol(coreRow, 'iv30d'),
-        iv60d: readVol(coreRow, 'iv60d'),
-        iv90d: readVol(coreRow, 'iv90d'),
-        iv6m: readVol(coreRow, 'iv6m'),
-        iv1y: readVol(coreRow, 'iv1y'),
-        exErnIv10d: readVol(coreRow, 'exErnIv10d'),
-        exErnIv20d: readVol(coreRow, 'exErnIv20d'),
-        exErnIv30d: readVol(coreRow, 'exErnIv30d'),
-        exErnIv60d: readVol(coreRow, 'exErnIv60d'),
-        exErnIv90d: readVol(coreRow, 'exErnIv90d'),
-        fwd30_20: readVol(coreRow, 'fwd30_20'),
-        fwd60_30: readVol(coreRow, 'fwd60_30'),
-        fwd90_60: readVol(coreRow, 'fwd90_60'),
-        impliedMove: readVol(coreRow, 'impliedMove'),
-        annIdiv: readNum(coreRow, 'annIdiv'),
-        impliedNextDiv: readNum(coreRow, 'impliedNextDiv'),
-        borrow30: normalizeOratsSignedRateToDecimal(readNum(coreRow, 'borrow30')),
-        yieldRate: readVol(coreRow, 'yieldRate'),
-        yangZhangAdrVol: input.yangZhangAdrVol,
-        strikes: strikeRows,
-        reason: null,
-      };
-
-      this.surfaceCache.set(ticker, { fetchedAtMs: nowMs, payload: operational });
-      this.recordHttpSuccess();
-      return operational;
-    } catch (err) {
-      this.recordHttpFailure();
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        status: 'UNAVAILABLE',
-        source: 'ORATS_DELAYED_CORE',
-        ticker,
-        asOfUtcSec,
-        reason: `ORATS_FETCH_ERROR: ${redactSecrets(msg, this.deps.secrets)}`,
-        massiveSpotPrice: input.massiveSpotPrice,
-        massiveSpotSourceMode: input.massiveSpotSourceMode,
-        yangZhangAdrVol: input.yangZhangAdrVol,
-      };
-    }
+    if (failure) return { ...operational, status: 'PARTIAL_FAILURE', healthStatus: 'PARTIAL_FAILURE', reason,
+      dataProvenance: 'LIVE_PARTIAL', surfaceCompleteness: !strikes.health.ok ? 'INCOMPLETE_STRIKES_ERROR' : 'UNVERIFIED_DATE' };
+    const healthy = { ...operational, cachedAtUtcSec: receivedAtUtcSec };
+    this.surfaceCache.set(ticker, { fetchedAtMs: receivedMs, payload: healthy });
+    return healthy;
   }
 }

@@ -221,6 +221,8 @@ function normalizeTradeEvent(
   return {
     ev: 'T',
     sym: symRaw,
+    ...(typeof item['q'] === 'number' && Number.isSafeInteger(item['q']) && item['q'] >= 0 ? { sequence: item['q'] } : {}),
+    ...((typeof item['i'] === 'string' && item['i'].trim() !== '') || (typeof item['i'] === 'number' && Number.isSafeInteger(item['i'])) ? { tradeId: String(item['i']) } : {}),
     price,
     size,
     timeSec,
@@ -265,6 +267,9 @@ function normalizeQuoteEvent(
   return {
     ev: 'Q',
     sym: symRaw,
+    ...(typeof item['q'] === 'number' && Number.isSafeInteger(item['q']) && item['q'] >= 0 ? { sequence: item['q'] } : {}),
+    ...(typeof item['bx'] === 'number' && Number.isSafeInteger(item['bx']) && item['bx'] >= 0 ? { bidExchange: item['bx'] } : {}),
+    ...(typeof item['ax'] === 'number' && Number.isSafeInteger(item['ax']) && item['ax'] >= 0 ? { askExchange: item['ax'] } : {}),
     bidPrice: bp,
     askPrice: ap,
     bidSize: bs,

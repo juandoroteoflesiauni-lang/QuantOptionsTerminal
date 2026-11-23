@@ -1413,12 +1413,6 @@ export class GgalSpecialistRuntime {
   private recorderTimer: ReturnType<typeof setInterval> | null = null;
   private readonly arFeedRouter: ArFeedRouter;
   private readonly oratsClient: OratsHybridClient;
-  /** Pieza 32: último resultado de la superficie ORATS para providers-status. */
-  private oratsLastCall: {
-    readonly atUtcSec: number;
-    readonly ok: boolean;
-    readonly status: string;
-  } | null = null;
   private regimePriorProbabilities: readonly [number, number, number] = [0.55, 0.35, 0.10];
   private previousBmbBest: BmbBestQuoteObservation | null = null;
   private bmbIcebergCache: {
@@ -1524,43 +1518,12 @@ export class GgalSpecialistRuntime {
    * Pieza 32: estado ORATS para `GET /api/us/providers-status` (rol superficie
    * `smvVol` / `IV Rank` / `impliedMove` en el especialista GGAL).
    */
-  public getOratsStatus(): {
-    readonly configured: boolean;
-    readonly connected: boolean | null;
-    readonly lastFetchAtUtcSec: number | null;
-    readonly lastStatus: string | null;
-    readonly activeRole: 'SURFACE';
-  } {
-    const configured = this.oratsClient.isConfigured();
-    const last = this.oratsLastCall;
-    return {
-      configured,
-      connected: !configured ? false : last === null ? null : last.ok,
-      lastFetchAtUtcSec: last?.atUtcSec ?? null,
-      lastStatus: last?.status ?? null,
-      activeRole: 'SURFACE',
-    };
+  public getOratsStatus() {
+    return { ...this.getOratsFeedHealth(), activeRole: 'SURFACE' as const };
   }
 
-  /** Pieza 33: estado real del cliente ORATS para el monitor unificado. */
   public getOratsFeedHealth() {
-    const configured = this.oratsClient.isConfigured();
-    const last = this.oratsLastCall;
-    const nowMs = this.nowMsFn();
-    return {
-      configured,
-      connected: !configured ? false : last === null ? null : last.ok,
-      lastFetchAtUtcSec: last?.atUtcSec ?? null,
-      lastStatus: last?.status ?? null,
-      // ORATS datav2 no expone tier/cuota en la superficie normalizada actual:
-      // se publican null explícitos, nunca valores inventados.
-      planTier: null,
-      quotaRemaining: null,
-      quotaLimit: null,
-      quotaResetAtUtcSec: null,
-      circuitBreaker: this.oratsClient.getCircuitBreaker(nowMs),
-      telemetry: this.oratsClient.getFeedTelemetrySnapshot(nowMs),
-    };
+    return this.oratsClient.getHealthSnapshot(this.nowMsFn());
   }
 
   /** Pieza 33: resincronización real de cores + strikes (bypass de cache ORATS). */
@@ -5289,11 +5252,6 @@ export class GgalSpecialistRuntime {
       yangZhangAdrVol,
       forceRefresh,
     });
-    this.oratsLastCall = {
-      atUtcSec: Math.floor(this.nowMsFn() / 1_000),
-      ok: surface.status === 'OPERATIONAL',
-      status: surface.status,
-    };
     const otmWingCclVol = this.buildOtmWingCclFromBundle(bundle);
 
     return {

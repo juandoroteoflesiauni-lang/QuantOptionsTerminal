@@ -65,6 +65,8 @@ export interface WsAggBarEvent {
 
 /** Normalized trade event (`ev: "T"`). */
 export interface WsTradeEvent {
+  readonly sequence?: number;
+  readonly tradeId?: string;
   readonly ev: 'T';
   readonly sym: string;
   readonly price: number;
@@ -79,6 +81,9 @@ export interface WsTradeEvent {
 
 /** Normalized top-of-book quote event (`ev: "Q"`). */
 export interface WsQuoteEvent {
+  readonly sequence?: number;
+  readonly bidExchange?: number;
+  readonly askExchange?: number;
   readonly ev: 'Q';
   readonly sym: string;
   readonly bidPrice: number;

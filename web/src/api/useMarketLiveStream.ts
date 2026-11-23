@@ -1,3 +1,4 @@
+import { parseOpraWireRow, coalesceOptionQuoteUpdate, type LiveOptionQuoteSnapshot } from '../../../src/core/opraOptionIntegrity.js';
 import type { CclTemporalValuation } from '../../../src/core/temporalFeedIntegrity';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
@@ -23,6 +24,8 @@ import {
   SOA_COL_LAST,
   SOA_COL_TIMESTAMP,
   SOA_DELTA_STRIDE,
+  SOA_COL_TRADE_TIMESTAMP,
+  SOA_DELTA_STRIDE_V2,
   TradeRingBuffer,
   domCellRegistry,
   isDedicatedWorkerSupported,
@@ -219,16 +222,7 @@ const optionQuoteStore = createAtomicKeyedStore<MarketLiveOptionQuote>();
 const orderBookStore = createAtomicKeyedStore<MarketLiveOrderBook>();
 const barUpdateListenersBySymbol = new Map<string, Set<(event: LiveBarUpdateEvent) => void>>();
 
-export interface MarketLiveOptionQuote {
-  readonly symbol: string;
-  readonly underlying: string;
-  readonly time: number;
-  readonly bid: number | null;
-  readonly ask: number | null;
-  readonly mid: number | null;
-  readonly last: number | null;
-  readonly size: number | null;
-}
+export type MarketLiveOptionQuote = LiveOptionQuoteSnapshot;
 
 export interface LiveBarUpdateEvent {
   readonly symbol: string;
@@ -321,6 +315,7 @@ let legacyFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const pendingMarketBatches: MarketBatchWire[] = [];
 let marketBatchFlushHandle: number | null = null;
 let pendingMarketBatchTransport: LiveStreamTransport = 'WS';
+let optionScopeEpoch = 0;
 const visibleSymbolsByConsumer = new Map<string, readonly string[]>();
 
 function postToWorker(message: WorkerInboundMessage, transfer?: Transferable[]): void {
@@ -435,6 +430,7 @@ function sendViewScopeMessage(): void {
   if (marketWorker !== null) {
     postToWorker({
       type: 'SET_VIEW_SCOPE',
+      optionScopeEpoch,
       view: currentViewScope.view,
       focusSymbol: currentViewScope.focusSymbol,
       focusMarket: currentViewScope.focusMarket,
@@ -471,6 +467,12 @@ export function setMarketViewScope(scope: MarketViewScope): void {
     currentViewScope.focusMarket === cleanMarket
   ) {
     return;
+  }
+  if (currentViewScope?.view === 'options' && (currentViewScope.focusSymbol !== cleanSymbol || cleanView !== 'options')) {
+    optionScopeEpoch++;
+    visibleSymbolsByConsumer.delete('option-chain');
+    optionQuoteStore.clear();
+    marketStoreSoa.resetOptionSlots();
   }
   currentViewScope = {
     view: cleanView,
@@ -525,17 +527,6 @@ function marketQuotesEqual(a: MarketLiveQuote, b: MarketLiveQuote): boolean {
     a.extendedPrice === b.extendedPrice &&
     a.extendedChangePct === b.extendedChangePct &&
     a.regularClose === b.regularClose
-  );
-}
-
-function optionQuotesEqual(a: MarketLiveOptionQuote, b: MarketLiveOptionQuote): boolean {
-  return (
-    a.bid === b.bid &&
-    a.ask === b.ask &&
-    a.mid === b.mid &&
-    a.last === b.last &&
-    a.size === b.size &&
-    a.time === b.time
   );
 }
 
@@ -1874,36 +1865,20 @@ function dispatchBarUpdateEvent(raw: Record<string, unknown>): void {
 function applyOptionQuotesBatch(parsed: Record<string, unknown>): void {
   const rawQuotes = parsed['quotes'];
   if (!Array.isArray(rawQuotes)) return;
-  const serverTimeSec = finitePositive(parsed['serverTimeSec']) ?? Math.floor(Date.now() / 1_000);
+  if (currentViewScope && (currentViewScope.view !== 'options' || parsed['underlying'] !== currentViewScope.focusSymbol)) return;
   for (const item of rawQuotes) {
     if (!isRecord(item) || typeof item['symbol'] !== 'string') continue;
     const key = normalizeOptionContractKey(item['symbol']);
-    if (key === '') continue;
-    const underlying =
-      typeof item['underlying'] === 'string' && item['underlying'].trim() !== ''
-        ? item['underlying'].trim().toUpperCase()
-        : '';
-    const nextOpt: MarketLiveOptionQuote = {
-      symbol: key,
-      underlying,
-      time: finitePositive(item['time']) ?? serverTimeSec,
-      bid: nullableNumber(item['bid']),
-      ask: nullableNumber(item['ask']),
-      mid: nullableNumber(item['mid']),
-      last: nullableNumber(item['last']),
-      size: nullableNumber(item['size']),
-    };
-    optionQuoteStore.set(key, nextOpt, optionQuotesEqual);
+    const old = optionQuoteStore.get(key);
+    const next = coalesceOptionQuoteUpdate(old, parseOpraWireRow(item, key));
+    if (old === next || !next.updatedChannels?.length) continue;
+    optionQuoteStore.set(key, next);
     if (marketWorker === null) {
-      writeDirectSoaFallback(
-        key,
-        nextOpt.bid ?? Number.NaN,
-        nextOpt.ask ?? Number.NaN,
-        nextOpt.last ?? nextOpt.mid ?? Number.NaN,
-        nextOpt.size ?? Number.NaN,
-        nextOpt.size ?? Number.NaN,
-        nextOpt.time,
-      );
+      const id = marketStoreSoa.registerSymbol(key);
+      if (id < 0) continue;
+      marketStoreSoa.writeOptionSnapshot(id, next);
+      directSoaScratch[SOA_COL_ID] = id;
+      domCellRegistry.applySoaDeltaBatch(marketStoreSoa, directSoaScratch, 1, SOA_DELTA_STRIDE);
     }
   }
 }
@@ -2184,7 +2159,7 @@ function ensureMarketWorker(): Worker | null {
     if (msg.type === 'SYMBOL_BINDINGS') {
       for (let i = 0; i < msg.bindings.length; i += 1) {
         const pair = msg.bindings[i];
-        if (pair !== undefined) {
+        if (pair !== undefined && (msg.optionScopeEpoch === optionScopeEpoch || !/\d{6}[CP]\d{8}$/.test(pair[1]))) {
           marketStoreSoa.bindSymbolId(pair[0], pair[1]);
         }
       }
@@ -2197,11 +2172,17 @@ function ensureMarketWorker(): Worker | null {
     if (msg.type === 'DELTA_BATCH') {
       for (let i = 0; i < msg.bindings.length; i += 1) {
         const pair = msg.bindings[i];
-        if (pair !== undefined) {
+        if (pair !== undefined && (msg.optionScopeEpoch === optionScopeEpoch || !/\d{6}[CP]\d{8}$/.test(pair[1]))) {
           marketStoreSoa.bindSymbolId(pair[0], pair[1]);
         }
       }
       const view = new Float64Array(msg.buffer, 0, msg.count * msg.stride);
+      // A transferable already posted by the previous options scope can arrive after the reset.
+      if (msg.optionScopeEpoch !== optionScopeEpoch && msg.stride === SOA_DELTA_STRIDE_V2) {
+        for (let base = 0; base < view.length; base += msg.stride) {
+          if (view[base + SOA_COL_TRADE_TIMESTAMP] !== -1) view[base + SOA_COL_ID] = -1;
+        }
+      }
       marketStoreSoa.applyBinaryDelta(view, msg.count, msg.stride);
       domCellRegistry.applySoaDeltaBatch(marketStoreSoa, view, msg.count, msg.stride);
       postToWorker({ type: 'RETURN_BUFFER', buffer: msg.buffer }, [msg.buffer]);
@@ -2211,6 +2192,7 @@ function ensureMarketWorker(): Worker | null {
       return;
     }
     if (msg.type === 'PARSED_WS_MESSAGE') {
+      if (msg.payload['type'] === 'option_quotes_batch' && msg.optionScopeEpoch !== optionScopeEpoch) return;
       handleParsedMessage(msg.payload, 'WS');
     }
   });

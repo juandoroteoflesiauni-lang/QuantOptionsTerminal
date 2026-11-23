@@ -1,3 +1,5 @@
+import type { OratsMetadata } from '../core/oratsIntegrity.js';
+import { applyOpraEvent, type OpraContractLiveState } from '../core/opraOptionIntegrity.js';
 /**
  * Orquestador runtime local para QuantOptionsTerminal (Pieza 13).
  *
@@ -236,7 +238,6 @@ import {
 } from './ggalTickStream.js';
 import {
   extractOptionUnderlying,
-  hasOptionQuoteChanged,
   type LiveOptionQuoteSnapshot,
 } from './wsViewScopeBackpressure.js';
 import {
@@ -1164,6 +1165,9 @@ export type RuntimeWsBroadcast =
     }
   | {
       readonly type: 'trade';
+      readonly eventTimeMs?: number;
+      readonly seq?: number | null;
+      readonly tradeId?: string | null;
       readonly cluster: 'stocks' | 'options';
       readonly symbol: string;
       readonly time: number;
@@ -1172,6 +1176,10 @@ export type RuntimeWsBroadcast =
     }
   | {
       readonly type: 'quote';
+      readonly eventTimeMs?: number;
+      readonly seq?: number | null;
+      readonly bidSize?: number;
+      readonly askSize?: number;
       readonly cluster: 'stocks' | 'options';
       readonly symbol: string;
       readonly time: number;
@@ -2268,7 +2276,7 @@ export function resolveContractChangePct(
 
 export const US_VOL_SURFACE_TTL_MS = 10 * 60 * 1_000;
 
-export interface UsVolSurfaceResponse {
+export interface UsVolSurfaceResponse extends OratsMetadata {
   readonly status: 'OK' | 'PARTIAL' | 'NO_DATA';
   readonly symbol: string;
   readonly asOfUtcSec: number;
@@ -4588,7 +4596,7 @@ export class MarketRuntime {
     }
   >();
   private readonly subscribedOptionContracts = new Set<string>();
-  private readonly liveOptionQuotes = new Map<string, LiveOptionQuoteSnapshot>();
+  private readonly liveOptionStates = new Map<string, OpraContractLiveState>();
   private readonly wsListeners = new Set<(event: RuntimeWsBroadcast) => void>();
   private readonly wheelHistoryBySymbol = new Map<string, WheelSnapshotInput[]>();
   private readonly usPriorSmileCache = new Map<
@@ -5418,7 +5426,12 @@ export class MarketRuntime {
     return key;
   }
 
+  public getOratsClient() { return this.oratsClient; }
+
+  public getOratsFeedHealth() { return this.oratsClient?.getHealthSnapshot(this.nowMsFn()) ?? null; }
+
   public getHealth(): {
+    readonly orats: ReturnType<MarketRuntime['getOratsFeedHealth']>;
     readonly ok: boolean;
     readonly nowUtcSec: number;
     readonly hasApiKey: boolean;
@@ -5436,6 +5449,7 @@ export class MarketRuntime {
   } {
     return {
       ok: true,
+      orats: this.getOratsFeedHealth(),
       nowUtcSec: Math.floor(this.nowMsFn() / 1_000),
       hasApiKey: this.apiKey.trim() !== '',
       watchedSymbols: this.watchedSymbols,
@@ -6091,7 +6105,7 @@ export class MarketRuntime {
       this.optionsWsClient = null;
     }
     this.subscribedOptionContracts.clear();
-    this.liveOptionQuotes.clear();
+    this.liveOptionStates.clear();
   }
 
   /**
@@ -6153,6 +6167,7 @@ export class MarketRuntime {
         }
         for (const c of evicted) {
           this.subscribedOptionContracts.delete(c);
+          this.liveOptionStates.delete(c);
         }
       }
       const remainingSlots = slotBudget - this.subscribedOptionContracts.size;
@@ -6360,11 +6375,11 @@ export class MarketRuntime {
 
   public getLiveOptionQuotes(underlying?: string): readonly LiveOptionQuoteSnapshot[] {
     if (underlying === undefined || underlying.trim() === '') {
-      return [...this.liveOptionQuotes.values()];
+      return Array.from(this.liveOptionStates.values(), (state) => state.snapshot);
     }
     const target = underlying.trim().toUpperCase();
     const out: LiveOptionQuoteSnapshot[] = [];
-    for (const quote of this.liveOptionQuotes.values()) {
+    for (const { snapshot: quote } of this.liveOptionStates.values()) {
       if (quote.underlying === target) {
         out.push(quote);
       }
@@ -6373,7 +6388,7 @@ export class MarketRuntime {
   }
 
   public getLiveOptionQuoteSnapshot(symbol: string): LiveOptionQuoteSnapshot | undefined {
-    return this.liveOptionQuotes.get(symbol.trim().toUpperCase());
+    return this.liveOptionStates.get(symbol.trim().toUpperCase())?.snapshot;
   }
 
   private handleOptionWsEvents(events: readonly WsNormalizedEvent[]): void {
@@ -6387,61 +6402,15 @@ export class MarketRuntime {
           message: redactSecrets(ev.message, this.secrets),
           time: serverTimeSec,
         });
-      } else if (ev.ev === 'T') {
+      } else if (ev.ev === 'Q' || ev.ev === 'T') {
         const key = ev.sym.trim().toUpperCase();
-        const prev = this.liveOptionQuotes.get(key);
-        const underlying = prev?.underlying ?? extractOptionUnderlying(key) ?? '';
-        const last = sanitizeFinite(ev.price);
-        const size = sanitizeFinite(ev.size);
-        const next: LiveOptionQuoteSnapshot = {
-          symbol: key,
-          underlying,
-          time: ev.timeSec,
-          bid: prev?.bid ?? null,
-          ask: prev?.ask ?? null,
-          mid: prev?.mid ?? null,
-          last,
-          size,
-        };
-        this.liveOptionQuotes.set(key, next);
-        this.emitBroadcast({
-          type: 'trade',
-          cluster: 'options',
-          symbol: ev.sym,
-          time: ev.timeSec,
-          price: ev.price,
-          size: ev.size,
-        });
-      } else if (ev.ev === 'Q') {
-        const key = ev.sym.trim().toUpperCase();
-        const prev = this.liveOptionQuotes.get(key);
-        const underlying = prev?.underlying ?? extractOptionUnderlying(key) ?? '';
-        const bid = sanitizeFinite(ev.bidPrice);
-        const ask = sanitizeFinite(ev.askPrice);
-        const mid = bid !== null && ask !== null && ask >= bid ? 0.5 * (bid + ask) : null;
-        const next: LiveOptionQuoteSnapshot = {
-          symbol: key,
-          underlying,
-          time: ev.timeSec,
-          bid,
-          ask,
-          mid,
-          last: prev?.last ?? null,
-          size: prev?.size ?? null,
-        };
-        this.liveOptionQuotes.set(key, next);
-        if (!hasOptionQuoteChanged(prev, next)) {
-          continue;
-        }
-        this.emitBroadcast({
-          type: 'quote',
-          cluster: 'options',
-          symbol: ev.sym,
-          time: ev.timeSec,
-          bid,
-          ask,
-          mid,
-        });
+        const result = applyOpraEvent(this.liveOptionStates.get(key), extractOptionUnderlying(key) ?? '', ev);
+        if (result.reason !== null) continue;
+        this.liveOptionStates.set(key, result.state);
+        const common = { cluster: 'options' as const, symbol: key, time: ev.timeSec, eventTimeMs: ev.eventTimeMs, seq: ev.sequence ?? null };
+        this.emitBroadcast(ev.ev === 'Q'
+          ? { ...common, type: 'quote', bid: ev.bidPrice, ask: ev.askPrice, bidSize: ev.bidSize, askSize: ev.askSize, mid: result.state.snapshot.mid }
+          : { ...common, type: 'trade', price: ev.price, size: ev.size, tradeId: ev.tradeId ?? null });
       }
     }
   }
@@ -7099,7 +7068,7 @@ export class MarketRuntime {
         status: 'NO_DATA',
         symbol: canonicalSymbol,
         asOfUtcSec: nowSec,
-        cacheState: 'UNAVAILABLE',
+        cacheState: 'UNAVAILABLE', healthStatus: 'UNAVAILABLE', providerTradeDate: null, dataProvenance: 'UNAVAILABLE',
         stale: false,
         reason: 'ORATS_CLIENT_NOT_CONFIGURED',
         surface: sanitizeJsonValue(unavailableSurface),
@@ -7147,19 +7116,25 @@ export class MarketRuntime {
     const surfaceOk = surface.status === 'OPERATIONAL';
     const ivRankOk = ivRank.status === 'OPERATIONAL';
     const status: UsVolSurfaceResponse['status'] =
-      surfaceOk && ivRankOk ? 'OK' : surfaceOk || ivRankOk ? 'PARTIAL' : 'NO_DATA';
+      surfaceOk && ivRankOk ? 'OK' : surface.status !== 'UNAVAILABLE' || ivRank.status !== 'UNAVAILABLE' ? 'PARTIAL' : 'NO_DATA';
     const reason =
       surfaceOk && ivRankOk
         ? null
         : `${surfaceOk ? 'SURFACE_OK' : `SURFACE:${surface.reason}`} | ${
             ivRankOk ? 'IV_RANK_OK' : `IV_RANK:${ivRank.reason}`
           }`;
+    const stale = surface.status === 'STALE_CACHE' || ivRank.status === 'STALE_CACHE';
+    const health = this.oratsClient.getHealthSnapshot();
     return {
+      healthStatus: stale ? 'STALE_CACHE' : status === 'OK' ? 'OPERATIONAL' : status === 'PARTIAL' ? 'PARTIAL_FAILURE' : 'UNAVAILABLE',
+      dataProvenance: stale ? 'STALE_CACHE' : status === 'OK' ? 'LIVE' : status === 'PARTIAL' ? 'LIVE_PARTIAL' : 'UNAVAILABLE',
+      endpoints: health.endpoints, providerTradeDate: surface.providerTradeDate ?? null,
+      cacheAgeMs: Math.max(surface.cacheAgeMs ?? 0, ivRank.cacheAgeMs ?? 0),
       status,
       symbol: canonicalSymbol,
       asOfUtcSec: nowSec,
-      cacheState: 'MISS',
-      stale: false,
+      cacheState: stale ? 'STALE' : 'MISS',
+      stale,
       reason,
       surface: sanitizeJsonValue(surface),
       ivRank: sanitizeJsonValue(ivRank),
@@ -7174,44 +7149,43 @@ export class MarketRuntime {
     const cacheKey = `us:vol-surface:${parsed.canonicalSymbol}`;
     const forceRefresh = options.forceRefresh === true;
     const nowMs = this.nowMsFn();
-    if (!forceRefresh) {
-      const cached = this.usVolSurfaceCache.get(cacheKey);
-      if (cached !== undefined) {
-        const ageMs = nowMs - cached.fetchedAtMs;
-        if (ageMs < US_VOL_SURFACE_TTL_MS) {
-          return { ...cached.response, cacheState: 'HIT', stale: false };
-        }
-        const inflight = this.usVolSurfaceInFlight.get(cacheKey);
-        if (inflight === undefined) {
-          const refresh = this.computeUsVolSurface(parsed.canonicalSymbol, false)
-            .then((fresh) => {
-              this.usVolSurfaceCache.set(cacheKey, { fetchedAtMs: this.nowMsFn(), response: fresh });
-              return fresh;
-            })
-            .finally(() => {
-              this.usVolSurfaceInFlight.delete(cacheKey);
-            });
-          this.usVolSurfaceInFlight.set(cacheKey, refresh);
-        }
-        return { ...cached.response, cacheState: 'STALE', stale: true };
-      }
+    const cached = this.usVolSurfaceCache.get(cacheKey);
+    const age = cached ? nowMs - cached.fetchedAtMs : 0;
+    const health = this.getOratsFeedHealth();
+    if (!forceRefresh && cached && age < US_VOL_SURFACE_TTL_MS && health?.healthStatus === 'OPERATIONAL') {
+      return { ...cached.response, cacheState: 'HIT', stale: false, cacheAgeMs: age };
     }
 
+    const staleResponse = (entry: NonNullable<typeof cached>, fresh?: UsVolSurfaceResponse): UsVolSurfaceResponse => {
+      const surface = entry.response.surface;
+      if (surface.status !== 'OPERATIONAL') return fresh ?? entry.response;
+      const reason = fresh?.surface.reason ?? fresh?.reason ?? health?.lastError ?? 'ORATS_REFRESH_PENDING';
+      return {
+        ...entry.response,
+        ...(fresh ? { ivRank: fresh.ivRank } : {}),
+        status: 'PARTIAL', cacheState: 'STALE', stale: true, cacheAgeMs: age,
+        healthStatus: 'STALE_CACHE', dataProvenance: 'STALE_CACHE',
+        ...(health ? { endpoints: fresh?.endpoints ?? health.endpoints } : {}),
+        reason,
+        surface: { ...surface, status: 'STALE_CACHE', stale: true, dataProvenance: 'STALE_CACHE',
+          healthStatus: 'STALE_CACHE', surfaceCompleteness: 'STALE_CACHE_SERVED', cacheAgeMs: age,
+          ...(health ? { endpoints: fresh?.endpoints ?? health.endpoints } : {}),
+          reason },
+      };
+    };
+    const swr = cached && !forceRefresh && age >= US_VOL_SURFACE_TTL_MS && health?.healthStatus === 'OPERATIONAL';
     const inflight = this.usVolSurfaceInFlight.get(cacheKey);
-    if (inflight !== undefined) {
-      return inflight;
-    }
+    if (inflight) return swr ? staleResponse(cached) : inflight;
     const compute = this.computeUsVolSurface(parsed.canonicalSymbol, forceRefresh)
       .then((fresh) => {
-        this.usVolSurfaceCache.set(cacheKey, { fetchedAtMs: this.nowMsFn(), response: fresh });
+        if (fresh.status === 'OK' && fresh.surface.tradeDateVerified) {
+          this.usVolSurfaceCache.set(cacheKey, { fetchedAtMs: this.nowMsFn(), response: fresh });
+        } else if (cached) return staleResponse(cached, fresh);
         return fresh;
       })
-      .finally(() => {
-        if (this.usVolSurfaceInFlight.get(cacheKey) === compute) {
-          this.usVolSurfaceInFlight.delete(cacheKey);
-        }
-      });
+      .finally(() => { this.usVolSurfaceInFlight.delete(cacheKey); });
     this.usVolSurfaceInFlight.set(cacheKey, compute);
+    if (swr) { void compute.catch(() => undefined); return staleResponse(cached); }
     return compute;
   }
 

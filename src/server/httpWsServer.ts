@@ -1,3 +1,4 @@
+import { coalesceOptionQuoteUpdate } from '../core/opraOptionIntegrity.js';
 /**
  * Servidor HTTP + WebSocket local (`node:http` + `ws`) para QuantOptionsTerminal (Pieza 13).
  *
@@ -355,20 +356,30 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
   const getAllSecrets = (): readonly string[] => [
     ...new Set([...secrets, ...extraSecrets, ...arRuntime.getSecrets()]),
   ];
+  const sharedOrats = runtime.getOratsClient();
   const ggalRuntime =
     options.ggalRuntime ??
     new GgalSpecialistRuntime({
+      ...(sharedOrats ? { oratsClient: sharedOrats } : {}),
       runtime,
       arRuntime,
       secrets: getAllSecrets(),
       env: effectiveEnv,
     });
+  const getOrats = () => {
+    const us = runtime.getOratsFeedHealth();
+    const ggal = ggalRuntime.getOratsFeedHealth();
+    if (!us || !us.configured) return ggal;
+    if (!ggal.configured) return us;
+    const priority = (h: typeof us) => h.lastFetchAtUtcSec === null ? 0 : h.healthStatus === 'OPERATIONAL' ? 1 : 2;
+    return priority(us) > priority(ggal) || (priority(us) === priority(ggal) && (us.lastFetchAtUtcSec ?? 0) > (ggal.lastFetchAtUtcSec ?? 0)) ? us : ggal;
+  };
   const feedsHealthMonitor = new FeedsHealthMonitor({
     getMassiveWs: () => runtime.getMassiveWsFeedHealth(),
     getMassiveRest: () => runtime.getMassiveRestFeedHealth(),
     getTradier: () => runtime.getTradierFeedHealth(),
     getFmp: () => runtime.getFmpEnterpriseFeedHealth(),
-    getOrats: () => ggalRuntime.getOratsFeedHealth(),
+    getOrats,
     getPrimary: () => arRuntime.getPrimaryFeedHealth(),
     getBmb: () => arRuntime.getBmbFeedHealth(),
     getIol: () => arRuntime.getIolFeedHealth(),
@@ -715,6 +726,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         client.send(
           JSON.stringify({
             type: 'option_quotes_batch',
+            schemaVersion: 2,
             underlying: state.focusSymbol,
             serverTimeSec,
             quotes: changed,
@@ -788,6 +800,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         };
         sendJson(res, 200, {
           ...runtime.getHealth(),
+          orats: getOrats(),
           warmupStatus,
           connectors: {
             primaryRofex: safePrimary,
@@ -928,7 +941,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       }
 
       if (pathname === '/api/us/providers-status') {        const usProviders = runtime.getUsProvidersStatus();
-        const oratsStatus = ggalRuntime.getOratsStatus();
+        const oratsStatus = { ...getOrats(), activeRole: 'SURFACE' };
         const tradierLive = usProviders.TRADIER_LIVE;
         const usOptionsFeedBadge: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' =
           tradierLive.configured && tradierLive.connected
@@ -1555,7 +1568,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
           if (scope.view === 'options' && scope.focusSymbol !== null) {
             for (const quote of runtime.getLiveOptionQuotes(scope.focusSymbol)) {
-              state.optionQuotesBuffer.set(quote.symbol, quote);
+              state.optionQuotesBuffer.set(quote.symbol, { ...quote, updatedChannels: ['Q', 'T'] });
             }
           }
         } else if (parsed.action === 'subscribe' && Array.isArray(parsed.symbols)) {
@@ -1627,9 +1640,10 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
                 symbol: key,
                 underlying,
                 time: event.time,
-                bid: prevOpt?.bid ?? null,
-                ask: prevOpt?.ask ?? null,
-                mid: prevOpt?.mid ?? null,
+                updatedChannels: ['T'], tradeSeq: event.seq ?? null, tradeTimestampMs: event.eventTimeMs ?? event.time * 1000, tradeId: event.tradeId ?? null,
+                bid: null,
+                ask: null,
+                mid: null,
                 last: event.price,
                 size: event.size,
               }
@@ -1640,10 +1654,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
                 bid: event.bid,
                 ask: event.ask,
                 mid: event.mid,
-                last: prevOpt?.last ?? null,
-                size: prevOpt?.size ?? null,
+                updatedChannels: ['Q'], quoteSeq: event.seq ?? null, quoteTimestampMs: event.eventTimeMs ?? event.time * 1000,
+                bidSize: event.bidSize ?? null, askSize: event.askSize ?? null, last: null,
+                size: null,
               });
-        state.optionQuotesBuffer.set(key, optSnapshot);
+        const buffered = state.optionQuotesBuffer.get(key);
+        const base = buffered ?? (prevOpt && { ...prevOpt, updatedChannels: [] });
+        const merged = coalesceOptionQuoteUpdate(base, optSnapshot);
+        if (merged !== base && merged.updatedChannels?.length) state.optionQuotesBuffer.set(key, merged);
       }
       return;
     }

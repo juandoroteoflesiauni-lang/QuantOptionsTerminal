@@ -1,0 +1,660 @@
+{
+  "breaker": {
+    "failures": 3,
+    "rateLimit": 1795284060000,
+    "retry": [
+      1795284030000,
+      1795284090000
+    ]
+  },
+  "dates": {
+    "": null,
+    "2024-02-29": "2024-02-29",
+    "2025-02-29": null,
+    "2026-02-30": null,
+    "2026-11-20": "2026-11-20"
+  },
+  "endpoints": {
+    "empty": "EMPTY_VALID",
+    "incomplete": "INCOMPLETE_STRIKES_ERROR",
+    "partial": "PARTIAL_FAILURE",
+    "reason": "ORATS_STRIKES_HTTP_503",
+    "stale": "STALE_CACHE"
+  },
+  "pulse": [
+    "id",
+    "lastTickAgeMs",
+    "latencyMs",
+    "messagesPerMinute",
+    "sessionMode",
+    "state"
+  ],
+  "replay": [
+    {
+      "event": {
+        "ap": 1.2,
+        "as": 20,
+        "ax": 2,
+        "bp": 1,
+        "bs": 10,
+        "bx": 1,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 100000
+      },
+      "expected": {
+        "ask": 1.2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 10,
+        "last": null,
+        "mid": 1.1,
+        "quoteSeq": null,
+        "quoteTimestamp": 100,
+        "quoteTimestampMs": 100000,
+        "size": null
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ev": "T",
+        "i": "T-99",
+        "p": 1.15,
+        "s": 3,
+        "sym": "O:SPY261120C00600000",
+        "t": 105000
+      },
+      "expected": {
+        "ask": 1.2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 10,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.1,
+        "quoteSeq": null,
+        "quoteTimestamp": 100,
+        "quoteTimestampMs": 100000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ap": 1.1,
+        "as": 5,
+        "bp": 0.9,
+        "bs": 5,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 95000
+      },
+      "expected": {
+        "ask": 1.2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 10,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.1,
+        "quoteSeq": null,
+        "quoteTimestamp": 100,
+        "quoteTimestampMs": 100000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": "STALE_QUOTE"
+    },
+    {
+      "event": {
+        "ap": 1.25,
+        "as": 25,
+        "bp": 1.05,
+        "bs": 15,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 110000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.15,
+        "quoteSeq": null,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ev": "T",
+        "p": 1.08,
+        "s": 7,
+        "sym": "O:SPY261120C00600000",
+        "t": 102000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.15,
+        "quoteSeq": null,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": "STALE_TRADE"
+    },
+    {
+      "event": {
+        "ap": 1.2,
+        "as": 8,
+        "bp": 1.4,
+        "bs": 8,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 115000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.15,
+        "quoteSeq": null,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": "CROSSED_BOOK"
+    }
+  ],
+  "session": [
+    1795219140000,
+    1795219260000,
+    1795237200000
+  ],
+  "start": 1795284000000,
+  "strikes": [
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 500
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 505
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 510
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 515
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 520
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 525
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 530
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 535
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 540
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 545
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 550
+    },
+    {
+      "dte": 28,
+      "expirDate": "2026-12-18",
+      "strike": 555
+    }
+  ],
+  "ties": [
+    {
+      "event": {
+        "ap": 1.25,
+        "as": 25,
+        "bp": 1.05,
+        "bs": 15,
+        "ev": "Q",
+        "q": 10,
+        "sym": "O:SPY261120C00600000",
+        "t": 110000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": null,
+        "mid": 1.15,
+        "quoteSeq": 10,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": null
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ap": 1.25,
+        "as": 25,
+        "bp": 1.05,
+        "bs": 15,
+        "ev": "Q",
+        "q": 9,
+        "sym": "O:SPY261120C00600000",
+        "t": 110000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": null,
+        "mid": 1.15,
+        "quoteSeq": 10,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": null
+      },
+      "reason": "STALE_QUOTE_SEQ"
+    },
+    {
+      "event": {
+        "ap": 1.25,
+        "as": 25,
+        "bp": 1.05,
+        "bs": 15,
+        "ev": "Q",
+        "q": 10,
+        "sym": "O:SPY261120C00600000",
+        "t": 110000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": null,
+        "mid": 1.15,
+        "quoteSeq": 10,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": null
+      },
+      "reason": "DUPLICATE_QUOTE"
+    },
+    {
+      "event": {
+        "ap": 1.25,
+        "as": 25,
+        "bp": 1.05,
+        "bs": 15,
+        "ev": "Q",
+        "q": 11,
+        "sym": "O:SPY261120C00600000",
+        "t": 110000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": null,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": null
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ap": 1.25,
+        "as": 25,
+        "bp": 1.05,
+        "bs": 15,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 110000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": null,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": null
+      },
+      "reason": "UNSEQUENCED_TIE"
+    },
+    {
+      "event": {
+        "ev": "T",
+        "i": "T-99",
+        "p": 1.15,
+        "s": 3,
+        "sym": "O:SPY261120C00600000",
+        "t": 105000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ev": "T",
+        "i": "T-99",
+        "p": 1.15,
+        "s": 3,
+        "sym": "O:SPY261120C00600000",
+        "t": 106000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.15,
+        "lastSize": 3,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 3,
+        "tradeCount": 1,
+        "tradeSeq": null,
+        "tradeTimestamp": 105,
+        "tradeTimestampMs": 105000,
+        "tradeVolume": 3
+      },
+      "reason": "DUPLICATE_TRADE"
+    },
+    {
+      "event": {
+        "ev": "T",
+        "p": 1.16,
+        "q": 2,
+        "s": 2,
+        "sym": "O:SPY261120C00600000",
+        "t": 108000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.16,
+        "lastSize": 2,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 2,
+        "tradeCount": 2,
+        "tradeSeq": 2,
+        "tradeTimestamp": 108,
+        "tradeTimestampMs": 108000,
+        "tradeVolume": 5
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ev": "T",
+        "p": 1.17,
+        "q": 2,
+        "s": 2,
+        "sym": "O:SPY261120C00600000",
+        "t": 108000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.16,
+        "lastSize": 2,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 2,
+        "tradeCount": 2,
+        "tradeSeq": 2,
+        "tradeTimestamp": 108,
+        "tradeTimestampMs": 108000,
+        "tradeVolume": 5
+      },
+      "reason": "DUPLICATE_TRADE"
+    },
+    {
+      "event": {
+        "ev": "T",
+        "p": 1.16,
+        "s": 2,
+        "sym": "O:SPY261120C00600000",
+        "t": 109000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.16,
+        "lastSize": 2,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 2,
+        "tradeCount": 3,
+        "tradeSeq": null,
+        "tradeTimestamp": 109,
+        "tradeTimestampMs": 109000,
+        "tradeVolume": 7
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ev": "T",
+        "p": 1.16,
+        "s": 2,
+        "sym": "O:SPY261120C00600000",
+        "t": 109000
+      },
+      "expected": {
+        "ask": 1.25,
+        "askSize": 25,
+        "bid": 1.05,
+        "bidSize": 15,
+        "last": 1.16,
+        "lastSize": 2,
+        "mid": 1.15,
+        "quoteSeq": 11,
+        "quoteTimestamp": 110,
+        "quoteTimestampMs": 110000,
+        "size": 2,
+        "tradeCount": 3,
+        "tradeSeq": null,
+        "tradeTimestamp": 109,
+        "tradeTimestampMs": 109000,
+        "tradeVolume": 7
+      },
+      "reason": "DUPLICATE_TRADE"
+    }
+  ],
+  "unsequenced": [
+    {
+      "event": {
+        "ap": 1.2,
+        "as": 20,
+        "ax": 2,
+        "bp": 1,
+        "bs": 10,
+        "bx": 1,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 100000
+      },
+      "expected": {
+        "ask": 1.2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 10,
+        "last": null,
+        "mid": 1.1,
+        "quoteSeq": null,
+        "quoteTimestamp": 100,
+        "quoteTimestampMs": 100000,
+        "size": null
+      },
+      "reason": null
+    },
+    {
+      "event": {
+        "ap": 1.2,
+        "as": 20,
+        "ax": 2,
+        "bp": 1,
+        "bs": 10,
+        "bx": 1,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 100000
+      },
+      "expected": {
+        "ask": 1.2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 10,
+        "last": null,
+        "mid": 1.1,
+        "quoteSeq": null,
+        "quoteTimestamp": 100,
+        "quoteTimestampMs": 100000,
+        "size": null
+      },
+      "reason": "DUPLICATE_QUOTE"
+    },
+    {
+      "event": {
+        "ap": 1.2,
+        "as": 20,
+        "ax": 2,
+        "bp": 1,
+        "bs": 0,
+        "bx": 1,
+        "ev": "Q",
+        "sym": "O:SPY261120C00600000",
+        "t": 100000
+      },
+      "expected": {
+        "ask": 1.2,
+        "askSize": 20,
+        "bid": 1,
+        "bidSize": 0,
+        "last": null,
+        "mid": 1.1,
+        "quoteSeq": null,
+        "quoteTimestamp": 100,
+        "quoteTimestampMs": 100000,
+        "size": null
+      },
+      "reason": null
+    }
+  ],
+  "wire": {
+    "bytes": 9600,
+    "count": 100,
+    "ms": 1794580680987,
+    "sec": 1794580680,
+    "stride": 12
+  }
+}
