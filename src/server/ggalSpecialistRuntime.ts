@@ -5981,8 +5981,13 @@ export class GgalSpecialistRuntime {
     readonly forceRefresh: boolean;
     /** Pieza 40: ruta rápida solo con velas/EMA/AVWAP, sin cálculos pesados. */
     readonly light?: boolean;
+    readonly subPaneMode?: string;
   }): Promise<GgalDualChartComputation> {
-    const key = `${opts.coordMode}|${opts.timeframe}|${opts.avwapAnchor}|${opts.light === true ? 'light' : 'full'}`;
+    const subPaneSuffix =
+      opts.light !== true && opts.subPaneMode !== undefined && opts.subPaneMode !== 'REL_STRENGTH_BANKS'
+        ? '|nobanks'
+        : '';
+    const key = `${opts.coordMode}|${opts.timeframe}|${opts.avwapAnchor}|${opts.light === true ? 'light' : 'full'}${subPaneSuffix}`;
     const nowMs = this.nowMsFn();
     const cached = this.dualChartCache.get(key);
 
@@ -6559,10 +6564,13 @@ export class GgalSpecialistRuntime {
     readonly avwapAnchor: GgalAvwapAnchorMode;
     readonly forceRefresh: boolean;
     readonly light?: boolean;
+    readonly subPaneMode?: string;
   }): Promise<GgalDualChartComputation> {
     if (opts.light === true) {
       return this.computeDualChartLight(opts);
     }
+    const skipBankPeers =
+      opts.subPaneMode !== undefined && opts.subPaneMode !== 'REL_STRENGTH_BANKS';
     const runtimeTf =
       opts.timeframe === '1H' ? '1h' : opts.timeframe === '4H' ? '4h' : opts.timeframe;
     const peerTimeout = <T>(p: Promise<T>, ms = 2_500): Promise<T | null> =>
@@ -6633,24 +6641,30 @@ export class GgalSpecialistRuntime {
         : this.runtime
             .getBars('GGAL', '1D', { visibleBars: DUAL_CHART_TARGET_BARS, forceRefresh: false })
             .catch(() => null),
-      peerTimeout(
-        this.runtime.getBars('BMA', runtimeTf, {
-          visibleBars: DUAL_CHART_TARGET_BARS,
-          forceRefresh: false,
-        }),
-      ),
-      peerTimeout(
-        this.runtime.getBars('BBAR', runtimeTf, {
-          visibleBars: DUAL_CHART_TARGET_BARS,
-          forceRefresh: false,
-        }),
-      ),
-      peerTimeout(
-        this.runtime.getBars('SUPV', runtimeTf, {
-          visibleBars: DUAL_CHART_TARGET_BARS,
-          forceRefresh: false,
-        }),
-      ),
+      skipBankPeers
+        ? Promise.resolve(null)
+        : peerTimeout(
+            this.runtime.getBars('BMA', runtimeTf, {
+              visibleBars: DUAL_CHART_TARGET_BARS,
+              forceRefresh: false,
+            }),
+          ),
+      skipBankPeers
+        ? Promise.resolve(null)
+        : peerTimeout(
+            this.runtime.getBars('BBAR', runtimeTf, {
+              visibleBars: DUAL_CHART_TARGET_BARS,
+              forceRefresh: false,
+            }),
+          ),
+      skipBankPeers
+        ? Promise.resolve(null)
+        : peerTimeout(
+            this.runtime.getBars('SUPV', runtimeTf, {
+              visibleBars: DUAL_CHART_TARGET_BARS,
+              forceRefresh: false,
+            }),
+          ),
     ]);
 
     let bundle = racedBundle;

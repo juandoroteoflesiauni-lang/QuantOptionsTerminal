@@ -5022,6 +5022,9 @@ export class MarketRuntime {
   private readonly usExpiryCatalogCache: SingleFlightRuntimeCache<UsExpiryCatalogResult>;
   /** Pieza 50.2: cadena on-demand por vencimiento exacto (TTL dinámico RTH/fuera de RTH). */
   private readonly usExpiryChainCache: SingleFlightRuntimeCache<UsOptionExpiryChainResponse>;
+  /** Perf-1: caché dedicada para las 7 consultas auxiliares de barras en computeSnapshot. */
+  private readonly snapshotBarsAuxCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadBars>>>;
+  private readonly snapshotBarsAuxUseFixedTtl: boolean;
 
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
@@ -5801,6 +5804,12 @@ export class MarketRuntime {
       nowFn: this.nowMsFn,
       // Pieza 50.2: TTL dinámico ET — 15 s en RTH, 60 s fuera de RTH / fin de semana.
       ttlResolver: (nowMs) => (getUsLiveSession(nowMs) === 'RTH' ? 15_000 : 60_000),
+    });
+    this.snapshotBarsAuxUseFixedTtl = deps.ttlResolver === undefined;
+    this.snapshotBarsAuxCache = new SingleFlightRuntimeCache({
+      nowFn: this.nowMsFn,
+      ttlResolver: deps.ttlResolver ?? (() => 15_000),
+      maxEntries: 128,
     });
 
     if (
@@ -7529,7 +7538,11 @@ export class MarketRuntime {
       : `snapshot:${parsed.canonicalSymbol}:${normalizedExpiration}`;
     const result = await this.snapshotCache.getOrCompute(
       cacheKey,
-      () => this.computeSnapshot(parsed, { ...(normalizedExpiration === '' ? {} : { expiration: normalizedExpiration }) }),
+      () =>
+        this.computeSnapshot(parsed, {
+          ...(normalizedExpiration === '' ? {} : { expiration: normalizedExpiration }),
+          ...(options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh }),
+        }),
       {
         ttlMs: 15_000,
         ...(options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh }),
@@ -8737,7 +8750,7 @@ export class MarketRuntime {
 
   private async computeSnapshot(
     parsed: ParsedSymbol,
-    options: { readonly expiration?: string } = {},
+    options: { readonly expiration?: string; readonly forceRefresh?: boolean } = {},
   ): Promise<TerminalSnapshotResponse> {
     const apiKey = this.assertRestApiKey();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
@@ -8772,6 +8785,39 @@ export class MarketRuntime {
       ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
     };
 
+    const loadCachedSnapshotBars = (req: {
+      readonly symbol: string;
+      readonly timeframe: Timeframe;
+      readonly visibleBars: number;
+      readonly warmupBars: number;
+      readonly maxPages: number;
+      readonly rthOnly?: boolean;
+    }) => {
+      const ttlMs = req.timeframe === '1D' || req.timeframe === '4h' ? 60_000 : 15_000;
+      const cacheKey = `snapBars:massive:${req.symbol}:${req.timeframe}:${String(req.visibleBars)}:${String(req.warmupBars)}:${req.rthOnly === true ? 'rth' : 'all'}`;
+      return this.snapshotBarsAuxCache
+        .getOrCompute(
+          cacheKey,
+          () =>
+            this.loadBarsFn({
+              provider: 'massive',
+              symbol: req.symbol,
+              timeframe: req.timeframe,
+              visibleBars: req.visibleBars,
+              warmupBars: req.warmupBars,
+              ...(req.rthOnly === undefined ? {} : { rthOnly: req.rthOnly }),
+              maxPages: req.maxPages,
+              now: nowSec,
+              ...baseTransport,
+            }),
+          {
+            ...(this.snapshotBarsAuxUseFixedTtl ? { ttlMs } : {}),
+            ...(options.forceRefresh === true ? { forceRefresh: true } : {}),
+          },
+        )
+        .then((r) => r.value);
+    };
+
     const [
       treasuryRes,
       fundingRes,
@@ -8804,80 +8850,59 @@ export class MarketRuntime {
         US_EQUITY_UNIVERSE.map((u) => u.symbol),
         false,
       ),
-      this.loadBarsFn({
-        provider: 'massive',
+      loadCachedSnapshotBars({
         symbol: canonicalSymbol,
         timeframe: '1D',
         visibleBars: 60,
         warmupBars: 720,
         maxPages: 3,
-        now: nowSec,
-        ...baseTransport,
       }),
-      this.loadBarsFn({
-        provider: 'massive',
+      loadCachedSnapshotBars({
         symbol: canonicalSymbol,
         timeframe: '4h',
         visibleBars: 60,
         warmupBars: 60,
         maxPages: 3,
-        now: nowSec,
-        ...baseTransport,
       }),
-      this.loadBarsFn({
-        provider: 'massive',
+      loadCachedSnapshotBars({
         symbol: canonicalSymbol,
         timeframe: '15m',
         visibleBars: 90,
         warmupBars: 40,
         rthOnly: true,
         maxPages: 3,
-        now: nowSec,
-        ...baseTransport,
       }),
-      this.loadBarsFn({
-        provider: 'massive',
+      loadCachedSnapshotBars({
         symbol: canonicalSymbol,
         timeframe: '5m',
         visibleBars: 240,
         warmupBars: 60,
         rthOnly: false,
         maxPages: 5,
-        now: nowSec,
-        ...baseTransport,
       }),
-      this.loadBarsFn({
-        provider: 'massive',
+      loadCachedSnapshotBars({
         symbol: correlatedSymbol,
         timeframe: '5m',
         visibleBars: 120,
         warmupBars: 30,
         rthOnly: false,
         maxPages: 3,
-        now: nowSec,
-        ...baseTransport,
       }),
-      this.loadBarsFn({
-        provider: 'massive',
+      loadCachedSnapshotBars({
         symbol: 'I:VIX',
         timeframe: '1D',
         visibleBars: 20,
         warmupBars: 10,
         maxPages: 1,
-        now: nowSec,
-        ...baseTransport,
       }).catch(() => null),
       canonicalSymbol === 'SPY'
         ? Promise.resolve(null)
-        : this.loadBarsFn({
-            provider: 'massive',
+        : loadCachedSnapshotBars({
             symbol: 'SPY',
             timeframe: '1D',
             visibleBars: 60,
             warmupBars: 60,
             maxPages: 1,
-            now: nowSec,
-            ...baseTransport,
           }).catch(() => null),
     ]);
 
@@ -11502,6 +11527,8 @@ export class MarketRuntime {
       readonly visibleBars?: number;
       readonly rthOnly?: boolean;
       readonly forceRefresh?: boolean;
+      readonly includeOverlays?: boolean;
+      readonly fullHistory?: boolean;
     } = {},
   ): Promise<TerminalBarsResponse> {
     const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
@@ -11511,11 +11538,17 @@ export class MarketRuntime {
     const visibleBars = Math.min(Math.max(options.visibleBars ?? defaultVisible, 20), maxVisible);
     const requestedRthOnly = options.rthOnly ?? false;
     const effectiveRthOnly = requestedRthOnly && timeframe !== '1D' && timeframe !== '4h';
-    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}`;
+    const includeOverlays = options.includeOverlays ?? true;
+    const fullHistory = options.fullHistory ?? true;
+    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}`;
 
     const result = await this.barsCache.getOrCompute(
       cacheKey,
-      () => this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly, cacheKey),
+      () =>
+        this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly, cacheKey, {
+          includeOverlays,
+          fullHistory,
+        }),
       options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh },
     );
     return result.value;
@@ -11527,6 +11560,10 @@ export class MarketRuntime {
     visibleBars: number,
     rthOnly: boolean,
     barsCacheKey: string,
+    opts: {
+      readonly includeOverlays: boolean;
+      readonly fullHistory: boolean;
+    } = { includeOverlays: true, fullHistory: true },
   ): Promise<TerminalBarsResponse> {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const barSeconds = TIMEFRAME_SECONDS[timeframe];
@@ -11645,6 +11682,10 @@ export class MarketRuntime {
         );
       }
       bars = loadedBars;
+      if (!opts.fullHistory || !opts.includeOverlays) {
+        const windowTarget = visibleBars + REST_EMA_WARMUP_BARS;
+        visibleStart = Math.max(0, bars.length - windowTarget);
+      }
     } else if (providerChain[0] === 'FMP_ENTERPRISE_REST') {
       // Pieza 50.5 (Bloque 1): la ventana se deriva de la densidad real por
       // sesión del adaptador, no de `visibleBars * barSeconds + 14 días`.
@@ -11769,6 +11810,84 @@ export class MarketRuntime {
       );
     }
 
+    const startSlice = Math.max(0, visibleStart);
+    const slicedBars = bars.slice(startSlice);
+    const sessionVwapSupported = 1_800 % barSeconds === 0;
+    const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
+
+    // Pieza 50.5: anclas Auto-AVWAP adjuntas al payload, cacheadas por día. Ante
+    // cualquier error se degrada a `[]` y jamás bloquea `/api/bars`.
+    let autoAvwapAnchors: readonly AutoAvwapAnchor[] = [];
+    try {
+      autoAvwapAnchors = await this.resolveAutoAvwapAnchorsForUs(
+        parsed.canonicalSymbol,
+        timeframe === '1D' ? bars : null,
+        nowSec,
+        barsCacheKey,
+      );
+    } catch {
+      autoAvwapAnchors = [];
+    }
+
+    if (!opts.includeOverlays) {
+      // StockDetailView computa EMA/AVWAP en cliente sobre `bars` y lee solo
+      // `overlays.sessionVwap` + `sessionVwapSupported` (Pieza 50.6) y `autoAvwapAnchors`.
+      const sessionVwapInput = slicedBars;
+      const sessionVwap = sessionVwapSupported
+        ? computeSessionVwap(sessionVwapInput, { market: 'EQUITY', barSeconds })
+        : null;
+      const emptyOverlay = slicedBars.map(() => null);
+      const cachedSnapshot = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
+      const payload: TerminalBarsResponse = {
+        status: barsStatusOk ? 'OK' : 'PARTIAL',
+        symbol: parsed.canonicalSymbol,
+        timeframe,
+        barSeconds,
+        rthOnly,
+        asOfUtcSec: nowSec,
+        visibleStartIndex: visibleStart - startSlice,
+        bars: slicedBars.map(serializeBar),
+        formingBar:
+          formingState?.formingBar !== undefined && formingState.formingBar !== null
+            ? serializeBar(formingState.formingBar)
+            : null,
+        overlays: {
+          ema9: emptyOverlay,
+          ema21: emptyOverlay,
+          ema50: emptyOverlay,
+          ema200: emptyOverlay,
+          sma50: emptyOverlay,
+          sma200: emptyOverlay,
+          hma55: emptyOverlay,
+          sessionVwap: sessionVwapSupported && sessionVwap !== null
+            ? (() => {
+                const sessionVwapByTime = new Map(sessionVwap.points.map((point) => [point.time, point.vwap] as const));
+                return slicedBars.map((bar) => sanitizeFinite(sessionVwapByTime.get(bar.time)));
+              })()
+            : emptyOverlay,
+          sessionVwapSupported,
+          avwap: emptyOverlay,
+          avwapUpper1: emptyOverlay,
+          avwapLower1: emptyOverlay,
+          avwapUpper2: emptyOverlay,
+          avwapLower2: emptyOverlay,
+        },
+        subPanes: {
+          rsi14: emptyOverlay,
+          sessionCvd: emptyOverlay,
+          deltaMode: 'NONE',
+        },
+        zones: null,
+        keyLevels: cachedSnapshot?.envelope.snapshot.keyLevels ?? [],
+        markers: [],
+        barsProvider,
+        barsProviderFallbackUsed: [...providerFallbackUsed],
+        autoAvwapAnchors,
+      };
+      assertJsonSafeSerialized(payload);
+      return payload;
+    }
+
     const closes = bars.map((b) => b.close);
     const ema9 = calculateEma(closes, 9);
     const ema21 = calculateEma(closes, 21);
@@ -11778,7 +11897,6 @@ export class MarketRuntime {
     const sma200 = computeSmaSeries(closes, 200);
     const hma55 = computeHmaSeries(closes, 55);
 
-    const sessionVwapSupported = 1_800 % barSeconds === 0;
     const sessionVwap = sessionVwapSupported
       ? computeSessionVwap(bars, { market: 'EQUITY', barSeconds })
       : null;
@@ -11846,29 +11964,12 @@ export class MarketRuntime {
       })),
     ];
 
-    const startSlice = Math.max(0, visibleStart);
-    const slicedBars = bars.slice(startSlice);
     const avwapByTime = new Map(avwap.points.map((point) => [point.time, point] as const));
     const avwapAligned = (selector: (point: typeof avwap.points[number]) => number): (number | null)[] =>
       slicedBars.map((bar) => {
         const point = avwapByTime.get(bar.time);
         return point === undefined ? null : sanitizeFinite(selector(point));
       });
-    const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
-
-    // Pieza 50.5: anclas Auto-AVWAP adjuntas al payload, cacheadas por día. Ante
-    // cualquier error se degrada a `[]` y jamás bloquea `/api/bars`.
-    let autoAvwapAnchors: readonly AutoAvwapAnchor[] = [];
-    try {
-      autoAvwapAnchors = await this.resolveAutoAvwapAnchorsForUs(
-        parsed.canonicalSymbol,
-        timeframe === '1D' ? bars : null,
-        nowSec,
-        barsCacheKey,
-      );
-    } catch {
-      autoAvwapAnchors = [];
-    }
 
     const payload: TerminalBarsResponse = {
       status: barsStatusOk ? 'OK' : 'PARTIAL',

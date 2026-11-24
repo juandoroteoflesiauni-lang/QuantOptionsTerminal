@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { calendarDteEt } from '../../../src/core/options/zeroDteFixes';
 import type { LogicalRange } from 'lightweight-charts';
 import {
@@ -20,14 +20,13 @@ import {
 } from 'lightweight-charts';
 import { ArrowLeft, Keyboard, Zap } from 'lucide-react';
 import {
-  getLiveOptionsForUnderlying,
   refreshOverview,
   requestOptionsChain,
   requestOptionsUniverse,
   requestStockDetail,
   requestTerminalBars,
   requestUsSnapshot,
-  useLiveMarketState,
+  useLiveStockDetailRuntimeSlice,
 } from '../data/liveRuntimeBridge';
 import type {
   ArStockDetailResponse,
@@ -110,13 +109,17 @@ import {
   getMarketStreamMetaClock,
   type LiveBarUpdateEvent,
   type MarketLiveOrderBook,
+  setVisibleMarketSymbols,
   subscribeAtomicQuoteValue,
   subscribeLiveBarUpdate,
   useAtomicMarketQuote,
   useAtomicOrderBook,
   useLivePriceFlash,
+  useMarketFocusSymbol,
   useMarketStreamMeta,
 } from '../api/useMarketLiveStream';
+
+const EMPTY_MINIMAL_BARS: readonly MinimalOhlcvBar[] = [];
 import {
   StockDetailSymbolSelector,
   type StockDetailCategory,
@@ -437,10 +440,33 @@ export const StockDetailView: React.FC<{
   onBackToMonitor,
   onOpenOrderTicket,
 }) => {
-  const runtime = useLiveMarketState();
   const tickerRaw = ticker.trim().toUpperCase() || 'GGAL';
-
   const [selectorOpen, setSelectorOpen] = useState(false);
+
+  const stockRoute = useMemo(() => {
+    return resolveStockDetailRoute({
+      rawTicker: tickerRaw,
+      isArLocalSymbol:
+        AR_STOCKS.some((stock) => stock.ticker === tickerRaw) ||
+        AR_GENERAL_PANEL_STOCKS.some((stock) => stock.ticker === tickerRaw),
+    });
+  }, [tickerRaw]);
+  const cleanTicker = stockRoute?.providerSymbol ?? tickerRaw;
+  const isArMarket = stockRoute?.market === 'AR';
+  const stockMode = stockRoute?.mode ?? 'BYMA_ARS';
+  const stockExchange: StockDetailExchange = stockRoute?.exchange ?? 'US';
+  const currentStockKey = stockRoute?.key ?? cleanTicker;
+
+  const runtime = useLiveStockDetailRuntimeSlice(cleanTicker, isArMarket, selectorOpen);
+  useMarketFocusSymbol(cleanTicker);
+  useEffect(() => {
+    const qualified = `${isArMarket ? 'AR' : 'US'}:${cleanTicker}`;
+    setVisibleMarketSymbols([qualified], 'stock-detail');
+    return () => {
+      setVisibleMarketSymbols([], 'stock-detail');
+    };
+  }, [cleanTicker, isArMarket]);
+
   const [timeframe, setTimeframe] = useState<TerminalTimeframe>('1D');
   const [avwapMode, setAvwapMode] = useState<PanoramicAvwapAnchorMode>('MONTH_START');
   const avwapModeRef = useRef(avwapMode);
@@ -484,26 +510,11 @@ export const StockDetailView: React.FC<{
   const getMainLogicalRangeRef = useRef<(() => LogicalRangeAlias | null) | null>(null);
   const mainCrosshairRef = useRef<((time: number | null) => void) | null>(null);
   const lowerCrosshairRef = useRef<((time: number | null) => void) | null>(null);
-  const hasOverviewRef = useRef(Boolean(runtime.overview));
-  hasOverviewRef.current = Boolean(runtime.overview);
-
-  const stockRoute = useMemo(() => {
-    return resolveStockDetailRoute({
-      rawTicker: tickerRaw,
-      isArLocalSymbol:
-        AR_STOCKS.some((stock) => stock.ticker === tickerRaw) ||
-        AR_GENERAL_PANEL_STOCKS.some((stock) => stock.ticker === tickerRaw),
-    });
-  }, [tickerRaw]);
-  const cleanTicker = stockRoute?.providerSymbol ?? tickerRaw;
-  const isArMarket = stockRoute?.market === 'AR';
-  const stockMode = stockRoute?.mode ?? 'BYMA_ARS';
-  const stockExchange: StockDetailExchange = stockRoute?.exchange ?? 'US';
-  const currentStockKey = stockRoute?.key ?? cleanTicker;
+  const hasOverviewRef = useRef(runtime.hasOverview);
+  hasOverviewRef.current = runtime.hasOverview;
 
   const liveQuote = useAtomicMarketQuote(isArMarket ? 'AR' : 'US', cleanTicker, 250);
   const liveStreamMeta = useMarketStreamMeta(1_000);
-  const liveOrderBook = useAtomicOrderBook(isArMarket ? cleanTicker : null, 100);
   const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
   const liveHeaderFlash = useLivePriceFlash(liveQuote?.price ?? null);
 
@@ -553,6 +564,7 @@ export const StockDetailView: React.FC<{
           // para todos los timeframes intradiarios (`1m`, `5m`, `15m`, `1h`, `4h`).
           const detailPromise = requestStockDetail(cleanTicker, false, apiTimeframe, controller.signal);
           void detailPromise.catch(() => undefined);
+          void requestOptionsChain(cleanTicker).catch(() => undefined);
           let arBarsRes = await requestTerminalBars(cleanTicker, apiTimeframe, {
             visibleBars: 1_250,
             market: 'AR',
@@ -613,13 +625,13 @@ export const StockDetailView: React.FC<{
             }
           }
           setLoading(false);
-          void requestOptionsChain(cleanTicker).catch(() => undefined);
         } else {
           const barsPromise = requestTerminalBars(cleanTicker, apiTimeframe, {
             visibleBars: apiTimeframe === '1D' ? 1_250 : 1_000,
+            includeOverlays: false,
             signal: controller.signal,
           });
-          void requestUsSnapshot(cleanTicker, { signal: controller.signal }).catch(() => undefined);
+          void requestUsSnapshot(cleanTicker, { prefetch: false, signal: controller.signal }).catch(() => undefined);
           const barsRes = await barsPromise;
           if (!isCurrent()) return;
           if (barsRes) {
@@ -828,14 +840,10 @@ export const StockDetailView: React.FC<{
     });
   }, [selectorOpen, runtime.optionsUnderlyings, runtime.overview]);
 
-  const stockDetail = isArMarket
-    ? (runtime.stockDetailsBySymbol[cleanTicker] as ArStockDetailWithOverlays | undefined)
-    : undefined;
+  const stockDetail = runtime.stockDetail as ArStockDetailWithOverlays | undefined;
   // Pieza 50.3: lectura aislada por mercado (`AR:<ticker>` vs `US:<ticker>`).
-  const arOptions = isArMarket
-    ? getLiveOptionsForUnderlying(runtime, `AR:${cleanTicker}`)
-    : undefined;
-  const usSnap = !isArMarket ? runtime.usSnapshotsBySymbol[cleanTicker] : undefined;
+  const arOptions = runtime.arOptions;
+  const usSnap = runtime.usSnap;
   const usBarsResp = !isArMarket ? usBarsByKey[`${currentStockKey}:${timeframe}`] : undefined;
   // Pieza 50.4: `1W` se deriva de las velas `1D` ya cargadas (sin request propio).
   const usBars1dResp = !isArMarket ? usBarsByKey[`${currentStockKey}:1D`] : undefined;
@@ -846,14 +854,10 @@ export const StockDetailView: React.FC<{
   const usBarsContextResp = timeframe === '1W' ? usBars1dResp : usBarsResp;
 
   const contextInfo: StockContextBannerInfo = useMemo(() => {
-    const cclMed = normalizeFiniteOrNull(runtime.overview?.cclMedian);
+    const cclMed = normalizeFiniteOrNull(runtime.overviewCclMedian);
     if (isArMarket) {
-      const ovStock =
-        stockDetail?.stock ??
-        runtime.overview?.mervalStocks.find((stock) => stock.ticker === cleanTicker) ??
-        runtime.overview?.generalPanelStocks.find((stock) => stock.ticker === cleanTicker) ??
-        null;
-      const cedearStock = runtime.overview?.cedears.find((stock) => stock.ticker === cleanTicker) ?? null;
+      const ovStock = stockDetail?.stock ?? runtime.overviewArStock;
+      const cedearStock = runtime.overviewCedear;
       const arMeta =
         AR_STOCKS.find((stock) => stock.ticker === cleanTicker) ??
         AR_GENERAL_PANEL_STOCKS.find((stock) => stock.ticker === cleanTicker);
@@ -935,10 +939,7 @@ export const StockDetailView: React.FC<{
     const spot =
       normalizeFiniteOrNull(liveUsPrice) ??
       normalizeFiniteOrNull(snapSpot);
-    const matchedCedear = runtime.overview?.cedears.find((cedear) => {
-      const targetUs = cedear.adrTicker?.replace(/ US$/i, '').trim().toUpperCase();
-      return targetUs === cleanTicker || cedear.ticker === cleanTicker;
-    });
+    const matchedCedear = runtime.overviewCedear;
     const cedPrice = normalizeFiniteOrNull(matchedCedear?.last);
     const cedRatio = normalizeFiniteOrNull(matchedCedear?.adrRatio);
     const impliedCcl =
@@ -994,7 +995,7 @@ export const StockDetailView: React.FC<{
       cedearArsPrice: cedPrice,
       cedearCclMismatchPct: cclMismatchPct,
     };
-  }, [cleanTicker, isArMarket, liveQuote, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overview, stockDetail, usBarsContextResp, usSnap]);
+  }, [cleanTicker, isArMarket, liveQuote, stockExchange, stockMode, stockRoute?.isAdr, runtime.feedStatus, runtime.optionsUnderlyings, runtime.overviewArStock, runtime.overviewCclMedian, runtime.overviewCedear, stockDetail, usBarsContextResp, usSnap]);
 
   const isArIntradayFallbackActive =
     isArMarket &&
@@ -1009,61 +1010,13 @@ export const StockDetailView: React.FC<{
     ? `BYMA sin histórico ${timeframe.toUpperCase()} · mostrando 1D real`
     : null;
 
-  const mergedArOrderBook = useMemo(() => {
-    if (!isArMarket) return null;
-    return mergeArLiveOrderBookDto(
-      stockDetail?.orderBook5Levels ?? null,
-      liveOrderBook,
-      cleanTicker,
-      contextInfo.spot,
-      contextInfo.dayHigh,
-      contextInfo.dayLow,
-      contextInfo.prevClose,
-    );
-  }, [
-    cleanTicker,
-    contextInfo.dayHigh,
-    contextInfo.dayLow,
-    contextInfo.prevClose,
-    contextInfo.spot,
-    isArMarket,
-    liveOrderBook,
-    stockDetail?.orderBook5Levels,
-  ]);
-
-  const headerBook = useMemo(() => {
-    const rawBook = isArMarket ? mergedArOrderBook : null;
-    if (rawBook === null) return null;
-    return normalizeStockDetailOrderBook(rawBook.bids, rawBook.asks, 5);
-  }, [isArMarket, mergedArOrderBook]);
-
-  const headerQuotes = useMemo(() => {
-    return normalizeStockDetailHeaderQuotes({
-      quoteBid: isArMarket ? (stockDetail?.stock?.bid ?? null) : contextInfo.nbboBid,
-      quoteBidSize: isArMarket ? null : contextInfo.nbboBidSize,
-      quoteAsk: isArMarket ? (stockDetail?.stock?.ask ?? null) : contextInfo.nbboAsk,
-      quoteAskSize: isArMarket ? null : contextInfo.nbboAskSize,
-      book: isArMarket ? headerBook : null,
-    });
-  }, [
-    contextInfo.nbboAsk,
-    contextInfo.nbboAskSize,
-    contextInfo.nbboBid,
-    contextInfo.nbboBidSize,
-    headerBook,
-    isArMarket,
-    stockDetail?.stock?.ask,
-    stockDetail?.stock?.bid,
-  ]);
-
   const effectiveClickedAnchorTimeSec =
     avwapMode === 'CLICKED_CANDLE' ? clickedAnchorTimeSec : null;
+  const arHistoricalBars = stockDetail?.historicalBars;
 
   const chartBundle: PanoramicChartBundle = useMemo(() => {
     let rawBars: readonly MinimalOhlcvBar[] = [];
     let intradayUnavailableReason: string | null = null;
-    let benchBars1d: readonly MinimalOhlcvBar[] = [];
-    let ivAtmPct: number | null = null;
 
     if (isArMarket) {
       // Pieza 38 / 43: 1D prioriza /api/bars?market=AR; cualquier timeframe
@@ -1074,33 +1027,23 @@ export const StockDetailView: React.FC<{
         rawBars =
           arBars1dResp !== undefined && arBars1dResp.bars.length > 0
             ? arBars1dResp.bars
-            : (stockDetail?.historicalBars ?? []);
+            : (arHistoricalBars ?? []);
       } else if (timeframe === '1D') {
         rawBars =
           arBarsResp !== undefined && arBarsResp.bars.length > 0
             ? arBarsResp.bars
-            : (stockDetail?.historicalBars ?? []);
+            : (arHistoricalBars ?? []);
       } else if (arBarsResp !== undefined && arBarsResp.bars.length > 0) {
         rawBars = arBarsResp.bars;
       } else if (arBars1dResp !== undefined && arBars1dResp.bars.length > 0) {
         rawBars = arBars1dResp.bars;
-      } else if ((stockDetail?.historicalBars.length ?? 0) > 0) {
-        rawBars = stockDetail?.historicalBars ?? [];
+      } else if ((arHistoricalBars?.length ?? 0) > 0) {
+        rawBars = arHistoricalBars ?? [];
       } else {
         intradayUnavailableReason = `Sin histórico disponible para ${cleanTicker} (${timeframe})`;
       }
-      benchBars1d = dedupAndSortBars(stockDetail?.benchmarkBars1d ?? []);
-      const frontExpiry = arOptions?.expiries.find((expiry) => expiry.ivAtm !== null && expiry.ivAtm > 0) ?? arOptions?.expiries[0];
-      if (frontExpiry?.ivAtm != null && Number.isFinite(frontExpiry.ivAtm)) ivAtmPct = frontExpiry.ivAtm * 100;
     } else {
       rawBars = timeframe === '1W' ? (usBars1dResp?.bars ?? []) : (usBarsResp?.bars ?? []);
-      benchBars1d = dedupAndSortBars(usSnap?.benchmarkBars1d ?? []);
-      const ivDecimal =
-        usSnap?.volSurfaceSummary?.frontSlice?.ivAtm ??
-        usSnap?.volSurfaceSummary?.iv30d ??
-        usSnap?.envelope?.snapshot?.metrics?.iv30d ??
-        null;
-      if (ivDecimal !== null && Number.isFinite(ivDecimal) && ivDecimal > 0) ivAtmPct = ivDecimal * 100;
     }
 
     const dedupDaily = dedupAndSortBars(rawBars);
@@ -1206,11 +1149,6 @@ export const StockDetailView: React.FC<{
       bundleAvwapAnchorDateSec = avwapEffectiveAnchorTimeSec;
     }
 
-    const rv30Decimal = isArMarket
-      ? stockDetail?.realizedVol20d ?? null
-      : usSnap?.envelope?.snapshot?.metrics?.realizedVolAnnualized ?? usSnap?.envelope?.metrics?.realizedVol20d?.value ?? null;
-    const rv30Pct = rv30Decimal !== null && Number.isFinite(rv30Decimal) && rv30Decimal > 0 ? rv30Decimal * 100 : null;
-    const vrpPct = ivAtmPct !== null && rv30Pct !== null ? ivAtmPct - rv30Pct : null;
     const modeLabel = PANORAMIC_AVWAP_MODES.find((mode) => mode.id === avwapMode)?.label ?? '—';
 
     // Pieza 50.5: anclas institucionales del backend (misma respuesta que alimenta
@@ -1261,14 +1199,46 @@ export const StockDetailView: React.FC<{
         effectiveChartTimeframe === '1W' ? dedupDaily : [],
       autoAvwapLines,
       isAutoAvwapMode,
-      benchmarkBars1d: benchBars1d,
-      ivAtmPct,
-      rv30Pct,
-      vrpPct,
+      benchmarkBars1d: EMPTY_MINIMAL_BARS,
+      ivAtmPct: null,
+      rv30Pct: null,
+      vrpPct: null,
       barsAvailable: bars.length > 0 && intradayUnavailableReason === null,
       intradayUnavailableReason,
     };
-  }, [arBars1dResp, arBarsResp, arOptions, avwapMode, cleanTicker, effectiveChartTimeframe, effectiveClickedAnchorTimeSec, isArMarket, stockDetail, timeframe, usBars1dResp, usBarsResp, usSnap]);
+  }, [arBars1dResp, arBarsResp, arHistoricalBars, avwapMode, cleanTicker, effectiveChartTimeframe, effectiveClickedAnchorTimeSec, isArMarket, timeframe, usBars1dResp, usBarsResp]);
+
+  const lowerPaneVolAndBench = useMemo(() => {
+    let benchmarkBars1d: readonly MinimalOhlcvBar[] = EMPTY_MINIMAL_BARS;
+    let ivAtmPct: number | null = null;
+    if (isArMarket) {
+      benchmarkBars1d = dedupAndSortBars(stockDetail?.benchmarkBars1d ?? []);
+      const frontExpiry = arOptions?.expiries.find((expiry) => expiry.ivAtm !== null && expiry.ivAtm > 0) ?? arOptions?.expiries[0];
+      if (frontExpiry?.ivAtm != null && Number.isFinite(frontExpiry.ivAtm)) ivAtmPct = frontExpiry.ivAtm * 100;
+    } else {
+      benchmarkBars1d = dedupAndSortBars(usSnap?.benchmarkBars1d ?? []);
+      const ivDecimal =
+        usSnap?.volSurfaceSummary?.frontSlice?.ivAtm ??
+        usSnap?.volSurfaceSummary?.iv30d ??
+        usSnap?.envelope?.snapshot?.metrics?.iv30d ??
+        null;
+      if (ivDecimal !== null && Number.isFinite(ivDecimal) && ivDecimal > 0) ivAtmPct = ivDecimal * 100;
+    }
+    const rv30Decimal = isArMarket
+      ? stockDetail?.realizedVol20d ?? null
+      : usSnap?.envelope?.snapshot?.metrics?.realizedVolAnnualized ?? usSnap?.envelope?.metrics?.realizedVol20d?.value ?? null;
+    const rv30Pct = rv30Decimal !== null && Number.isFinite(rv30Decimal) && rv30Decimal > 0 ? rv30Decimal * 100 : null;
+    const vrpPct = ivAtmPct !== null && rv30Pct !== null ? ivAtmPct - rv30Pct : null;
+    return { benchmarkBars1d, ivAtmPct, rv30Pct, vrpPct };
+  }, [arOptions, isArMarket, stockDetail?.benchmarkBars1d, stockDetail?.realizedVol20d, usSnap]);
+
+  const lowerPaneBundle: StockChartSeriesBundle = useMemo(
+    () => ({
+      ...chartBundle,
+      ...lowerPaneVolAndBench,
+    }),
+    [chartBundle, lowerPaneVolAndBench],
+  );
 
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];
@@ -1456,7 +1426,7 @@ export const StockDetailView: React.FC<{
         netGex: normalizeFiniteOrNull(strike.netGex),
       }));
       const days = exposure?.expectedMoveDays ?? stockDetail?.nextExpiry?.daysToExpiry ?? null;
-      const ivDecimal = chartBundle.ivAtmPct !== null ? chartBundle.ivAtmPct / 100 : null;
+      const ivDecimal = lowerPaneVolAndBench.ivAtmPct !== null ? lowerPaneVolAndBench.ivAtmPct / 100 : null;
       let moveInfo: ExpectedMoveOverlayInfo | null = null;
       if (spot !== null && spot > 0 && exposure?.expectedMoveAbs != null && exposure.expectedMoveAbs > 0) {
         moveInfo = {
@@ -1510,7 +1480,7 @@ export const StockDetailView: React.FC<{
           }
         : null;
     return { gexProfileStrikes: byStrike, expectedMoveInfo: moveInfo };
-  }, [arOptions, chartBundle.ivAtmPct, contextInfo.spot, isArMarket, stockDetail, usSnap]);
+  }, [arOptions, contextInfo.spot, isArMarket, lowerPaneVolAndBench.ivAtmPct, stockDetail, usSnap]);
 
   const executionDeck: StockExecutionDeckData = useMemo(() => {
     if (isArMarket) {
@@ -1519,7 +1489,7 @@ export const StockDetailView: React.FC<{
         ticker: cleanTicker,
         spot: contextInfo.spot,
         atr14: keyLevels.atr14,
-        orderBook24h: mergedArOrderBook,
+        orderBook24h: stockDetail?.orderBook5Levels ?? null,
         orderBookCi: stockDetail?.orderBookCi ?? null,
         rofexFrontContract: stockDetail?.rofexFrontContract ?? null,
         confluenceClusters: stockDetail?.institutionalEngines?.confluenceClusters ?? null,
@@ -1611,7 +1581,7 @@ export const StockDetailView: React.FC<{
       marketCclMedian: contextInfo.marketCclMedian,
       currencySymbol: 'USD',
     };
-  }, [cleanTicker, contextInfo, isArMarket, keyLevels.atr14, mergedArOrderBook, stockDetail, usSnap]);
+  }, [cleanTicker, contextInfo, isArMarket, keyLevels.atr14, stockDetail, usSnap]);
 
   const handleToggleOverlay = useCallback((key: keyof OverlayVisibilityState) => {
     setOverlays((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -1827,41 +1797,21 @@ export const StockDetailView: React.FC<{
         </div>
 
         <div className="mt-2.5 grid grid-cols-2 gap-2 border-t border-[#1C1C24] pt-2.5 lg:grid-cols-4">
-          <ContextCard
-            label={isArMarket ? 'L2 / L1 BYMA' : 'NBBO'}
-            value={`BID ${formatHeaderSideQuote(
-              headerQuotes.bid,
-              headerQuotes.bidSize,
-              (n) => fmtNum(n, 2),
-              (n) => fmtNum(n, 0),
-            )} · ASK ${formatHeaderSideQuote(
-              headerQuotes.ask,
-              headerQuotes.askSize,
-              (n) => fmtNum(n, 2),
-              (n) => fmtNum(n, 0),
-            )}`}
-            hint={
-              isArMarket
-                ? mergedArOrderBook?.source ?? stockDetail?.orderBook5Levels?.source ?? '—'
-                : headerQuotes.bidSize !== null || headerQuotes.askSize !== null
-                  ? `x${headerQuotes.bidSize !== null ? fmtNum(headerQuotes.bidSize, 0) : '—'} / x${headerQuotes.askSize !== null ? fmtNum(headerQuotes.askSize, 0) : '—'}`
-                  : 'NBBO'
-            }
-          />
-          <ContextCard
-            label="Spread"
-            value={
-              Number.isFinite(headerQuotes.spreadPct)
-                ? `${fmtPct(headerQuotes.spreadPct, 3)}${
-                    Number.isFinite(headerQuotes.spreadAbs)
-                      ? ` (${isArMarket ? '$' : 'US$'} ${fmtNum(headerQuotes.spreadAbs, 2)})`
-                      : ''
-                  }`
-                : contextInfo.nbboSpreadPct !== null
-                  ? fmtPct(contextInfo.nbboSpreadPct, 3)
-                  : '—'
-            }
-            hint={isArMarket ? stockDetail?.orderBook5Levels?.settlement ?? '—' : 'NBBO'}
+          <StockDetailHeaderBookCards
+            isArMarket={isArMarket}
+            cleanTicker={cleanTicker}
+            stockDetailOrderBook={stockDetail?.orderBook5Levels ?? null}
+            stockDetailBid={stockDetail?.stock?.bid ?? null}
+            stockDetailAsk={stockDetail?.stock?.ask ?? null}
+            nbboBid={contextInfo.nbboBid}
+            nbboAsk={contextInfo.nbboAsk}
+            nbboBidSize={contextInfo.nbboBidSize}
+            nbboAskSize={contextInfo.nbboAskSize}
+            nbboSpreadPct={contextInfo.nbboSpreadPct}
+            spot={contextInfo.spot}
+            dayHigh={contextInfo.dayHigh}
+            dayLow={contextInfo.dayLow}
+            prevClose={contextInfo.prevClose}
           />
           <ContextCard
             label={isArMarket ? 'Equivalencia ADR' : 'Equivalencia CEDEAR'}
@@ -2069,7 +2019,7 @@ export const StockDetailView: React.FC<{
         timeframe={effectiveChartTimeframe}
         mode={lowerMode}
         onChangeMode={setLowerMode}
-        bundle={chartBundle}
+        bundle={lowerPaneBundle}
         onLogicalRangeSync={handleLowerRangeSync}
         onCrosshairTimeSync={handleLowerCrosshairSync}
         externalLogicalRangeRef={lowerLogicalRef}
@@ -2078,8 +2028,15 @@ export const StockDetailView: React.FC<{
       />
 
       <section className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <ExecutionBottomDeck
-          deck={executionDeck}
+        <StockDetailExecutionSection
+          isArMarket={isArMarket}
+          cleanTicker={cleanTicker}
+          baseDeck={executionDeck}
+          stockDetailOrderBook={stockDetail?.orderBook5Levels ?? null}
+          spot={contextInfo.spot}
+          dayHigh={contextInfo.dayHigh}
+          dayLow={contextInfo.dayLow}
+          prevClose={contextInfo.prevClose}
           keyLevels={keyLevels}
           onHighlightLevel={handleToggleHighlight}
           onOpenOrderTicket={onOpenOrderTicket}
@@ -2187,7 +2144,7 @@ const PanoramicPriceChart: React.FC<{
   readonly externalLogicalRangeRef: React.MutableRefObject<((range: LogicalRangeAlias) => void) | null>;
   readonly externalCrosshairTimeRef: React.MutableRefObject<((timeSec: number | null) => void) | null>;
   readonly getLogicalRangeRef: React.MutableRefObject<(() => LogicalRangeAlias | null) | null>;
-}> = ({
+}> = memo(({
   ticker,
   market,
   providerSymbol,
@@ -2223,6 +2180,14 @@ const PanoramicPriceChart: React.FC<{
     readonly putWall: IPriceLine;
     readonly zeroGamma: IPriceLine;
   } | null>(null);
+  const lastPriceLineOptsRef = useRef<
+    Partial<
+      Record<
+        'poc' | 'vah' | 'val' | 'callWall' | 'putWall' | 'zeroGamma',
+        { readonly enabled: boolean; readonly price: number; readonly highlighted: boolean; readonly title: string }
+      >
+    >
+  >({});
   const suppressingRangeEventRef = useRef(false);
   const pendingExternalRangeRef = useRef<LogicalRangeAlias | null>(null);
   const latestBarsRef = useRef(bundle.bars);
@@ -2301,8 +2266,7 @@ const PanoramicPriceChart: React.FC<{
         secondsVisible: false,
         enableConflation: true,
         conflationThresholdFactor: 1.0,
-        precomputeConflationOnInit: true,
-        precomputeConflationPriority: 'background',
+        precomputeConflationOnInit: false,
       },
       autoSize: false,
       width: Math.max(1, Math.floor(element.clientWidth)),
@@ -2512,6 +2476,7 @@ const PanoramicPriceChart: React.FC<{
       vwapRef.current = null;
       avwapRefs.current = {};
       priceLineSlotsRef.current = null;
+      lastPriceLineOptsRef.current = {};
       externalLogicalRangeRef.current = null;
       externalCrosshairTimeRef.current = null;
       getLogicalRangeRef.current = null;
@@ -2726,34 +2691,56 @@ const PanoramicPriceChart: React.FC<{
   useEffect(() => {
     const slots = priceLineSlotsRef.current;
     if (!slots) return;
+    type SlotKey = keyof typeof slots;
     const updateSlot = (
+      slotKey: SlotKey,
       pl: IPriceLine,
       enabled: boolean,
       price: number | null,
       title: string,
       highlighted: boolean,
     ): void => {
-      if (!enabled || price === null || !Number.isFinite(price) || price <= 0) {
+      const nextEnabled = enabled && price !== null && Number.isFinite(price) && price > 0;
+      const nextPrice = nextEnabled && price !== null ? price : 0;
+      const nextTitle = nextEnabled ? title : '';
+      const nextHighlighted = nextEnabled && highlighted;
+      const prevOpts = lastPriceLineOptsRef.current[slotKey];
+      if (
+        prevOpts !== undefined &&
+        prevOpts.enabled === nextEnabled &&
+        prevOpts.price === nextPrice &&
+        prevOpts.highlighted === nextHighlighted &&
+        prevOpts.title === nextTitle
+      ) {
+        return;
+      }
+      lastPriceLineOptsRef.current[slotKey] = {
+        enabled: nextEnabled,
+        price: nextPrice,
+        highlighted: nextHighlighted,
+        title: nextTitle,
+      };
+      if (!nextEnabled) {
         pl.applyOptions({ price: 0, lineVisible: false, axisLabelVisible: false, title: '' });
         return;
       }
       pl.applyOptions({
-        price,
-        lineWidth: highlighted ? 3 : 2,
+        price: nextPrice,
+        lineWidth: nextHighlighted ? 3 : 2,
         lineVisible: true,
         axisLabelVisible: true,
-        title,
+        title: nextTitle,
       });
     };
     const prefix = currencySymbol === 'USD' ? 'US$' : '$';
     const hasBars = bundle.barsAvailable;
     const vpTag = resolveVpWindowTag(keyLevels.volumeProfileWindowBars ?? null);
-    updateSlot(slots.poc, hasBars && overlays.volumeProfile, keyLevels.poc, `POC ${prefix}${fmtNum(keyLevels.poc, 2)} (${vpTag})`, highlightedLevel === 'POC');
-    updateSlot(slots.vah, hasBars && overlays.volumeProfile, keyLevels.vah, 'VAH', highlightedLevel === 'VAH');
-    updateSlot(slots.val, hasBars && overlays.volumeProfile, keyLevels.val, 'VAL', highlightedLevel === 'VAL');
-    updateSlot(slots.callWall, hasBars && overlays.optionWalls, keyLevels.callWall, `CALL WALL ${prefix}${fmtNum(keyLevels.callWall, 2)}`, highlightedLevel === 'CALL_WALL');
-    updateSlot(slots.putWall, hasBars && overlays.optionWalls, keyLevels.putWall, `PUT WALL ${prefix}${fmtNum(keyLevels.putWall, 2)}`, highlightedLevel === 'PUT_WALL');
-    updateSlot(slots.zeroGamma, hasBars && overlays.optionWalls, keyLevels.zeroGamma, `ZERO-GAMMA ${prefix}${fmtNum(keyLevels.zeroGamma, 2)}`, highlightedLevel === 'ZERO_GAMMA');
+    updateSlot('poc', slots.poc, hasBars && overlays.volumeProfile, keyLevels.poc, `POC ${prefix}${fmtNum(keyLevels.poc, 2)} (${vpTag})`, highlightedLevel === 'POC');
+    updateSlot('vah', slots.vah, hasBars && overlays.volumeProfile, keyLevels.vah, 'VAH', highlightedLevel === 'VAH');
+    updateSlot('val', slots.val, hasBars && overlays.volumeProfile, keyLevels.val, 'VAL', highlightedLevel === 'VAL');
+    updateSlot('callWall', slots.callWall, hasBars && overlays.optionWalls, keyLevels.callWall, `CALL WALL ${prefix}${fmtNum(keyLevels.callWall, 2)}`, highlightedLevel === 'CALL_WALL');
+    updateSlot('putWall', slots.putWall, hasBars && overlays.optionWalls, keyLevels.putWall, `PUT WALL ${prefix}${fmtNum(keyLevels.putWall, 2)}`, highlightedLevel === 'PUT_WALL');
+    updateSlot('zeroGamma', slots.zeroGamma, hasBars && overlays.optionWalls, keyLevels.zeroGamma, `ZERO-GAMMA ${prefix}${fmtNum(keyLevels.zeroGamma, 2)}`, highlightedLevel === 'ZERO_GAMMA');
   }, [bundle.barsAvailable, currencySymbol, highlightedLevel, keyLevels, overlays.optionWalls, overlays.volumeProfile]);
 
   // Bus imperativo 60 FPS en rAF: TODOS los eventos aceptados se encolan y un
@@ -2972,4 +2959,168 @@ const PanoramicPriceChart: React.FC<{
       )}
     </div>
   );
-};
+});
+
+const StockDetailHeaderBookCards: React.FC<{
+  readonly isArMarket: boolean;
+  readonly cleanTicker: string;
+  readonly stockDetailOrderBook: OrderBook5LevelsDto | null;
+  readonly stockDetailBid: number | null;
+  readonly stockDetailAsk: number | null;
+  readonly nbboBid: number | null;
+  readonly nbboAsk: number | null;
+  readonly nbboBidSize: number | null;
+  readonly nbboAskSize: number | null;
+  readonly nbboSpreadPct: number | null;
+  readonly spot: number | null;
+  readonly dayHigh: number | null;
+  readonly dayLow: number | null;
+  readonly prevClose: number | null;
+}> = memo(({
+  isArMarket,
+  cleanTicker,
+  stockDetailOrderBook,
+  stockDetailBid,
+  stockDetailAsk,
+  nbboBid,
+  nbboAsk,
+  nbboBidSize,
+  nbboAskSize,
+  nbboSpreadPct,
+  spot,
+  dayHigh,
+  dayLow,
+  prevClose,
+}) => {
+  const liveOrderBook = useAtomicOrderBook(isArMarket ? cleanTicker : null, 100);
+  const mergedArOrderBook = useMemo(() => {
+    if (!isArMarket) return null;
+    return mergeArLiveOrderBookDto(
+      stockDetailOrderBook,
+      liveOrderBook,
+      cleanTicker,
+      spot,
+      dayHigh,
+      dayLow,
+      prevClose,
+    );
+  }, [cleanTicker, dayHigh, dayLow, isArMarket, liveOrderBook, prevClose, spot, stockDetailOrderBook]);
+
+  const headerBook = useMemo(() => {
+    if (!isArMarket || mergedArOrderBook === null) return null;
+    return normalizeStockDetailOrderBook(mergedArOrderBook.bids, mergedArOrderBook.asks, 5);
+  }, [isArMarket, mergedArOrderBook]);
+
+  const headerQuotes = useMemo(() => {
+    return normalizeStockDetailHeaderQuotes({
+      quoteBid: isArMarket ? stockDetailBid : nbboBid,
+      quoteBidSize: isArMarket ? null : nbboBidSize,
+      quoteAsk: isArMarket ? stockDetailAsk : nbboAsk,
+      quoteAskSize: isArMarket ? null : nbboAskSize,
+      book: isArMarket ? headerBook : null,
+    });
+  }, [headerBook, isArMarket, nbboAsk, nbboAskSize, nbboBid, nbboBidSize, stockDetailAsk, stockDetailBid]);
+
+  return (
+    <>
+      <ContextCard
+        label={isArMarket ? 'L2 / L1 BYMA' : 'NBBO'}
+        value={`BID ${formatHeaderSideQuote(
+          headerQuotes.bid,
+          headerQuotes.bidSize,
+          (n) => fmtNum(n, 2),
+          (n) => fmtNum(n, 0),
+        )} · ASK ${formatHeaderSideQuote(
+          headerQuotes.ask,
+          headerQuotes.askSize,
+          (n) => fmtNum(n, 2),
+          (n) => fmtNum(n, 0),
+        )}`}
+        hint={
+          isArMarket
+            ? mergedArOrderBook?.source ?? stockDetailOrderBook?.source ?? '—'
+            : headerQuotes.bidSize !== null || headerQuotes.askSize !== null
+              ? `x${headerQuotes.bidSize !== null ? fmtNum(headerQuotes.bidSize, 0) : '—'} / x${headerQuotes.askSize !== null ? fmtNum(headerQuotes.askSize, 0) : '—'}`
+              : 'NBBO'
+        }
+      />
+      <ContextCard
+        label="Spread"
+        value={
+          Number.isFinite(headerQuotes.spreadPct)
+            ? `${fmtPct(headerQuotes.spreadPct, 3)}${
+                Number.isFinite(headerQuotes.spreadAbs)
+                  ? ` (${isArMarket ? '$' : 'US$'} ${fmtNum(headerQuotes.spreadAbs, 2)})`
+                  : ''
+              }`
+            : nbboSpreadPct !== null
+              ? fmtPct(nbboSpreadPct, 3)
+              : '—'
+        }
+        hint={isArMarket ? stockDetailOrderBook?.settlement ?? '—' : 'NBBO'}
+      />
+    </>
+  );
+});
+
+const StockDetailExecutionSection: React.FC<{
+  readonly isArMarket: boolean;
+  readonly cleanTicker: string;
+  readonly baseDeck: StockExecutionDeckData;
+  readonly stockDetailOrderBook: OrderBook5LevelsDto | null;
+  readonly spot: number | null;
+  readonly dayHigh: number | null;
+  readonly dayLow: number | null;
+  readonly prevClose: number | null;
+  readonly keyLevels: ChartKeyLevels;
+  readonly onHighlightLevel: (id: Exclude<HighlightLevelId, null>) => void;
+  readonly onOpenOrderTicket: (preset: {
+    ticker: string;
+    side: 'Compra' | 'Venta';
+    price: number;
+    qty: number;
+    instrumentLabel: string;
+  }) => void;
+  readonly onGoToOptions: (t: string) => void;
+}> = memo(({
+  isArMarket,
+  cleanTicker,
+  baseDeck,
+  stockDetailOrderBook,
+  spot,
+  dayHigh,
+  dayLow,
+  prevClose,
+  keyLevels,
+  onHighlightLevel,
+  onOpenOrderTicket,
+  onGoToOptions,
+}) => {
+  const liveOrderBook = useAtomicOrderBook(isArMarket ? cleanTicker : null, 100);
+  const deck = useMemo<StockExecutionDeckData>(() => {
+    if (!isArMarket) return baseDeck;
+    const mergedArOrderBook = mergeArLiveOrderBookDto(
+      stockDetailOrderBook,
+      liveOrderBook,
+      cleanTicker,
+      spot,
+      dayHigh,
+      dayLow,
+      prevClose,
+    );
+    return {
+      ...baseDeck,
+      orderBook24h: mergedArOrderBook,
+    };
+  }, [baseDeck, cleanTicker, dayHigh, dayLow, isArMarket, liveOrderBook, prevClose, spot, stockDetailOrderBook]);
+
+  return (
+    <ExecutionBottomDeck
+      deck={deck}
+      keyLevels={keyLevels}
+      onHighlightLevel={onHighlightLevel}
+      onOpenOrderTicket={onOpenOrderTicket}
+      onGoToOptions={onGoToOptions}
+    />
+  );
+});

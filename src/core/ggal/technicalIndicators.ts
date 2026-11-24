@@ -76,9 +76,26 @@ function isValidBar(bar: GgalChartBarPoint): boolean {
   );
 }
 
-function sortBarsAscending(candles: readonly GgalChartBarPoint[]): GgalChartBarPoint[] {
-  if (candles.length === 0) {
-    return [];
+function sortBarsAscending(candles: readonly GgalChartBarPoint[]): readonly GgalChartBarPoint[] {
+  if (candles.length <= 1) {
+    return candles;
+  }
+  let sorted = true;
+  let prevTime = candles[0]?.timeSec ?? Number.NaN;
+  if (!Number.isFinite(prevTime)) {
+    sorted = false;
+  } else {
+    for (let i = 1; i < candles.length; i += 1) {
+      const currTime = candles[i]?.timeSec ?? Number.NaN;
+      if (!Number.isFinite(currTime) || prevTime > currTime) {
+        sorted = false;
+        break;
+      }
+      prevTime = currTime;
+    }
+  }
+  if (sorted) {
+    return candles;
   }
   const copy = [...candles];
   copy.sort((a, b) => a.timeSec - b.timeSec);

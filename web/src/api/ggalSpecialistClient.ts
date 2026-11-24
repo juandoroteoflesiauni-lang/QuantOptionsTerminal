@@ -1141,6 +1141,7 @@ export function fetchGgalDualChart(
     readonly coord: GgalDualChartCoordMode;
     readonly timeframe: GgalDualChartTimeframe;
     readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly subPaneMode?: GgalSubPaneIndicatorMode;
     readonly forceRefresh?: boolean;
     readonly signal?: AbortSignal;
   },
@@ -1150,6 +1151,9 @@ export function fetchGgalDualChart(
     timeframe: params.timeframe,
     avwapAnchor: params.avwapAnchor,
   });
+  if (params.subPaneMode !== undefined) {
+    sp.set('subPaneMode', params.subPaneMode);
+  }
   if (params.forceRefresh) {
     sp.set('refresh', '1');
   }
@@ -1168,6 +1172,8 @@ export function fetchGgalDualChartSeries(
     readonly coord: GgalDualChartCoordMode;
     readonly timeframe: GgalDualChartTimeframe;
     readonly avwapAnchor: GgalAvwapAnchorMode;
+    readonly light?: boolean;
+    readonly subPaneMode?: GgalSubPaneIndicatorMode;
     readonly forceRefresh?: boolean;
     readonly signal?: AbortSignal;
   },
@@ -1176,8 +1182,13 @@ export function fetchGgalDualChartSeries(
     coord: params.coord,
     timeframe: params.timeframe,
     avwapAnchor: params.avwapAnchor,
-    light: '1',
   });
+  if (params.light !== false) {
+    sp.set('light', '1');
+  }
+  if (params.subPaneMode !== undefined) {
+    sp.set('subPaneMode', params.subPaneMode);
+  }
   if (params.forceRefresh) {
     sp.set('refresh', '1');
   }

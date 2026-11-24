@@ -1,0 +1,128 @@
+{
+  "cases": [
+    {
+      "name": "us_dst_day_rollover_and_zero_vol",
+      "marketTz": "America/New_York",
+      "closedBars": [
+        {
+          "timeSec": 1746474600,
+          "open": 100.0,
+          "high": 102.0,
+          "low": 99.5,
+          "close": 101.0,
+          "volume": 1200.0
+        },
+        {
+          "timeSec": 1746474900,
+          "open": 101.0,
+          "high": 103.0,
+          "low": 100.0,
+          "close": 102.5,
+          "volume": 0.0
+        },
+        {
+          "timeSec": 1746538200,
+          "open": 104.0,
+          "high": 105.5,
+          "low": 103.5,
+          "close": 105.0,
+          "volume": 800.0
+        },
+        {
+          "timeSec": 1746538500,
+          "open": 105.0,
+          "high": 106.0,
+          "low": 104.0,
+          "close": 104.5,
+          "volume": 1500.0
+        }
+      ],
+      "steps": [
+        {
+          "closedBarsCount": 3,
+          "formingBar": {
+            "timeSec": 1746538500,
+            "open": 105.0,
+            "high": 105.4,
+            "low": 104.8,
+            "close": 105.2,
+            "volume": 400.0
+          },
+          "expectedVwap": 104.82222222222222
+        },
+        {
+          "closedBarsCount": 3,
+          "formingBar": {
+            "timeSec": 1746538500,
+            "open": 105.0,
+            "high": 106.0,
+            "low": 104.0,
+            "close": 104.5,
+            "volume": 1500.0
+          },
+          "expectedVwap": 104.77536231884058
+        },
+        {
+          "closedBarsCount": 4,
+          "formingBar": {
+            "timeSec": 1746538800,
+            "open": 104.5,
+            "high": 105.1,
+            "low": 104.2,
+            "close": 104.9,
+            "volume": 650.0
+          },
+          "expectedVwap": 104.76610169491525
+        }
+      ]
+    },
+    {
+      "name": "byma_utc_midnight_vs_art_session",
+      "marketTz": "America/Argentina/Buenos_Aires",
+      "closedBars": [
+        {
+          "timeSec": 1746489300,
+          "open": 7000.0,
+          "high": 7050.0,
+          "low": 6980.0,
+          "close": 7020.0,
+          "volume": 300.0
+        },
+        {
+          "timeSec": 1746489900,
+          "open": 7020.0,
+          "high": 7060.0,
+          "low": 7010.0,
+          "close": 7040.0,
+          "volume": 200.0
+        }
+      ],
+      "steps": [
+        {
+          "closedBarsCount": 1,
+          "formingBar": {
+            "timeSec": 1746489900,
+            "open": 7020.0,
+            "high": 7060.0,
+            "low": 7010.0,
+            "close": 7040.0,
+            "volume": 200.0
+          },
+          "expectedVwap": 7024.666666666667
+        },
+        {
+          "closedBarsCount": 2,
+          "formingBar": {
+            "timeSec": 1746540000,
+            "open": 7100.0,
+            "high": 7120.0,
+            "low": 7090.0,
+            "close": 7110.0,
+            "volume": 500.0
+          },
+          "expectedVwap": 7106.666666666667
+        }
+      ]
+    }
+  ]
+}

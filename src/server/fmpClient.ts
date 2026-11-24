@@ -946,26 +946,19 @@ export class FmpEnterpriseClient {
     }
 
     const pages: (readonly Bar[])[] = [];
-    let lastMeta: FmpHistoricalResult | null = null;
+    const metaHistory: FmpHistoricalResult[] = [];
     let totalDiscarded = 0;
     let earliestSeenSec = Number.POSITIVE_INFINITY;
     let consecutiveEmpty = 0;
     const maxEmptyWindows = Math.max(1, Math.trunc(request.maxEmptyWindows ?? 6));
+    const MAX_WINDOW_CONCURRENCY = 3;
 
-    for (const win of windows) {
-      const page = await this.fetchHistorical({
-        ...request,
-        fromUtcSec: win.fromUtcSec,
-        toUtcSec: win.toUtcSec,
-      });
-      lastMeta = page;
+    const consumePage = (page: FmpHistoricalResult): boolean => {
+      metaHistory.push(page);
       totalDiscarded += page.discarded;
       if (page.bars.length === 0) {
         consecutiveEmpty += 1;
-        if (consecutiveEmpty >= maxEmptyWindows) {
-          break;
-        }
-        continue;
+        return consecutiveEmpty >= maxEmptyWindows;
       }
       consecutiveEmpty = 0;
       pages.push(page.bars);
@@ -973,13 +966,42 @@ export class FmpEnterpriseClient {
       if (firstBar !== undefined && firstBar.time < earliestSeenSec) {
         earliestSeenSec = firstBar.time;
       }
-      if (earliestSeenSec <= fromUtcSec) {
-        break;
+      return earliestSeenSec <= fromUtcSec || page.legacyFallbackUsed;
+    };
+
+    // Probe newest window first so short ranges and range-ignoring legacy fallbacks stop in 1 HTTP call.
+    const firstWindow = windows[0];
+    let stopRequested = false;
+    if (firstWindow !== undefined) {
+      const firstPage = await this.fetchHistorical({
+        ...request,
+        fromUtcSec: firstWindow.fromUtcSec,
+        toUtcSec: firstWindow.toUtcSec,
+      });
+      stopRequested = consumePage(firstPage);
+    }
+
+    for (let batchStart = 1; batchStart < windows.length && !stopRequested; batchStart += MAX_WINDOW_CONCURRENCY) {
+      const batch = windows.slice(batchStart, batchStart + MAX_WINDOW_CONCURRENCY);
+      const batchPages = await Promise.all(
+        batch.map((win) =>
+          this.fetchHistorical({
+            ...request,
+            fromUtcSec: win.fromUtcSec,
+            toUtcSec: win.toUtcSec,
+          }),
+        ),
+      );
+      for (const page of batchPages) {
+        if (consumePage(page)) {
+          stopRequested = true;
+          break;
+        }
       }
     }
 
     const mergedBars = mergeFmpPaginatedBars(pages, { fromUtcSec, toUtcSec });
-    const meta = lastMeta;
+    const meta = metaHistory[metaHistory.length - 1] ?? null;
     return {
       bars: mergedBars,
       source: meta?.source ?? 'FMP_STABLE',

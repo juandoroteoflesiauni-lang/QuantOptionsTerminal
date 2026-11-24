@@ -286,6 +286,9 @@ interface BucketEntry {
   pv: number;
   revision: number;
   lastEmitAtMs: number | null;
+  lastTradeOrder: TradeRecord | null;
+  tradesMonotonic: boolean;
+  lastAggregatedEventTimeMs: number;
 }
 
 interface IndicatorCheckpoint {
@@ -342,8 +345,19 @@ function emptyCheckpoint(anchorSec: number | null): IndicatorCheckpoint {
 
 function newBucket(timeSec: number, session: string, seed: GgalTickMinuteBar | null = null): BucketEntry {
   return {
-    timeSec, session, seed, trades: [], minutes: new Map(), seen: new Set(),
-    bar: null, pv: 0, revision: 0, lastEmitAtMs: null,
+    timeSec,
+    session,
+    seed,
+    trades: [],
+    minutes: new Map(),
+    seen: new Set(),
+    bar: null,
+    pv: 0,
+    revision: 0,
+    lastEmitAtMs: null,
+    lastTradeOrder: null,
+    tradesMonotonic: true,
+    lastAggregatedEventTimeMs: -1,
   };
 }
 
@@ -359,22 +373,64 @@ function normalizeMinute(minute: GgalTickMinuteBar): GgalTickMinuteBar | null {
   return { ...minute, volume: Number.isFinite(minute.volume) && minute.volume >= 0 ? minute.volume : 0 };
 }
 
+function appendTradeMonotonicO1(
+  entry: BucketEntry,
+  record: TradeRecord,
+): { bar: GgalTickBar; pv: number } | null {
+  if (entry.bar === null || !entry.tradesMonotonic || entry.minutes.size > 0) {
+    return null;
+  }
+  if (entry.seed !== null && entry.seed.timeSec * 1_000 > record.eventTimeMs) {
+    return null;
+  }
+  if (record.eventTimeMs < entry.lastAggregatedEventTimeMs) {
+    return null;
+  }
+  if (entry.lastTradeOrder !== null && compareBucketTrades(entry.lastTradeOrder, record) > 0) {
+    return null;
+  }
+  const bar: GgalTickBar = {
+    timeSec: entry.timeSec,
+    open: entry.bar.open,
+    high: Math.max(entry.bar.high, record.price),
+    low: Math.min(entry.bar.low, record.price),
+    close: record.price,
+    volume: entry.bar.volume + record.volume,
+  };
+  const pv = entry.pv + record.price * record.volume;
+  entry.lastTradeOrder = record;
+  entry.lastAggregatedEventTimeMs = record.eventTimeMs;
+  return { bar, pv };
+}
+
 function aggregateBucket(entry: BucketEntry): { bar: GgalTickBar | null; pv: number } {
   // Un minuto consolidado reemplaza a la semilla del mismo minuto. Los
   // minutos de un timeframe superior se agregan por orden de evento.
   const minutes = [...entry.minutes.values()].sort((a, b) => a.timeSec - b.timeSec);
   const seed = entry.seed !== null && !entry.minutes.has(entry.seed.timeSec) ? entry.seed : null;
-  const trades = [...entry.trades].sort(compareBucketTrades);
+  const trades = entry.tradesMonotonic ? entry.trades : [...entry.trades].sort(compareBucketTrades);
   const observations = [
     ...minutes.map((minute) => ({ ...minute, pv: minutePv(minute), eventTimeMs: minute.timeSec * 1_000 })),
     ...trades.map((trade) => ({
       eventTimeMs: trade.eventTimeMs, open: trade.price, high: trade.price, low: trade.price, close: trade.price,
       volume: trade.volume, pv: trade.price * trade.volume,
     })),
-  ].sort((a, b) => a.eventTimeMs - b.eventTimeMs);
+  ];
+  let obsSorted = true;
+  for (let i = 1; i < observations.length; i += 1) {
+    if ((observations[i - 1]?.eventTimeMs ?? 0) > (observations[i]?.eventTimeMs ?? 0)) {
+      obsSorted = false;
+      break;
+    }
+  }
+  if (!obsSorted) {
+    observations.sort((a, b) => a.eventTimeMs - b.eventTimeMs);
+  }
   let bar: GgalTickBar | null = seed === null ? null : { ...seed, timeSec: entry.timeSec };
   let pv = seed === null ? 0 : minutePv(seed);
+  let lastEventMs = seed === null ? -1 : seed.timeSec * 1_000;
   for (const item of observations) {
+    if (item.eventTimeMs > lastEventMs) lastEventMs = item.eventTimeMs;
     bar = {
       timeSec: entry.timeSec,
       open: bar?.open ?? item.open,
@@ -385,6 +441,8 @@ function aggregateBucket(entry: BucketEntry): { bar: GgalTickBar | null; pv: num
     };
     pv += item.pv;
   }
+  entry.lastTradeOrder = trades.length > 0 ? trades[trades.length - 1] ?? null : null;
+  entry.lastAggregatedEventTimeMs = lastEventMs;
   return { bar, pv };
 }
 
@@ -480,12 +538,25 @@ export class GgalTickStreamEngine {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const nowBucket = ggalTickBucketStartSec(nowSec, timeframe);
     const previousRevisions = new Map([...state.buckets].map(([time, entry]) => [time, entry.revision]));
+    const sorted = bars.map(normalizeMinute).filter((bar) => bar !== null).sort((a, b) => a.timeSec - b.timeSec);
+    const seeds = new Map(sorted.map((bar) => [ggalTickBucketStartSec(bar.timeSec, timeframe), bar]));
+    let maxSeedTimeSec = -1;
+    for (const seedTimeSec of seeds.keys()) {
+      if (seedTimeSec > maxSeedTimeSec) maxSeedTimeSec = seedTimeSec;
+    }
+    const preservedLiveBuckets = new Map<number, BucketEntry>();
+    for (const [bucketTimeSec, existingEntry] of state.buckets) {
+      if (
+        bucketTimeSec > maxSeedTimeSec &&
+        (existingEntry.trades.length > 0 || existingEntry.minutes.size > 0)
+      ) {
+        preservedLiveBuckets.set(bucketTimeSec, existingEntry);
+      }
+    }
     state.buckets.clear();
     state.checkpoint = emptyCheckpoint(this.avwapAnchors.get(mode + ':' + timeframe) ?? null);
     state.activeTime = null;
     state.activeSession = null;
-    const sorted = bars.map(normalizeMinute).filter((bar) => bar !== null).sort((a, b) => a.timeSec - b.timeSec);
-    const seeds = new Map(sorted.map((bar) => [ggalTickBucketStartSec(bar.timeSec, timeframe), bar]));
     for (const [timeSec, bar] of seeds) {
       const session = resolveGgalMarketSessionDateKey(bar.timeSec, mode);
       state.activeTime = timeSec;
@@ -498,6 +569,16 @@ export class GgalTickStreamEngine {
       Object.assign(entry, aggregateBucket(entry));
       entry.revision = previousRevisions.get(timeSec) ?? 0;
       state.buckets.set(timeSec, entry);
+    }
+    if (preservedLiveBuckets.size > 0) {
+      const orderedLive = [...preservedLiveBuckets.entries()].sort((a, b) => a[0] - b[0]);
+      for (const [liveTimeSec, liveEntry] of orderedLive) {
+        state.buckets.set(liveTimeSec, liveEntry);
+        if (state.activeTime === null || liveTimeSec >= state.activeTime) {
+          state.activeTime = liveTimeSec;
+          state.activeSession = liveEntry.session;
+        }
+      }
     }
     this.evictBuckets(mode, timeframe, state);
   }
@@ -594,8 +675,15 @@ export class GgalTickStreamEngine {
         };
       }
       if (key !== null) entry.seen.add(key);
+      const fastAggregated = appendTradeMonotonicO1(entry, record);
+      if (
+        record.eventTimeMs < entry.lastAggregatedEventTimeMs ||
+        (entry.lastTradeOrder !== null && compareBucketTrades(entry.lastTradeOrder, record) > 0)
+      ) {
+        entry.tradesMonotonic = false;
+      }
       entry.trades.push(record);
-      this.applyBucket(mode, timeframe, state, entry, nowMs);
+      this.applyBucket(mode, timeframe, state, entry, nowMs, fastAggregated);
       accepted = true;
     }
     if (duplicate) {
@@ -647,11 +735,31 @@ export class GgalTickStreamEngine {
   }
 
   private sortedBuckets(state: TfSideState): BucketEntry[] {
-    return [...state.buckets.values()].sort((a, b) => a.timeSec - b.timeSec);
+    const out: BucketEntry[] = [];
+    let isSorted = true;
+    let prevTime = -1;
+    for (const entry of state.buckets.values()) {
+      if (entry.timeSec < prevTime) {
+        isSorted = false;
+      }
+      prevTime = entry.timeSec;
+      out.push(entry);
+    }
+    if (!isSorted) {
+      out.sort((a, b) => a.timeSec - b.timeSec);
+    }
+    return out;
   }
 
-  private applyBucket(mode: GgalTickMode, timeframe: GgalTickTimeframe, state: TfSideState, entry: BucketEntry, nowMs: number): void {
-    const { bar, pv } = aggregateBucket(entry);
+  private applyBucket(
+    mode: GgalTickMode,
+    timeframe: GgalTickTimeframe,
+    state: TfSideState,
+    entry: BucketEntry,
+    nowMs: number,
+    precomputed: { bar: GgalTickBar | null; pv: number } | null = null,
+  ): void {
+    const { bar, pv } = precomputed ?? aggregateBucket(entry);
     if (bar === null) return;
     const historical = state.activeTime !== null && entry.timeSec < state.activeTime;
     const changed = !sameBar(entry.bar, bar);

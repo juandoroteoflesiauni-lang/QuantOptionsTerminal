@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useCallback, useRef, useSyncExternalStore } from 'react';
 import { syncOptionEngineMarket } from '../components/options/engine';
 import type {
   ArMacroResponse,
@@ -205,13 +205,22 @@ function currentFactState(
   previous: UsSnapshotResponseDto | undefined,
   date: string,
 ): ExpiryFactState | null {
-  if (previous === undefined) return null;
-  const entry = loadedEntryOf(previous, date);
-  if (entry === null) return null;
-  return {
-    loaded: entry.loaded,
-    evaluationSec: loadedDateEvaluationsBySymbol.get(clean)?.get(date) ?? null,
-  };
+  if (previous !== undefined) {
+    const entry = loadedEntryOf(previous, date);
+    if (entry !== null) {
+      return {
+        loaded: entry.loaded,
+        evaluationSec: loadedDateEvaluationsBySymbol.get(clean)?.get(date) ?? null,
+      };
+    }
+  }
+  const pending = pendingPointFactsBySymbol.get(clean)?.get(date);
+  if (pending !== undefined) {
+    return pending.kind === 'snapshot'
+      ? snapshotFactState(pending.snapshot, date)
+      : chainFactState(pending.chain);
+  }
+  return null;
 }
 
 function snapshotFactState(snap: UsSnapshotResponseDto, date: string): ExpiryFactState {
@@ -590,7 +599,13 @@ export async function requestStockDetail(
 export async function requestTerminalBars(
   symbol: string,
   timeframe: TerminalTimeframe,
-  options?: { readonly force?: boolean; readonly visibleBars?: number; readonly signal?: AbortSignal; readonly market?: 'US' | 'AR' },
+  options?: {
+    readonly force?: boolean;
+    readonly visibleBars?: number;
+    readonly signal?: AbortSignal;
+    readonly market?: 'US' | 'AR';
+    readonly includeOverlays?: boolean;
+  },
 ): Promise<UsTerminalBarsResponseDto | null> {
   const clean = symbol.trim().toUpperCase();
   if (!clean) return null;
@@ -599,9 +614,10 @@ export async function requestTerminalBars(
   // del subyacente US en USD (SPEC punto 10). La clave de caché incluye el
   // mercado para no pisar `NVDA:1D:US` con `NVDA:1D:AR`.
   const market = options?.market ?? 'US';
+  const overlaysParam = options?.includeOverlays === false ? '&overlays=0' : '';
   return fetchJsonGuarded<UsTerminalBarsResponseDto>(
-    `bars:${clean}:${timeframe}:${market}`,
-    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&market=${market}&visibleBars=${String(vis)}${options?.force ? '&refresh=1' : ''}`,
+    `bars:${clean}:${timeframe}:${market}${overlaysParam}`,
+    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&market=${market}&visibleBars=${String(vis)}${options?.force ? '&refresh=1' : ''}${overlaysParam}`,
     { force: options?.force === true, signal: options?.signal },
   );
 }
@@ -743,49 +759,66 @@ export async function requestOptionsChain(
     const stamps = isPointScope ? pointPublicationStamps : basePublicationStamps;
     // Comprobación antes de mutar estado o hidratar consumidores.
     if (!acceptPublication(stamps, scopeKey, revision, snap.asOfUtcSec)) return;
-    const mapped = mapUsSnapshotToArOptions(clean, snap);
+    const previousSnap = state.usSnapshotsBySymbol[clean];
+    let publishedSnap: UsSnapshotResponseDto | null = null;
+    if (isPointScope) {
+      // Alcance puntual: SOLO se publica si aporta datos más nuevos para SU
+      // vencimiento; rechazado -> cero mutaciones de motor, estado ni notify.
+      const fact = snapshotFactState(snap, expiration);
+      const decision = resolveExpiryFactDecision(
+        fact,
+        currentFactState(clean, previousSnap, expiration),
+      );
+      if (decision !== 'publish') return;
+      stashPointSnapshot(clean, expiration, snap);
+      if (previousSnap !== undefined) {
+        publishedSnap = mergeLoadedExpiriesIntoBaseSnapshot(previousSnap, snap, expiration);
+        setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
+        hydrateFromUsSnapshot(publishedSnap);
+      }
+      const mapped = mapUsSnapshotToArOptions(clean, snap);
+      const merged = mergeArOptionsWithHydratedExpiry(state.optionsByUnderlying[canonicalKey], mapped);
+      const groups = buildOptionExpiryGroupsFromArOptions(merged);
+      if (activeOptionsCanonicalKey === canonicalKey) {
+        syncOptionEngineMarket(merged);
+      }
+      state = {
+        ...state,
+        isBackendConnected: true,
+        ...(publishedSnap !== null
+          ? { usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: publishedSnap } }
+          : {}),
+        optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
+        optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
+        ...(snap.catalysts
+          ? {
+              optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [clean]: snap.catalysts },
+              optionsCatalystsStatusBySymbol: {
+                ...state.optionsCatalystsStatusBySymbol,
+                [clean]: snap.catalysts.available ? 'OK' : 'NO_DATA',
+              },
+            }
+          : {}),
+        feedStatus: combineFeedStatus(state.feedStatus, mapped.feedStatus),
+        lastSyncUtcSec: snap.asOfUtcSec,
+      };
+      notify();
+      return;
+    }
+
+    publishedSnap = publishBaseSnapshot(clean, snap, previousSnap);
+    hydrateFromUsSnapshot(publishedSnap);
+    const mapped = mapUsSnapshotToArOptions(clean, publishedSnap);
     // Pieza 50.1: fusionar el vencimiento recién cargado sin borrar los otros ya hidratados.
     const merged = mergeArOptionsWithHydratedExpiry(state.optionsByUnderlying[canonicalKey], mapped);
     const groups = buildOptionExpiryGroupsFromArOptions(merged);
     if (activeOptionsCanonicalKey === canonicalKey) {
       syncOptionEngineMarket(merged);
     }
-    const previousSnap = state.usSnapshotsBySymbol[clean];
-    let publishedSnap: UsSnapshotResponseDto | null = null;
-    // Un snapshot puntual rechazado jamás hidrata consumidores si no hay base previa.
-    let allowRejectedSnapHydration = true;
-    if (isPointScope) {
-      // Alcance puntual: SOLO se publica la fecha solicitada (la respuesta puede
-      // traer anclas o curadas cargadas de más) y solo si aporta datos más
-      // nuevos que los vigentes de esa fecha; si no, queda el último válido.
-      const fact = snapshotFactState(snap, expiration);
-      const decision = resolveExpiryFactDecision(
-        fact,
-        currentFactState(clean, previousSnap, expiration),
-      );
-      if (decision === 'publish') {
-        stashPointSnapshot(clean, expiration, snap);
-        if (previousSnap !== undefined) {
-          publishedSnap = mergeLoadedExpiriesIntoBaseSnapshot(previousSnap, snap, expiration);
-          setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
-        }
-      } else {
-        publishedSnap = previousSnap ?? null;
-        allowRejectedSnapHydration = false;
-      }
-    } else {
-      publishedSnap = publishBaseSnapshot(clean, snap, previousSnap);
-    }
-    const hydrationSnap = publishedSnap ?? previousSnap ?? (allowRejectedSnapHydration ? snap : undefined);
-    if (hydrationSnap !== undefined) {
-      hydrateFromUsSnapshot(hydrationSnap);
-    }
     state = {
       ...state,
       isBackendConnected: true,
-      ...(publishedSnap !== null
-        ? { usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: publishedSnap } }
-        : {}),
+      usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: publishedSnap },
       optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
       optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       ...(snap.catalysts
@@ -850,6 +883,7 @@ export async function requestUsOptionExpiry(
     loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: true },
   };
   notify();
+  let clearedLoadingInCommit = false;
   try {
     const scopeKey = `point:US:${clean}:${expiration}`;
     const revision = beginPublication(scopeKey);
@@ -885,6 +919,7 @@ export async function requestUsOptionExpiry(
     state = {
       ...state,
       isBackendConnected: true,
+      loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: false },
       optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
       optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       // Alcance puntual: actualiza los hechos de SU vencimiento sobre la base
@@ -902,13 +937,16 @@ export async function requestUsOptionExpiry(
       feedStatus: combineFeedStatus(state.feedStatus, resp.feedMode),
       lastSyncUtcSec: resp.asOfUtcSec,
     };
+    clearedLoadingInCommit = true;
     notify();
   } finally {
-    state = {
-      ...state,
-      loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: false },
-    };
-    notify();
+    if (!clearedLoadingInCommit) {
+      state = {
+        ...state,
+        loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: false },
+      };
+      notify();
+    }
   }
 }
 
@@ -1176,6 +1214,95 @@ export function useLiveMarketStatus(): LiveMarketStatus {
     () => statusSnapshot,
     () => statusSnapshot,
   );
+}
+
+export interface LiveStockDetailRuntimeSlice {
+  readonly feedStatus: FeedStatus;
+  readonly optionsUnderlyingsStatus: LiveMarketState['optionsUnderlyingsStatus'];
+  readonly hasOverview: boolean;
+  readonly overviewCclMedian: number | null;
+  readonly overviewArStock: ArOverviewResponse['mervalStocks'][number] | null;
+  readonly overviewCedear: ArOverviewResponse['cedears'][number] | null;
+  readonly stockDetail: ArStockDetailResponse | undefined;
+  readonly arOptions: ArOptionsResponse | undefined;
+  readonly usSnap: UsSnapshotResponseDto | undefined;
+  readonly overview: ArOverviewResponse | null;
+  readonly optionsUnderlyings: readonly OptionsUnderlyingMetaDto[];
+}
+
+export function useLiveStockDetailRuntimeSlice(
+  cleanTicker: string,
+  isArMarket: boolean,
+  selectorOpen: boolean,
+): LiveStockDetailRuntimeSlice {
+  const clean = cleanTicker.trim().toUpperCase();
+  const cachedRef = useRef<LiveStockDetailRuntimeSlice | null>(null);
+
+  const subscribe = useCallback((listener: () => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
+
+  const getSnapshot = useCallback((): LiveStockDetailRuntimeSlice => {
+    const ov = state.overview;
+    const overviewCclMedian =
+      ov?.cclMedian !== undefined && Number.isFinite(ov.cclMedian) ? ov.cclMedian : null;
+    const overviewArStock = isArMarket
+      ? (ov?.mervalStocks.find((s) => s.ticker === clean) ??
+        ov?.generalPanelStocks.find((s) => s.ticker === clean) ??
+        null)
+      : null;
+    const overviewCedear = isArMarket
+      ? (ov?.cedears.find((s) => s.ticker === clean) ?? null)
+      : (ov?.cedears.find((s) => {
+          const targetUs = s.adrTicker?.replace(/ US$/i, '').trim().toUpperCase();
+          return targetUs === clean || s.ticker === clean;
+        }) ?? null);
+    const stockDetail = isArMarket ? state.stockDetailsBySymbol[clean] : undefined;
+    const arOptions = isArMarket ? getLiveOptionsForUnderlying(state, `AR:${clean}`) : undefined;
+    const usSnap = !isArMarket ? state.usSnapshotsBySymbol[clean] : undefined;
+    const hasOverview = ov !== null;
+    const prev = cachedRef.current;
+    const effectiveOverview =
+      selectorOpen || prev === null || prev.overview === null ? ov : prev.overview;
+
+    if (
+      prev !== null &&
+      prev.feedStatus === state.feedStatus &&
+      prev.optionsUnderlyingsStatus === state.optionsUnderlyingsStatus &&
+      prev.hasOverview === hasOverview &&
+      prev.overviewCclMedian === overviewCclMedian &&
+      prev.overviewArStock === overviewArStock &&
+      prev.overviewCedear === overviewCedear &&
+      prev.stockDetail === stockDetail &&
+      prev.arOptions === arOptions &&
+      prev.usSnap === usSnap &&
+      prev.overview === effectiveOverview &&
+      prev.optionsUnderlyings === state.optionsUnderlyings
+    ) {
+      return prev;
+    }
+
+    const next: LiveStockDetailRuntimeSlice = {
+      feedStatus: state.feedStatus,
+      optionsUnderlyingsStatus: state.optionsUnderlyingsStatus,
+      hasOverview,
+      overviewCclMedian,
+      overviewArStock,
+      overviewCedear,
+      stockDetail,
+      arOptions,
+      usSnap,
+      overview: effectiveOverview,
+      optionsUnderlyings: state.optionsUnderlyings,
+    };
+    cachedRef.current = next;
+    return next;
+  }, [clean, isArMarket, selectorOpen]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 export function subscribeLiveTickerUpdates(fn: TickerListener): () => void {

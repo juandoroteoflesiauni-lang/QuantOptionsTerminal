@@ -414,6 +414,128 @@ function projectLiveCalendarCandle(
   };
 }
 
+const SESSION_VWAP_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+
+function getSessionVwapFormatter(marketTz: string): Intl.DateTimeFormat {
+  let formatter = SESSION_VWAP_FORMATTER_CACHE.get(marketTz);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: marketTz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    SESSION_VWAP_FORMATTER_CACHE.set(marketTz, formatter);
+  }
+  return formatter;
+}
+
+export interface LiveSessionVwapCheckpoint {
+  readonly sessionKey: string;
+  readonly closedCumPv: number;
+  readonly closedCumVol: number;
+}
+
+/**
+ * Builds an immutable O(1) checkpoint for the active trading session from
+ * ascending closed bars in `marketTz` without mutating inputs.
+ */
+export function buildSessionVwapCheckpoint(
+  closedBars: readonly LiveChartBar[],
+  marketTz: string,
+): LiveSessionVwapCheckpoint | null {
+  const formatter = getSessionVwapFormatter(marketTz);
+  let targetSessionKey: string | null = null;
+  for (let i = closedBars.length - 1; i >= 0; i -= 1) {
+    const bar = closedBars[i];
+    if (bar !== undefined && Number.isInteger(bar.timeSec) && bar.timeSec >= 0) {
+      targetSessionKey = formatter.format(new Date(bar.timeSec * 1_000));
+      break;
+    }
+  }
+  if (targetSessionKey === null) return null;
+
+  let closedCumPv = 0;
+  let closedCumVol = 0;
+  for (let i = closedBars.length - 1; i >= 0; i -= 1) {
+    const bar = closedBars[i];
+    if (bar === undefined || !Number.isInteger(bar.timeSec) || bar.timeSec < 0) continue;
+    const key = formatter.format(new Date(bar.timeSec * 1_000));
+    if (key < targetSessionKey) break;
+    if (key !== targetSessionKey) continue;
+    const typicalPrice = (bar.high + bar.low + bar.close) / 3;
+    if (!Number.isFinite(typicalPrice) || !Number.isFinite(bar.volume) || bar.volume <= 0) continue;
+    closedCumPv += typicalPrice * bar.volume;
+    closedCumVol += bar.volume;
+  }
+  return {
+    sessionKey: targetSessionKey,
+    closedCumPv,
+    closedCumVol,
+  };
+}
+
+/**
+ * Advances the Session VWAP checkpoint in O(1) when a forming bar closes.
+ */
+export function advanceSessionVwapCheckpoint(
+  checkpoint: LiveSessionVwapCheckpoint | null,
+  justClosedBar: LiveChartBar,
+  marketTz: string,
+): LiveSessionVwapCheckpoint | null {
+  if (!Number.isInteger(justClosedBar.timeSec) || justClosedBar.timeSec < 0) {
+    return checkpoint;
+  }
+  const formatter = getSessionVwapFormatter(marketTz);
+  const sessionKey = formatter.format(new Date(justClosedBar.timeSec * 1_000));
+  const typicalPrice = (justClosedBar.high + justClosedBar.low + justClosedBar.close) / 3;
+  const valid =
+    Number.isFinite(typicalPrice) &&
+    Number.isFinite(justClosedBar.volume) &&
+    justClosedBar.volume > 0;
+  const pvDelta = valid ? typicalPrice * justClosedBar.volume : 0;
+  const volDelta = valid ? justClosedBar.volume : 0;
+
+  if (checkpoint === null || checkpoint.sessionKey !== sessionKey) {
+    return {
+      sessionKey,
+      closedCumPv: pvDelta,
+      closedCumVol: volDelta,
+    };
+  }
+  return {
+    sessionKey,
+    closedCumPv: checkpoint.closedCumPv + pvDelta,
+    closedCumVol: checkpoint.closedCumVol + volDelta,
+  };
+}
+
+/**
+ * Projects live Session VWAP in O(1) from a closed-bar checkpoint and the
+ * forming bar state, matching `projectLiveSessionVwap` mathematically.
+ */
+export function projectLiveSessionVwapFromCheckpoint(
+  checkpoint: LiveSessionVwapCheckpoint | null,
+  formingBar: LiveChartBar,
+  marketTz: string,
+): LiveVwapPoint | null {
+  if (!Number.isInteger(formingBar.timeSec) || formingBar.timeSec < 0) return null;
+  if (!isFinitePositive(formingBar.close)) return null;
+  const formingTypicalPrice = (formingBar.high + formingBar.low + formingBar.close) / 3;
+  if (!Number.isFinite(formingTypicalPrice) || !Number.isFinite(formingBar.volume) || formingBar.volume <= 0) {
+    return null;
+  }
+  const formatter = getSessionVwapFormatter(marketTz);
+  const sessionKey = formatter.format(new Date(formingBar.timeSec * 1_000));
+  const sameSession = checkpoint !== null && checkpoint.sessionKey === sessionKey;
+  const basePv = sameSession ? checkpoint.closedCumPv : 0;
+  const baseVol = sameSession ? checkpoint.closedCumVol : 0;
+  const totalVolume = baseVol + formingBar.volume;
+  if (!Number.isFinite(totalVolume) || totalVolume <= 0) return null;
+  const value = (basePv + formingTypicalPrice * formingBar.volume) / totalVolume;
+  return Number.isFinite(value) ? { timeSec: formingBar.timeSec, value } : null;
+}
+
 /**
  * Projects the session VWAP point for the forming bar. Previous bars of the
  * same session are accumulated exactly once; the forming bar is represented by
@@ -426,12 +548,7 @@ export function projectLiveSessionVwap(
 ): LiveVwapPoint | null {
   if (!Number.isInteger(formingBar.timeSec) || formingBar.timeSec < 0) return null;
   if (!isFinitePositive(formingBar.close)) return null;
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: marketTz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
+  const formatter = getSessionVwapFormatter(marketTz);
   const sessionKey = formatter.format(new Date(formingBar.timeSec * 1_000));
   let cumulativePriceVolume = 0;
   let cumulativeVolume = 0;

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { memo, useEffect, useMemo, useRef } from 'react';
 import {
   BaselineSeries,
   ColorType,
@@ -27,7 +27,14 @@ import {
   computeRelativeStrengthSeries,
   computeRollingRvSeries,
 } from './stockDetailMath';
-import type { LowerPaneMode, StockChartSeriesBundle } from './stockDetailTypes';
+import type {
+  LowerPaneMode,
+  StockChartSeriesBundle,
+} from './stockDetailTypes';
+
+const EMPTY_FLOW_POINTS: ReturnType<typeof computeLeeReadyBarFlow> = [];
+const EMPTY_RS_POINTS: ReturnType<typeof computeRelativeStrengthSeries> = [];
+const EMPTY_RV_SERIES: readonly number[] = [];
 
 export const SyncedLowerPaneChart: React.FC<{
   readonly ticker: string;
@@ -41,7 +48,7 @@ export const SyncedLowerPaneChart: React.FC<{
   readonly externalLogicalRangeRef: React.MutableRefObject<((range: LogicalRange) => void) | null>;
   readonly externalCrosshairTimeRef: React.MutableRefObject<((timeSec: number | null) => void) | null>;
   readonly getMainVisibleLogicalRange?: () => LogicalRange | null;
-}> = ({
+}> = memo(({
   ticker,
   market,
   timeframe,
@@ -83,14 +90,17 @@ export const SyncedLowerPaneChart: React.FC<{
   crosshairCbRef.current = onCrosshairTimeSync;
   getMainRangeCbRef.current = getMainVisibleLogicalRange;
 
-  const flowPoints = useMemo(() => computeLeeReadyBarFlow(bundle.bars), [bundle.bars]);
+  const flowPoints = useMemo(
+    () => (mode === 'CVD' ? computeLeeReadyBarFlow(bundle.bars) : EMPTY_FLOW_POINTS),
+    [bundle.bars, mode],
+  );
   const rsPoints = useMemo(
-    () => computeRelativeStrengthSeries(bundle.bars, bundle.benchmarkBars1d, true),
-    [bundle.bars, bundle.benchmarkBars1d],
+    () => (mode === 'RS' ? computeRelativeStrengthSeries(bundle.bars, bundle.benchmarkBars1d, true) : EMPTY_RS_POINTS),
+    [bundle.bars, bundle.benchmarkBars1d, mode],
   );
   const rollingRvSeries = useMemo(
-    () => (timeframe === '1D' ? computeRollingRvSeries(bundle.bars, 30, 252) : []),
-    [bundle.bars, timeframe],
+    () => (mode === 'VOLATILITY' && timeframe === '1D' ? computeRollingRvSeries(bundle.bars, 30, 252) : EMPTY_RV_SERIES),
+    [bundle.bars, mode, timeframe],
   );
 
   const latestFlow = flowPoints[flowPoints.length - 1];
@@ -132,8 +142,7 @@ export const SyncedLowerPaneChart: React.FC<{
         secondsVisible: false,
         enableConflation: true,
         conflationThresholdFactor: 1.0,
-        precomputeConflationOnInit: true,
-        precomputeConflationPriority: 'background',
+        precomputeConflationOnInit: false,
       },
       autoSize: false,
       width: Math.max(1, Math.floor(el.clientWidth)),
@@ -559,4 +568,4 @@ export const SyncedLowerPaneChart: React.FC<{
       </div>
     </section>
   );
-};
+});

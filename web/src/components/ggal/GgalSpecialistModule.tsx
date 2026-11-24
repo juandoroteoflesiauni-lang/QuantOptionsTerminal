@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import {
   fetchGgalClearingRisk,
+  fetchGgalDualChart,
   fetchGgalDualChartSeries,
   fetchGgalDualDensity,
   fetchGgalFeedStatus,
@@ -52,6 +53,7 @@ import {
   type GgalStrategyFamily,
   type GgalStrategySelectorResponseDto,
   type GgalStructurePinningResponseDto,
+  type GgalSubPaneIndicatorMode,
   type GgalTelemetryHeaderDto,
   type GgalVolTriangleResponseDto,
 } from '../../api/ggalSpecialistClient';
@@ -312,6 +314,9 @@ export const GgalSpecialistModule: React.FC<{
   const dualChartRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dualChartRetryAttemptsRef = useRef(0);
   const lastValidDualChartRef = useRef<GgalDualChartPayloadDto | null>(null);
+  const subPaneModeRef = useRef<GgalSubPaneIndicatorMode>('CVD_LEE_READY');
+  const dualChartGenRef = useRef(0);
+  const fullHydratedGenRef = useRef(0);
   const loadDualChartRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
 
   const clearDualChartRetryTimer = (): void => {
@@ -343,17 +348,26 @@ export const GgalSpecialistModule: React.FC<{
       dualChartAbortRef.current?.abort();
       const ctrl = new AbortController();
       dualChartAbortRef.current = ctrl;
-      const cacheKey = `${coordMode}:${chartTimeframe}:${avwapAnchor}`;
-      const cached = dualChartCacheRef.current.get(cacheKey);
+      dualChartGenRef.current += 1;
+      const gen = dualChartGenRef.current;
+      const activeSubPane = subPaneModeRef.current;
+      const subPaneCacheGroup = activeSubPane === 'REL_STRENGTH_BANKS' ? 'BANKS' : 'CORE';
+      const cacheKey = `${coordMode}:${chartTimeframe}:${avwapAnchor}:${subPaneCacheGroup}`;
+      const cached =
+        dualChartCacheRef.current.get(cacheKey) ??
+        (subPaneCacheGroup === 'CORE'
+          ? dualChartCacheRef.current.get(`${coordMode}:${chartTimeframe}:${avwapAnchor}:BANKS`)
+          : undefined);
       const sameCurrencyFallback =
         lastValidDualChartRef.current !== null &&
         lastValidDualChartRef.current.coordMode === coordMode
           ? lastValidDualChartRef.current
           : null;
-      if (cached !== undefined) {
+      if (cached !== undefined && !forceRefresh) {
         setDualChartPayload(cached);
         setDualChartError(null);
         setDualChartLoading(false);
+        fullHydratedGenRef.current = gen;
       } else if (sameCurrencyFallback !== null) {
         setDualChartPayload(sameCurrencyFallback);
         setDualChartError(null);
@@ -363,41 +377,74 @@ export const GgalSpecialistModule: React.FC<{
         setDualChartError(null);
         setDualChartLoading(true);
       }
+
       try {
-        const res = await fetchGgalDualChartSeries({
+        const shouldFetchLightFirst = cached === undefined || forceRefresh;
+        const lightPromise = shouldFetchLightFirst
+          ? fetchGgalDualChartSeries({
+              coord: coordMode,
+              timeframe: chartTimeframe,
+              avwapAnchor,
+              light: true,
+              forceRefresh,
+              signal: ctrl.signal,
+            })
+              .then((lightRes) => {
+                if (
+                  ctrl.signal.aborted ||
+                  dualChartGenRef.current !== gen ||
+                  fullHydratedGenRef.current === gen
+                ) {
+                  return;
+                }
+                setRouterStatus(lightRes.routerStatus);
+                if (lightRes.dualChart.status === 'OPERATIONAL') {
+                  lastValidDualChartRef.current = lightRes.dualChart;
+                  setDualChartPayload(lightRes.dualChart);
+                  setDualChartError(null);
+                  setDualChartLoading(false);
+                }
+              })
+              .catch(() => undefined)
+          : Promise.resolve();
+
+        const fullRes = await fetchGgalDualChart({
           coord: coordMode,
           timeframe: chartTimeframe,
           avwapAnchor,
+          subPaneMode: activeSubPane,
           forceRefresh,
           signal: ctrl.signal,
         });
-        if (ctrl.signal.aborted) return;
-        setRouterStatus(res.routerStatus);
-        if (res.dualChart.status === 'UNAVAILABLE' && res.dualChart.reason === 'DUAL_CHART_WARMING_UP') {
+        await lightPromise;
+        if (ctrl.signal.aborted || dualChartGenRef.current !== gen) return;
+        fullHydratedGenRef.current = gen;
+        setRouterStatus(fullRes.routerStatus);
+        if (fullRes.dualChart.status === 'UNAVAILABLE' && fullRes.dualChart.reason === 'DUAL_CHART_WARMING_UP') {
           scheduleDualChartRetry();
           return;
         }
-        if (res.dualChart.status === 'OPERATIONAL') {
+        if (fullRes.dualChart.status === 'OPERATIONAL') {
           dualChartRetryAttemptsRef.current = 0;
-          lastValidDualChartRef.current = res.dualChart;
+          lastValidDualChartRef.current = fullRes.dualChart;
           dualChartCacheRef.current.delete(cacheKey);
-          dualChartCacheRef.current.set(cacheKey, res.dualChart);
+          dualChartCacheRef.current.set(cacheKey, fullRes.dualChart);
           while (dualChartCacheRef.current.size > 24) {
             const oldestKey = dualChartCacheRef.current.keys().next().value;
             if (oldestKey === undefined) break;
             dualChartCacheRef.current.delete(oldestKey);
           }
-          setDualChartPayload(res.dualChart);
+          setDualChartPayload(fullRes.dualChart);
           setDualChartError(null);
         } else if (cached === undefined && lastValidDualChartRef.current === null) {
-          setDualChartPayload(res.dualChart);
+          setDualChartPayload(fullRes.dualChart);
         }
       } catch {
-        if (!ctrl.signal.aborted) {
+        if (!ctrl.signal.aborted && dualChartGenRef.current === gen && fullHydratedGenRef.current !== gen) {
           scheduleDualChartRetry();
         }
       } finally {
-        if (!ctrl.signal.aborted) {
+        if (!ctrl.signal.aborted && dualChartGenRef.current === gen) {
           setDualChartLoading(false);
         }
       }
@@ -405,6 +452,20 @@ export const GgalSpecialistModule: React.FC<{
     [avwapAnchor, chartTimeframe, coordMode],
   );
   loadDualChartRef.current = loadDualChart;
+
+  const handleSubPaneModeChange = useCallback(
+    (nextMode: GgalSubPaneIndicatorMode) => {
+      const prevMode = subPaneModeRef.current;
+      subPaneModeRef.current = nextMode;
+      if (nextMode === 'REL_STRENGTH_BANKS' && prevMode !== 'REL_STRENGTH_BANKS') {
+        const bankKey = `${coordMode}:${chartTimeframe}:${avwapAnchor}:BANKS`;
+        if (!dualChartCacheRef.current.has(bankKey)) {
+          void loadDualChartRef.current?.(false);
+        }
+      }
+    },
+    [avwapAnchor, chartTimeframe, coordMode],
+  );
 
   const loadDualMicro = useCallback(async (forceRefresh = false) => {
     dualMicroAbortRef.current?.abort();
@@ -612,15 +673,21 @@ export const GgalSpecialistModule: React.FC<{
   }, [dualChartPayload, coordMode, chartTimeframe, avwapAnchor, loadDualChart]);
 
   useEffect(() => {
-    void loadDualMicro(false);
+    const timer = setTimeout(() => {
+      void loadDualMicro(false);
+    }, 0);
     return () => {
+      clearTimeout(timer);
       dualMicroAbortRef.current?.abort();
     };
   }, [loadDualMicro]);
 
   useEffect(() => {
-    void loadTab(activeTab, false);
+    const timer = setTimeout(() => {
+      void loadTab(activeTab, false);
+    }, 0);
     return () => {
+      clearTimeout(timer);
       abortRef.current?.abort();
     };
   }, [activeTab, loadTab]);
@@ -1221,6 +1288,7 @@ export const GgalSpecialistModule: React.FC<{
         onChangeCoordMode={setCoordMode}
         onChangeTimeframe={setChartTimeframe}
         onChangeAvwapAnchor={setAvwapAnchor}
+        onSubPaneModeChange={handleSubPaneModeChange}
         onRefresh={() => {
           void loadDualChart(true);
           void loadDualMicro(true);

@@ -214,7 +214,8 @@ let state: MarketLiveStreamState = {
   totalBatches: 0,
 };
 
-const listeners = new Set<() => void>();
+  const listeners = new Set<() => void>();
+const testCommitListeners = new Set<() => void>();
 const metaListeners = new Set<() => void>();
 const freshnessListeners = new Set<() => void>();
 const quoteStore = createAtomicKeyedStore<MarketLiveQuote>();
@@ -269,6 +270,8 @@ export interface MarketViewScope {
   readonly view: string;
   readonly focusSymbol: string | null;
   readonly focusMarket: 'AR' | 'US' | null;
+  readonly ggalMode?: 'ADR' | 'ARS' | 'CCL' | null;
+  readonly ggalTimeframe?: string | null;
 }
 
 let metaState: MarketStreamMeta = {
@@ -434,6 +437,8 @@ function sendViewScopeMessage(): void {
       view: currentViewScope.view,
       focusSymbol: currentViewScope.focusSymbol,
       focusMarket: currentViewScope.focusMarket,
+      ...(currentViewScope.ggalMode !== undefined ? { ggalMode: currentViewScope.ggalMode } : {}),
+      ...(currentViewScope.ggalTimeframe !== undefined ? { ggalTimeframe: currentViewScope.ggalTimeframe } : {}),
     });
     sendVisibleIdsToWorker();
     return;
@@ -446,6 +451,8 @@ function sendViewScopeMessage(): void {
         view: currentViewScope.view,
         focusSymbol: currentViewScope.focusSymbol,
         focusMarket: currentViewScope.focusMarket,
+        ...(currentViewScope.ggalMode !== undefined ? { ggalMode: currentViewScope.ggalMode } : {}),
+        ...(currentViewScope.ggalTimeframe !== undefined ? { ggalTimeframe: currentViewScope.ggalTimeframe } : {}),
       }),
     );
   } catch {
@@ -460,11 +467,28 @@ export function setMarketViewScope(scope: MarketViewScope): void {
       ? scope.focusSymbol.trim().toUpperCase()
       : null;
   const cleanMarket = scope.focusMarket;
+  const stayingInGgal = cleanView === 'ggal_specialist' && currentViewScope?.view === 'ggal_specialist';
+  const cleanGgalMode =
+    scope.ggalMode !== undefined
+      ? scope.ggalMode
+      : stayingInGgal
+        ? (currentViewScope?.ggalMode ?? null)
+        : null;
+  const rawGgalTimeframe =
+    scope.ggalTimeframe !== undefined
+      ? scope.ggalTimeframe
+      : stayingInGgal
+        ? (currentViewScope?.ggalTimeframe ?? null)
+        : null;
+  const cleanGgalTimeframe =
+    rawGgalTimeframe !== null && rawGgalTimeframe.trim() !== '' ? rawGgalTimeframe.trim() : null;
   if (
     currentViewScope !== null &&
     currentViewScope.view === cleanView &&
     currentViewScope.focusSymbol === cleanSymbol &&
-    currentViewScope.focusMarket === cleanMarket
+    currentViewScope.focusMarket === cleanMarket &&
+    (currentViewScope.ggalMode ?? null) === cleanGgalMode &&
+    (currentViewScope.ggalTimeframe ?? null) === cleanGgalTimeframe
   ) {
     return;
   }
@@ -478,18 +502,32 @@ export function setMarketViewScope(scope: MarketViewScope): void {
     view: cleanView,
     focusSymbol: cleanSymbol,
     focusMarket: cleanMarket,
+    ...(cleanGgalMode !== null ? { ggalMode: cleanGgalMode } : {}),
+    ...(cleanGgalTimeframe !== null ? { ggalTimeframe: cleanGgalTimeframe } : {}),
   };
   sendViewScopeMessage();
+}
+
+export function getCurrentMarketViewScope(): MarketViewScope | null {
+  return currentViewScope;
 }
 
 export function useMarketViewScope(
   view: string,
   focusSymbol: string | null,
   focusMarket: 'AR' | 'US' | null,
+  ggalMode?: 'ADR' | 'ARS' | 'CCL' | null,
+  ggalTimeframe?: string | null,
 ): void {
   useEffect(() => {
-    setMarketViewScope({ view, focusSymbol, focusMarket });
-  }, [view, focusSymbol, focusMarket]);
+    setMarketViewScope({
+      view,
+      focusSymbol,
+      focusMarket,
+      ...(ggalMode !== undefined ? { ggalMode } : {}),
+      ...(ggalTimeframe !== undefined ? { ggalTimeframe } : {}),
+    });
+  }, [view, focusSymbol, focusMarket, ggalMode, ggalTimeframe]);
 }
 
 export function setMarketFocusSymbol(symbol: string | null | undefined): void {
@@ -620,6 +658,20 @@ function emitMetaListeners(immediate: boolean): void {
   }, Math.max(0, TABLE_THROTTLE_MS - elapsed));
 }
 
+export interface LiveConnectionStatus {
+  readonly status: 'CONNECTING' | 'LIVE' | 'RECONNECTING';
+  readonly transport: LiveStreamTransport | null;
+  readonly isLive: boolean;
+  readonly isFresh: boolean;
+}
+
+let connectionStatusSnapshot: LiveConnectionStatus = {
+  status: metaState.status,
+  transport: metaState.transport,
+  isLive: metaState.isLive,
+  isFresh: metaState.isFresh,
+};
+
 function notify(next: MarketLiveStreamState): void {
   const prev = state;
   state = next;
@@ -658,12 +710,26 @@ function notify(next: MarketLiveStreamState): void {
       lastReceivedAtMs: next.lastReceivedAtMs,
       ticksPerSecond: next.ticksPerSecond,
     };
+    if (
+      connectionStatusSnapshot.status !== next.status ||
+      connectionStatusSnapshot.transport !== next.transport ||
+      connectionStatusSnapshot.isLive !== next.isLive ||
+      connectionStatusSnapshot.isFresh !== isFresh
+    ) {
+      connectionStatusSnapshot = {
+        status: next.status,
+        transport: next.transport,
+        isLive: next.isLive,
+        isFresh,
+      };
+    }
     if (prevFresh !== isFresh) {
       freshnessListeners.forEach((fn) => fn());
     }
     emitMetaListeners(connChanged);
   }
   refreshFreshnessWatchdog();
+  testCommitListeners.forEach((fn) => fn());
 
   if (connChanged || next.totalBatches <= 1) {
     if (legacyNotifyTimer !== null) {
@@ -1294,6 +1360,28 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     batch.usSourceMode === 'TRADIER_WS' || batch.usSourceMode === 'FMP_ENTERPRISE_REST' || batch.usSourceMode === 'MASSIVE_WS' || batch.usSourceMode === 'MASSIVE_BATCH' || batch.usSourceMode === 'NO_DATA'
       ? batch.usSourceMode
       : state.usSourceMode;
+  const removedList = Array.isArray(batch.removed) ? batch.removed : [];
+  const nextCclMedian = arSourceMode === 'NO_DATA' ? null : batch.cclMedian === null ? null : finitePositive(batch.cclMedian) ?? state.cclMedian;
+  const nextMepMedian = arSourceMode === 'NO_DATA' ? null : batch.mepMedian === null ? null : finitePositive(batch.mepMedian) ?? state.mepMedian;
+  const noQuotesOrAux =
+    batch.quotes.length === 0 &&
+    removedList.length === 0 &&
+    !Array.isArray(batch.cauciones) &&
+    batch.futures === undefined &&
+    batch.liveOrderBook === undefined &&
+    !Array.isArray(batch.tape) &&
+    batch.liveFx === undefined &&
+    arSourceMode === state.arSourceMode &&
+    usSourceMode === state.usSourceMode &&
+    nextCclMedian === state.cclMedian &&
+    nextMepMedian === state.mepMedian &&
+    arSourceMode !== 'NO_DATA' &&
+    usSourceMode !== 'NO_DATA';
+  if (noQuotesOrAux) {
+    lastDeltaRevision = revision;
+    return true;
+  }
+
   const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotesBySymbol };
   if (arSourceMode === 'NO_DATA' || usSourceMode === 'NO_DATA') {
     for (const [key, quote] of Object.entries(nextQuotes)) {
@@ -1303,16 +1391,15 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
       }
     }
   }
-  if (Array.isArray(batch.removed)) {
-    for (const rawKey of batch.removed) {
-      if (typeof rawKey === 'string') {
-        const key = normalizeRemovedQuoteKey(rawKey);
-        delete nextQuotes[key];
-        quoteStore.delete(key);
-      }
+  for (const rawKey of removedList) {
+    if (typeof rawKey === 'string') {
+      const key = normalizeRemovedQuoteKey(rawKey);
+      delete nextQuotes[key];
+      quoteStore.delete(key);
     }
   }
   let changedTicks = 0;
+  const touchedQuotes = new Map<string, MarketLiveQuote>();
   for (const raw of batch.quotes) {
     if (!isRecord(raw) || typeof raw['symbol'] !== 'string') continue;
     const market = raw['market'];
@@ -1323,6 +1410,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     if (parsed === null) continue;
     if (parsed.direction !== null) changedTicks += 1;
     nextQuotes[key] = parsed;
+    touchedQuotes.set(key, parsed);
     quoteStore.set(key, parsed, marketQuotesEqual);
     if (marketWorker === null || transport === 'POLL') {
       writeDirectSoaFallback(
@@ -1357,7 +1445,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
   }
   const liveOrderBook = parsedOrderBook ?? state.liveOrderBook;
   let liveTape = Array.isArray(batch.tape) ? parseTape(batch.tape) : state.liveTape;
-  for (const [key, parsedQuote] of Object.entries(nextQuotes)) {
+  for (const [key, parsedQuote] of touchedQuotes) {
     const previousQuote = state.quotesBySymbol[key] ?? null;
     const tapeTick = deriveTapeTickFromQuote(parsedQuote, previousQuote);
     if (tapeTick !== null) {
@@ -1430,7 +1518,6 @@ function applyTickDeltaSequence(
       : Math.max(0.001, (receivedAtMs - lastBatchReceivedAtMs) / 1_000);
   lastBatchReceivedAtMs = receivedAtMs;
 
-  const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotesBySymbol };
   const latestArSourceMode =
     last.arSourceMode === 'LIVE_PRIMARY' || last.arSourceMode === 'LIVE_BMB' || last.arSourceMode === 'LIVE_IOL' || last.arSourceMode === 'DATA912' || last.arSourceMode === 'NO_DATA'
       ? last.arSourceMode
@@ -1439,6 +1526,53 @@ function applyTickDeltaSequence(
     last.usSourceMode === 'TRADIER_WS' || last.usSourceMode === 'FMP_ENTERPRISE_REST' || last.usSourceMode === 'MASSIVE_WS' || last.usSourceMode === 'MASSIVE_BATCH' || last.usSourceMode === 'NO_DATA'
       ? last.usSourceMode
       : state.usSourceMode;
+  const nextCclMedian =
+    latestArSourceMode === 'NO_DATA'
+      ? null
+      : last.cclMedian === null
+        ? state.cclMedian
+        : finitePositive(last.cclMedian) ?? state.cclMedian;
+  const nextMepMedian =
+    latestArSourceMode === 'NO_DATA'
+      ? null
+      : last.mepMedian === null
+        ? state.mepMedian
+        : finitePositive(last.mepMedian) ?? state.mepMedian;
+
+  let anyQuotesOrRemovedOrAux = false;
+  for (let i = 0; i < valid.length; i += 1) {
+    const batch = valid[i];
+    if (batch === undefined) continue;
+    if (
+      (Array.isArray(batch.quotes) && batch.quotes.length > 0) ||
+      (Array.isArray(batch.removed) && batch.removed.length > 0) ||
+      Array.isArray(batch.cauciones) ||
+      Array.isArray(batch.futures) ||
+      batch.futuresSource === 'PRIMARY_WS' ||
+      batch.futuresSource === 'PRIMARY_REST' ||
+      batch.liveOrderBook !== undefined ||
+      Array.isArray(batch.tape) ||
+      batch.liveFx !== undefined
+    ) {
+      anyQuotesOrRemovedOrAux = true;
+      break;
+    }
+  }
+
+  if (
+    !anyQuotesOrRemovedOrAux &&
+    latestArSourceMode === state.arSourceMode &&
+    latestUsSourceMode === state.usSourceMode &&
+    nextCclMedian === state.cclMedian &&
+    nextMepMedian === state.mepMedian &&
+    latestArSourceMode !== 'NO_DATA' &&
+    latestUsSourceMode !== 'NO_DATA'
+  ) {
+    lastDeltaRevision = latestRevision;
+    return true;
+  }
+
+  const nextQuotes: Record<string, MarketLiveQuote> = { ...state.quotesBySymbol };
   if (latestArSourceMode === 'NO_DATA' || latestUsSourceMode === 'NO_DATA') {
     for (const [key, quote] of Object.entries(nextQuotes)) {
       if (
@@ -1452,6 +1586,7 @@ function applyTickDeltaSequence(
   }
 
   let changedTicks = 0;
+  const touchedQuotes = new Map<string, MarketLiveQuote>();
   for (const batch of valid) {
     if (Array.isArray(batch.removed)) {
       for (const rawKey of batch.removed) {
@@ -1478,6 +1613,7 @@ function applyTickDeltaSequence(
       if (parsed === null) continue;
       if (parsed.direction !== null) changedTicks += 1;
       nextQuotes[key] = parsed;
+      touchedQuotes.set(key, parsed);
       quoteStore.set(key, parsed, marketQuotesEqual);
       if (marketWorker === null || transport === 'POLL') {
         writeDirectSoaFallback(
@@ -1522,7 +1658,7 @@ function applyTickDeltaSequence(
     if (Array.isArray(batch.tape)) liveTape = parseTape(batch.tape);
   }
 
-  for (const [key, parsedQuote] of Object.entries(nextQuotes)) {
+  for (const [key, parsedQuote] of touchedQuotes) {
     const previousQuote = state.quotesBySymbol[key] ?? null;
     const tapeTick = deriveTapeTickFromQuote(parsedQuote, previousQuote);
     if (tapeTick !== null) {
@@ -2515,4 +2651,121 @@ export function useThrottledMarketQuotesTick(throttleMs = TABLE_THROTTLE_MS): nu
     [],
   );
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function useLiveConnectionStatus(): LiveConnectionStatus {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      metaListeners.add(listener);
+      return () => {
+        metaListeners.delete(listener);
+      };
+    },
+    [],
+  );
+  const getSnapshot = useCallback(() => connectionStatusSnapshot, []);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function __testApplyMarketStreamFrame(
+  rawFrame: Record<string, unknown>,
+  transport: LiveStreamTransport = 'WS',
+): boolean {
+  const type = rawFrame['type'];
+  if (type === 'TICK_DELTA') {
+    return applyTickDelta(rawFrame as MarketTickBatchWire, transport);
+  }
+  if (type === 'MARKET_TICK_BATCH') {
+    return applyBatch(rawFrame as MarketTickBatchWire, transport);
+  }
+  if (type === 'market_batch') {
+    const delta = isRecord(rawFrame['delta']) ? (rawFrame['delta'] as MarketTickBatchWire) : null;
+    if (delta !== null) {
+      return applyTickDeltaSequence([delta], transport);
+    }
+    return true;
+  }
+  handleParsedMessage(rawFrame, transport);
+  return true;
+}
+
+export function __testSubscribeStateCommits(listener: () => void): () => void {
+  testCommitListeners.add(listener);
+  return () => {
+    testCommitListeners.delete(listener);
+  };
+}
+
+export function __testGetMarketStreamStateSnapshot(): MarketLiveStreamState {
+  return state;
+}
+
+export function __testResetMarketStreamState(): void {
+  if (legacyNotifyTimer !== null) {
+    clearTimeout(legacyNotifyTimer);
+    legacyNotifyTimer = null;
+  }
+  if (metaNotifyTimer !== null) {
+    clearTimeout(metaNotifyTimer);
+    metaNotifyTimer = null;
+  }
+  if (freshnessTimer !== null) {
+    clearTimeout(freshnessTimer);
+    freshnessTimer = null;
+  }
+  if (legacyFlushTimer !== null) {
+    clearTimeout(legacyFlushTimer);
+    legacyFlushTimer = null;
+  }
+  pendingLegacyQuotes.clear();
+  pendingMarketBatches.length = 0;
+  lastBatchReceivedAtMs = null;
+  lastDeltaRevision = 0;
+  currentViewScope = null;
+  marketFocusSymbol = null;
+  visibleSymbolsByConsumer.clear();
+  quoteStore.clear();
+  optionQuoteStore.clear();
+  orderBookStore.clear();
+  state = {
+    version: 0,
+    status: 'CONNECTING',
+    transport: null,
+    isLive: false,
+    quotesBySymbol: {},
+    liveFx: null,
+    liveOrderBook: null,
+    liveTape: [],
+    cclMedian: null,
+    mepMedian: null,
+    arSourceMode: 'NO_DATA',
+    usSourceMode: 'NO_DATA',
+    cauciones: [],
+    futures: [],
+    futuresSource: 'NONE',
+    lastServerTimeSec: null,
+    lastReceivedAtMs: null,
+    ticksPerSecond: 0,
+    totalBatches: 0,
+  };
+  metaState = {
+    status: state.status,
+    transport: state.transport,
+    isLive: state.isLive,
+    isFresh: false,
+    arSourceMode: state.arSourceMode,
+    usSourceMode: state.usSourceMode,
+    cclMedian: state.cclMedian,
+    mepMedian: state.mepMedian,
+    liveFx: state.liveFx,
+    lastServerTimeSec: state.lastServerTimeSec,
+    lastReceivedAtMs: state.lastReceivedAtMs,
+    ticksPerSecond: state.ticksPerSecond,
+  };
+  connectionStatusSnapshot = {
+    status: metaState.status,
+    transport: metaState.transport,
+    isLive: metaState.isLive,
+    isFresh: metaState.isFresh,
+  };
 }

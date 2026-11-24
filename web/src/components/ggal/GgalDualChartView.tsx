@@ -26,12 +26,12 @@ import { classifySessionRegime } from '../../../../src/core/ggal/parityGap';
 import { evaluateCclContemporaneity, MAX_PLAUSIBLE_EPOCH_SEC } from '../../../../src/core/temporalFeedIntegrity';
 import { projectLiveEma } from '../../../../src/core/ema';
 import {
-  appendLiveTapeTick,
+  advanceSessionVwapCheckpoint,
+  buildSessionVwapCheckpoint,
   projectLiveCandle,
-  projectLiveCvd,
-  projectLiveSessionVwap,
+  projectLiveSessionVwapFromCheckpoint,
   type LiveChartBar,
-  type LiveTapeTick,
+  type LiveSessionVwapCheckpoint,
 } from '../../../../src/core/realtimePropagation';
 import type {
   GgalAvwapAnchorMode,
@@ -56,6 +56,7 @@ import {
 import {
   formatExtendedSessionBadge,
   getMarketStreamMetaClock,
+  setVisibleMarketSymbols,
   subscribeAtomicQuoteValue,
   subscribeGgalBarTick,
   tickFlashClass,
@@ -63,6 +64,7 @@ import {
   useAtomicOrderBook,
   useLivePriceFlash,
   useMarketStreamMeta,
+  useMarketViewScope,
   type MarketLiveQuote,
   type GgalBarTickEventDto,
 } from '../../api/useMarketLiveStream';
@@ -79,7 +81,21 @@ export interface GgalDualChartViewProps {
   readonly onChangeCoordMode: (next: GgalDualChartCoordMode) => void;
   readonly onChangeTimeframe: (next: GgalDualChartTimeframe) => void;
   readonly onChangeAvwapAnchor: (next: GgalAvwapAnchorMode) => void;
+  readonly onSubPaneModeChange?: (next: GgalSubPaneIndicatorMode) => void;
   readonly onRefresh: () => void;
+}
+
+function findBarIndexByTime(bars: readonly LiveChartBar[], timeSec: number): number {
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const t = bars[mid]!.timeSec;
+    if (t === timeSec) return mid;
+    if (t < timeSec) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
 }
 
 const BMB_OUT_OF_SESSION_MESSAGE = 'BYMA fuera de rueda (11:00–17:00 ART) — BMB Bridge armado';
@@ -1169,8 +1185,20 @@ export function GgalDualChartView({
   onChangeCoordMode,
   onChangeTimeframe,
   onChangeAvwapAnchor,
+  onSubPaneModeChange,
   onRefresh,
 }: GgalDualChartViewProps) {
+  const streamMode = coordMode === 'USD_ADR_NASDAQ' ? 'ADR' : coordMode === 'ARS_BYMA' ? 'ARS' : 'CCL';
+  const streamTimeframeForScope = timeframe === '1H' ? '1h' : timeframe === '4H' ? '4h' : timeframe;
+  useMarketViewScope('ggal_specialist', 'GGAL', 'AR', streamMode, streamTimeframeForScope);
+
+  useEffect(() => {
+    setVisibleMarketSymbols(['AR:GGAL', 'US:GGAL'], 'ggal-dual');
+    return () => {
+      setVisibleMarketSymbols([], 'ggal-dual');
+    };
+  }, []);
+
   const lastBarRef = useRef<LiveChartBar | null>(null);
   const closedBarsRef = useRef<readonly LiveChartBar[]>([]);
   const appliedBucketRevisionRef = useRef(new Map<number, number>());
@@ -1191,11 +1219,17 @@ export function GgalDualChartView({
   const avwapPlus2SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const avwapMinus2SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const priceLineSlotsRef = useRef<Record<LevelId, IPriceLine> | null>(null);
+  const lastPriceLineOptsRef = useRef<
+    Partial<Record<LevelId, { readonly show: boolean; readonly price: number; readonly title: string }>>
+  >({});
   // Leyenda OHLCV: DOM directo (sin setState por pixel de mouse).
   const crosshairLegendRef = useRef<HTMLDivElement | null>(null);
   const lastCvdRef = useRef<number | null>(null);
-  const tapeRef = useRef<readonly LiveTapeTick[]>([]);
+  const liveBarCvdDeltaRef = useRef<number>(0);
+  const sessionVwapCheckpointRef = useRef<LiveSessionVwapCheckpoint | null>(null);
   const lastDatasetSigRef = useRef<string | null>(null);
+  const lastSubPaneSigRef = useRef<string | null>(null);
+  const lastRightPadRef = useRef<number | null>(null);
   const tickRafIdRef = useRef<number | null>(null);
   const [subPaneMode, setSubPaneMode] = useState<GgalSubPaneIndicatorMode>('CVD_LEE_READY');
   const [greekMode, setGreekMode] = useState<GgalGreekProfileMode>('SIGNED_GEX');
@@ -1313,8 +1347,7 @@ export function GgalDualChartView({
         rightOffset: 2,
         enableConflation: true,
         conflationThresholdFactor: 1.0,
-        precomputeConflationOnInit: true,
-        precomputeConflationPriority: 'background',
+        precomputeConflationOnInit: false,
       },
     });
 
@@ -1335,8 +1368,7 @@ export function GgalDualChartView({
         rightOffset: 2,
         enableConflation: true,
         conflationThresholdFactor: 1.0,
-        precomputeConflationOnInit: true,
-        precomputeConflationPriority: 'background',
+        precomputeConflationOnInit: false,
       },
     });
 
@@ -1608,11 +1640,16 @@ export function GgalDualChartView({
       rsBbarSeriesRef.current = null;
       rsSupvSeriesRef.current = null;
       priceLineSlotsRef.current = null;
+      lastPriceLineOptsRef.current = {};
+      lastDatasetSigRef.current = null;
+      lastSubPaneSigRef.current = null;
+      lastRightPadRef.current = null;
+      sessionVwapCheckpointRef.current = null;
       primitiveRef.current = null;
     };
   }, []);
 
-  // 1) Dataset histórico: setData() únicamente cuando cambia símbolo/coordMode/timeframe/avwap/snapshot real.
+  // 1) Dataset histórico: setData() únicamente cuando cambia símbolo/coordMode/timeframe/avwap o las velas cerradas.
   useEffect(() => {
     const mainChart = mainChartRef.current;
     const subChart = subChartRef.current;
@@ -1628,12 +1665,73 @@ export function GgalDualChartView({
     const bars = safePayload?.status === 'OPERATIONAL' ? (safePayload.bars ?? []) : [];
     latestBarCountRef.current = bars.length;
 
+    const closedCount = Math.max(0, bars.length - 1);
+    const lastClosedBar = closedCount > 0 ? bars[closedCount - 1] : undefined;
     const datasetSig =
       safePayload === null || safePayload.status !== 'OPERATIONAL' || bars.length === 0
         ? `EMPTY|${scaleModeKey}`
-        : `${safePayload.timeframe}|${safePayload.coordMode}|${safePayload.avwapAnchor}|${String(safePayload.asOfUtcSec)}|${String(bars.length)}|${String(bars[0]?.timeSec ?? 0)}|${String(bars[bars.length - 1]?.timeSec ?? 0)}`;
+        : `${safePayload.timeframe}|${safePayload.coordMode}|${safePayload.avwapAnchor}|${String(bars.length)}|${String(bars[0]?.timeSec ?? 0)}|${String(lastClosedBar?.timeSec ?? 0)}|${String(lastClosedBar?.close ?? 0)}`;
+
+    const subPaneSeries = safePayload?.status === 'OPERATIONAL' ? (safePayload.subPaneSeries ?? []) : [];
+    const lastSubPoint = subPaneSeries[subPaneSeries.length - 1];
+    const subPaneSig =
+      subPaneSeries.length === 0
+        ? 'EMPTY'
+        : `${String(subPaneSeries.length)}|${String(lastSubPoint?.timeSec ?? 0)}|${String(lastSubPoint?.cvdLeeReady ?? 'na')}|${String(lastSubPoint?.cclBrechaPct ?? 'na')}|${String(lastSubPoint?.relStrengthBma ?? 'na')}`;
 
     if (lastDatasetSigRef.current === datasetSig) {
+      if (safePayload !== null && safePayload.status === 'OPERATIONAL' && bars.length > 0) {
+        if (lastSubPaneSigRef.current !== subPaneSig) {
+          lastSubPaneSigRef.current = subPaneSig;
+          cvdSeriesRef.current?.setData(
+            subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.cvdLeeReady })),
+          );
+          cclBrechaSeriesRef.current?.setData(
+            subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.cclBrechaPct })),
+          );
+          rsBmaSeriesRef.current?.setData(
+            subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthBma })),
+          );
+          rsBbarSeriesRef.current?.setData(
+            subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthBbar })),
+          );
+          rsSupvSeriesRef.current?.setData(
+            subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthSupv })),
+          );
+          lastCvdRef.current =
+            lastSubPoint !== undefined && Number.isFinite(lastSubPoint.cvdLeeReady)
+              ? lastSubPoint.cvdLeeReady
+              : null;
+          liveBarCvdDeltaRef.current = 0;
+        }
+        const rightPad = (safePayload.expectedCone?.length ?? 0) >= 2 ? 5 : 2;
+        if (lastRightPadRef.current !== rightPad) {
+          lastRightPadRef.current = rightPad;
+          mainChart.timeScale().applyOptions({ rightOffset: rightPad });
+          subChart.timeScale().applyOptions({ rightOffset: rightPad });
+        }
+        const incomingLast = bars[bars.length - 1];
+        if (
+          incomingLast !== undefined &&
+          lastBarRef.current !== null &&
+          incomingLast.timeSec === lastBarRef.current.timeSec &&
+          !appliedBucketRevisionRef.current.has(incomingLast.timeSec)
+        ) {
+          lastBarRef.current = incomingLast;
+          candleSeries.update({
+            time: incomingLast.timeSec as UTCTimestamp,
+            open: incomingLast.open,
+            high: incomingLast.high,
+            low: incomingLast.low,
+            close: incomingLast.close,
+          });
+          volumeSeriesRef.current?.update({
+            time: incomingLast.timeSec as UTCTimestamp,
+            value: incomingLast.volume,
+            color: incomingLast.close >= incomingLast.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
+          });
+        }
+      }
       return;
     }
     lastDatasetSigRef.current = datasetSig;
@@ -1664,13 +1762,16 @@ export function GgalDualChartView({
         isSyncingRef.current = false;
       }
       lastFitKeyRef.current = null;
+      lastSubPaneSigRef.current = 'EMPTY';
+      lastRightPadRef.current = null;
       lastBarRef.current = null;
       appliedBucketRevisionRef.current.clear();
       closedBarsRef.current = [];
+      sessionVwapCheckpointRef.current = null;
       emaBaselinesRef.current = null;
       emaEndRef.current = null;
       lastCvdRef.current = null;
-      tapeRef.current = [];
+      liveBarCvdDeltaRef.current = 0;
       return;
     }
 
@@ -1705,6 +1806,8 @@ export function GgalDualChartView({
     lastBarRef.current = lastBar ?? null;
     appliedBucketRevisionRef.current.clear();
     closedBarsRef.current = bars.slice(0, Math.max(0, bars.length - 1));
+    const marketTz = safePayload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+    sessionVwapCheckpointRef.current = buildSessionVwapCheckpoint(closedBarsRef.current, marketTz);
     emaBaselinesRef.current = {
       9: safePayload.ema9 !== undefined && safePayload.ema9.length > 1 ? (safePayload.ema9[safePayload.ema9.length - 2]?.value ?? Number.NaN) : Number.NaN,
       21: safePayload.ema21 !== undefined && safePayload.ema21.length > 1 ? (safePayload.ema21[safePayload.ema21.length - 2]?.value ?? Number.NaN) : Number.NaN,
@@ -1742,11 +1845,10 @@ export function GgalDualChartView({
     avwapPlus2SeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.plus2Sigma })));
     avwapMinus2SeriesRef.current?.setData(avwapBands.map((band) => ({ time: band.timeSec as UTCTimestamp, value: band.minus2Sigma })));
 
-    const marketTz = safePayload.coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
     const vwapSeriesPts = computeSessionVwapSeries(bars, marketTz);
     setLinePts(vwapSeriesRef.current, vwapSeriesPts);
 
-    const subPaneSeries = safePayload.subPaneSeries ?? [];
+    lastSubPaneSigRef.current = subPaneSig;
     cvdSeriesRef.current?.setData(
       subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.cvdLeeReady })),
     );
@@ -1762,19 +1864,19 @@ export function GgalDualChartView({
     rsSupvSeriesRef.current?.setData(
       subPaneSeries.map((pt) => ({ time: pt.timeSec as UTCTimestamp, value: pt.relStrengthSupv })),
     );
-    const lastCvdPoint = subPaneSeries[subPaneSeries.length - 1];
     lastCvdRef.current =
-      lastCvdPoint !== undefined && Number.isFinite(lastCvdPoint.cvdLeeReady)
-        ? lastCvdPoint.cvdLeeReady
+      lastSubPoint !== undefined && Number.isFinite(lastSubPoint.cvdLeeReady)
+        ? lastSubPoint.cvdLeeReady
         : null;
-    tapeRef.current = [];
+    liveBarCvdDeltaRef.current = 0;
 
-    const fitKey = `${safePayload.timeframe}|${safePayload.coordMode}|${safePayload.avwapAnchor}|${String(safePayload.asOfUtcSec)}|${String(bars.length)}`;
+    const fitKey = `${safePayload.timeframe}|${safePayload.coordMode}`;
     if (lastFitKeyRef.current !== fitKey || scaleModeChanged) {
       lastFitKeyRef.current = fitKey;
       isSyncingRef.current = true;
       try {
         const rightPad = (safePayload.expectedCone?.length ?? 0) >= 2 ? 5 : 2;
+        lastRightPadRef.current = rightPad;
         mainChart.timeScale().applyOptions({ rightOffset: rightPad });
         subChart.timeScale().applyOptions({ rightOffset: rightPad });
         mainChart.priceScale('right').applyOptions({ autoScale: true });
@@ -1841,11 +1943,23 @@ export function GgalDualChartView({
         price !== null &&
         price !== undefined &&
         Number.isFinite(price);
+      const nextPrice = show && price !== null && price !== undefined ? price : 0;
+      const nextTitle = show ? spec.label : '';
+      const prevOpts = lastPriceLineOptsRef.current[spec.id];
+      if (
+        prevOpts !== undefined &&
+        prevOpts.show === show &&
+        prevOpts.price === nextPrice &&
+        prevOpts.title === nextTitle
+      ) {
+        continue;
+      }
+      lastPriceLineOptsRef.current[spec.id] = { show, price: nextPrice, title: nextTitle };
       slots[spec.id].applyOptions({
-        price: show && price !== null && price !== undefined ? price : 0,
+        price: nextPrice,
         lineVisible: show,
         axisLabelVisible: show,
-        title: show ? spec.label : '',
+        title: nextTitle,
       });
     }
   }, [safePayload, levelVisibility]);
@@ -1865,6 +1979,8 @@ export function GgalDualChartView({
       series.update({ time: timeSec as UTCTimestamp, value });
     };
 
+    const marketTz = coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
+
     const flushFrame = (): void => {
       tickRafIdRef.current = null;
       const barTicks = [...pendingTicksByTime.values()].sort((a, b) => a.bar.timeSec - b.bar.timeSec);
@@ -1881,14 +1997,53 @@ export function GgalDualChartView({
         if (currentLast !== null && b.timeSec < currentLast.timeSec) {
           if (barTick.isRevision !== true && barTick.updateKind !== 'HISTORICAL_REVISION') continue;
           if (revision !== undefined) revisions.set(b.timeSec, revision);
-          closedBarsRef.current = [...closedBarsRef.current.filter((bar) => bar.timeSec !== b.timeSec), b]
-            .sort((a, b) => a.timeSec - b.timeSec);
-          historicalBarsChanged = true;
+          const existingIdx = findBarIndexByTime(closedBarsRef.current, b.timeSec);
+          if (existingIdx >= 0) {
+            const nextClosed = closedBarsRef.current.slice();
+            nextClosed[existingIdx] = b;
+            closedBarsRef.current = nextClosed;
+            sessionVwapCheckpointRef.current = buildSessionVwapCheckpoint(closedBarsRef.current, marketTz);
+            candleSeriesRef.current?.update(
+              {
+                time: b.timeSec as UTCTimestamp,
+                open: b.open,
+                high: b.high,
+                low: b.low,
+                close: b.close,
+              },
+              true,
+            );
+            volumeSeriesRef.current?.update(
+              {
+                time: b.timeSec as UTCTimestamp,
+                value: b.volume,
+                color: b.close >= b.open ? 'rgba(34,197,94,0.38)' : 'rgba(239,68,68,0.38)',
+              },
+              true,
+            );
+          } else {
+            closedBarsRef.current = [...closedBarsRef.current, b].sort((a, c) => a.timeSec - c.timeSec);
+            sessionVwapCheckpointRef.current = buildSessionVwapCheckpoint(closedBarsRef.current, marketTz);
+            historicalBarsChanged = true;
+          }
           continue;
         }
         if (revision !== undefined) revisions.set(b.timeSec, revision);
         if (currentLast !== null && b.timeSec > currentLast.timeSec) {
           closedBarsRef.current = [...closedBarsRef.current, currentLast];
+          if (sessionVwapCheckpointRef.current !== null) {
+            sessionVwapCheckpointRef.current = advanceSessionVwapCheckpoint(
+              sessionVwapCheckpointRef.current,
+              currentLast,
+              marketTz,
+            );
+          } else {
+            sessionVwapCheckpointRef.current = buildSessionVwapCheckpoint(closedBarsRef.current, marketTz);
+          }
+          if (lastCvdRef.current !== null) {
+            lastCvdRef.current += liveBarCvdDeltaRef.current;
+          }
+          liveBarCvdDeltaRef.current = 0;
           if (emaEndRef.current !== null) {
             emaBaselinesRef.current = { ...emaEndRef.current };
           }
@@ -2009,6 +2164,19 @@ export function GgalDualChartView({
       }
       if (projectedBar.timeSec > bar.timeSec) {
         closedBarsRef.current = [...closedBarsRef.current, bar];
+        if (sessionVwapCheckpointRef.current !== null) {
+          sessionVwapCheckpointRef.current = advanceSessionVwapCheckpoint(
+            sessionVwapCheckpointRef.current,
+            bar,
+            marketTz,
+          );
+        } else {
+          sessionVwapCheckpointRef.current = buildSessionVwapCheckpoint(closedBarsRef.current, marketTz);
+        }
+        if (lastCvdRef.current !== null) {
+          lastCvdRef.current += liveBarCvdDeltaRef.current;
+        }
+        liveBarCvdDeltaRef.current = 0;
         if (emaEndRef.current !== null) {
           emaBaselinesRef.current = { ...emaEndRef.current };
         }
@@ -2049,30 +2217,23 @@ export function GgalDualChartView({
       }
 
       if (vwapSeriesRef.current !== null) {
-        const marketTz = coordMode === 'USD_ADR_NASDAQ' ? US_MARKET_TZ : BYMA_MARKET_TZ;
-        const vwapPoint = projectLiveSessionVwap(closedBarsRef.current, projectedBar, marketTz);
+        let cp = sessionVwapCheckpointRef.current;
+        if (cp === null) {
+          cp = buildSessionVwapCheckpoint(closedBarsRef.current, marketTz);
+          sessionVwapCheckpointRef.current = cp;
+        }
+        const vwapPoint = projectLiveSessionVwapFromCheckpoint(cp, projectedBar, marketTz);
         if (vwapPoint !== null) {
           vwapSeriesRef.current.update({ time: vwapPoint.timeSec as UTCTimestamp, value: vwapPoint.value });
         }
       }
 
-      if (activeQuote !== null && previousQuote !== null && activeQuote.asOfUtcSec !== null) {
-        const tapeTick: LiveTapeTick = {
-          market: activeQuote.market,
-          symbol: activeQuote.symbol,
-          price: activeQuote.price,
-          size:
-            activeQuote.volume !== null && previousQuote.volume !== null
-              ? Math.max(0, activeQuote.volume - previousQuote.volume)
-              : null,
-          side: activeQuote.direction === 'down' ? 'SELL' : 'BUY',
-          timeSec: activeQuote.asOfUtcSec,
-        };
-        tapeRef.current = appendLiveTapeTick(tapeRef.current, tapeTick);
+      if (volumeDelta > 0 && activeQuote !== null) {
+        liveBarCvdDeltaRef.current += activeQuote.direction === 'down' ? -volumeDelta : volumeDelta;
       }
 
       if (subPaneMode === 'CVD_LEE_READY' && cvdSeriesRef.current !== null && lastCvdRef.current !== null) {
-        const projectedCvd = projectLiveCvd(lastCvdRef.current, tapeRef.current);
+        const projectedCvd = lastCvdRef.current + liveBarCvdDeltaRef.current;
         if (Number.isFinite(projectedCvd)) {
           cvdSeriesRef.current.update({ time: projectedBar.timeSec as UTCTimestamp, value: projectedCvd });
         }
@@ -2081,8 +2242,22 @@ export function GgalDualChartView({
 
     const scheduleFlush = (): void => {
       if (tickRafIdRef.current !== null) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       tickRafIdRef.current = window.requestAnimationFrame(flushFrame);
     };
+
+    const handleVisibilityChange = (): void => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        (pendingQuoteDirty || pendingTicksByTime.size > 0)
+      ) {
+        scheduleFlush();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
 
     const unsubBar = subscribeGgalBarTick((event) => {
       if (event.mode !== mode || event.timeframe !== streamTimeframe) return;
@@ -2094,17 +2269,22 @@ export function GgalDualChartView({
 
     const unsubAr = subscribeAtomicQuoteValue('AR', 'GGAL', (quote) => {
       latestArQuote = quote;
+      if (coordMode === 'USD_ADR_NASDAQ') return;
       pendingQuoteDirty = true;
       scheduleFlush();
     });
 
     const unsubUs = subscribeAtomicQuoteValue('US', 'GGAL', (quote) => {
       latestUsQuote = quote;
+      if (coordMode === 'ARS_BYMA') return;
       pendingQuoteDirty = true;
       scheduleFlush();
     });
 
     return () => {
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
       unsubBar();
       unsubAr();
       unsubUs();
@@ -2412,7 +2592,10 @@ export function GgalDualChartView({
               <button
                 key={mode}
                 type="button"
-                onClick={() => setSubPaneMode(mode)}
+                onClick={() => {
+                  setSubPaneMode(mode);
+                  onSubPaneModeChange?.(mode);
+                }}
                 className={`rounded border px-2 py-0.5 text-[11px] transition ${
                   subPaneMode === mode
                     ? 'border-[#E5C76B]/60 bg-[#E5C76B]/15 text-[#E5C76B]'

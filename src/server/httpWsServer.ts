@@ -40,6 +40,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
+import { constants as zlibConstants, gzip } from 'node:zlib';
 import { WebSocket, WebSocketServer } from 'ws';
 import type {
   GgalAvwapAnchorMode,
@@ -135,6 +136,8 @@ interface ClientSubscriptionState {
   view: string | null;
   focusSymbol: string | null;
   focusMarket: 'AR' | 'US' | null;
+  ggalMode: 'ADR' | 'ARS' | 'CCL' | null;
+  ggalTimeframe: string | null;
   clientDeltaRevision: number;
   backpressureActive: boolean;
   coalescedDeltaQuotes: Map<string, ReturnType<MarketRuntime['getLiveUsQuotes']>[number]>;
@@ -147,6 +150,7 @@ interface ClientSubscriptionState {
   lastSentOptionQuotes: Map<string, LiveOptionQuoteSnapshot>;
   lastSentStockQuotes: Map<string, string>;
   lastSentL2Sig: string | null;
+  lastSentMacroSig: string | null;
   pongReceived: boolean;
   missedHeartbeats: number;
 }
@@ -204,10 +208,64 @@ async function readJsonBody(
   }
 }
 
+const GZIP_COMPRESS_THRESHOLD_BYTES = 8_192;
+
+function appendVaryHeader(res: ServerResponse, token: string): void {
+  const current = res.getHeader('Vary');
+  if (typeof current === 'string' && current.trim() !== '') {
+    const items = current.split(',').map((item) => item.trim().toLowerCase());
+    if (!items.includes(token.toLowerCase())) {
+      res.setHeader('Vary', `${current}, ${token}`);
+    }
+    return;
+  }
+  if (Array.isArray(current) && current.length > 0) {
+    const joined = current.join(', ');
+    if (!joined.toLowerCase().includes(token.toLowerCase())) {
+      res.setHeader('Vary', `${joined}, ${token}`);
+    }
+    return;
+  }
+  res.setHeader('Vary', token);
+}
+
+function acceptsGzipEncoding(req: IncomingMessage | undefined): boolean {
+  const raw = req?.headers['accept-encoding'];
+  if (typeof raw !== 'string' || raw.trim() === '') return false;
+  for (const part of raw.toLowerCase().split(',')) {
+    const [encodingRaw, ...params] = part.trim().split(';');
+    if (encodingRaw?.trim() === 'gzip') {
+      const qParam = params.find((p) => p.trim().startsWith('q='));
+      if (qParam !== undefined && Number(qParam.trim().slice(2)) === 0) {
+        return false;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   const body = JSON.stringify(payload);
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  const byteLength = Buffer.byteLength(body, 'utf8');
+  if (byteLength >= GZIP_COMPRESS_THRESHOLD_BYTES) {
+    appendVaryHeader(res, 'Accept-Encoding');
+    if (acceptsGzipEncoding(res.req)) {
+      gzip(body, { level: zlibConstants.Z_BEST_SPEED }, (err, compressed) => {
+        if (res.writableEnded || res.destroyed) return;
+        if (err === null) {
+          res.setHeader('Content-Encoding', 'gzip');
+          res.setHeader('Content-Length', String(compressed.length));
+          res.end(compressed);
+          return;
+        }
+        res.end(body);
+      });
+      return;
+    }
+  }
   res.end(body);
 }
 
@@ -574,11 +632,23 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
     };
   };
 
+  const formatMacroSig = (batch: {
+    readonly arSourceMode: string | null | undefined;
+    readonly usSourceMode: string | null | undefined;
+    readonly arFeedStatus: string | null | undefined;
+    readonly futuresSource?: string | null | undefined;
+    readonly cclMedian: number | null | undefined;
+    readonly mepMedian: number | null | undefined;
+  }): string =>
+    `${batch.arSourceMode ?? ''}|${batch.usSourceMode ?? ''}|${batch.arFeedStatus ?? ''}|${batch.futuresSource ?? ''}|${batch.cclMedian !== null && batch.cclMedian !== undefined ? String(batch.cclMedian) : ''}|${batch.mepMedian !== null && batch.mepMedian !== undefined ? String(batch.mepMedian) : ''}`;
+
   const sendMarketTickBatch = (client: WebSocket, state?: ClientSubscriptionState): void => {
     if (client.readyState !== WebSocket.OPEN) return;
     if (state !== undefined) {
       if (checkClientBackpressure(client, state) !== 'SEND') return;
-      client.send(JSON.stringify(buildMarketTickBatch(state.clientDeltaRevision)));
+      const batch = buildMarketTickBatch(state.clientDeltaRevision);
+      state.lastSentMacroSig = formatMacroSig(batch);
+      client.send(JSON.stringify(batch));
       return;
     }
     if (getClientBufferedAmount(client) > 1_048_576) return;
@@ -658,6 +728,20 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         }
       }
 
+      const macroSig = formatMacroSig(globalDelta);
+      const hasEffectiveChanges =
+        state.coalescedDeltaQuotes.size > 0 ||
+        state.coalescedDeltaRemoved.size > 0 ||
+        state.coalescedCauciones !== null ||
+        state.coalescedFutures !== null ||
+        liveOrderBook !== undefined ||
+        state.marketEvents.size > 0 ||
+        state.lastSentMacroSig !== macroSig;
+      if (!hasEffectiveChanges) {
+        continue;
+      }
+
+      state.lastSentMacroSig = macroSig;
       state.clientDeltaRevision += 1;
       const clientDelta: Record<string, unknown> = {
         type: globalDelta.type,
@@ -849,6 +933,9 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
         const visibleBars = parseOptionalPositiveInt(params.get('visibleBars'), 'visibleBars', secrets);
         const rthOnly = parseBooleanFlag(params.get('rthOnly'));
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
+        const overlaysRaw = params.get('overlays')?.trim().toLowerCase();
+        const includeOverlays = overlaysRaw === '0' || overlaysRaw === 'false' ? false : true;
+        const fullHistory = parseBooleanFlag(params.get('fullHistory'));
         // Pieza 38: los locales BYMA (Panel Líder / Panel General + soberanos) y
         // todo `market=AR` explícito resuelven al histórico real en ARS de
         // argentinaMarketLoader (Data912). Los CEDEARs colisionan con el ticker
@@ -866,6 +953,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           ...(visibleBars === undefined ? {} : { visibleBars }),
           rthOnly,
           forceRefresh,
+          ...(!includeOverlays ? { includeOverlays: false } : {}),
+          ...(fullHistory ? { fullHistory: true } : {}),
         });
         sendJson(res, 200, bars);
         return;
@@ -1242,12 +1331,14 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
 
         const forceRefresh = parseBooleanFlag(params.get('refresh')) || parseBooleanFlag(params.get('force'));
         const light = parseBooleanFlag(params.get('light'));
+        const subPaneMode = params.get('subPaneMode')?.trim() || undefined;
         const dualChart = await ggalRuntime.getDualChart({
           coordMode,
           timeframe,
           avwapAnchor,
           forceRefresh,
           ...(light ? { light: true } : {}),
+          ...(subPaneMode !== undefined ? { subPaneMode } : {}),
         });
         sendJson(res, 200, dualChart);
         return;
@@ -1471,6 +1562,8 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       view: null,
       focusSymbol: null,
       focusMarket: null,
+      ggalMode: null,
+      ggalTimeframe: null,
       clientDeltaRevision: 0,
       backpressureActive: false,
       coalescedDeltaQuotes: new Map(),
@@ -1483,6 +1576,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       lastSentOptionQuotes: new Map(),
       lastSentStockQuotes: new Map(),
       lastSentL2Sig: null,
+      lastSentMacroSig: null,
       pongReceived: true,
       missedHeartbeats: 0,
     };
@@ -1530,18 +1624,24 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           readonly view?: unknown;
           readonly focusSymbol?: unknown;
           readonly focusMarket?: unknown;
+          readonly ggalMode?: unknown;
+          readonly ggalTimeframe?: unknown;
         };
         if (parsed.type === 'set_view_scope') {
           const scope = normalizeViewScope({
             view: parsed.view,
             focusSymbol: parsed.focusSymbol,
             focusMarket: parsed.focusMarket,
+            ggalMode: parsed.ggalMode,
+            ggalTimeframe: parsed.ggalTimeframe,
           });
           const previousFocus = state.focusSymbol;
           const previousMarket = state.focusMarket;
           state.view = scope.view;
           state.focusSymbol = scope.focusSymbol;
           state.focusMarket = scope.focusMarket;
+          state.ggalMode = scope.ggalMode ?? null;
+          state.ggalTimeframe = scope.ggalTimeframe ?? null;
 
           for (const [key, event] of state.focusEvents) {
             if (event.type === 'status') continue;
@@ -1677,7 +1777,13 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
       }
       const state = clientStates.get(client);
       if (state === undefined || state.healthOnly) continue;
-      if (event.type === 'ggal_bar_tick' && !shouldEmitGgalBarTickToClient(state)) {
+      if (
+        event.type === 'ggal_bar_tick' &&
+        !shouldEmitGgalBarTickToClient(state, {
+          mode: event.mode,
+          timeframe: event.timeframe,
+        })
+      ) {
         continue;
       }
       if (!shouldSendBroadcast(state, event)) continue;

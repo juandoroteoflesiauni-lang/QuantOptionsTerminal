@@ -33,6 +33,8 @@ export type WorkerInboundMessage =
       readonly view: string;
       readonly focusSymbol: string | null;
       readonly focusMarket: 'AR' | 'US' | null;
+      readonly ggalMode?: 'ADR' | 'ARS' | 'CCL' | null;
+      readonly ggalTimeframe?: string | null;
     }
   | { readonly type: 'SET_FOCUS_SYMBOL'; readonly symbol: string | null }
   | {
@@ -105,6 +107,8 @@ let openTimeout: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let hasReceivedAnyBatch = false;
 let readySignalPending = false;
+let stopPollNotifiedForSocket = false;
+let lastMarketBatchMacroSig: string | null = null;
 
 let optionScopeEpoch = 0;
 let focusSymbol: string | null = null;
@@ -112,6 +116,8 @@ let viewScope: {
   readonly view: string;
   readonly focusSymbol: string | null;
   readonly focusMarket: 'AR' | 'US' | null;
+  readonly ggalMode?: 'ADR' | 'ARS' | 'CCL' | null;
+  readonly ggalTimeframe?: string | null;
 } | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -317,6 +323,12 @@ function ingestOrderBookToSoa(rawBook: unknown, fallbackTs: number): void {
   conflation.markDirty(id);
 }
 
+function notifyStopPollOnce(): void {
+  if (stopPollNotifiedForSocket) return;
+  stopPollNotifiedForSocket = true;
+  workerSelf.postMessage({ type: 'WS_STOP_POLL' });
+}
+
 function handleParsedFrame(parsed: Record<string, unknown>): void {
   const nowSec = finitePositive(parsed['serverTimeSec']) ?? Math.floor(Date.now() / 1_000);
   const type = parsed['type'];
@@ -325,7 +337,7 @@ function handleParsedFrame(parsed: Record<string, unknown>): void {
     hasReceivedAnyBatch = true;
     ingestMarketQuoteArray(parsed['quotes'], nowSec);
     ingestOrderBookToSoa(parsed['liveOrderBook'], nowSec);
-    workerSelf.postMessage({ type: 'WS_STOP_POLL' });
+    notifyStopPollOnce();
     workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     notifyDeltasReady();
     return;
@@ -334,18 +346,50 @@ function handleParsedFrame(parsed: Record<string, unknown>): void {
   if (type === 'market_batch') {
     hasReceivedAnyBatch = true;
     const delta = isRecord(parsed['delta']) ? parsed['delta'] : null;
+    const events = Array.isArray(parsed['events']) ? parsed['events'] : [];
+    const deltaQuotes = delta !== null && Array.isArray(delta['quotes']) ? delta['quotes'] : [];
+    const deltaRemoved = delta !== null && Array.isArray(delta['removed']) ? delta['removed'] : [];
+    const hasDeltaAux =
+      delta !== null &&
+      (delta['cauciones'] !== undefined ||
+        delta['futures'] !== undefined ||
+        delta['liveOrderBook'] !== undefined ||
+        Array.isArray(delta['tape']) ||
+        delta['liveFx'] !== undefined);
+    const macroSig =
+      delta !== null
+        ? `${String(delta['arSourceMode'] ?? '')}|${String(delta['usSourceMode'] ?? '')}|${String(delta['arFeedStatus'] ?? '')}|${String(delta['cclMedian'] ?? '')}|${String(delta['mepMedian'] ?? '')}`
+        : '';
+    const macroChanged = delta !== null && macroSig !== lastMarketBatchMacroSig;
     if (delta !== null) {
-      ingestMarketQuoteArray(delta['quotes'], nowSec);
+      lastMarketBatchMacroSig = macroSig;
+    }
+
+    if (delta !== null && deltaQuotes.length > 0) {
+      ingestMarketQuoteArray(deltaQuotes, nowSec);
+    }
+    if (delta !== null && delta['liveOrderBook'] !== undefined) {
       ingestOrderBookToSoa(delta['liveOrderBook'], nowSec);
     }
-    const events = Array.isArray(parsed['events']) ? parsed['events'] : [];
     for (let i = 0; i < events.length; i += 1) {
       const ev = events[i];
       if (isRecord(ev)) {
         ingestLegacyEventToSoa(ev, nowSec);
       }
     }
-    workerSelf.postMessage({ type: 'WS_STOP_POLL' });
+    notifyStopPollOnce();
+    const hasRevisionEnvelope =
+      delta !== null && typeof delta['deltaRevision'] === 'number' && Number.isFinite(delta['deltaRevision']);
+    if (
+      events.length === 0 &&
+      !hasRevisionEnvelope &&
+      deltaQuotes.length === 0 &&
+      deltaRemoved.length === 0 &&
+      !hasDeltaAux &&
+      !macroChanged
+    ) {
+      return;
+    }
     workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     notifyDeltasReady();
     return;
@@ -354,7 +398,7 @@ function handleParsedFrame(parsed: Record<string, unknown>): void {
   if (type === 'option_quotes_batch') {
     if (viewScope && (viewScope.view !== 'options' || viewScope.focusSymbol !== parsed['underlying'])) return;
     ingestOptionQuoteArray(parsed['quotes']);
-    workerSelf.postMessage({ type: 'WS_STOP_POLL' });
+    notifyStopPollOnce();
     workerSelf.postMessage({ type: 'PARSED_WS_MESSAGE', optionScopeEpoch, payload: parsed });
     notifyDeltasReady();
     return;
@@ -388,6 +432,8 @@ function sendViewScopeToSocket(): void {
         view: viewScope.view,
         focusSymbol: viewScope.focusSymbol,
         focusMarket: viewScope.focusMarket,
+        ...(viewScope.ggalMode !== undefined ? { ggalMode: viewScope.ggalMode } : {}),
+        ...(viewScope.ggalTimeframe !== undefined ? { ggalTimeframe: viewScope.ggalTimeframe } : {}),
       }),
     );
   } catch {
@@ -431,9 +477,12 @@ function connectSocket(): void {
   });
 
   let next: WebSocket;
+  stopPollNotifiedForSocket = false;
+  lastMarketBatchMacroSig = null;
   try {
     next = new WebSocket(socketUrl);
   } catch {
+    stopPollNotifiedForSocket = false;
     workerSelf.postMessage({ type: 'WS_FALLBACK_POLL' });
     reconnectTimer = setTimeout(connectSocket, RECONNECT_INTERVAL_MS);
     return;
@@ -442,6 +491,7 @@ function connectSocket(): void {
 
   openTimeout = setTimeout(() => {
     if (generation === socketGeneration && next.readyState !== WebSocket.OPEN) {
+      stopPollNotifiedForSocket = false;
       workerSelf.postMessage({ type: 'WS_FALLBACK_POLL' });
     }
   }, WS_OPEN_TIMEOUT_MS);
@@ -486,6 +536,8 @@ function connectSocket(): void {
       openTimeout = null;
     }
     socket = null;
+    stopPollNotifiedForSocket = false;
+    lastMarketBatchMacroSig = null;
     workerSelf.postMessage({
       type: 'WS_STATUS',
       status: 'RECONNECTING',
@@ -582,6 +634,8 @@ workerSelf.onmessage = (event: MessageEvent<WorkerInboundMessage>): void => {
       view: msg.view,
       focusSymbol: msg.focusSymbol,
       focusMarket: msg.focusMarket,
+      ...(msg.ggalMode !== undefined ? { ggalMode: msg.ggalMode } : {}),
+      ...(msg.ggalTimeframe !== undefined ? { ggalTimeframe: msg.ggalTimeframe } : {}),
     };
     sendViewScopeToSocket();
     return;

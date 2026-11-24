@@ -15,6 +15,8 @@ export interface ClientViewScope {
   readonly view: string | null;
   readonly focusSymbol: string | null;
   readonly focusMarket: 'AR' | 'US' | null;
+  readonly ggalMode?: 'ADR' | 'ARS' | 'CCL' | null;
+  readonly ggalTimeframe?: string | null;
 }
 
 import type { LiveOptionQuoteSnapshot } from '../core/opraOptionIntegrity.js';
@@ -53,10 +55,28 @@ export interface MarketTickQuoteLike {
 
 const OCC_CONTRACT_PATTERN = /^([A-Z][A-Z0-9.-]{0,6}?)(\d{6})([CP])(\d{8})$/;
 
+function normalizeGgalMode(raw: unknown): 'ADR' | 'ARS' | 'CCL' | null {
+  if (typeof raw !== 'string') return null;
+  const clean = raw.trim().toUpperCase();
+  return clean === 'ADR' || clean === 'ARS' || clean === 'CCL' ? clean : null;
+}
+
+function normalizeGgalTimeframe(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const clean = raw.trim();
+  if (clean === '') return null;
+  if (clean === '1H' || clean === '1h') return '1h';
+  if (clean === '4H' || clean === '4h') return '4h';
+  if (clean === '1d' || clean === '1D') return '1D';
+  return clean;
+}
+
 export function normalizeViewScope(raw: {
   readonly view?: unknown;
   readonly focusSymbol?: unknown;
   readonly focusMarket?: unknown;
+  readonly ggalMode?: unknown;
+  readonly ggalTimeframe?: unknown;
 }): ClientViewScope {
   const view =
     typeof raw.view === 'string' && raw.view.trim() !== ''
@@ -88,7 +108,16 @@ export function normalizeViewScope(raw: {
     }
   }
 
-  return { view, focusSymbol, focusMarket };
+  const ggalMode = normalizeGgalMode(raw.ggalMode);
+  const ggalTimeframe = normalizeGgalTimeframe(raw.ggalTimeframe);
+
+  return {
+    view,
+    focusSymbol,
+    focusMarket,
+    ...(ggalMode !== null ? { ggalMode } : {}),
+    ...(ggalTimeframe !== null ? { ggalTimeframe } : {}),
+  };
 }
 
 export function extractOptionUnderlying(contractSymbol: string): string | null {
@@ -120,11 +149,30 @@ export function resolveScopedL2Symbol(scope: ClientViewScope): string | null {
   return null;
 }
 
-export function shouldEmitGgalBarTickToClient(scope: ClientViewScope): boolean {
-  if (scope.view === null || scope.view === 'ggal_specialist') {
-    return true;
+export function shouldEmitGgalBarTickToClient(
+  scope: ClientViewScope,
+  event?: { readonly mode: 'ADR' | 'ARS' | 'CCL'; readonly timeframe: string },
+): boolean {
+  const allowedByView =
+    scope.view === null ||
+    scope.view === 'ggal_specialist' ||
+    (scope.view === 'stock_detail' && scope.focusSymbol === 'GGAL');
+  if (!allowedByView) {
+    return false;
   }
-  return scope.view === 'stock_detail' && scope.focusSymbol === 'GGAL';
+  if (event !== undefined) {
+    if (scope.ggalMode !== undefined && scope.ggalMode !== null && event.mode !== scope.ggalMode) {
+      return false;
+    }
+    if (scope.ggalTimeframe !== undefined && scope.ggalTimeframe !== null) {
+      const normalizedScopeTf = normalizeGgalTimeframe(scope.ggalTimeframe);
+      const normalizedEventTf = normalizeGgalTimeframe(event.timeframe);
+      if (normalizedScopeTf !== null && normalizedEventTf !== normalizedScopeTf) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export function evaluateWsBackpressure(
