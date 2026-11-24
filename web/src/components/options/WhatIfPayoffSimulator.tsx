@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState } from 'react';
+import React, { memo, useId, useMemo, useState } from 'react';
 import {
   buildWhatIfHeatmapAndAttribution,
   evaluateWhatIfPoint,
@@ -87,7 +87,7 @@ function heatmapCellStyle(pnlUsd: number, maxAbs: number): React.CSSProperties {
   };
 }
 
-export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
+export const WhatIfPayoffSimulator = memo(function WhatIfPayoffSimulator({
   structureLabel,
   spot,
   rate,
@@ -102,7 +102,7 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
   zeroGammaSpot = null,
   breakevens = [],
   zeroDte = false,
-}) => {
+}: WhatIfPayoffSimulatorProps) {
   // 0DTE: horizonte en horas reales hasta el cierre (16:00 ET), mínimo 0.25 h.
   const [startHours] = useState<number>(() => {
     const h = hoursToCloseEt(Date.now());
@@ -1000,4 +1000,4 @@ export const WhatIfPayoffSimulator: React.FC<WhatIfPayoffSimulatorProps> = ({
       </div>
     </div>
   );
-};
+});

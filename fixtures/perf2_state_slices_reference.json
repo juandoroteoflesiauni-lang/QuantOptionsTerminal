@@ -1,0 +1,73 @@
+{
+  "notifications": {
+    "qqq": {
+      "spy": 0,
+      "qqq": 1,
+      "macro": 0,
+      "status": 0,
+      "ggal": 0,
+      "spyOptions": 0,
+      "spyLoading": 0,
+      "combined": 0
+    },
+    "health": {
+      "spy": 0,
+      "qqq": 0,
+      "macro": 0,
+      "status": 1,
+      "ggal": 0,
+      "spyOptions": 0,
+      "spyLoading": 0,
+      "combined": 0
+    },
+    "healthUnchanged": {
+      "spy": 0,
+      "qqq": 0,
+      "macro": 0,
+      "status": 0,
+      "ggal": 0,
+      "spyOptions": 0,
+      "spyLoading": 0,
+      "combined": 0
+    },
+    "spyChain": {
+      "spy": 1,
+      "qqq": 0,
+      "macro": 0,
+      "status": 0,
+      "ggal": 0,
+      "spyOptions": 1,
+      "spyLoading": 0,
+      "combined": 1
+    },
+    "spyExpiry": {
+      "spy": 1,
+      "qqq": 0,
+      "macro": 0,
+      "status": 0,
+      "ggal": 0,
+      "spyOptions": 1,
+      "spyLoading": 2,
+      "combined": 1
+    }
+  },
+  "waiters": [
+    {
+      "canceled": [
+        1
+      ],
+      "fetchAborted": false,
+      "received": [
+        2
+      ]
+    },
+    {
+      "canceled": [
+        1,
+        2
+      ],
+      "fetchAborted": true,
+      "received": []
+    }
+  ]
+}

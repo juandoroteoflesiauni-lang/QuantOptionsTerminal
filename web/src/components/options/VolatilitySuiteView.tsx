@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { memo, useMemo, useState } from 'react';
 import { type OptionExpiryGroup, fmtNum } from '../../data/marketData';
 import type { ArOptionsQuantEnginesDto, ArOptionsResponse, UsSnapshotResponseDto, UsVolSurfaceResponseDto } from '../../data/liveTypes';
 import type { StratLeg } from './engine';
@@ -27,7 +27,6 @@ import {
   computeNumericExtent,
   fmtNullableNumber,
   fmtSignedNullable,
-  resolveActiveVolAnalyticsSuite,
   resolveExpiryVolSuite,
   resolveUnifiedQuantEngines,
   sliceHistorySeriesByHorizon,
@@ -52,6 +51,7 @@ export interface VolatilitySuiteViewProps {
   readonly onSelectExpiry: (expiryId: string) => void;
   readonly effectiveTlrPct: number;
   readonly liveOptions: ArOptionsResponse | undefined;
+  readonly activeVolSuite: VolAnalyticsSuiteDto | null;
   readonly activeQuantEngines: ArOptionsQuantEnginesDto | null;
   readonly usSnapshot: UsSnapshotResponseDto | undefined;
   readonly usVolSurface?: UsVolSurfaceResponseDto | null;
@@ -131,7 +131,7 @@ function buildLinearTicks(min: number, max: number, count: number): number[] {
   return Array.from({ length: count }, (_, i) => min + i * step);
 }
 
-export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
+export const VolatilitySuiteView = memo(function VolatilitySuiteView({
   underlying,
   stockName,
   spot,
@@ -141,25 +141,16 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
   effectiveTlrPct,
   liveOptions,
   activeQuantEngines,
+  activeVolSuite: suite,
   usSnapshot,
   usVolSurface,
   onSendToBuilder,
-}) => {
+}: VolatilitySuiteViewProps) {
   const [activeTab, setActiveTab] = useState<VolatilitySubTabId>('resumen');
   const [onlyOtm, setOnlyOtm] = useState<boolean>(true);
   const [smileXAxis, setSmileXAxis] = useState<SmileXAxisMode>('MONEYNESS');
   const [showPriorSmile, setShowPriorSmile] = useState<boolean>(false);
   const [horizon, setHorizon] = useState<VolHistoryHorizon>('1A');
-
-  const suite = useMemo(
-    () =>
-      resolveActiveVolAnalyticsSuite({
-        liveOptions,
-        liveQuantEngines: activeQuantEngines,
-        usSnapshot,
-      }),
-    [liveOptions, activeQuantEngines, usSnapshot],
-  );
 
   const expirySuite = useMemo(
     () => resolveExpiryVolSuite(suite, activeExpiry?.id ?? null),
@@ -693,7 +684,7 @@ export const VolatilitySuiteView: React.FC<VolatilitySuiteViewProps> = ({
       )}
     </div>
   );
-};
+});
 
 // ============================================================================
 // Tab 1: Resumen & Cono Esperado (Q vs Lognormal)

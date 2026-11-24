@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronDown,
@@ -29,15 +29,20 @@ import {
   type OptionExpiryGroup,
 } from '../data/marketData';
 import {
-  getLiveOptionsForUnderlying,
-  getOptionExpiriesForUnderlying,
   requestOptionsCatalysts,
   requestOptionsChain,
   requestOptionsUniverse,
   requestUsOptionExpiry,
   requestUsVolSurface,
   setActiveOptionsUnderlyingKey,
-  useLiveMarketState,
+  useLiveBridgeSelector,
+  useLiveMarketStatus,
+  useLiveOptionsCatalysts,
+  useLiveOptionsSlice,
+  useLiveOptionsUniverse,
+  useLiveUsProvidersStatus,
+  useLiveUsSnapshot,
+  useLiveUsVolSurface,
 } from '../data/liveRuntimeBridge';
 import {
   buildExpirySelectorEntries,
@@ -48,11 +53,11 @@ import {
   parseOptionsUnderlyingKey,
 } from '../data/optionsUnderlying';
 import { OptionsSymbolSelector } from './OptionsSymbolSelector';
+import { LiveClockBadge } from './MarketModules';
 import {
-  getMarketStreamMetaClock,
   useAtomicMarketQuote,
   useLivePriceFlash,
-  useMarketStreamMeta,
+  useOptionsValuationQuote,
 } from '../api/useMarketLiveStream';
 import { VirtualizedOptionChainTable } from './options/VirtualizedOptionChainTable';
 import { VirtualizedRows } from './common/VirtualizedRows';
@@ -140,43 +145,7 @@ type UsProvidersStatusDto = {
   readonly usOptionsFeedBadge?: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
 };
 
-const useUsOptionsFeedBadge = (pollMs = 30_000): 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null => {
-  const [badge, setBadge] = useState<'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null>(null);
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    let active = true;
-    const load = async () => {
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 5_000);
-      try {
-        const res = await fetch('/api/us/providers-status', {
-          signal: controller.signal,
-          headers: { accept: 'application/json' },
-        });
-        if (!res.ok) {
-          if (active) setBadge(null);
-          return;
-        }
-        const json = (await res.json()) as UsProvidersStatusDto;
-        if (active) setBadge(json.usOptionsFeedBadge ?? null);
-      } catch {
-        // Endpoint ausente: badge explícito '—', sin origen falso.
-        if (active) setBadge(null);
-      } finally {
-        window.clearTimeout(timer);
-      }
-    };
-    void load();
-    const intervalId = window.setInterval(() => {
-      void load();
-    }, pollMs);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, [pollMs]);
-  return badge;
-};
+
 
 interface StrategyFamilyItem {
   id: StrategyFamilyId;
@@ -784,6 +753,80 @@ function buildDetailedSpreadMatrix(
   });
 }
 
+interface OptionsHeaderQuoteProps {
+  readonly market: 'AR' | 'US';
+  readonly symbol: string;
+  readonly fallbackSpot: number;
+  readonly fallbackDeltaPct: number;
+}
+
+function useOptionsHeaderQuote({ market, symbol, fallbackSpot, fallbackDeltaPct }: OptionsHeaderQuoteProps) {
+  const live = useAtomicMarketQuote(market, symbol, 250);
+  return {
+    headerSpot: live?.price ?? fallbackSpot,
+    headerDeltaPct: live?.changePct ?? fallbackDeltaPct,
+    headerFlash: useLivePriceFlash(live?.price ?? null),
+  };
+}
+
+const OptionsHeaderSpotPrice = memo(function OptionsHeaderSpotPrice(
+  props: OptionsHeaderQuoteProps & { readonly currency: string },
+) {
+  const { headerSpot, headerDeltaPct, headerFlash } = useOptionsHeaderQuote(props);
+  const optionCurrency = props.currency;
+  return (
+    <>
+    <span
+      className={`rounded px-1 font-mono-num tabular-nums text-[22px] font-extrabold tracking-tight ${
+        !Number.isFinite(headerDeltaPct)
+          ? 'text-[#FFFFFF]'
+          : headerDeltaPct < 0
+            ? 'text-[#F23645]'
+            : 'text-[#22C55E]'
+      }`}
+      style={{
+        backgroundColor: headerFlash === null ? 'transparent' : headerFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+      }}
+    >
+      {fmtNum(headerSpot, 2)}
+    </span>
+    <span className="text-[12px] font-mono-num text-[#787B86]">
+      {optionCurrency}
+    </span>
+    <span
+      className={`font-mono-num text-[13px] font-semibold ${
+        !Number.isFinite(headerDeltaPct)
+          ? 'text-[#787B86]'
+          : headerDeltaPct < 0
+            ? 'text-[#F23645]'
+            : 'text-[#22C55E]'
+      }`}
+    >
+      {Number.isFinite(headerDeltaPct)
+        ? `${headerDeltaPct > 0 ? '+' : ''}${fmtNum(headerDeltaPct, 2)} %`
+        : '—'}
+    </span>
+
+    </>
+  );
+});
+
+const OptionsHeaderClock = memo(function OptionsHeaderClock({
+  market, symbol,
+}: Pick<OptionsHeaderQuoteProps, 'market' | 'symbol'>) {
+  const live = useAtomicMarketQuote(market, symbol, 250);
+  return <LiveClockBadge enabled={live !== null} />;
+});
+
+const OptionsLiveSymbolSelector = memo(function OptionsLiveSymbolSelector({
+  market, symbol, fallbackSpot, fallbackDeltaPct, ...props
+}: OptionsHeaderQuoteProps & Omit<
+  React.ComponentProps<typeof OptionsSymbolSelector>, 'selectedPrice' | 'selectedChangePct' | 'selectedFlash'
+>) {
+  const { headerSpot, headerDeltaPct, headerFlash } = useOptionsHeaderQuote({ market, symbol, fallbackSpot, fallbackDeltaPct });
+  return <OptionsSymbolSelector {...props} selectedPrice={headerSpot} selectedChangePct={headerDeltaPct} selectedFlash={headerFlash} />;
+});
+
 export const OptionsModule: React.FC<{
   activeSubView: OptionsSubView;
   onSelectSubView: (v: OptionsSubView) => void;
@@ -805,23 +848,39 @@ export const OptionsModule: React.FC<{
   density,
   onOpenOrderTicket,
 }) => {
-  const liveMarket = useLiveMarketState();
   const selectedUnderlyingKey = parseOptionsUnderlyingKey(selectedUnderlying).key;
   const underlyingMeta = parseOptionsUnderlyingKey(selectedUnderlyingKey);
   const upperUnderlying = underlyingMeta.symbol;
   const canonicalUnderlyingKey = underlyingMeta.canonicalKey;
   const isUsMarket = underlyingMeta.market === 'US';
   const optionCurrency = underlyingMeta.currency;
+  const { options: liveOptions, expiries: activeExpiries, loading: loadingOptionExpiries } = useLiveOptionsSlice(canonicalUnderlyingKey);
+  const usSnapshot = useLiveUsSnapshot(isUsMarket ? upperUnderlying : null);
+  const usVolSurface = useLiveUsVolSurface(isUsMarket && activeSubView === 'volatilidad' ? canonicalUnderlyingKey : null);
+  const { catalysts } = useLiveOptionsCatalysts(isUsMarket ? upperUnderlying : null);
+  const { underlyings, status: universeStatus } = useLiveOptionsUniverse();
+  const liveMarket = useLiveMarketStatus();
+  const overview = useLiveBridgeSelector(isUsMarket ? [] : ['overview'], (state) => isUsMarket ? null : state.overview);
+  const macro = useLiveBridgeSelector(isUsMarket ? [] : ['macro'], (state) => isUsMarket ? null : state.macro);
+  const expiryController = useRef<AbortController | null>(null);
   // Pieza 32: origen del feed de opciones US (Tradier Live + ORATS / Massive + ORATS).
-  const usOptionsFeedBadge = useUsOptionsFeedBadge();
+  const usOptionsFeedBadge = useLiveUsProvidersStatus(isUsMarket)?.usOptionsFeedBadge ?? null;
   const [symbolSelectorOpen, setSymbolSelectorOpen] = useState(false);
 
   useEffect(() => {
-    void requestOptionsUniverse();
+    const controller = new AbortController();
+    void requestOptionsUniverse(false, controller.signal);
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
-    void requestOptionsChain(selectedUnderlyingKey);
+    const controller = new AbortController();
+    expiryController.current = controller;
+    void requestOptionsChain(selectedUnderlyingKey, false, undefined, controller.signal);
+    return () => {
+      controller.abort();
+      expiryController.current = null;
+    };
   }, [selectedUnderlyingKey]);
 
   // Pieza 50.3: rastrea el subyacente activo para que solo su cadena alinee `engine.ts`;
@@ -836,13 +895,17 @@ export const OptionsModule: React.FC<{
   // Pieza 36: ORATS se consulta solo al abrir Volatilidad en un subyacente US.
   useEffect(() => {
     if (!isUsMarket || activeSubView !== 'volatilidad') return;
-    void requestUsVolSurface(selectedUnderlyingKey);
+    const controller = new AbortController();
+    void requestUsVolSurface(selectedUnderlyingKey, false, controller.signal);
+    return () => controller.abort();
   }, [activeSubView, isUsMarket, selectedUnderlyingKey]);
 
   // Pieza 46: catalizadores Earnings + calendario macro FOMC / CPI en subyacentes US.
   useEffect(() => {
     if (!isUsMarket) return;
-    void requestOptionsCatalysts(selectedUnderlyingKey);
+    const controller = new AbortController();
+    void requestOptionsCatalysts(selectedUnderlyingKey, false, controller.signal);
+    return () => controller.abort();
   }, [isUsMarket, selectedUnderlyingKey]);
 
   useEffect(() => {
@@ -934,8 +997,6 @@ export const OptionsModule: React.FC<{
   const [simTlr, setSimTlr] = useState<number>(Number.NaN);
 
   // Pieza 50.3: lectura estrictamente por subyacente seleccionado (`market:symbol`).
-  const liveOptions = getLiveOptionsForUnderlying(liveMarket, canonicalUnderlyingKey);
-  const activeExpiries = getOptionExpiriesForUnderlying(liveMarket, canonicalUnderlyingKey);
   const liveOptionsExt = liveOptions as
     | (NonNullable<typeof liveOptions> & {
         readonly quantEnginesByExpiry?: Readonly<
@@ -976,9 +1037,9 @@ export const OptionsModule: React.FC<{
     underlyingMeta.market === 'AR' ? AR_STOCKS.find((s) => s.ticker === upperUnderlying) ?? AR_STOCKS[0] : undefined;
   const overviewStock =
     underlyingMeta.market === 'AR'
-      ? liveMarket.overview?.mervalStocks.find((s) => s.ticker === upperUnderlying) ??
-        liveMarket.overview?.generalPanelStocks.find((s) => s.ticker === upperUnderlying) ??
-        liveMarket.overview?.cedears.find((s) => s.ticker === upperUnderlying)
+      ? overview?.mervalStocks.find((s) => s.ticker === upperUnderlying) ??
+        overview?.generalPanelStocks.find((s) => s.ticker === upperUnderlying) ??
+        overview?.cedears.find((s) => s.ticker === upperUnderlying)
       : undefined;
   const usMeta = underlyingMeta.market === 'US' ? US_MARKET_DATA.find((u) => u.ticker === upperUnderlying) : undefined;
 
@@ -986,21 +1047,13 @@ export const OptionsModule: React.FC<{
     usMeta?.name ??
     overviewStock?.name ??
     catalogStock?.name ??
-    liveMarket.optionsUnderlyings.find((u) => u.key === selectedUnderlyingKey)?.name ??
+    underlyings.find((u) => u.key === selectedUnderlyingKey)?.name ??
     upperUnderlying;
   const displayDeltaPct =
     usMeta?.deltaPct ?? overviewStock?.deltaPct ?? catalogStock?.deltaPct ?? Number.NaN;
   const usUnderlying = underlyingMeta.market === 'US';
-  const liveUnderlyingQuote = useAtomicMarketQuote(usUnderlying ? 'US' : 'AR', upperUnderlying, 250);
-  const liveStreamMeta = useMarketStreamMeta(1_000);
   // Pieza 50.1: separar spot de encabezado (tick extendido PRE/AH) del spot de valuación
   // de la cadena OPRA cuando el feed está en EOD_CIERRE o fuera de RTH.
-  const liveQuoteSpot =
-    liveUnderlyingQuote !== null &&
-    Number.isFinite(liveUnderlyingQuote.price) &&
-    liveUnderlyingQuote.price > 0
-      ? liveUnderlyingQuote.price
-      : Number.NaN;
   const chainValuationSpot =
     liveOptions?.spot !== null &&
     liveOptions?.spot !== undefined &&
@@ -1008,11 +1061,10 @@ export const OptionsModule: React.FC<{
     liveOptions.spot > 0
       ? liveOptions.spot
       : Number.NaN;
-  const opraSessionClosed =
-    liveOptions?.feedStatus === 'EOD_CIERRE' ||
-    (liveUnderlyingQuote?.sessionPhase !== null &&
-      liveUnderlyingQuote?.sessionPhase !== undefined &&
-      liveUnderlyingQuote.sessionPhase !== 'RTH');
+  const { price: liveQuoteSpot, sessionClosed: opraSessionClosed } = useOptionsValuationQuote(
+    underlyingMeta.market, upperUnderlying, Number.isFinite(chainValuationSpot),
+    liveOptions?.feedStatus === 'EOD_CIERRE',
+  );
   const displaySpot =
     opraSessionClosed && Number.isFinite(chainValuationSpot)
       ? chainValuationSpot
@@ -1021,10 +1073,6 @@ export const OptionsModule: React.FC<{
         : Number.isFinite(chainValuationSpot)
           ? chainValuationSpot
           : overviewStock?.last ?? catalogStock?.last ?? Number.NaN;
-  const headerSpot = Number.isFinite(liveQuoteSpot) ? liveQuoteSpot : displaySpot;
-  const headerDeltaPct = liveUnderlyingQuote?.changePct ?? displayDeltaPct;
-  const headerFlash = useLivePriceFlash(liveUnderlyingQuote?.price ?? null);
-  const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
 
   // Pieza 50.1: escalera de spreads con mids de cierre en mercado cerrado / EOD_CIERRE.
   const spreadPricingMode: VerticalSpreadPricingMode = opraSessionClosed ? 'EOD_MID' : 'LIVE_CROSS';
@@ -1043,14 +1091,14 @@ export const OptionsModule: React.FC<{
   // un vencimiento ya cargado cambia instantáneamente en memoria sin llamada de red.
   // Pieza 50.2.1/50.3: el estado cargado/pendiente sale del subyacente seleccionado
   // (`expirySelectorEntries`), nunca de un array global pisable.
-  const handleSelectExpiry = (nextId: string): void => {
+  const handleSelectExpiry = useCallback((nextId: string): void => {
     setSelectedExpiryId(nextId);
     if (!usUnderlying) return;
     const entry = expirySelectorEntries.find((e) => e.id === nextId);
     if (entry?.isLoaded !== true) {
-      void requestUsOptionExpiry(selectedUnderlyingKey, nextId);
+      void requestUsOptionExpiry(selectedUnderlyingKey, nextId, false, expiryController.current?.signal);
     }
-  };
+  }, [expirySelectorEntries, selectedUnderlyingKey, usUnderlying]);
 
   const activeExpiry = useMemo<OptionExpiryGroup | null>(() => {
     // Pieza 50.3: el vencimiento activo se resuelve EXCLUSIVAMENTE desde las expiries del
@@ -1126,7 +1174,7 @@ export const OptionsModule: React.FC<{
   // Pieza 50.2: estado de carga on-demand del vencimiento activo (sin animaciones).
   const isActiveExpiryLoading = Boolean(
     activeExpiry?.id !== undefined
-      ? liveMarket.loadingOptionExpiries[`${selectedUnderlyingKey}:${activeExpiry.id}`]
+      ? loadingOptionExpiries[`${selectedUnderlyingKey}:${activeExpiry.id}`]
       : false,
   );
 
@@ -1144,8 +1192,8 @@ export const OptionsModule: React.FC<{
 
   const liveTlrPct =
     liveOptions?.rateTna ??
-    liveMarket.macro?.variables.badlarTna ??
-    liveMarket.macro?.variables.tamarTna ??
+    macro?.variables.badlarTna ??
+    macro?.variables.tamarTna ??
     null;
   const effectiveTlrPct =
     liveTlrPct !== null && Number.isFinite(liveTlrPct)
@@ -1263,9 +1311,9 @@ export const OptionsModule: React.FC<{
       resolveActiveVolAnalyticsSuite({
         liveOptions,
         liveQuantEngines: activeQuantEngines,
-        usSnapshot: liveMarket.usSnapshotsBySymbol[upperUnderlying],
+        usSnapshot: usSnapshot,
       }),
-    [liveOptions, activeQuantEngines, liveMarket.usSnapshotsBySymbol, upperUnderlying],
+    [liveOptions, activeQuantEngines, usSnapshot],
   );
   const activeVolSuiteExpiry = useMemo(
     // Pieza 50.2: estricto — jamás cae silenciosamente al front 0DTE de la suite.
@@ -1318,7 +1366,7 @@ export const OptionsModule: React.FC<{
       }
     }
     const snapshotFrontExpiry =
-      liveMarket.usSnapshotsBySymbol[upperUnderlying]?.volSurfaceSummary?.frontSlice?.expirationDate ?? null;
+      usSnapshot?.volSurfaceSummary?.frontSlice?.expirationDate ?? null;
     if (
       activeExpiry?.id !== undefined &&
       snapshotFrontExpiry !== null &&
@@ -1331,7 +1379,7 @@ export const OptionsModule: React.FC<{
     liveOptions?.quantEnginesByExpiry,
     liveOptions?.quantEngines,
     activeExpiry?.id,
-    liveMarket.usSnapshotsBySymbol,
+    usSnapshot,
     upperUnderlying,
   ]);
   const activeExpiryHeaderTir = useMemo(
@@ -1373,20 +1421,20 @@ export const OptionsModule: React.FC<{
 
   // Derivados dinámicos reales
   const { cards: visiblePayoffCards, rows: comparisonRows } = useMemo(
-    () =>
-      buildLiveStrategyCardsAndRows(labMarket, {
+    () => activeSubView === 'estrategias'
+      ? buildLiveStrategyCardsAndRows(labMarket, {
         strategyMode,
         selectedFamily,
         marketBias,
         targetPrice,
         expiries: activeExpiries,
-      }),
-    [labMarket, strategyMode, selectedFamily, marketBias, targetPrice, activeExpiries]
+      }) : { cards: [], rows: [] },
+    [activeSubView, labMarket, strategyMode, selectedFamily, marketBias, targetPrice, activeExpiries]
   );
 
   const detailedSpreadRows: readonly DetailedSpreadRow[] = useMemo(
-    () =>
-      buildDetailedSpreadMatrix(
+    () => activeSubView === 'spreads'
+      ? buildDetailedSpreadMatrix(
         safeActiveRows,
         displaySpot,
         activeExpiry?.oneSigmaHigh ?? Number.NaN,
@@ -1396,8 +1444,8 @@ export const OptionsModule: React.FC<{
         spreadFilter,
         isUsMarket,
         spreadPricingMode,
-      ),
-    [activeExpiry, safeActiveRows, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, spreadPricingMode],
+      ) : [],
+    [activeSubView, activeExpiry, safeActiveRows, displaySpot, activeDays, effectiveRateDec, activeAtmIvDec, spreadFilter, isUsMarket, spreadPricingMode],
   );
 
   // Pieza 49.1: ventana virtual de la escalera de spreads (>50 filas → solo visibles).
@@ -1576,7 +1624,9 @@ export const OptionsModule: React.FC<{
   const activeSpreadMode: SpreadExecutionMode =
     spreadModeOverride?.token === spreadModeToken ? spreadModeOverride.mode : autoSpreadMode;
 
+  const rankCredit = activeSubView === 'spreads';
   const activeBlDensityNodes = useMemo(() => {
+    if (!rankCredit) return [];
     // Pieza 46.1: serie suavizada exclusivamente (filtro iv/bid/spread -> PCHIP en w(k) -> grilla uniforme
     // proporcional a expectedMove -> max(0, pdf) -> área = 1). Sin fallback a densidad cruda.
     if (
@@ -1615,9 +1665,10 @@ export const OptionsModule: React.FC<{
       nodes,
     });
     return extracted.status === 'OK' ? extracted.nodes : [];
-  }, [activeExpiry, safeActiveRows, displaySpot, activeDays, activeDte, effectiveRateDec, activeDividendYield, activeAtmIvDec]);
+  }, [rankCredit, activeExpiry, safeActiveRows, displaySpot, activeDays, activeDte, effectiveRateDec, activeDividendYield, activeAtmIvDec]);
 
   const creditRankingResult = useMemo(() => {
+    if (!rankCredit) return null;
     const quotes: CreditOptionQuoteInput[] = [];
     for (const row of safeActiveRows) {
       if (!Number.isFinite(row.strike) || row.strike <= 0) continue;
@@ -1669,9 +1720,11 @@ export const OptionsModule: React.FC<{
     contractMultiplier,
     activeBlDensityNodes,
     activeRegimeCode,
+    rankCredit,
   ]);
 
   const focusedCreditCandidate: CreditStructureCandidate | null = useMemo(() => {
+    if (creditRankingResult === null) return null;
     const list = creditRankingResult.allCandidates;
     if (selectedCreditId !== null) {
       const hit = list.find((c) => c.id === selectedCreditId);
@@ -1687,7 +1740,7 @@ export const OptionsModule: React.FC<{
   }, [creditRankingResult, selectedCreditId]);
 
   const catalystWindow = useMemo(() => {
-    const rawCat = isUsMarket ? liveMarket.optionsCatalystsBySymbol[upperUnderlying] ?? null : null;
+    const rawCat = isUsMarket ? catalysts ?? null : null;
     const activeExpDto = liveOptions?.expiries.find((e) => e.expiryCode === activeExpiry?.id);
     const activeExpUtcSec =
       activeExpDto && Number.isFinite(activeExpDto.expiryUtcSec) && activeExpDto.expiryUtcSec > 0
@@ -1705,7 +1758,7 @@ export const OptionsModule: React.FC<{
     });
   }, [
     isUsMarket,
-    liveMarket.optionsCatalystsBySymbol,
+    catalysts,
     upperUnderlying,
     liveOptions,
     activeExpiry?.id,
@@ -1871,7 +1924,7 @@ export const OptionsModule: React.FC<{
       | null
       | undefined;
     if (flowExt?.agresionTicks) return flowExt.agresionTicks;
-    const rawUsSnap = liveMarket.usSnapshotsBySymbol[upperUnderlying];
+    const rawUsSnap = usSnapshot;
     const usTe = rawUsSnap?.terminalEngines as
       | (NonNullable<NonNullable<typeof rawUsSnap>['terminalEngines']> & {
           readonly agresionTicks?: AgresionTicksShape | null;
@@ -1879,20 +1932,21 @@ export const OptionsModule: React.FC<{
       | null
       | undefined;
     return usTe?.agresionTicks ?? null;
-  }, [activeQuantEngines, liveMarket.usSnapshotsBySymbol, upperUnderlying]);
+  }, [activeQuantEngines, usSnapshot, upperUnderlying]);
 
   const flowSummary = useMemo(
-    () =>
-      buildBidirectionalFlow(safeActiveRows, displaySpot, flowUnit, {
+    () => activeSubView === 'flujo'
+      ? buildBidirectionalFlow(safeActiveRows, displaySpot, flowUnit, {
         market: underlyingMeta.market,
         contractMultiplier,
-      }),
-    [safeActiveRows, displaySpot, flowUnit, underlyingMeta.market, contractMultiplier]
+      }) : null,
+    [activeSubView, safeActiveRows, displaySpot, flowUnit, underlyingMeta.market, contractMultiplier]
   );
 
   // Pieza 49.1: ventana virtual del flujo por base (marcador Zero Gamma incluido como entrada).
   const flowTableScrollRef = useRef<HTMLDivElement | null>(null);
   const flowEntries = useMemo<readonly FlowTableEntry[]>(() => {
+    if (flowSummary === null) return [];
     const list: FlowTableEntry[] = [];
     const zg = dealerGammaReport.zeroGammaSpot;
     for (let i = 0; i < flowSummary.rows.length; i += 1) {
@@ -1910,7 +1964,7 @@ export const OptionsModule: React.FC<{
       list.push({ kind: 'row', key: `flow-${String(row.strikeNum)}`, row });
     }
     return list;
-  }, [flowSummary.rows, dealerGammaReport.zeroGammaSpot]);
+  }, [flowSummary, dealerGammaReport.zeroGammaSpot]);
 
   // Pieza 50: resumen Vanna (VEX) / Charm (CEX) de dealers del vencimiento activo.
   const exposureSummaryView = liveOptions?.exposureSummary ?? null;
@@ -1920,8 +1974,8 @@ export const OptionsModule: React.FC<{
   const charmPinStrikeView = exposureSummaryView?.charmPinStrike ?? null;
 
   const builderAnalytics = useMemo(
-    () =>
-      computeBuilderAnalytics(
+    () => activeSubView === 'armado'
+      ? computeBuilderAnalytics(
         legs,
         simSpot,
         simDaysLeft,
@@ -1931,8 +1985,8 @@ export const OptionsModule: React.FC<{
         activeExpiry?.daysToExpiry ?? 30,
         activeExpiry?.rows ?? [],
         bsZeroDteFloorDays
-      ),
-    [legs, simSpot, simDaysLeft, simIvShift, simTlr, displaySpot, activeExpiry, liveMarket.version]
+      ) : null,
+    [activeSubView, legs, simSpot, simDaysLeft, simIvShift, simTlr, displaySpot, activeExpiry, bsZeroDteFloorDays]
   );
 
   const formatStrike = (value: number): string =>
@@ -1970,11 +2024,94 @@ export const OptionsModule: React.FC<{
     return 'bg-[#3B181C] text-[#F87171] border border-[#64252C]';
   };
 
-  const syncTimeLabel = liveOptions?.asOfUtcSec
-    ? new Date(liveOptions.asOfUtcSec * 1000).toLocaleTimeString('es-AR')
-    : liveMarket.lastSyncUtcSec
-      ? new Date(liveMarket.lastSyncUtcSec * 1000).toLocaleTimeString('es-AR')
-      : '—';
+  const lastSyncUtcSec = liveOptions?.asOfUtcSec ?? usSnapshot?.asOfUtcSec ?? overview?.asOfUtcSec;
+  const syncTimeLabel = lastSyncUtcSec ? new Date(lastSyncUtcSec * 1_000).toLocaleTimeString('es-AR') : '—';
+
+  const chainViews = useMemo(() => {
+    if (activeSubView !== 'cadena') return [];
+    return activeExpiries.map((exp) => {
+      // Pieza 50.3: cada vencimiento se valida contra el spot activo antes de renderizar.
+      const expIntegrity = validateChainIntegrity(exp.rows, displaySpot);
+      const isExpiryChainCorrupt = expIntegrity.reason === 'SCALE_MISMATCH';
+      const rawExpiry = liveOptions?.expiries.find((e) => e.expiryCode === exp.id);
+      const { summary, rows: enrichedRows } = buildEnrichedChainForExpiry({
+        exp,
+        rawExpiry,
+        liveOptions,
+        spot: displaySpot,
+        rateDec: effectiveRateDec,
+        holdingsBySymbol: optionHoldingsMap,
+        marketStateLabel: liveMarket.marketStateLabel,
+      });
+
+      const spotValidForBand = Number.isFinite(displaySpot) && displaySpot > 0;
+      const bandLow =
+        spotValidForBand && Number.isFinite(summary.band1SigmaAbs) && summary.band1SigmaAbs > 0
+          ? displaySpot - sigmaMultiplier * summary.band1SigmaAbs
+          : Number.NaN;
+      const bandHigh =
+        spotValidForBand && Number.isFinite(summary.band1SigmaAbs) && summary.band1SigmaAbs > 0
+          ? displaySpot + sigmaMultiplier * summary.band1SigmaAbs
+          : Number.NaN;
+
+      const isRowInBand = (r: EnrichedChainRow): boolean =>
+        Number.isFinite(bandLow) && Number.isFinite(bandHigh)
+          ? r.row.strike >= bandLow - 1e-9 && r.row.strike <= bandHigh + 1e-9
+          : r.row.inOneSigma;
+
+      const filteredRows = onlySigmaRange ? enrichedRows.filter(isRowInBand) : enrichedRows;
+
+      const { beforeFirst, afterIndex } = computeInlineMarkersForRows({
+        rows: filteredRows,
+        spot: displaySpot,
+        band1SigmaAbs: summary.band1SigmaAbs,
+        sigmaMultiplier,
+        onlySigmaRange,
+      });
+
+      const handleQuoteClick = (
+        e: React.MouseEvent,
+        item: EnrichedChainRow,
+        optType: 'Call' | 'Put',
+        side: 'Compra' | 'Venta',
+        price: number,
+        ticker: string
+      ) => {
+        if (!Number.isFinite(price) || price <= 0) return;
+        if (quoteClickTarget === 'armado' || e.shiftKey) {
+          setLegs((prev) => [
+            ...prev,
+            {
+              ...legFromRow(item.row, optType, side, 10),
+              premium: +price.toFixed(2),
+            },
+          ]);
+          setBuilderSeedKey(`${upperUnderlying}:custom`);
+          onSelectSubView('armado');
+          return;
+        }
+        onOpenOrderTicket({
+          ticker,
+          side,
+          price,
+          qty: 10,
+          instrumentLabel: `${optType} ${upperUnderlying} Base ${fmtNum(item.row.strike, 0)} (${exp.id})`,
+        });
+      };
+
+      const callBarPct = Number.isFinite(summary.callSharePct)
+        ? Math.min(100, Math.max(0, summary.callSharePct))
+        : 0;
+      const putBarPct = Number.isFinite(summary.putSharePct)
+        ? Math.min(100, Math.max(0, summary.putSharePct))
+        : 0;
+      return { exp, expIntegrity, isExpiryChainCorrupt, summary, filteredRows, beforeFirst, afterIndex, handleQuoteClick, callBarPct, putBarPct };
+    });
+  }, [
+    activeSubView, activeExpiries, displaySpot, liveOptions, effectiveRateDec, optionHoldingsMap,
+    liveMarket.marketStateLabel, onlySigmaRange, sigmaMultiplier, quoteClickTarget, upperUnderlying,
+    onSelectSubView, onOpenOrderTicket,
+  ]);
 
   const builderRows = activeExpiry?.rows ?? [];
   const atmBuilderIdx = findAtmIdx(builderRows, displaySpot);
@@ -2050,36 +2187,13 @@ export const OptionsModule: React.FC<{
                 ÚLTIMO
               </span>
               <div className="flex flex-wrap items-baseline gap-2.5">
-                <span
-                  className={`rounded px-1 font-mono-num tabular-nums text-[22px] font-extrabold tracking-tight ${
-                    !Number.isFinite(headerDeltaPct)
-                      ? 'text-[#FFFFFF]'
-                      : headerDeltaPct < 0
-                        ? 'text-[#F23645]'
-                        : 'text-[#22C55E]'
-                  }`}
-                  style={{
-                    backgroundColor: headerFlash === null ? 'transparent' : headerFlash === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
-                  }}
-                >
-                  {fmtNum(headerSpot, 2)}
-                </span>
-                <span className="text-[12px] font-mono-num text-[#787B86]">
-                  {optionCurrency}
-                </span>
-                <span
-                  className={`font-mono-num text-[13px] font-semibold ${
-                    !Number.isFinite(headerDeltaPct)
-                      ? 'text-[#787B86]'
-                      : headerDeltaPct < 0
-                        ? 'text-[#F23645]'
-                        : 'text-[#22C55E]'
-                  }`}
-                >
-                  {Number.isFinite(headerDeltaPct)
-                    ? `${headerDeltaPct > 0 ? '+' : ''}${fmtNum(headerDeltaPct, 2)} %`
-                    : '—'}
-                </span>
+                <OptionsHeaderSpotPrice
+                  market={underlyingMeta.market}
+                  symbol={upperUnderlying}
+                  currency={optionCurrency}
+                  fallbackSpot={displaySpot}
+                  fallbackDeltaPct={displayDeltaPct}
+                />
 
                 <button
                   type="button"
@@ -2099,11 +2213,7 @@ export const OptionsModule: React.FC<{
                     {liveMarket.marketStateLabel} ({liveOptions?.feedStatus ?? liveMarket.feedStatus})
                   </span>
                   <span className="font-mono-num text-[#6D7282]">{syncTimeLabel}</span>
-                  {liveUnderlyingQuote !== null && liveClock !== null && (
-                    <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
-                      ● Tiempo real {liveClock}
-                    </span>
-                  )}
+                  <OptionsHeaderClock market={underlyingMeta.market} symbol={upperUnderlying} />
                   <span
                     className={`rounded-full border px-2 py-0.5 font-mono-num text-[10px] font-semibold ${
                       usOptionsFeedBadge === 'TRADIER LIVE + ORATS'
@@ -2191,7 +2301,7 @@ export const OptionsModule: React.FC<{
                       {expirySelectorEntries.map((entry) => {
                         const isSel = entry.id === activeExpiry?.id;
                         const isLoading = Boolean(
-                          liveMarket.loadingOptionExpiries[`${selectedUnderlyingKey}:${entry.id}`],
+                          loadingOptionExpiries[`${selectedUnderlyingKey}:${entry.id}`],
                         );
                         const fwdSeg = forwardSegmentByFarCode.get(entry.id);
                         const hasArb = forwardIvSegments.some(
@@ -2345,7 +2455,7 @@ export const OptionsModule: React.FC<{
             Favoritos:
           </span>
           {OPTIONS_FAVORITE_KEYS.map((key) => {
-            const meta = liveMarket.optionsUnderlyings.find((u) => u.key === key);
+            const meta = underlyings.find((u) => u.key === key);
             const symbol = parseOptionsUnderlyingKey(key).symbol;
             const active = key === selectedUnderlyingKey;
             return (
@@ -2947,7 +3057,7 @@ export const OptionsModule: React.FC<{
       {/* =====================================================================
           3. MÓDULO 2: MATRIZ DE SPREADS (ESCALERA / PARES)
           ===================================================================== */}
-      {activeSubView === 'spreads' && (
+      {activeSubView === 'spreads' && creditRankingResult !== null && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1">
@@ -3674,7 +3784,7 @@ export const OptionsModule: React.FC<{
       {/* =====================================================================
           4. MÓDULO 3: FLUJO DE DINERO EN OPCIONES
           ===================================================================== */}
-      {activeSubView === 'flujo' && (
+      {activeSubView === 'flujo' && flowSummary !== null && (
         <div className="space-y-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -4423,86 +4533,8 @@ export const OptionsModule: React.FC<{
               Sin vencimientos de opciones cargados para {upperUnderlying}. Esperando cadena del subyacente activo...
             </div>
           ) : (
-            activeExpiries.map((exp) => {
-              // Pieza 50.2: los vencimientos pendientes (stub sin filas) arrancan
-              // colapsados para no renderizar decenas de tablas vacías.
+            chainViews.map(({ exp, expIntegrity, isExpiryChainCorrupt, summary, filteredRows, beforeFirst, afterIndex, handleQuoteClick, callBarPct, putBarPct }) => {
               const isOpen = expandedExpiries[exp.id] ?? exp.rows.length > 0;
-              // Pieza 50.3: cada vencimiento se valida contra el spot activo antes de renderizar.
-              const expIntegrity = validateChainIntegrity(exp.rows, displaySpot);
-              const isExpiryChainCorrupt = expIntegrity.reason === 'SCALE_MISMATCH';
-              const rawExpiry = liveOptions?.expiries.find((e) => e.expiryCode === exp.id);
-              const { summary, rows: enrichedRows } = buildEnrichedChainForExpiry({
-                exp,
-                rawExpiry,
-                liveOptions,
-                spot: displaySpot,
-                rateDec: effectiveRateDec,
-                holdingsBySymbol: optionHoldingsMap,
-                marketStateLabel: liveMarket.marketStateLabel,
-              });
-
-              const spotValidForBand = Number.isFinite(displaySpot) && displaySpot > 0;
-              const bandLow =
-                spotValidForBand && Number.isFinite(summary.band1SigmaAbs) && summary.band1SigmaAbs > 0
-                  ? displaySpot - sigmaMultiplier * summary.band1SigmaAbs
-                  : Number.NaN;
-              const bandHigh =
-                spotValidForBand && Number.isFinite(summary.band1SigmaAbs) && summary.band1SigmaAbs > 0
-                  ? displaySpot + sigmaMultiplier * summary.band1SigmaAbs
-                  : Number.NaN;
-
-              const isRowInBand = (r: EnrichedChainRow): boolean =>
-                Number.isFinite(bandLow) && Number.isFinite(bandHigh)
-                  ? r.row.strike >= bandLow - 1e-9 && r.row.strike <= bandHigh + 1e-9
-                  : r.row.inOneSigma;
-
-              const filteredRows = onlySigmaRange ? enrichedRows.filter(isRowInBand) : enrichedRows;
-
-              const { beforeFirst, afterIndex } = computeInlineMarkersForRows({
-                rows: filteredRows,
-                spot: displaySpot,
-                band1SigmaAbs: summary.band1SigmaAbs,
-                sigmaMultiplier,
-                onlySigmaRange,
-              });
-
-              const handleQuoteClick = (
-                e: React.MouseEvent,
-                item: EnrichedChainRow,
-                optType: 'Call' | 'Put',
-                side: 'Compra' | 'Venta',
-                price: number,
-                ticker: string
-              ) => {
-                if (!Number.isFinite(price) || price <= 0) return;
-                if (quoteClickTarget === 'armado' || e.shiftKey) {
-                  setLegs((prev) => [
-                    ...prev,
-                    {
-                      ...legFromRow(item.row, optType, side, 10),
-                      premium: +price.toFixed(2),
-                    },
-                  ]);
-                  setBuilderSeedKey(`${upperUnderlying}:custom`);
-                  onSelectSubView('armado');
-                  return;
-                }
-                onOpenOrderTicket({
-                  ticker,
-                  side,
-                  price,
-                  qty: 10,
-                  instrumentLabel: `${optType} ${upperUnderlying} Base ${fmtNum(item.row.strike, 0)} (${exp.id})`,
-                });
-              };
-
-              const callBarPct = Number.isFinite(summary.callSharePct)
-                ? Math.min(100, Math.max(0, summary.callSharePct))
-                : 0;
-              const putBarPct = Number.isFinite(summary.putSharePct)
-                ? Math.min(100, Math.max(0, summary.putSharePct))
-                : 0;
-
               return (
                 <div key={exp.id} className="rounded-[12px] bg-[#0A0A0D] border border-[#1C1C24] overflow-hidden">
                   {/* Encabezado de Vencimiento — 3 Líneas Compactas */}
@@ -4677,8 +4709,9 @@ export const OptionsModule: React.FC<{
                 effectiveTlrPct={effectiveTlrPct}
                 liveOptions={liveOptions}
                 activeQuantEngines={activeQuantEngines}
-                usSnapshot={liveMarket.usSnapshotsBySymbol[upperUnderlying]}
-                usVolSurface={liveMarket.usVolSurfaceBySymbol[selectedUnderlyingKey] ?? null}
+                activeVolSuite={activeVolSuite}
+                usSnapshot={usSnapshot}
+                usVolSurface={usVolSurface.surface}
                 onSendToBuilder={(builderLegs) => {
                   loadIntoBuilder(priceLegs(labMarket, builderLegs), 1);
                 }}
@@ -4691,7 +4724,7 @@ export const OptionsModule: React.FC<{
       {/* =====================================================================
           6. VISTA 6: ARMADO A MANO (SIMULADOR INTERACTIVO DE PATAS)
           ===================================================================== */}
-      {activeSubView === 'armado' && (
+      {activeSubView === 'armado' && builderAnalytics !== null && (
         <div className="space-y-5">
           <div className="rounded-[12px] bg-[#12141A] border border-[#232733] p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -5475,18 +5508,21 @@ export const OptionsModule: React.FC<{
         </div>
       )}
 
-      <OptionsSymbolSelector
-        open={symbolSelectorOpen}
-        onClose={() => setSymbolSelectorOpen(false)}
-        onSelect={onSelectUnderlying}
-        selectedKey={selectedUnderlyingKey}
-        underlyings={liveMarket.optionsUnderlyings}
-        status={liveMarket.optionsUnderlyingsStatus}
-        selectedName={stockName}
-        selectedPrice={headerSpot}
-        selectedChangePct={Number.isFinite(headerDeltaPct) ? headerDeltaPct : Number.NaN}
-        selectedFlash={headerFlash}
-      />
+      {symbolSelectorOpen && (
+        <OptionsLiveSymbolSelector
+          open
+          onClose={() => setSymbolSelectorOpen(false)}
+          onSelect={onSelectUnderlying}
+          selectedKey={selectedUnderlyingKey}
+          underlyings={underlyings}
+          status={universeStatus}
+          selectedName={stockName}
+          market={underlyingMeta.market}
+          symbol={upperUnderlying}
+          fallbackSpot={displaySpot}
+          fallbackDeltaPct={displayDeltaPct}
+        />
+      )}
     </div>
   );
 };

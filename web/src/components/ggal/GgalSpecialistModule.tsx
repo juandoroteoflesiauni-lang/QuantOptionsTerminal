@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   normalizeOratsSignedRateToDecimal,
   oratsVolToPct,
@@ -63,13 +63,16 @@ import { CompanyLogo } from '../common/CompanyLogo';
 import type { OrderTicketPreset } from '../Overlays';
 import { GgalDualChartView } from './GgalDualChartView';
 import {
-  getMarketStreamMetaClock,
+  setVisibleMarketSymbols,
   pushLiveOrderBook,
   tickFlashClass,
   useAtomicMarketQuote,
   useLivePriceFlash,
-  useMarketStreamMeta,
+  useMarketLiveFx,
 } from '../../api/useMarketLiveStream';
+import { useLiveUsProvidersStatus } from '../../data/liveRuntimeBridge';
+import { isDocumentVisible, subscribeDocumentVisibility } from '../../data/visibilityLifecycle';
+import { LiveClockBadge } from '../MarketModules';
 
 export type GgalTabId =
   | 'parity-gap'
@@ -140,51 +143,6 @@ function badgeToneClass(badge: GgalBadgeMode): string {
   }
 }
 
-/* Pieza 32: origen del feed de opciones US/OPRA (Tradier Live + ORATS o
-   Massive + ORATS) expuesto por /api/us/providers-status. */
-type UsProvidersBadgeDto = {
-  readonly status?: string;
-  readonly usOptionsFeedBadge?: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
-};
-
-const useUsOptionsFeedBadge = (pollMs = 30_000): 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null => {
-  const [badge, setBadge] = useState<'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS' | null>(null);
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    let active = true;
-    const load = async () => {
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 5_000);
-      try {
-        const res = await fetch('/api/us/providers-status', {
-          signal: controller.signal,
-          headers: { accept: 'application/json' },
-        });
-        if (!res.ok) {
-          if (active) setBadge(null);
-          return;
-        }
-        const json = (await res.json()) as UsProvidersBadgeDto;
-        if (active) setBadge(json.usOptionsFeedBadge ?? null);
-      } catch {
-        // Endpoint ausente: badge explícito '—', sin origen falso.
-        if (active) setBadge(null);
-      } finally {
-        window.clearTimeout(timer);
-      }
-    };
-    void load();
-    const intervalId = window.setInterval(() => {
-      void load();
-    }, pollMs);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, [pollMs]);
-  return badge;
-};
-
 function fmtCurrency(val: number | null | undefined, prefix = '$ ', decimals = 2): string {
   if (val === null || val === undefined || !Number.isFinite(val)) return '—';
   return `${prefix}${fmtNum(val, decimals)}`;
@@ -236,19 +194,112 @@ const EmptyPanel: React.FC<{ title: string; detail: string }> = ({ title, detail
   </div>
 );
 
+const GgalLiveRibbonClock = memo(function GgalLiveRibbonClock() {
+  const byma = useAtomicMarketQuote('AR', 'GGAL', 250);
+  const adr = useAtomicMarketQuote('US', 'GGAL', 250);
+  return <LiveClockBadge enabled={byma !== null || adr !== null} />;
+});
+
+const GgalLivePriceRibbon = memo(function GgalLivePriceRibbon({
+  parityData,
+}: { readonly parityData: GgalParityGapResponseDto }) {
+  const liveArGgal = useAtomicMarketQuote('AR', 'GGAL', 250);
+  const liveUsGgal = useAtomicMarketQuote('US', 'GGAL', 250);
+  const fx = useMarketLiveFx();
+  const liveFx = fx.isFresh ? fx.liveFx : null;
+  const arFlash = useLivePriceFlash(liveArGgal?.price ?? null);
+  const usFlash = useLivePriceFlash(liveUsGgal?.price ?? null);
+  const adrHeroPrice =
+    parityData.result.spot.adrMidUsd ??
+    parityData.result.spot.adrIndicativeUsd ??
+    parityData.result.spot.adrLastUsd ??
+    liveUsGgal?.price;
+  const adrModeText = adrQuoteModeBadgeLabel(parityData.result.spot.adrQuoteMode);
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+      <div className="px-5 py-4 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <CompanyLogo ticker="GGAL" name="GGAL BYMA 24hs / CI" size="md" />
+            <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
+              GGAL BYMA 24hs / CI
+            </span>
+            <HelpTooltip
+              title="GGAL BYMA 24hs / CI"
+              text="Cotización mid de GGAL en BYMA 24hs y cierre teórico ajustado por paridad SOFR/Caución y apertura ADR."
+            />
+          </div>
+          <span className="text-[10px] font-mono-num font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
+            {parityData.telemetry.marketMode}
+          </span>
+        </div>
+        <div className="flex items-baseline gap-2.5 pt-0.5">
+          <div
+            className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(arFlash)}`}
+          >
+            {fmtCurrency(liveArGgal?.price ?? parityData.result.spot.byma24hArs, '$ ', 2)}
+          </div>
+        </div>
+        <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
+          {`Contado Inmediato: ${fmtCurrency(parityData.result.spot.bymaCiArs, '$ ', 2)} · Fair Open: ${fmtCurrency(parityData.result.spot.fairBymaOpenArs, '$ ', 2)}`}
+        </div>
+      </div>
+      <div className="px-5 py-4 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <CompanyLogo ticker="GGAL" name="GGAL ADR (NASDAQ 10:1)" size="md" />
+            <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
+              GGAL ADR (NASDAQ 10:1)
+            </span>
+            <HelpTooltip
+              title="GGAL ADR (NASDAQ 10:1)"
+              text="Precio del ADR en dólares en NASDAQ y paridad justa implícita frente al benchmark de bonos soberanos."
+            />
+          </div>
+          <span className="text-[10px] font-mono-num tabular-nums font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
+            {parityData.result.spot.adrQuoteMode !== undefined
+              ? adrModeText
+              : (parityData.rateInputs.sofrSource ?? 'SOFR')}
+          </span>
+        </div>
+        <div className="flex items-baseline gap-2.5 pt-0.5">
+          <div
+            className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(usFlash)}`}
+          >
+            {fmtCurrency(adrHeroPrice, 'US$ ', 2)}
+          </div>
+        </div>
+        <div className="text-[11.5px] font-mono-num tabular-nums text-[#787B86] leading-snug truncate">
+          {`Bid / Ask: ${fmtCurrency(parityData.result.spot.adrBidUsd, 'US$ ', 2)} / ${fmtCurrency(parityData.result.spot.adrAskUsd, 'US$ ', 2)} · Last: ${fmtCurrency(parityData.result.spot.adrLastUsd ?? parityData.result.spot.adrIndicativeUsd, 'US$ ', 2)} · Justo s/ AL30: ${fmtCurrency(parityData.result.spot.fairAdrUsd, 'US$ ', 2)}`}
+        </div>
+      </div>
+      <KPICard
+        title="CCL GGAL vs. Soberanos"
+        heroValue={fmtCurrency(liveFx?.cclImplicitGgal ?? parityData.result.ccl.cclGgal24h, '$ ', 2)}
+        badge="BMA/BYMA"
+        subtitle={`Benchmark AL30/GD30: ${fmtCurrency(liveFx?.cclMedian ?? parityData.result.ccl.cclSovereignBenchmark, '$ ', 2)} · Spread: ${fmtNum(parityData.result.ccl.spreadLogBps, 1)} pb`}
+        helpText="Contado con Liquidación implícito en GGAL ajustado por diferencial T+1 ARS vs T+1 US frente al promedio ponderado AL30/GD30."
+      />
+      <KPICard
+        title="Z-Score OU & Vida Media"
+        heroValue={fmtNum(parityData.result.ccl.zScore, 2)}
+        badge={parityData.result.ouCalibration.status}
+        subtitle={`Half-life: ${fmtNum(parityData.result.ccl.ouHalfLifeDays, 2)} d · Gap apertura: ${fmtPct(parityData.result.spot.gapPctVsPrevClose, 2, true)}`}
+        helpText="Calibración estrictamente causal Ornstein-Uhlenbeck AR(1) del spread logarítmico."
+      />
+    </div>
+  );
+});
+
 export const GgalSpecialistModule: React.FC<{
   onOpenOrderTicket: (preset: OrderTicketPreset) => void;
 }> = ({ onOpenOrderTicket }) => {
   const [activeTab, setActiveTab] = useState<GgalTabId>('parity-gap');
-  const liveArGgal = useAtomicMarketQuote('AR', 'GGAL', 250);
-  const liveUsGgal = useAtomicMarketQuote('US', 'GGAL', 250);
-  const liveStreamMeta = useMarketStreamMeta(500);
-  const liveFx = liveStreamMeta.isFresh ? liveStreamMeta.liveFx : null;
-  const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
-  const arFlash = useLivePriceFlash(liveArGgal?.price ?? null);
-  const usFlash = useLivePriceFlash(liveUsGgal?.price ?? null);
-  // Pieza 32: origen del feed de opciones US/OPRA (Tradier Live o Massive) + ORATS.
-  const usOptionsFeedBadge = useUsOptionsFeedBadge();
+  const usOptionsFeedBadge = useLiveUsProvidersStatus()?.usOptionsFeedBadge ?? null;
+  useEffect(() => {
+    setVisibleMarketSymbols(['AR:GGAL', 'US:GGAL'], 'ggal-specialist');
+    return () => setVisibleMarketSymbols([], 'ggal-specialist');
+  }, []);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -304,6 +355,14 @@ export const GgalSpecialistModule: React.FC<{
   const [anexoSuccess, setAnexoSuccess] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  const tabGenRef = useRef(0);
+  const filters = {
+    allowProxyOi, selectedAnexoExpiry, enforceThresholds, familyFilter, minBymaOiNom, minEvMultiple,
+    m6CapitalArs, m6CollateralAforo, m6CollateralKind, m6CollateralValueArs, m6DesiredLots, m6Side, m6StrategyKind,
+  };
+  const tabFiltersRef = useRef(filters);
+  useEffect(() => { tabFiltersRef.current = filters; });
+  const previousFilterRun = useRef<{ tab: GgalTabId; signature: string } | null>(null);
   const dualChartAbortRef = useRef<AbortController | null>(null);
   const dualMicroAbortRef = useRef<AbortController | null>(null);
   const dualWarmRetryRef = useRef<{ readonly key: string; readonly attempts: number }>({
@@ -313,6 +372,7 @@ export const GgalSpecialistModule: React.FC<{
   const dualWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dualChartRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dualChartRetryAttemptsRef = useRef(0);
+  const dualChartRetryPending = useRef(false);
   const lastValidDualChartRef = useRef<GgalDualChartPayloadDto | null>(null);
   const subPaneModeRef = useRef<GgalSubPaneIndicatorMode>('CVD_LEE_READY');
   const dualChartGenRef = useRef(0);
@@ -320,6 +380,7 @@ export const GgalSpecialistModule: React.FC<{
   const loadDualChartRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
 
   const clearDualChartRetryTimer = (): void => {
+    dualChartRetryPending.current = false;
     if (dualChartRetryTimerRef.current !== null) {
       clearTimeout(dualChartRetryTimerRef.current);
       dualChartRetryTimerRef.current = null;
@@ -338,7 +399,8 @@ export const GgalSpecialistModule: React.FC<{
     dualChartRetryAttemptsRef.current += 1;
     dualChartRetryTimerRef.current = setTimeout(() => {
       dualChartRetryTimerRef.current = null;
-      void loadDualChartRef.current?.(false);
+      if (isDocumentVisible()) void loadDualChartRef.current?.(false);
+      else dualChartRetryPending.current = true;
     }, delayMs);
   };
 
@@ -453,6 +515,13 @@ export const GgalSpecialistModule: React.FC<{
   );
   loadDualChartRef.current = loadDualChart;
 
+  useEffect(() => subscribeDocumentVisibility((visible) => {
+    if (visible && dualChartRetryPending.current) {
+      dualChartRetryPending.current = false;
+      void loadDualChartRef.current?.(false);
+    }
+  }), []);
+
   const handleSubPaneModeChange = useCallback(
     (nextMode: GgalSubPaneIndicatorMode) => {
       const prevMode = subPaneModeRef.current;
@@ -508,9 +577,18 @@ export const GgalSpecialistModule: React.FC<{
 
   const loadTab = useCallback(
     async (tab: GgalTabId, forceRefresh = false) => {
+      const generation = ++tabGenRef.current;
       abortRef.current?.abort();
+      const {
+        allowProxyOi, selectedAnexoExpiry, enforceThresholds, familyFilter, minBymaOiNom, minEvMultiple,
+        m6CapitalArs, m6CollateralAforo, m6CollateralKind, m6CollateralValueArs, m6DesiredLots, m6Side, m6StrategyKind,
+      } = tabFiltersRef.current;
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      const isCurrent = () => generation === tabGenRef.current && !ctrl.signal.aborted;
+      const publish = <T,>(set: (value: T) => void) => (value: T) => {
+        if (isCurrent()) set(value);
+      };
       setLoading(true);
       setErrorMsg(null);
       try {
@@ -522,32 +600,32 @@ export const GgalSpecialistModule: React.FC<{
           forceRefresh,
           signal: ctrl.signal,
         }).then((rs) => {
-          if (!ctrl.signal.aborted) {
+          if (isCurrent()) {
             setRouterStatus(rs);
           }
         });
 
         let tabPromise: Promise<void>;
         if (tab === 'parity-gap') {
-          tabPromise = fetchGgalParityGap({ forceRefresh, signal: ctrl.signal }).then(setParityData);
+          tabPromise = fetchGgalParityGap({ forceRefresh, signal: ctrl.signal }).then(publish(setParityData));
         } else if (tab === 'vol-triangle') {
-          tabPromise = fetchGgalVolTriangle({ forceRefresh, signal: ctrl.signal }).then(setVolData);
+          tabPromise = fetchGgalVolTriangle({ forceRefresh, signal: ctrl.signal }).then(publish(setVolData));
         } else if (tab === 'dual-density') {
-          tabPromise = fetchGgalDualDensity({ forceRefresh, signal: ctrl.signal }).then(setDualData);
+          tabPromise = fetchGgalDualDensity({ forceRefresh, signal: ctrl.signal }).then(publish(setDualData));
         } else if (tab === 'structure-pinning') {
           tabPromise = fetchGgalStructurePinning({
             forceRefresh,
             signal: ctrl.signal,
             allowProxyOi,
             ...(selectedAnexoExpiry !== '' ? { targetExpiry: selectedAnexoExpiry } : {}),
-          }).then(setStructureData);
+          }).then(publish(setStructureData));
         } else if (tab === 'microstructure-orats') {
           tabPromise = Promise.all([
             fetchGgalMicrostructure({ forceRefresh, signal: ctrl.signal }),
             fetchGgalOptionsSurface({ forceRefresh, signal: ctrl.signal }),
             fetchGgalClearingRisk({ forceRefresh, signal: ctrl.signal }),
           ]).then(([mRes, sRes, cRes]) => {
-            if (!ctrl.signal.aborted) {
+            if (isCurrent()) {
               setRouterStatus(mRes.routerStatus);
               setMicroData(mRes);
               setSurfaceData(sRes);
@@ -556,7 +634,7 @@ export const GgalSpecialistModule: React.FC<{
           });
         } else if (tab === 'regime-2027') {
           tabPromise = fetchGgalRegime2027({ forceRefresh, signal: ctrl.signal }).then((rRes) => {
-            if (!ctrl.signal.aborted) {
+            if (isCurrent()) {
               setRouterStatus(rRes.routerStatus);
               setRegimeData(rRes);
             }
@@ -581,7 +659,7 @@ export const GgalSpecialistModule: React.FC<{
               ...(Number.isFinite(parsedLots) && parsedLots > 0 ? { desiredLots: parsedLots } : {}),
             },
             { forceRefresh, signal: ctrl.signal },
-          ).then(setMarginRiskData);
+          ).then(publish(setMarginRiskData));
         } else {
           const parsedOi = Number(minBymaOiNom);
           const parsedMult = Number(minEvMultiple);
@@ -596,39 +674,25 @@ export const GgalSpecialistModule: React.FC<{
               maxCandidates: 25,
             },
             { forceRefresh, signal: ctrl.signal },
-          ).then(setStrategyData);
+          ).then(publish(setStrategyData));
         }
 
         const [ov] = await Promise.all([overviewPromise, feedStatusPromise, tabPromise]);
-        if (!ctrl.signal.aborted) {
+        if (isCurrent()) {
           setOverview(ov);
         }
       } catch (err: unknown) {
-        if (ctrl.signal.aborted) {
+        if (!isCurrent()) {
           return;
         }
         setErrorMsg(err instanceof Error ? err.message : String(err));
       } finally {
-        if (!ctrl.signal.aborted) {
+        if (isCurrent()) {
           setLoading(false);
         }
       }
     },
-    [
-      allowProxyOi,
-      selectedAnexoExpiry,
-      enforceThresholds,
-      familyFilter,
-      m6CapitalArs,
-      m6CollateralAforo,
-      m6CollateralKind,
-      m6CollateralValueArs,
-      m6DesiredLots,
-      m6Side,
-      m6StrategyKind,
-      minBymaOiNom,
-      minEvMultiple,
-    ],
+    [],
   );
 
   useEffect(() => {
@@ -660,11 +724,20 @@ export const GgalSpecialistModule: React.FC<{
     dualWarmRetryRef.current = { key, attempts: nextAttempt };
     const delaysMs = [8_000, 16_000, 24_000] as const;
     const delay = delaysMs[nextAttempt - 1] ?? 24_000;
+    let due = false;
+    const unsubscribe = subscribeDocumentVisibility((visible) => {
+      if (visible && due) {
+        due = false;
+        void loadDualChart(false);
+      }
+    });
     dualWarmTimerRef.current = setTimeout(() => {
       dualWarmTimerRef.current = null;
-      void loadDualChart(false);
+      if (isDocumentVisible()) void loadDualChart(false);
+      else due = true;
     }, delay);
     return () => {
+      unsubscribe();
       if (dualWarmTimerRef.current !== null) {
         clearTimeout(dualWarmTimerRef.current);
         dualWarmTimerRef.current = null;
@@ -682,15 +755,25 @@ export const GgalSpecialistModule: React.FC<{
     };
   }, [loadDualMicro]);
 
+  const filterSignature = JSON.stringify(
+    activeTab === 'strategy-selector' ? [familyFilter, enforceThresholds, minBymaOiNom, minEvMultiple]
+      : activeTab === 'margin-risk' ? [m6StrategyKind, m6Side, m6CapitalArs, m6CollateralKind, m6CollateralValueArs, m6CollateralAforo, m6DesiredLots]
+      : activeTab === 'structure-pinning' ? [allowProxyOi, selectedAnexoExpiry]
+      : [],
+  );
+
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void loadTab(activeTab, false);
-    }, 0);
+    const previous = previousFilterRun.current;
+    const filterChanged = previous?.tab === activeTab && previous.signature !== filterSignature;
+    const debounce = filterChanged && (activeTab === 'strategy-selector' || activeTab === 'margin-risk') ? 350 : 0;
+    previousFilterRun.current = { tab: activeTab, signature: filterSignature };
+    const timer = setTimeout(() => { void loadTab(activeTab, false); }, debounce);
     return () => {
       clearTimeout(timer);
+      ++tabGenRef.current;
       abortRef.current?.abort();
     };
-  }, [activeTab, loadTab]);
+  }, [activeTab, filterSignature, loadTab]);
 
   const activeTelemetry: GgalTelemetryHeaderDto | null = useMemo(() => {
     if (activeTab === 'parity-gap' && parityData !== null) return parityData.telemetry;
@@ -729,7 +812,8 @@ export const GgalSpecialistModule: React.FC<{
     }
   };
 
-  const renderSpreadChart = () => {
+  const spreadChart = useMemo(() => {
+    if (activeTab !== 'parity-gap') return null;
     const pts = (parityData?.historicalSpreads ?? []).filter(
       (p) => p.spreadLogBps !== null && Number.isFinite(p.spreadLogBps),
     );
@@ -827,7 +911,7 @@ export const GgalSpecialistModule: React.FC<{
         </svg>
       </div>
     );
-  };
+  }, [activeTab, parityData]);
 
   const renderSmileChart = () => {
     const pts = (volData?.smileComparison ?? []).filter(
@@ -1116,11 +1200,7 @@ export const GgalSpecialistModule: React.FC<{
             </span>
           ))}
 
-          {(liveArGgal !== null || liveUsGgal !== null) && liveClock !== null && (
-            <span className="rounded-full border border-[#22C55E]/35 bg-[#22C55E]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#22C55E]">
-              ● Tiempo real {liveClock}
-            </span>
-          )}
+          <GgalLiveRibbonClock />
 
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] bg-[#171722] border border-[#1E1E2B] text-[10.5px] font-mono-num text-[#D1D5DB]">
             <Clock className="w-3 h-3 text-[#8B7CF6]" />
@@ -1329,12 +1409,6 @@ export const GgalSpecialistModule: React.FC<{
                   parityData.result.signal === 'SHORT_BYMA_LONG_ADR')
               ? 'pos'
               : 'default';
-        const adrHeroPrice =
-          parityData.result.spot.adrMidUsd ??
-          parityData.result.spot.adrIndicativeUsd ??
-          parityData.result.spot.adrLastUsd ??
-          liveUsGgal?.price;
-        const adrModeText = adrQuoteModeBadgeLabel(parityData.result.spot.adrQuoteMode);
         return (
         <div className="space-y-4">
           <InsightBanner tag="Paridad & OU AR(1)" variant={bannerVariant}>
@@ -1344,80 +1418,9 @@ export const GgalSpecialistModule: React.FC<{
             )}
           </InsightBanner>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="px-5 py-4 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <CompanyLogo ticker="GGAL" name="GGAL BYMA 24hs / CI" size="md" />
-                  <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
-                    GGAL BYMA 24hs / CI
-                  </span>
-                  <HelpTooltip
-                    title="GGAL BYMA 24hs / CI"
-                    text="Cotización mid de GGAL en BYMA 24hs y cierre teórico ajustado por paridad SOFR/Caución y apertura ADR."
-                  />
-                </div>
-                <span className="text-[10px] font-mono-num font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
-                  {parityData.telemetry.marketMode}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2.5 pt-0.5">
-                <div
-                  className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(arFlash)}`}
-                >
-                  {fmtCurrency(liveArGgal?.price ?? parityData.result.spot.byma24hArs, '$ ', 2)}
-                </div>
-              </div>
-              <div className="text-[11.5px] text-[#787B86] leading-snug truncate">
-                {`Contado Inmediato: ${fmtCurrency(parityData.result.spot.bymaCiArs, '$ ', 2)} · Fair Open: ${fmtCurrency(parityData.result.spot.fairBymaOpenArs, '$ ', 2)}`}
-              </div>
-            </div>
-            <div className="px-5 py-4 rounded-[10px] bg-[#131722] border border-[#232733] hover:border-[#343B4F] transition-all flex flex-col justify-between gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <CompanyLogo ticker="GGAL" name="GGAL ADR (NASDAQ 10:1)" size="md" />
-                  <span className="text-[12.5px] font-medium text-[#9CA3AF] truncate">
-                    GGAL ADR (NASDAQ 10:1)
-                  </span>
-                  <HelpTooltip
-                    title="GGAL ADR (NASDAQ 10:1)"
-                    text="Precio del ADR en dólares en NASDAQ y paridad justa implícita frente al benchmark de bonos soberanos."
-                  />
-                </div>
-                <span className="text-[10px] font-mono-num tabular-nums font-semibold uppercase tracking-wider text-[#787B86] shrink-0">
-                  {parityData.result.spot.adrQuoteMode !== undefined
-                    ? adrModeText
-                    : (parityData.rateInputs.sofrSource ?? 'SOFR')}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2.5 pt-0.5">
-                <div
-                  className={`rounded px-1 font-mono-num tabular-nums text-[23px] leading-[28px] font-bold ${tickFlashClass(usFlash)}`}
-                >
-                  {fmtCurrency(adrHeroPrice, 'US$ ', 2)}
-                </div>
-              </div>
-              <div className="text-[11.5px] font-mono-num tabular-nums text-[#787B86] leading-snug truncate">
-                {`Bid / Ask: ${fmtCurrency(parityData.result.spot.adrBidUsd, 'US$ ', 2)} / ${fmtCurrency(parityData.result.spot.adrAskUsd, 'US$ ', 2)} · Last: ${fmtCurrency(parityData.result.spot.adrLastUsd ?? parityData.result.spot.adrIndicativeUsd, 'US$ ', 2)} · Justo s/ AL30: ${fmtCurrency(parityData.result.spot.fairAdrUsd, 'US$ ', 2)}`}
-              </div>
-            </div>
-            <KPICard
-              title="CCL GGAL vs. Soberanos"
-              heroValue={fmtCurrency(liveFx?.cclImplicitGgal ?? parityData.result.ccl.cclGgal24h, '$ ', 2)}
-              badge="BMA/BYMA"
-              subtitle={`Benchmark AL30/GD30: ${fmtCurrency(liveFx?.cclMedian ?? parityData.result.ccl.cclSovereignBenchmark, '$ ', 2)} · Spread: ${fmtNum(parityData.result.ccl.spreadLogBps, 1)} pb`}
-              helpText="Contado con Liquidación implícito en GGAL ajustado por diferencial T+1 ARS vs T+1 US frente al promedio ponderado AL30/GD30."
-            />
-            <KPICard
-              title="Z-Score OU & Vida Media"
-              heroValue={fmtNum(parityData.result.ccl.zScore, 2)}
-              badge={parityData.result.ouCalibration.status}
-              subtitle={`Half-life: ${fmtNum(parityData.result.ccl.ouHalfLifeDays, 2)} d · Gap apertura: ${fmtPct(parityData.result.spot.gapPctVsPrevClose, 2, true)}`}
-              helpText="Calibración estrictamente causal Ornstein-Uhlenbeck AR(1) del spread logarítmico."
-            />
-          </div>
+          <GgalLivePriceRibbon parityData={parityData} />
 
-          {renderSpreadChart()}
+          {spreadChart}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="rounded-[10px] bg-[#11111A] border border-[#1E1E2B] overflow-hidden">

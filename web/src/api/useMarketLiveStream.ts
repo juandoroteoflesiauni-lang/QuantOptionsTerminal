@@ -1,6 +1,6 @@
 import { parseOpraWireRow, coalesceOptionQuoteUpdate, type LiveOptionQuoteSnapshot } from '../../../src/core/opraOptionIntegrity.js';
 import type { CclTemporalValuation } from '../../../src/core/temporalFeedIntegrity';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   L2_THROTTLE_MS,
   TABLE_THROTTLE_MS,
@@ -9,6 +9,7 @@ import {
 } from '../../../src/core/atomicQuoteStore';
 import { appendLiveTapeTick, type LiveFxSnapshot, type LiveTapeTick } from '../../../src/core/realtimePropagation';
 import { refreshBackendHealth } from '../data/liveRuntimeBridge';
+import { isDocumentVisible, subscribeDocumentVisibility } from '../data/visibilityLifecycle';
 import {
   DEFAULT_SOA_CAPACITY,
   DEFAULT_TRADE_RING_CAPACITY,
@@ -186,6 +187,9 @@ interface MarketBatchWire {
 
 const WS_OPEN_TIMEOUT_MS = 2_000;
 const POLL_INTERVAL_MS = 2_000;
+const HIDDEN_POLL_INTERVAL_MS = 15_000;
+const POLL_HEALTH_INTERVAL_MS = 10_000;
+const VIEW_SCOPE_COALESCE_MS = 24;
 const POLL_REQUEST_TIMEOUT_MS = 2_500;
 const QUOTE_RECEIVE_FRESHNESS_MS = 40_000;
 const LEGACY_FLUSH_INTERVAL_MS = 16;
@@ -214,10 +218,21 @@ let state: MarketLiveStreamState = {
   totalBatches: 0,
 };
 
-  const listeners = new Set<() => void>();
+const listeners = new Set<() => void>();
 const testCommitListeners = new Set<() => void>();
 const metaListeners = new Set<() => void>();
 const freshnessListeners = new Set<() => void>();
+const clockListeners = new Set<() => void>();
+const connectionListeners = new Set<() => void>();
+const fxListeners = new Set<() => void>();
+const futuresListeners = new Set<() => void>();
+const caucionesListeners = new Set<() => void>();
+const scopedQuotes = createAtomicKeyedStore<number>();
+const changedQuoteMarkets = new Set<LiveStreamMarket>();
+const scopedQuoteFreshnessListeners: Record<LiveStreamMarket, Set<() => void>> = {
+  AR: new Set(),
+  US: new Set(),
+};
 const quoteStore = createAtomicKeyedStore<MarketLiveQuote>();
 const optionQuoteStore = createAtomicKeyedStore<MarketLiveOptionQuote>();
 const orderBookStore = createAtomicKeyedStore<MarketLiveOrderBook>();
@@ -307,15 +322,22 @@ let legacyNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 let lastLegacyNotifyAtMs = 0;
 let metaNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 let lastMetaNotifyAtMs = 0;
-let pollInFlight = false;
+let pollController: AbortController | null = null;
+let lastPollHealthAtMs = -Infinity;
+let stopStreamVisibility: (() => void) | null = null;
 let pollGeneration = 0;
 let lastBatchReceivedAtMs: number | null = null;
 let lastDeltaRevision = 0;
 let marketFocusSymbol: string | null = null;
 let currentViewScope: MarketViewScope | null = null;
+let viewScopeGeneration = 0;
+let viewScopeTimer: ReturnType<typeof setTimeout> | null = null;
+let sentDirectScope: { generation: number; scope: MarketViewScope } | null = null;
+let sentWorkerScope: { worker: Worker; scope: MarketViewScope; epoch: number } | null = null;
+let l2ScopeEpoch = 0;
 const pendingLegacyQuotes = new Map<string, MarketLiveQuote>();
 let legacyFlushTimer: ReturnType<typeof setTimeout> | null = null;
-const pendingMarketBatches: MarketBatchWire[] = [];
+const pendingMarketBatches: { batch: MarketBatchWire; l2Epoch: number }[] = [];
 let marketBatchFlushHandle: number | null = null;
 let pendingMarketBatchTransport: LiveStreamTransport = 'WS';
 let optionScopeEpoch = 0;
@@ -431,6 +453,9 @@ function sendFocusMessage(): void {
 function sendViewScopeMessage(): void {
   if (currentViewScope === null) return;
   if (marketWorker !== null) {
+    if (sentWorkerScope?.worker === marketWorker &&
+        sentWorkerScope.scope === currentViewScope && sentWorkerScope.epoch === optionScopeEpoch) return;
+    sentWorkerScope = { worker: marketWorker, scope: currentViewScope, epoch: optionScopeEpoch };
     postToWorker({
       type: 'SET_VIEW_SCOPE',
       optionScopeEpoch,
@@ -444,6 +469,7 @@ function sendViewScopeMessage(): void {
     return;
   }
   if (socket === null || socket.readyState !== WebSocket.OPEN) return;
+  if (sentDirectScope?.generation === socketGeneration && sentDirectScope.scope === currentViewScope) return;
   try {
     socket.send(
       JSON.stringify({
@@ -455,6 +481,7 @@ function sendViewScopeMessage(): void {
         ...(currentViewScope.ggalTimeframe !== undefined ? { ggalTimeframe: currentViewScope.ggalTimeframe } : {}),
       }),
     );
+    sentDirectScope = { generation: socketGeneration, scope: currentViewScope };
   } catch {
     // Un fallo de envío no tumba el socket compartido.
   }
@@ -492,11 +519,15 @@ export function setMarketViewScope(scope: MarketViewScope): void {
   ) {
     return;
   }
-  if (currentViewScope?.view === 'options' && (currentViewScope.focusSymbol !== cleanSymbol || cleanView !== 'options')) {
+  const previousScope = currentViewScope;
+  const previousL2Symbol = resolveScopedL2Symbol(previousScope);
+  if (previousScope?.view === 'options' &&
+      (previousScope.focusSymbol !== cleanSymbol || previousScope.focusMarket !== cleanMarket || cleanView !== 'options')) {
     optionScopeEpoch++;
     visibleSymbolsByConsumer.delete('option-chain');
     optionQuoteStore.clear();
     marketStoreSoa.resetOptionSlots();
+    postToWorker({ type: 'CLEAR_OPTION_SLOTS' });
   }
   currentViewScope = {
     view: cleanView,
@@ -505,7 +536,31 @@ export function setMarketViewScope(scope: MarketViewScope): void {
     ...(cleanGgalMode !== null ? { ggalMode: cleanGgalMode } : {}),
     ...(cleanGgalTimeframe !== null ? { ggalTimeframe: cleanGgalTimeframe } : {}),
   };
-  sendViewScopeMessage();
+  if (previousL2Symbol !== resolveScopedL2Symbol(currentViewScope)) {
+    l2ScopeEpoch += 1;
+    orderBookStore.clear();
+    if (state.liveOrderBook !== null) notify({ ...state, version: state.version + 1, liveOrderBook: null });
+  }
+  const generation = ++viewScopeGeneration;
+  if (viewScopeTimer !== null) clearTimeout(viewScopeTimer);
+  if (previousScope === null && managerCount > 0) {
+    viewScopeTimer = null;
+    sendViewScopeMessage();
+  } else {
+    viewScopeTimer = setTimeout(() => {
+      viewScopeTimer = null;
+      if (generation === viewScopeGeneration) sendViewScopeMessage();
+    }, VIEW_SCOPE_COALESCE_MS);
+  }
+}
+
+function resolveScopedL2Symbol(scope: MarketViewScope | null): string | null {
+  if (scope?.view === 'ggal_specialist') return scope.focusSymbol ?? 'GGAL';
+  return scope?.view === 'stock_detail' ? scope.focusSymbol : null;
+}
+
+function acceptsL2Symbol(symbol: string): boolean {
+  return currentViewScope === null || symbol === resolveScopedL2Symbol(currentViewScope);
 }
 
 export function getCurrentMarketViewScope(): MarketViewScope | null {
@@ -568,6 +623,15 @@ function marketQuotesEqual(a: MarketLiveQuote, b: MarketLiveQuote): boolean {
   );
 }
 
+function writeScopedMarketQuote(key: string, quote: MarketLiveQuote): void {
+  if (quoteStore.set(key, quote, marketQuotesEqual)) changedQuoteMarkets.add(quote.market);
+}
+
+function deleteScopedMarketQuote(key: string): void {
+  const quote = quoteStore.get(key);
+  if (quote !== undefined && quoteStore.delete(key)) changedQuoteMarkets.add(quote.market);
+}
+
 function orderBooksEqual(a: MarketLiveOrderBook, b: MarketLiveOrderBook): boolean {
   if (
     a.symbol !== b.symbol ||
@@ -605,6 +669,8 @@ function refreshFreshnessWatchdog(): void {
   if (!state.isLive || state.lastReceivedAtMs === null) {
     if (metaState.isFresh) {
       metaState = { ...metaState, isFresh: false };
+      updateStreamSlices();
+      notifyMarketFreshness();
       freshnessListeners.forEach((fn) => fn());
       metaListeners.forEach((fn) => fn());
     }
@@ -614,6 +680,8 @@ function refreshFreshnessWatchdog(): void {
   if (remaining <= 0) {
     if (metaState.isFresh) {
       metaState = { ...metaState, isFresh: false };
+      updateStreamSlices();
+      notifyMarketFreshness();
       freshnessListeners.forEach((fn) => fn());
       metaListeners.forEach((fn) => fn());
     }
@@ -623,6 +691,8 @@ function refreshFreshnessWatchdog(): void {
     freshnessTimer = null;
     if (metaState.isFresh) {
       metaState = { ...metaState, isFresh: false };
+      updateStreamSlices();
+      notifyMarketFreshness();
       freshnessListeners.forEach((fn) => fn());
       metaListeners.forEach((fn) => fn());
     }
@@ -672,6 +742,94 @@ let connectionStatusSnapshot: LiveConnectionStatus = {
   isFresh: metaState.isFresh,
 };
 
+interface MarketStreamClock extends Pick<MarketStreamMeta, 'isFresh' | 'ticksPerSecond' | 'transport' | 'status' | 'arSourceMode'> {
+  readonly clock: string | null;
+}
+
+type MarketStreamFx = Pick<MarketStreamMeta, 'isFresh' | 'cclMedian' | 'mepMedian' | 'liveFx'>;
+type MarketStreamFutures = Pick<MarketLiveStreamState, 'futures' | 'futuresSource'>;
+interface MarketStreamCauciones extends Pick<MarketStreamMeta, 'isFresh' | 'arSourceMode'> {
+  readonly cauciones: readonly MarketLiveCaucion[];
+}
+
+let clockSecond: number | null = null;
+let clockSnapshot: MarketStreamClock = {
+  clock: null, isFresh: false, ticksPerSecond: 0, transport: null,
+  status: state.status, arSourceMode: state.arSourceMode,
+};
+let fxSnapshot: MarketStreamFx = { isFresh: false, cclMedian: null, mepMedian: null, liveFx: null };
+let futuresSnapshot: MarketStreamFutures = { futures: state.futures, futuresSource: state.futuresSource };
+let caucionesSnapshot: MarketStreamCauciones = {
+  isFresh: false, arSourceMode: state.arSourceMode, cauciones: state.cauciones,
+};
+
+function sameFields(a: object, b: object): boolean {
+  return a === b || (Object.keys(a).length === Object.keys(b).length &&
+    Object.entries(a).every(([key, value]) => Object.is(value, Reflect.get(b, key))));
+}
+
+function sameRows<T extends object>(a: readonly T[], b: readonly T[]): boolean {
+  return a === b || (a.length === b.length && a.every((row, index) => {
+    const other = b[index];
+    return other !== undefined && sameFields(row, other);
+  }));
+}
+
+function sameFx(a: LiveFxSnapshot | null, b: LiveFxSnapshot | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  const { cclGgalTemporal: previous, ...previousValues } = a;
+  const { cclGgalTemporal: next, ...nextValues } = b;
+  return sameFields(previousValues, nextValues) &&
+    (previous === next || (previous !== undefined && next !== undefined && sameFields(previous, next)));
+}
+
+function updateStreamSlices(): void {
+  const { status, transport, isLive, isFresh, cclMedian, mepMedian, liveFx, arSourceMode } = metaState;
+  const changed = new Set<Set<() => void>>();
+  if (connectionStatusSnapshot.status !== status || connectionStatusSnapshot.transport !== transport ||
+      connectionStatusSnapshot.isLive !== isLive || connectionStatusSnapshot.isFresh !== isFresh) {
+    connectionStatusSnapshot = { status, transport, isLive, isFresh };
+    changed.add(connectionListeners);
+  }
+
+  if (fxSnapshot.isFresh !== isFresh || fxSnapshot.cclMedian !== cclMedian ||
+      fxSnapshot.mepMedian !== mepMedian || !sameFx(fxSnapshot.liveFx, liveFx)) {
+    fxSnapshot = { isFresh, cclMedian, mepMedian, liveFx };
+    changed.add(fxListeners);
+  }
+  if (futuresSnapshot.futuresSource !== state.futuresSource || !sameRows(futuresSnapshot.futures, state.futures)) {
+    futuresSnapshot = { futures: state.futures, futuresSource: state.futuresSource };
+    changed.add(futuresListeners);
+  }
+  if (caucionesSnapshot.isFresh !== isFresh || caucionesSnapshot.arSourceMode !== arSourceMode ||
+      !sameRows(caucionesSnapshot.cauciones, state.cauciones)) {
+    caucionesSnapshot = { isFresh, arSourceMode, cauciones: state.cauciones };
+    changed.add(caucionesListeners);
+  }
+  if (isDocumentVisible()) {
+    const received = metaState.lastReceivedAtMs;
+    const second = isFresh && received !== null ? Math.floor(received / 1_000) : null;
+    if (second !== clockSecond || clockSnapshot.status !== status || clockSnapshot.transport !== transport ||
+        clockSnapshot.arSourceMode !== arSourceMode || clockSnapshot.isFresh !== isFresh) {
+      const clock = second === clockSecond ? clockSnapshot.clock : getMarketStreamMetaClock(metaState);
+      clockSecond = second;
+      clockSnapshot = { clock, status, transport, isFresh, arSourceMode, ticksPerSecond: metaState.ticksPerSecond };
+      changed.add(clockListeners);
+    }
+  }
+  for (const registered of changed) registered.forEach((listener) => listener());
+}
+
+function notifyMarketFreshness(): void {
+  if (!isDocumentVisible()) return;
+  for (const market of ['AR', 'US'] as const) {
+    if (scopedQuotes.get(market) !== undefined && !changedQuoteMarkets.has(market)) {
+      scopedQuoteFreshnessListeners[market].forEach((listener) => listener());
+    }
+  }
+}
+
 function notify(next: MarketLiveStreamState): void {
   const prev = state;
   state = next;
@@ -692,6 +850,7 @@ function notify(next: MarketLiveStreamState): void {
     metaState.mepMedian !== next.mepMedian ||
     metaState.lastReceivedAtMs !== next.lastReceivedAtMs ||
     metaState.ticksPerSecond !== next.ticksPerSecond ||
+    metaState.lastServerTimeSec !== next.lastServerTimeSec ||
     metaState.liveFx !== next.liveFx;
 
   const prevFresh = metaState.isFresh;
@@ -710,24 +869,18 @@ function notify(next: MarketLiveStreamState): void {
       lastReceivedAtMs: next.lastReceivedAtMs,
       ticksPerSecond: next.ticksPerSecond,
     };
-    if (
-      connectionStatusSnapshot.status !== next.status ||
-      connectionStatusSnapshot.transport !== next.transport ||
-      connectionStatusSnapshot.isLive !== next.isLive ||
-      connectionStatusSnapshot.isFresh !== isFresh
-    ) {
-      connectionStatusSnapshot = {
-        status: next.status,
-        transport: next.transport,
-        isLive: next.isLive,
-        isFresh,
-      };
-    }
-    if (prevFresh !== isFresh) {
-      freshnessListeners.forEach((fn) => fn());
-    }
-    emitMetaListeners(connChanged);
   }
+
+  updateStreamSlices();
+  for (const market of changedQuoteMarkets) {
+    scopedQuotes.set(market, (scopedQuotes.get(market) ?? 0) + 1);
+  }
+  if (prevFresh !== isFresh) {
+    notifyMarketFreshness();
+    freshnessListeners.forEach((fn) => fn());
+  }
+  changedQuoteMarkets.clear();
+  if (metaChanged) emitMetaListeners(connChanged);
   refreshFreshnessWatchdog();
   testCommitListeners.forEach((fn) => fn());
 
@@ -877,13 +1030,12 @@ export function getMarketLiveQuote(
 
 export function pushLiveOrderBook(snapshot: MarketLiveOrderBook): void {
   const cleanSymbol = snapshot.symbol.trim().toUpperCase();
-  if (cleanSymbol !== '') {
-    orderBookStore.set(
-      cleanSymbol,
-      cleanSymbol === snapshot.symbol ? snapshot : { ...snapshot, symbol: cleanSymbol },
-      orderBooksEqual,
-    );
-  }
+  if (cleanSymbol === '' || !acceptsL2Symbol(cleanSymbol)) return;
+  orderBookStore.set(
+    cleanSymbol,
+    cleanSymbol === snapshot.symbol ? snapshot : { ...snapshot, symbol: cleanSymbol },
+    orderBooksEqual,
+  );
   notify({ ...state, version: state.version + 1, liveOrderBook: snapshot });
 }
 
@@ -1020,6 +1172,8 @@ function parseLiveFx(raw: unknown): LiveFxSnapshot | null {
 
 function parseOrderBook(raw: unknown): MarketLiveOrderBook | null {
   if (!isRecord(raw) || typeof raw['symbol'] !== 'string' || raw['symbol'].trim() === '') return null;
+  const symbol = raw['symbol'].trim().toUpperCase();
+  if (!acceptsL2Symbol(symbol)) return null;
   const parseLevels = (value: unknown): MarketLiveOrderBookLevel[] => {
     if (!Array.isArray(value)) return [];
     const levels: MarketLiveOrderBookLevel[] = [];
@@ -1042,7 +1196,7 @@ function parseOrderBook(raw: unknown): MarketLiveOrderBook | null {
   const micropriceL1Raw = raw['micropriceL1'];
   const vpinRaw = raw['vpin'];
   return {
-    symbol: raw['symbol'].trim().toUpperCase(),
+    symbol,
     bids: parseLevels(raw['bids']),
     asks: parseLevels(raw['asks']),
     microprice: typeof micropriceRaw === 'number' && Number.isFinite(micropriceRaw) ? micropriceRaw : null,
@@ -1293,7 +1447,7 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     if (tapeTick !== null) {
       liveTape = pushTapeTick(liveTape, tapeTick);
     }
-    quoteStore.set(key, parsedQuote, marketQuotesEqual);
+    writeScopedMarketQuote(key, parsedQuote);
     if (marketWorker === null || transport === 'POLL') {
       writeDirectSoaFallback(
         key,
@@ -1311,7 +1465,7 @@ function applyBatch(batch: MarketTickBatchWire, transport: LiveStreamTransport):
     if (nextQuotes[existingKey] === undefined) staleKeys.push(existingKey);
   }
   for (const staleKey of staleKeys) {
-    quoteStore.delete(staleKey);
+    deleteScopedMarketQuote(staleKey);
   }
   if (parsedOrderBook !== null) {
     orderBookStore.set(parsedOrderBook.symbol, parsedOrderBook, orderBooksEqual);
@@ -1387,7 +1541,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     for (const [key, quote] of Object.entries(nextQuotes)) {
       if ((quote.market === 'AR' && arSourceMode === 'NO_DATA') || (quote.market === 'US' && usSourceMode === 'NO_DATA')) {
         delete nextQuotes[key];
-        quoteStore.delete(key);
+        deleteScopedMarketQuote(key);
       }
     }
   }
@@ -1395,7 +1549,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     if (typeof rawKey === 'string') {
       const key = normalizeRemovedQuoteKey(rawKey);
       delete nextQuotes[key];
-      quoteStore.delete(key);
+      deleteScopedMarketQuote(key);
     }
   }
   let changedTicks = 0;
@@ -1411,7 +1565,7 @@ function applyTickDelta(batch: MarketTickBatchWire, transport: LiveStreamTranspo
     if (parsed.direction !== null) changedTicks += 1;
     nextQuotes[key] = parsed;
     touchedQuotes.set(key, parsed);
-    quoteStore.set(key, parsed, marketQuotesEqual);
+    writeScopedMarketQuote(key, parsed);
     if (marketWorker === null || transport === 'POLL') {
       writeDirectSoaFallback(
         key,
@@ -1580,7 +1734,7 @@ function applyTickDeltaSequence(
         (quote.market === 'US' && latestUsSourceMode === 'NO_DATA')
       ) {
         delete nextQuotes[key];
-        quoteStore.delete(key);
+        deleteScopedMarketQuote(key);
       }
     }
   }
@@ -1593,7 +1747,7 @@ function applyTickDeltaSequence(
         if (typeof rawKey === 'string') {
           const key = normalizeRemovedQuoteKey(rawKey);
           delete nextQuotes[key];
-          quoteStore.delete(key);
+          deleteScopedMarketQuote(key);
         }
       }
     }
@@ -1614,7 +1768,7 @@ function applyTickDeltaSequence(
       if (parsed.direction !== null) changedTicks += 1;
       nextQuotes[key] = parsed;
       touchedQuotes.set(key, parsed);
-      quoteStore.set(key, parsed, marketQuotesEqual);
+      writeScopedMarketQuote(key, parsed);
       if (marketWorker === null || transport === 'POLL') {
         writeDirectSoaFallback(
           key,
@@ -1714,7 +1868,7 @@ function flushLegacyQuotes(): void {
   const nextQuotes = { ...state.quotesBySymbol };
   pendingLegacyQuotes.forEach((quote, key) => {
     nextQuotes[key] = quote;
-    quoteStore.set(key, quote, marketQuotesEqual);
+    writeScopedMarketQuote(key, quote);
   });
   pendingLegacyQuotes.clear();
   notify({
@@ -1945,7 +2099,7 @@ function cancelMarketBatchFlush(): void {
 
 function queueMarketBatch(batch: MarketBatchWire, transport: LiveStreamTransport): void {
   pendingMarketBatchTransport = transport;
-  pendingMarketBatches.push(batch);
+  pendingMarketBatches.push({ batch, l2Epoch: l2ScopeEpoch });
   scheduleMarketBatchFlush();
 }
 
@@ -2001,7 +2155,8 @@ function dispatchBarUpdateEvent(raw: Record<string, unknown>): void {
 function applyOptionQuotesBatch(parsed: Record<string, unknown>): void {
   const rawQuotes = parsed['quotes'];
   if (!Array.isArray(rawQuotes)) return;
-  if (currentViewScope && (currentViewScope.view !== 'options' || parsed['underlying'] !== currentViewScope.focusSymbol)) return;
+  if (currentViewScope && (currentViewScope.view !== 'options' || currentViewScope.focusMarket === 'AR' ||
+      parsed['underlying'] !== currentViewScope.focusSymbol)) return;
   for (const item of rawQuotes) {
     if (!isRecord(item) || typeof item['symbol'] !== 'string') continue;
     const key = normalizeOptionContractKey(item['symbol']);
@@ -2050,7 +2205,11 @@ function requestWsResync(): void {
 }
 
 function flushMarketBatches(): void {
-  const batches = pendingMarketBatches.splice(0, pendingMarketBatches.length);
+  const batches = pendingMarketBatches.splice(0).map(({ batch, l2Epoch }) =>
+    l2Epoch === l2ScopeEpoch || !isRecord(batch.delta)
+      ? batch
+      : { ...batch, delta: { ...batch.delta, liveOrderBook: undefined } },
+  );
   const transport = pendingMarketBatchTransport;
   const deltas = batches
     .map((batch) => batch.delta)
@@ -2116,12 +2275,16 @@ function handleMessage(raw: unknown, transport: LiveStreamTransport): void {
 }
 
 async function pollOnce(generation: number): Promise<void> {
-  if (pollInFlight) return;
-  pollInFlight = true;
+  if (pollController !== null || generation !== pollGeneration) return;
   const controller = new AbortController();
+  pollController = controller;
   const timeout = setTimeout(() => controller.abort(), POLL_REQUEST_TIMEOUT_MS);
   try {
-    void refreshBackendHealth();
+    const now = Date.now();
+    if (isDocumentVisible() && now - lastPollHealthAtMs >= POLL_HEALTH_INTERVAL_MS) {
+      lastPollHealthAtMs = now;
+      void refreshBackendHealth(controller.signal);
+    }
     const response = await fetch('/api/market/ticks', {
       headers: { accept: 'application/json' },
       cache: 'no-store',
@@ -2138,25 +2301,31 @@ async function pollOnce(generation: number): Promise<void> {
     }
   } finally {
     clearTimeout(timeout);
-    pollInFlight = false;
+    if (pollController === controller) pollController = null;
   }
+}
+
+function schedulePollTimer(generation: number): void {
+  if (pollTimer !== null) clearInterval(pollTimer);
+  pollTimer = setInterval(() => {
+    void pollOnce(generation);
+  }, isDocumentVisible() ? POLL_INTERVAL_MS : HIDDEN_POLL_INTERVAL_MS);
 }
 
 function startPolling(): void {
   if (pollTimer !== null || managerCount === 0) return;
   const generation = ++pollGeneration;
   notify({ ...state, version: state.version + 1, transport: 'POLL', status: state.isLive ? 'LIVE' : 'RECONNECTING' });
-  void pollOnce(generation);
-  pollTimer = setInterval(() => {
-    void pollOnce(generation);
-  }, POLL_INTERVAL_MS);
+  if (isDocumentVisible()) void pollOnce(generation);
+  schedulePollTimer(generation);
 }
 
 function stopPolling(): void {
   pollGeneration += 1;
   if (pollTimer !== null) clearInterval(pollTimer);
   pollTimer = null;
-  pollInFlight = false;
+  pollController?.abort();
+  pollController = null;
 }
 
 function socketUrl(): string {
@@ -2166,7 +2335,7 @@ function socketUrl(): string {
 }
 
 function scheduleWorkerPull(): void {
-  if (marketWorker === null || pullScheduled || managerCount === 0) return;
+  if (marketWorker === null || pullScheduled || managerCount === 0 || !isDocumentVisible()) return;
   pullScheduled = true;
   const schedule =
     typeof requestAnimationFrame === 'function'
@@ -2175,7 +2344,7 @@ function scheduleWorkerPull(): void {
   pullRafHandle = schedule(() => {
     pullRafHandle = null;
     pullScheduled = false;
-    if (marketWorker !== null && managerCount > 0) {
+    if (marketWorker !== null && managerCount > 0 && isDocumentVisible()) {
       postToWorker({ type: 'PULL_DELTAS' });
     }
   });
@@ -2225,7 +2394,7 @@ function connectDirectSocket(): void {
     sendFocusMessage();
     sendViewScopeMessage();
     notify({ ...state, version: state.version + 1, status: 'LIVE', transport: 'WS', isLive: true });
-    void refreshBackendHealth();
+    if (isDocumentVisible()) void refreshBackendHealth();
   });
   next.addEventListener('message', (event) => {
     if (generation === socketGeneration) handleMessage(event.data, 'WS');
@@ -2281,7 +2450,7 @@ function ensureMarketWorker(): Worker | null {
         transport: msg.transport,
         isLive: msg.isLive,
       });
-      if (msg.isLive) void refreshBackendHealth();
+      if (msg.isLive && isDocumentVisible()) void refreshBackendHealth();
       return;
     }
     if (msg.type === 'WS_FALLBACK_POLL') {
@@ -2355,10 +2524,9 @@ function connectSocket(): void {
   if (managerCount === 0 || typeof window === 'undefined') return;
   const activeWorker = ensureMarketWorker();
   if (activeWorker !== null) {
-    postToWorker({ type: 'CONNECT', url: socketUrl() });
-    sendFocusMessage();
     sendViewScopeMessage();
-    sendVisibleIdsToWorker();
+    sendFocusMessage();
+    postToWorker({ type: 'CONNECT', url: socketUrl() });
     return;
   }
   // Degradación limpia al transporte directo cuando `Worker` no está disponible.
@@ -2372,7 +2540,23 @@ function acquireConnection(): void {
     releaseTimer = null;
   }
   if (managerCount > 1) return;
-  void refreshBackendHealth();
+  stopStreamVisibility ??= subscribeDocumentVisibility((visible) => {
+    if (visible) {
+      updateStreamSlices();
+      notifyMarketFreshness();
+      scheduleWorkerPull();
+    } else {
+      cancelWorkerPull();
+    }
+    if (pollTimer !== null) {
+      const generation = ++pollGeneration;
+      pollController?.abort();
+      pollController = null;
+      schedulePollTimer(generation);
+      if (visible) void pollOnce(generation);
+    }
+  });
+  if (isDocumentVisible()) void refreshBackendHealth();
   if (
     marketWorker === null &&
     typeof WebSocket !== 'undefined' &&
@@ -2386,6 +2570,10 @@ function acquireConnection(): void {
 
 function teardownConnection(): void {
   socketGeneration += 1;
+  stopStreamVisibility?.();
+  stopStreamVisibility = null;
+  if (viewScopeTimer !== null) clearTimeout(viewScopeTimer);
+  viewScopeTimer = null;
   if (openTimeout !== null) clearTimeout(openTimeout);
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
   openTimeout = null;
@@ -2485,12 +2673,13 @@ export function subscribeAtomicQuoteValue(
   return quoteStore.subscribeKeyValue(key, listener);
 }
 
-export function useAtomicMarketQuote(
+function useAtomicMarketQuoteSelection<T>(
   market: LiveStreamMarket,
   symbol: string,
-  throttleMs = TABLE_THROTTLE_MS,
-  settlement?: string | null,
-): MarketLiveQuote | null {
+  throttleMs: number,
+  settlement: string | null | undefined,
+  select: (quote: MarketLiveQuote | null) => T,
+): T {
   const cleanSymbol = symbol.trim().toUpperCase();
   const key = liveQuoteKey(market, cleanSymbol, settlement);
   const fallbackCiKey =
@@ -2517,11 +2706,43 @@ export function useAtomicMarketQuote(
   );
 
   const getSnapshot = useCallback(
-    () => (cleanSymbol === '' ? null : getAtomicMarketQuote(market, cleanSymbol, settlement)),
-    [cleanSymbol, market, settlement],
+    () => select(cleanSymbol === '' ? null : getAtomicMarketQuote(market, cleanSymbol, settlement)),
+    [cleanSymbol, market, select, settlement],
   );
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+const readWholeQuote = (quote: MarketLiveQuote | null) => quote;
+
+export function useAtomicMarketQuote(
+  market: LiveStreamMarket,
+  symbol: string,
+  throttleMs = TABLE_THROTTLE_MS,
+  settlement?: string | null,
+): MarketLiveQuote | null {
+  return useAtomicMarketQuoteSelection(market, symbol, throttleMs, settlement, readWholeQuote);
+}
+
+export function useOptionsValuationQuote(
+  market: LiveStreamMarket,
+  symbol: string,
+  hasChainSpot: boolean,
+  chainClosed: boolean,
+): { readonly price: number; readonly sessionClosed: boolean } {
+  const select = useMemo(() => {
+    let previous = { price: Number.NaN, sessionClosed: false };
+    return (quote: MarketLiveQuote | null) => {
+      const phase = quote?.sessionPhase ?? null;
+      const sessionClosed = chainClosed || (phase !== null && phase !== 'RTH');
+      const price = sessionClosed && hasChainSpot ? Number.NaN : quote?.price ?? Number.NaN;
+      if (!Object.is(price, previous.price) || sessionClosed !== previous.sessionClosed) {
+        previous = { price, sessionClosed };
+      }
+      return previous;
+    };
+  }, [chainClosed, hasChainSpot, market, symbol]);
+  return useAtomicMarketQuoteSelection(market, symbol, 1_000, undefined, select);
 }
 
 export function useAtomicOptionQuote(
@@ -2654,17 +2875,85 @@ export function useThrottledMarketQuotesTick(throttleMs = TABLE_THROTTLE_MS): nu
 }
 
 export function useLiveConnectionStatus(): LiveConnectionStatus {
+  return useSyncExternalStore(subscribeConnection, readConnection, readConnection);
+}
+
+function subscribeStreamSlice(registered: Set<() => void>, listener: () => void): () => void {
+  registered.add(listener);
+  return () => { registered.delete(listener); };
+}
+
+const subscribeConnection = (listener: () => void) => subscribeStreamSlice(connectionListeners, listener);
+const readConnection = () => connectionStatusSnapshot;
+const readClock = () => clockSnapshot;
+export const getMarketStreamFxSnapshot = () => fxSnapshot;
+const readFutures = () => futuresSnapshot;
+const readCauciones = () => caucionesSnapshot;
+export const subscribeMarketLiveFx = (listener: () => void) => subscribeStreamSlice(fxListeners, listener);
+export const subscribeMarketLiveFutures = (listener: () => void) => subscribeStreamSlice(futuresListeners, listener);
+export const subscribeMarketLiveCauciones = (listener: () => void) => subscribeStreamSlice(caucionesListeners, listener);
+
+export function useMarketStreamClock(throttleMs = 1_000): MarketStreamClock {
+  const subscribe = useCallback((listener: () => void) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastAt = -Infinity;
+    const unsubscribe = subscribeStreamSlice(clockListeners, () => {
+      const wait = throttleMs - (Date.now() - lastAt);
+      if (wait <= 0) {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+        lastAt = Date.now();
+        listener();
+      } else if (timer === undefined) {
+        timer = setTimeout(() => {
+          timer = undefined;
+          lastAt = Date.now();
+          if (isDocumentVisible()) listener();
+        }, wait);
+      }
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [throttleMs]);
+  return useSyncExternalStore(subscribe, readClock, readClock);
+}
+
+export function useMarketLiveFx(): MarketStreamFx {
+  return useSyncExternalStore(subscribeMarketLiveFx, getMarketStreamFxSnapshot, getMarketStreamFxSnapshot);
+}
+
+export function useMarketLiveFutures(): MarketStreamFutures {
+  return useSyncExternalStore(subscribeMarketLiveFutures, readFutures, readFutures);
+}
+
+export function useMarketLiveCauciones(): MarketStreamCauciones {
+  return useSyncExternalStore(subscribeMarketLiveCauciones, readCauciones, readCauciones);
+}
+
+export function subscribeMarketScopedQuotes(
+  market: LiveStreamMarket,
+  throttleMs: number,
+  listener: () => void,
+): () => void {
+  const unsubscribe = scopedQuotes.subscribeKeyThrottled(market, throttleMs, () => {
+    if (isDocumentVisible()) listener();
+  });
+  const unsubscribeFreshness = subscribeStreamSlice(scopedQuoteFreshnessListeners[market], listener);
+  return () => {
+    unsubscribe();
+    unsubscribeFreshness();
+  };
+}
+
+export function useMarketScopedQuotesTick(market: LiveStreamMarket, throttleMs = 1_000): number {
   const subscribe = useCallback(
-    (listener: () => void) => {
-      metaListeners.add(listener);
-      return () => {
-        metaListeners.delete(listener);
-      };
-    },
-    [],
+    (listener: () => void) => subscribeMarketScopedQuotes(market, throttleMs, listener),
+    [market, throttleMs],
   );
-  const getSnapshot = useCallback(() => connectionStatusSnapshot, []);
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const read = useCallback(() => metaState.isFresh ? scopedQuotes.get(market) ?? -1 : -1, [market]);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 export function __testApplyMarketStreamFrame(
@@ -2722,6 +3011,13 @@ export function __testResetMarketStreamState(): void {
   lastBatchReceivedAtMs = null;
   lastDeltaRevision = 0;
   currentViewScope = null;
+  viewScopeGeneration += 1;
+  if (viewScopeTimer !== null) clearTimeout(viewScopeTimer);
+  viewScopeTimer = null;
+  optionScopeEpoch = 0;
+  l2ScopeEpoch = 0;
+  changedQuoteMarkets.clear();
+  scopedQuotes.clear();
   marketFocusSymbol = null;
   visibleSymbolsByConsumer.clear();
   quoteStore.clear();
@@ -2762,10 +3058,5 @@ export function __testResetMarketStreamState(): void {
     lastReceivedAtMs: state.lastReceivedAtMs,
     ticksPerSecond: state.ticksPerSecond,
   };
-  connectionStatusSnapshot = {
-    status: metaState.status,
-    transport: metaState.transport,
-    isLive: metaState.isLive,
-    isFresh: metaState.isFresh,
-  };
+  updateStreamSlices();
 }

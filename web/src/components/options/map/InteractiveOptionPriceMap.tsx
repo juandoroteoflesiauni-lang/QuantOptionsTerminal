@@ -4,7 +4,7 @@ import { Minus, Plus } from 'lucide-react';
 import { fmtNum } from '../../../data/marketData';
 import {
   getLiveOptionsForUnderlying,
-  useLiveMarketState,
+  useLiveBridgeSelector,
 } from '../../../data/liveRuntimeBridge';
 import {
   FX_EASE,
@@ -80,16 +80,19 @@ export const InteractiveOptionPriceMap: React.FC<{
     setIsCustom(false);
   }, [isUsMarket]);
 
-  const liveMarket = useLiveMarketState();
+  const optionsKey = (mkt.market === 'AR' ? 'AR:' : 'US:') + mkt.ticker;
+  const closes = useLiveBridgeSelector(
+    [`options:${optionsKey}`],
+    (snapshot) => getLiveOptionsForUnderlying(snapshot, optionsKey)?.historicalCloses,
+  );
   const store = useMemo(() => createPointerStore(), []);
   const history = useMemo(() => {
     // Pieza 50.3: lectura canónica `market:symbol` del subyacente del mapa.
-    const closes = getLiveOptionsForUnderlying(liveMarket, mkt.market === 'AR' ? `AR:${mkt.ticker}` : `US:${mkt.ticker}`)?.historicalCloses;
     if (!closes || closes.length === 0) {
       return Number.isFinite(mkt.spot) && mkt.spot > 0 ? [mkt.spot] : [];
     }
     return closes.filter((p) => Number.isFinite(p) && p > 0);
-  }, [liveMarket.optionsByUnderlying, mkt.ticker, mkt.spot]);
+  }, [closes, mkt.spot]);
   const geo = useMapGeometry(mkt, history, zoom);
 
   useEffect(() => {

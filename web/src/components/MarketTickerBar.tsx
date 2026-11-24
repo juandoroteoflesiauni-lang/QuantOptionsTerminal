@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useSyncExternalStore, memo } from 'react';
+import React, { useCallback, useEffect, useState, useSyncExternalStore, memo } from 'react';
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -8,27 +8,24 @@ import {
   Moon,
   HelpCircle,
 } from 'lucide-react';
-import { subscribeLiveTickerUpdates, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
+import { subscribeLiveTickerUpdates, useLiveMarketStatus, type LiveTickerUpdate } from '../data/liveRuntimeBridge';
 import {
   formatExtendedSessionBadge,
   getAtomicMarketQuote,
-  getMarketStreamMetaClock,
-  getMarketStreamMetaSnapshot,
-  isMarketStreamMetaFresh,
+  getMarketStreamFxSnapshot,
+  setVisibleMarketSymbols,
   subscribeAtomicQuoteValue,
-  subscribeMarketStreamMeta,
+  subscribeMarketLiveFx,
   tickFlashClass,
   useMarketStreamConnection,
-  useMarketStreamMeta,
+  useMarketStreamClock,
   type LiveUsSessionPhase,
   type MarketLiveQuote,
 } from '../api/useMarketLiveStream';
-import type { FeedStatus } from '../data/liveTypes';
 import { CompanyLogo } from './common/CompanyLogo';
 import {
   FeedsHealthDrawer,
-  type FeedsHealthController,
-  type FeedProviderId,
+  useFeedsBadgeSummary,
 } from './FeedsHealthDrawer';
 
 /* ============================================================================
@@ -63,7 +60,6 @@ export interface MarketTickerBarProps {
   sidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   marketStatus?: MarketSessionState;
-  feedStatus?: FeedStatus;
   onCycleMarketStatus?: () => void;
   onSelectTicker?: (symbol: string) => void;
   onOpenCommandPalette?: () => void;
@@ -74,7 +70,6 @@ export interface MarketTickerBarProps {
   onOpenShortcuts?: () => void;
   marqueeDurationSeconds?: number;
   liveFeedEnabled?: boolean;
-  feedsHealth: FeedsHealthController;
 }
 
 /* ============================================================================
@@ -222,6 +217,8 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
 
   const isPositive = Number.isFinite(item.changePct) && item.changePct > 0;
   const isNegative = Number.isFinite(item.changePct) && item.changePct < 0;
+  const extendedBadge = formatExtendedSessionBadge(item.sessionPhase);
+  const hasExtendedSession = ['SPY', 'QQQ', 'IWM', 'DIA', 'VIX', 'NVDA', 'AAPL'].includes(item.id);
 
   const clickableSymbol = ['GGAL', 'SUPV', 'TXAR', 'YPFD', 'PAMP', 'BMA'].includes(item.symbol)
     ? item.symbol
@@ -239,15 +236,18 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       <span className="text-[11.5px] font-semibold text-[#8A8F9E] group-hover:text-[#D1D4DC] transition-colors whitespace-nowrap">
         {item.symbol}
       </span>
-      {formatExtendedSessionBadge(item.sessionPhase) !== null && (
-        <span className="rounded px-1 py-0.2 font-mono-num text-[9px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35">
-          {formatExtendedSessionBadge(item.sessionPhase)}
+      {hasExtendedSession && (
+        <span
+          aria-hidden={extendedBadge === null}
+          className={`inline-block w-[27px] rounded px-1 py-0.2 text-center font-mono-num text-[9px] font-bold tracking-wider bg-[#F5B544]/15 text-[#F5B544] border border-[#F5B544]/35 ${extendedBadge === null ? 'invisible' : ''}`}
+        >
+          {extendedBadge}
         </span>
       )}
 
       <span
-        className={`font-mono-num text-[12px] font-bold whitespace-nowrap ${
-          flash === null ? 'text-[#ECEDF2]' : tickFlashClass(flash.dir)
+        className={`inline-block w-[10ch] font-mono-num text-[12px] font-bold whitespace-nowrap ${
+          flash === null ? 'border-b-2 border-transparent text-[#ECEDF2]' : tickFlashClass(flash.dir)
         }`}
       >
         {Number.isFinite(item.price)
@@ -256,7 +256,7 @@ const MemoizedTickerChip: React.FC<TickerChipProps> = memo(({ tickerId, onSelect
       </span>
 
       <span
-        className={`inline-flex items-center font-mono-num text-[11.5px] font-semibold whitespace-nowrap ${
+        className={`inline-block w-[8ch] font-mono-num text-[11.5px] font-semibold whitespace-nowrap ${
           isPositive
             ? 'text-[#22C55E]'
             : isNegative
@@ -339,12 +339,12 @@ function quoteToTickerUpdate(
 
 const MarketSessionStatusPill: React.FC<{
   readonly marketStatus: MarketSessionState;
-  readonly feedStatus: FeedStatus;
   readonly onCycleMarketStatus?: () => void;
-}> = memo(({ marketStatus, feedStatus, onCycleMarketStatus }) => {
-  const meta = useMarketStreamMeta(1_000);
-  const streamIsFresh = isMarketStreamMetaFresh(meta);
-  const liveClock = getMarketStreamMetaClock(meta) ?? '--:--:--';
+}> = memo(({ marketStatus, onCycleMarketStatus }) => {
+  const { feedStatus } = useLiveMarketStatus();
+  const meta = useMarketStreamClock();
+  const streamIsFresh = meta.isFresh;
+  const liveClock = meta.clock ?? '--:--:--';
   const feedTag = streamIsFresh
     ? meta.arSourceMode === 'LIVE_BMB'
       ? 'EN VIVO · BMB'
@@ -397,7 +397,13 @@ const MarketSessionStatusPill: React.FC<{
         </span>
         <span className="tracking-tight whitespace-nowrap">
           NYSE / BYMA: {marketStatus} · {feedTag}
-          {streamIsFresh ? ` · ${liveClock} · ${String(meta.ticksPerSecond)} ticks/s` : ''}
+          {streamIsFresh && (
+            <>
+              {' · '}{liveClock}{' · '}
+              <span className="inline-block w-[4ch] tabular-nums">{meta.ticksPerSecond}</span>
+              {' ticks/s'}
+            </>
+          )}
         </span>
       </button>
 
@@ -416,11 +422,48 @@ MarketSessionStatusPill.displayName = 'MarketSessionStatusPill';
    7. COMPONENTE PRINCIPAL: `MarketTickerBar`
    Layout: [Extremo Izquierdo Fijo] + [Marquee Central Infinito] + [Extremo Derecho Fijo]
    ============================================================================ */
-export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
+const FeedsHealthTriggerButton = memo(function FeedsHealthTriggerButton({
+  open, onOpen,
+}: { readonly open: boolean; readonly onOpen: () => void }) {
+  const feedsSummary = useFeedsBadgeSummary();
+  const feedsLabel =
+    feedsSummary.totalProviders === null
+      ? 'Feeds: —'
+      : (feedsSummary.activeCount ?? 0) > 0
+        ? `Feeds: ${String(feedsSummary.activeCount)}/${String(feedsSummary.totalProviders)} Activos`
+        : `Feeds: ${String(feedsSummary.configuredCount)}/${String(feedsSummary.totalProviders)} Armados`;
+  const feedsBadgeTone =
+    feedsSummary.totalProviders === null
+      ? { bg: 'bg-[#131722]', text: 'text-[#787B86]', border: 'border-[#2A2E3D]' }
+      : (feedsSummary.activeCount ?? 0) > 0
+        ? { bg: 'bg-[#0D221E]', text: 'text-[#22C55E]', border: 'border-[#164E3F]' }
+        : (feedsSummary.configuredCount ?? 0) > 0
+          ? { bg: 'bg-[#281E0E]', text: 'text-[#F5B544]', border: 'border-[#59411A]' }
+          : { bg: 'bg-[#1A1318]', text: 'text-[#F23645]', border: 'border-[#4A2229]' };
+
+  return (
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          title="Monitor unificado de salud, latencia y ticks de proveedores"
+          className={`hidden md:inline-flex h-[26px] w-[125px] items-center gap-1.5 rounded-full border px-2.5 font-mono-num text-[10.5px] font-semibold transition-colors cursor-pointer ${feedsBadgeTone.bg} ${feedsBadgeTone.text} ${feedsBadgeTone.border} hover:brightness-110`}
+        >
+          <span
+            className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+              feedsSummary.socketStatus === 'LIVE' ? 'bg-current' : 'bg-[#787B86]'
+            }`}
+          />
+          {feedsLabel}
+        </button>
+  );
+});
+
+export const MarketTickerBar = memo(function MarketTickerBar({
   sidebarCollapsed = false,
   onToggleSidebar,
   marketStatus = 'Abierto',
-  feedStatus = 'NO_DATA',
   onCycleMarketStatus,
   onSelectTicker,
   onOpenCommandPalette,
@@ -431,10 +474,20 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
   onOpenShortcuts,
   marqueeDurationSeconds = 48,
   liveFeedEnabled = true,
-  feedsHealth,
-}) => {
+}: MarketTickerBarProps) {
   useMarketStreamConnection(liveFeedEnabled);
   const [feedsDrawerOpen, setFeedsDrawerOpen] = useState(false);
+  const openFeedsDrawer = useCallback(() => setFeedsDrawerOpen(true), []);
+  const closeFeedsDrawer = useCallback(() => setFeedsDrawerOpen(false), []);
+
+  useEffect(() => {
+    if (!liveFeedEnabled) return;
+    setVisibleMarketSymbols([
+      'US:SPY', 'US:QQQ', 'US:IWM', 'US:DIA', 'US:NVDA', 'US:AAPL', 'US:I:VIX',
+      'AR:GGAL', 'AR:SUPV', 'AR:TXAR', 'AR:YPFD', 'AR:PAMP', 'AR:BMA',
+    ], 'ticker-bar');
+    return () => setVisibleMarketSymbols([], 'ticker-bar');
+  }, [liveFeedEnabled]);
 
   useEffect(() => {
     if (!liveFeedEnabled) return;
@@ -461,7 +514,7 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
     }
 
     const publishFxFromMeta = (): void => {
-      const meta = getMarketStreamMetaSnapshot();
+      const meta = getMarketStreamFxSnapshot();
       if (!meta.isFresh) return;
       const fxUpdates: LiveTickerUpdate[] = [];
       if (meta.cclMedian !== null) {
@@ -475,7 +528,7 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
       }
     };
     publishFxFromMeta();
-    unsubs.push(subscribeMarketStreamMeta(publishFxFromMeta));
+    unsubs.push(subscribeMarketLiveFx(publishFxFromMeta));
     if (initialUpdates.length > 0) {
       globalTickerStore.applyRealUpdates(initialUpdates, true);
     }
@@ -492,24 +545,6 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
       globalTickerStore.applyRealUpdates(updates);
     });
   }, [liveFeedEnabled]);
-
-  const feedsPulseFresh =
-    feedsHealth.lastPulseAtMs !== null && Date.now() - feedsHealth.lastPulseAtMs <= 15_000;
-  const feedsSummary = feedsPulseFresh ? feedsHealth.snapshot?.summary ?? null : null;
-  const feedsLabel =
-    feedsSummary === null
-      ? 'Feeds: —'
-      : feedsSummary.activeCount > 0
-        ? `Feeds: ${String(feedsSummary.activeCount)}/${String(feedsSummary.totalProviders)} Activos`
-        : `Feeds: ${String(feedsSummary.configuredCount)}/${String(feedsSummary.totalProviders)} Armados`;
-  const feedsBadgeTone =
-    feedsSummary === null
-      ? { bg: 'bg-[#131722]', text: 'text-[#787B86]', border: 'border-[#2A2E3D]' }
-      : feedsSummary.activeCount > 0
-        ? { bg: 'bg-[#0D221E]', text: 'text-[#22C55E]', border: 'border-[#164E3F]' }
-        : feedsSummary.configuredCount > 0
-          ? { bg: 'bg-[#281E0E]', text: 'text-[#F5B544]', border: 'border-[#59411A]' }
-          : { bg: 'bg-[#1A1318]', text: 'text-[#F23645]', border: 'border-[#4A2229]' };
 
   return (
     <>
@@ -536,25 +571,10 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
         {/* Badge de Estado de Mercado con LED circular pulsante */}
         <MarketSessionStatusPill
           marketStatus={marketStatus}
-          feedStatus={feedStatus}
           onCycleMarketStatus={onCycleMarketStatus}
         />
 
-        <button
-          type="button"
-          onClick={() => setFeedsDrawerOpen(true)}
-          aria-expanded={feedsDrawerOpen}
-          aria-haspopup="dialog"
-          title="Monitor unificado de salud, latencia y ticks de proveedores"
-          className={`hidden md:inline-flex h-[26px] items-center gap-1.5 rounded-full border px-2.5 font-mono-num text-[10.5px] font-semibold transition-colors cursor-pointer ${feedsBadgeTone.bg} ${feedsBadgeTone.text} ${feedsBadgeTone.border} hover:brightness-110`}
-        >
-          <span
-            className={`inline-flex h-1.5 w-1.5 rounded-full ${
-              feedsHealth.socketStatus === 'LIVE' ? 'bg-current' : 'bg-[#787B86]'
-            }`}
-          />
-          {feedsLabel}
-        </button>
+        <FeedsHealthTriggerButton open={feedsDrawerOpen} onOpen={openFeedsDrawer} />
 
         {/* Separador vertical sutil */}
         <div className="h-5 w-[1px] bg-[#1E222D] ml-0.5 hidden sm:block" />
@@ -636,16 +656,9 @@ export const MarketTickerBar: React.FC<MarketTickerBarProps> = ({
         </button>
       </div>
     </header>
-    <FeedsHealthDrawer
-      open={feedsDrawerOpen}
-      onClose={() => setFeedsDrawerOpen(false)}
-      health={feedsHealth}
-      onReconnect={(provider: FeedProviderId) => {
-        void feedsHealth.reconnectProvider(provider);
-      }}
-    />
+    <FeedsHealthDrawer open={feedsDrawerOpen} onClose={closeFeedsDrawer} />
     </>
   );
-};
+});
 
 export default MarketTickerBar;

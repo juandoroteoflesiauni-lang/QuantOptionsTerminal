@@ -21,7 +21,7 @@ import {
 import { ArrowLeft, Keyboard, Zap } from 'lucide-react';
 import {
   refreshOverview,
-  requestOptionsChain,
+  requestOptionsChain as requestLiveOptionsChain,
   requestOptionsUniverse,
   requestStockDetail,
   requestTerminalBars,
@@ -48,6 +48,7 @@ import { ExecutionBottomDeck } from './stock-detail/ExecutionBottomDeck';
 import { GexStrikeProfileChart } from './stock-detail/GexStrikeProfileChart';
 import { SyncedLowerPaneChart } from './stock-detail/SyncedLowerPaneChart';
 import { CompanyLogo } from './common/CompanyLogo';
+import { LiveClockBadge } from './MarketModules';
 import { projectLiveEma } from '../../../src/core/ema';
 import { projectLiveCandle, type LiveCalendarProjection, type LiveChartBar } from '../../../src/core/realtimePropagation';
 import {
@@ -106,7 +107,6 @@ import type {
 import {
   formatExtendedSessionBadge,
   getAtomicMarketQuote,
-  getMarketStreamMetaClock,
   type LiveBarUpdateEvent,
   type MarketLiveOrderBook,
   setVisibleMarketSymbols,
@@ -116,7 +116,6 @@ import {
   useAtomicOrderBook,
   useLivePriceFlash,
   useMarketFocusSymbol,
-  useMarketStreamMeta,
 } from '../api/useMarketLiveStream';
 
 const EMPTY_MINIMAL_BARS: readonly MinimalOhlcvBar[] = [];
@@ -514,8 +513,6 @@ export const StockDetailView: React.FC<{
   hasOverviewRef.current = runtime.hasOverview;
 
   const liveQuote = useAtomicMarketQuote(isArMarket ? 'AR' : 'US', cleanTicker, 250);
-  const liveStreamMeta = useMarketStreamMeta(1_000);
-  const liveClock = liveStreamMeta.isFresh ? getMarketStreamMetaClock(liveStreamMeta) : null;
   const liveHeaderFlash = useLivePriceFlash(liveQuote?.price ?? null);
 
   useEffect(() => {
@@ -536,7 +533,7 @@ export const StockDetailView: React.FC<{
       setClickedAnchorTimeSec(null);
     }
     setArFallbackNotice(null);
-    if (!hasOverviewRef.current) void refreshOverview();
+    if (!hasOverviewRef.current) void refreshOverview(false, controller.signal);
 
     // Pieza 50.4: `1W` se deriva 100 % en cliente desde las velas `1D`; jamás se llama
     // `/api/bars?timeframe=1W` ni `/api/ar/stock?timeframe=1W`. Si el 1D ya está en
@@ -556,6 +553,8 @@ export const StockDetailView: React.FC<{
     }
 
     const isCurrent = (): boolean => requestId === loadingRequestIdRef.current && !controller.signal.aborted;
+    const requestOptionsChain = (symbol: string) =>
+      requestLiveOptionsChain(symbol, false, undefined, controller.signal);
 
     const load = async (): Promise<void> => {
       try {
@@ -1764,21 +1763,7 @@ export const StockDetailView: React.FC<{
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            {liveQuote !== null && liveClock !== null ? (
-              <span
-                className={`rounded-full border px-2 py-1 font-mono-num text-[10px] font-semibold ${
-                  usExtendedBadge !== null
-                    ? 'border-[#F5B544]/40 bg-[#F5B544]/10 text-[#F5B544]'
-                    : 'border-[#22C55E]/35 bg-[#22C55E]/10 text-[#22C55E]'
-                }`}
-              >
-                {usExtendedBadge !== null ? `● ${usExtendedBadge} ${liveClock}` : `● Tiempo real ${liveClock}`}
-              </span>
-            ) : (
-              <span className="rounded-full border border-[#F5B544]/35 bg-[#F5B544]/10 px-2 py-1 font-mono-num text-[10px] font-semibold text-[#F5B544]">
-                ● CIERRE EOD
-              </span>
-            )}
+            <LiveClockBadge enabled={liveQuote !== null} extended={usExtendedBadge} showClosed />
             <button
               type="button"
               disabled={!optionsEnabled}

@@ -1,6 +1,7 @@
 import type { OratsMetadata } from '../../../src/core/oratsIntegrity.js';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useSyncExternalStore } from 'react';
 import { X, RefreshCw, Activity } from 'lucide-react';
+import { isDocumentVisible, subscribeDocumentVisibility } from '../data/visibilityLifecycle';
 
 /* ============================================================================
    1. CONTRATO WIRE (ESPEJO DEL ENDPOINT SIN SECRETOS)
@@ -283,159 +284,257 @@ export interface FeedsHealthState {
   readonly lastReconnectOk: boolean | null;
 }
 
-export interface FeedsHealthController extends FeedsHealthState {
-  readonly refresh: () => Promise<void>;
-  readonly reconnectProvider: (provider: FeedProviderId) => Promise<void>;
-}
-
 function feedsHealthSocketUrl(): string {
   if (import.meta.env.DEV) return 'ws://127.0.0.1:8787/ws?channel=feeds-health';
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws?channel=feeds-health`;
 }
 
-export function useFeedsHealthPulse(): FeedsHealthController {
-  const [snapshot, setSnapshot] = useState<FeedsHealthSnapshot | null>(null);
-  const [socketStatus, setSocketStatus] = useState<FeedsHealthSocketStatus>('CONNECTING');
-  const [lastPulseAtMs, setLastPulseAtMs] = useState<number | null>(null);
-  const [reconnectingProvider, setReconnectingProvider] = useState<FeedProviderId | null>(null);
-  const [lastReconnectDetail, setLastReconnectDetail] = useState<string | null>(null);
-  const [lastReconnectOk, setLastReconnectOk] = useState<boolean | null>(null);
-  const generationRef = useRef(0);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const emptyFeedsHealth: FeedsHealthState = Object.freeze({
+  snapshot: null, socketStatus: 'CONNECTING', lastPulseAtMs: null,
+  reconnectingProvider: null, lastReconnectDetail: null, lastReconnectOk: null,
+});
+type ConnectivityProvider = Pick<FeedProviderHealth, 'id' | 'state' | 'configured'>;
 
-  const refresh = useCallback(async (): Promise<void> => {
-    const generation = generationRef.current;
-    const response = await fetch('/api/system/feeds-health', {
-      headers: { accept: 'application/json' },
-      cache: 'no-store',
-    });
-    if (!response.ok) throw new Error(`feeds-health HTTP ${String(response.status)}`);
-    const raw: unknown = await response.json();
-    if (generation !== generationRef.current) return;
-    if (!isRecord(raw) || !Array.isArray(raw['providers'])) {
-      throw new Error('Invalid feeds-health payload');
-    }
-    setSnapshot(raw as unknown as FeedsHealthSnapshot);
-  }, []);
+export interface FeedsBadgeSummary {
+  readonly socketStatus: FeedsHealthSocketStatus;
+  readonly pulseFresh: boolean;
+  readonly activeCount: number | null;
+  readonly configuredCount: number | null;
+  readonly totalProviders: number | null;
+}
 
-  useEffect(() => {
-    const generation = ++generationRef.current;
-    let socket: WebSocket | null = null;
-    let disposed = false;
+const feedsHealthStore = {
+  state: emptyFeedsHealth,
+  full: new Set<() => void>(),
+  connectivity: new Set<() => void>(),
+  badge: new Set<() => void>(),
+};
+let connectivityProviders: readonly ConnectivityProvider[] = Object.freeze([]);
+let connectivitySignature = '';
+let badgeSummary: FeedsBadgeSummary = {
+  socketStatus: 'CONNECTING', pulseFresh: false, activeCount: null, configuredCount: null, totalProviders: null,
+};
+const PULSE_FRESH_MS = 15_000;
+let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+let stopVisibility: (() => void) | undefined;
+let connectionScope: AbortController | undefined;
+let socket: WebSocket | undefined;
+let connectionUsers = 0;
+let reconnectGeneration = 0;
 
-    const connect = (): void => {
-      if (disposed || generation !== generationRef.current) return;
-      setSocketStatus((previous) => (previous === 'LIVE' ? 'RECONNECTING' : 'CONNECTING'));
-      try {
-        socket = new WebSocket(feedsHealthSocketUrl());
-      } catch {
-        setSocketStatus('ERROR');
-        return;
-      }
-      socket.addEventListener('open', () => {
-        if (disposed || generation !== generationRef.current) return;
-        setSocketStatus('LIVE');
-      });
-      socket.addEventListener('message', (event: MessageEvent) => {
-        if (disposed || generation !== generationRef.current || typeof event.data !== 'string') return;
-        try {
-          const pulse = parsePulse(JSON.parse(event.data) as unknown);
-          if (pulse === null) return;
-          setLastPulseAtMs(Date.now());
-          setSnapshot((previous) => (previous === null ? null : mergePulse(previous, pulse)));
-        } catch {
-          return;
-        }
-      });
-      socket.addEventListener('close', () => {
-        if (disposed || generation !== generationRef.current) return;
-        setSocketStatus('RECONNECTING');
-        reconnectTimerRef.current = setTimeout(connect, 2_000);
-      });
-      socket.addEventListener('error', () => {
-        try {
-          socket?.close();
-        } catch {
-          return;
-        }
-      });
-    };
+function publishFeedsHealth(patch: Partial<FeedsHealthState>): void {
+  const previous = feedsHealthStore.state;
+  const fullChanged = Object.entries(patch).some(([key, value]) => Reflect.get(previous, key) !== value);
+  const next = fullChanged ? { ...previous, ...patch } : previous;
+  feedsHealthStore.state = next;
 
-    void refresh().catch(() => {
-      if (!disposed && generation === generationRef.current) setSocketStatus('ERROR');
-    });
-    connect();
+  const providers = next.snapshot?.providers ?? [];
+  const signature = providers.map(({ id, state, configured }) => `${id}:${state}:${configured}`).sort().join('|');
+  const connectivityChanged = connectivitySignature !== signature;
+  if (connectivityChanged) {
+    connectivitySignature = signature;
+    connectivityProviders = providers.map(({ id, state, configured }) => ({ id, state, configured }));
+  }
+  const pulseFresh = next.lastPulseAtMs !== null && Date.now() - next.lastPulseAtMs < PULSE_FRESH_MS;
+  const summary = pulseFresh ? next.snapshot?.summary : undefined;
+  const activeCount = summary?.activeCount ?? null;
+  const configuredCount = summary?.configuredCount ?? null;
+  const totalProviders = summary?.totalProviders ?? null;
+  const badgeChanged = badgeSummary.socketStatus !== next.socketStatus || badgeSummary.pulseFresh !== pulseFresh ||
+    badgeSummary.activeCount !== activeCount || badgeSummary.configuredCount !== configuredCount ||
+    badgeSummary.totalProviders !== totalProviders;
+  if (badgeChanged) badgeSummary = { socketStatus: next.socketStatus, pulseFresh, activeCount, configuredCount, totalProviders };
+  if (!isDocumentVisible()) return;
+  if (connectivityChanged) feedsHealthStore.connectivity.forEach((listener) => listener());
+  if (badgeChanged) feedsHealthStore.badge.forEach((listener) => listener());
+  if (fullChanged) feedsHealthStore.full.forEach((listener) => listener());
+}
 
-    return () => {
-      disposed = true;
-      if (reconnectTimerRef.current !== null) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      try {
-        socket?.close();
-      } catch {
-        return;
-      }
-    };
-  }, [refresh]);
+async function refreshFeedsHealth(): Promise<void> {
+  const signal = connectionScope?.signal;
+  if (signal === undefined || signal.aborted) return;
+  const response = await fetch('/api/system/feeds-health', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+    signal,
+  });
+  if (!response.ok) throw new Error(`feeds-health HTTP ${String(response.status)}`);
+  const raw: unknown = await response.json();
+  if (signal.aborted) return;
+  if (!isRecord(raw) || !Array.isArray(raw['providers'])) throw new Error('Invalid feeds-health payload');
+  const snapshot = raw as unknown as FeedsHealthSnapshot;
+  const previous = feedsHealthStore.state.snapshot;
+  if (previous === null || previous.asOfUtcSec <= snapshot.asOfUtcSec) publishFeedsHealth({ snapshot });
+}
 
-  const reconnectProvider = useCallback(async (provider: FeedProviderId): Promise<void> => {
-    setReconnectingProvider(provider);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4_500);
+function connectFeedsSocket(signal: AbortSignal): void {
+  if (signal.aborted) return;
+  let next: WebSocket;
+  try {
+    next = new WebSocket(feedsHealthSocketUrl());
+  } catch {
+    publishFeedsHealth({ socketStatus: 'ERROR' });
+    return;
+  }
+  socket = next;
+  const isCurrent = () => !signal.aborted && socket === next;
+  next.addEventListener('open', () => {
+    if (isCurrent()) publishFeedsHealth({ socketStatus: 'LIVE' });
+  });
+  next.addEventListener('message', (event: MessageEvent) => {
+    if (!isCurrent() || typeof event.data !== 'string') return;
     try {
-      const response = await fetch('/api/system/feeds-reconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ provider }),
-        signal: controller.signal,
+      const pulse = parsePulse(JSON.parse(event.data) as unknown);
+      if (pulse === null) return;
+      const previous = feedsHealthStore.state.snapshot;
+      publishFeedsHealth({
+        lastPulseAtMs: Date.now(),
+        snapshot: previous === null ? null : mergePulse(previous, pulse),
       });
-      const raw: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
-        const detail = isRecord(raw) && typeof raw['detail'] === 'string' ? raw['detail'] : `HTTP ${String(response.status)}`;
-        setLastReconnectOk(false);
-        setLastReconnectDetail(detail);
-        return;
-      }
-      const result = raw as FeedReconnectResult;
-      setLastReconnectOk(Boolean(result.ok));
-      setLastReconnectDetail(result.detail);
-      // La reconexión continúa en el backend; la UI no espera a que termine.
-      void refresh().catch(() => undefined);
-    } catch (err: unknown) {
-      setLastReconnectOk(false);
-      setLastReconnectDetail(err instanceof Error ? err.message : String(err));
-    } finally {
-      clearTimeout(timeoutId);
-      setReconnectingProvider((current) => (current === provider ? null : current));
+      if (pulseTimer !== undefined) clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(() => {
+        pulseTimer = undefined;
+        publishFeedsHealth({});
+      }, PULSE_FRESH_MS);
+    } catch {
+      // Ignora mensajes ajenos al contrato del pulso.
     }
-  }, [refresh]);
+  });
+  next.addEventListener('close', () => {
+    if (!isCurrent()) return;
+    socket = undefined;
+    publishFeedsHealth({ socketStatus: 'RECONNECTING' });
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      connectFeedsSocket(signal);
+    }, 2_000);
+  });
+  next.addEventListener('error', () => next.close());
+}
 
-  return useMemo(
-    () => ({
-      snapshot,
-      socketStatus,
-      lastPulseAtMs,
-      reconnectingProvider,
-      lastReconnectDetail,
-      lastReconnectOk,
-      refresh,
-      reconnectProvider,
-    }),
-    [
-      snapshot,
-      socketStatus,
-      lastPulseAtMs,
-      reconnectingProvider,
-      lastReconnectDetail,
-      lastReconnectOk,
-      refresh,
-      reconnectProvider,
-    ],
-  );
+function stopFeedsConnection(): void {
+  connectionScope?.abort();
+  connectionScope = undefined;
+  if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+  if (pulseTimer !== undefined) clearTimeout(pulseTimer);
+  reconnectTimer = undefined;
+  pulseTimer = undefined;
+  socket?.close();
+  socket = undefined;
+}
+
+function startFeedsConnection(): void {
+  if (connectionScope !== undefined) return;
+  const controller = new AbortController();
+  connectionScope = controller;
+  publishFeedsHealth({ socketStatus: 'CONNECTING', lastPulseAtMs: null });
+  void refreshFeedsHealth().catch(() => {
+    if (!controller.signal.aborted && feedsHealthStore.state.socketStatus !== 'LIVE') {
+      publishFeedsHealth({ socketStatus: 'ERROR' });
+    }
+  });
+  connectFeedsSocket(controller.signal);
+}
+
+export function acquireFeedsHealthConnection(): () => void {
+  connectionUsers += 1;
+  if (releaseTimer !== undefined) clearTimeout(releaseTimer);
+  releaseTimer = undefined;
+  if (stopVisibility === undefined) {
+    stopVisibility = subscribeDocumentVisibility((visible) => {
+      if (visible) {
+        startFeedsConnection();
+        feedsHealthStore.connectivity.forEach((listener) => listener());
+        feedsHealthStore.badge.forEach((listener) => listener());
+        feedsHealthStore.full.forEach((listener) => listener());
+      } else stopFeedsConnection();
+    });
+    if (isDocumentVisible()) startFeedsConnection();
+  }
+  let acquired = true;
+  return () => {
+    if (!acquired) return;
+    acquired = false;
+    connectionUsers -= 1;
+    if (connectionUsers !== 0) return;
+    releaseTimer = setTimeout(() => {
+      releaseTimer = undefined;
+      stopVisibility?.();
+      stopVisibility = undefined;
+      stopFeedsConnection();
+    }, 150);
+  };
+}
+
+export function useFeedsHealthConnection(): void {
+  useEffect(acquireFeedsHealthConnection, []);
+}
+
+async function reconnectProvider(provider: FeedProviderId): Promise<void> {
+  const generation = ++reconnectGeneration;
+  publishFeedsHealth({ reconnectingProvider: provider });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4_500);
+  try {
+    const response = await fetch('/api/system/feeds-reconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ provider }),
+      signal: controller.signal,
+    });
+    const raw: unknown = await response.json().catch(() => null);
+    if (generation !== reconnectGeneration) return;
+    if (!response.ok) {
+      const detail = isRecord(raw) && typeof raw['detail'] === 'string' ? raw['detail'] : `HTTP ${String(response.status)}`;
+      publishFeedsHealth({ lastReconnectOk: false, lastReconnectDetail: detail });
+      return;
+    }
+    const result = raw as FeedReconnectResult;
+    publishFeedsHealth({ lastReconnectOk: Boolean(result.ok), lastReconnectDetail: result.detail });
+    void refreshFeedsHealth().catch(() => undefined);
+  } catch (error) {
+    if (generation === reconnectGeneration) {
+      publishFeedsHealth({ lastReconnectOk: false, lastReconnectDetail: error instanceof Error ? error.message : String(error) });
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (generation === reconnectGeneration) publishFeedsHealth({ reconnectingProvider: null });
+  }
+}
+
+export function subscribeFeedsHealth(
+  channel: 'full' | 'connectivity' | 'badge',
+  listener: () => void,
+): () => void {
+  const registered = feedsHealthStore[channel];
+  registered.add(listener);
+  return () => { registered.delete(listener); };
+}
+
+const subscribeConnectivity = (listener: () => void) => subscribeFeedsHealth('connectivity', listener);
+const subscribeBadge = (listener: () => void) => subscribeFeedsHealth('badge', listener);
+const subscribeFull = (listener: () => void) => subscribeFeedsHealth('full', listener);
+const subscribeClosed = () => () => undefined;
+const readConnectivity = () => connectivityProviders;
+const readBadge = () => badgeSummary;
+const readFull = () => feedsHealthStore.state;
+const readClosed = () => emptyFeedsHealth;
+
+export function useGlobalConnectivityProviders(): readonly ConnectivityProvider[] {
+  return useSyncExternalStore(subscribeConnectivity, readConnectivity, readConnectivity);
+}
+
+export function useFeedsBadgeSummary(): FeedsBadgeSummary {
+  return useSyncExternalStore(subscribeBadge, readBadge, readBadge);
+}
+
+export function useFeedsHealthDrawerState(open: boolean): FeedsHealthState {
+  const read = open ? readFull : readClosed;
+  return useSyncExternalStore(open ? subscribeFull : subscribeClosed, read, read);
 }
 
 /* ============================================================================
@@ -637,16 +736,13 @@ const ProviderCard: React.FC<{
 export interface FeedsHealthDrawerProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly health: FeedsHealthState;
-  readonly onReconnect: (provider: FeedProviderId) => void;
 }
 
 export const FeedsHealthDrawer: React.FC<FeedsHealthDrawerProps> = ({
   open,
   onClose,
-  health,
-  onReconnect,
 }) => {
+  const health = useFeedsHealthDrawerState(open);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -687,7 +783,7 @@ export const FeedsHealthDrawer: React.FC<FeedsHealthDrawerProps> = ({
             <Activity className="h-4 w-4 text-[#8B7CF6]" />
             <div>
               <h2 className="text-[13px] font-bold text-[#ECEDF2]">Feeds en vivo</h2>
-              <p className="text-[10.5px] text-[#787B86]">
+              <p className="text-[10.5px] tabular-nums text-[#787B86]">
                 {summary === null
                   ? 'Sin snapshot válido'
                   : `${String(summary.activeCount)}/${String(summary.totalProviders)} activos · ${String(summary.configuredCount)} armados${summary.standbyCount !== undefined && summary.standbyCount > 0 ? ` · ${String(summary.standbyCount)} standby` : ''}`}
@@ -721,7 +817,7 @@ export const FeedsHealthDrawer: React.FC<FeedsHealthDrawerProps> = ({
                 key={provider.id}
                 provider={provider}
                 reconnecting={health.reconnectingProvider === provider.id}
-                onReconnect={onReconnect}
+                onReconnect={reconnectProvider}
               />
             ))
           )}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { memo, useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -37,7 +37,7 @@ import {
   fmtNum,
   fmtPctTable,
 } from './data/marketData';
-import { startLiveRuntimePolling, useLiveMarketStatus } from './data/liveRuntimeBridge';
+import { startLiveRuntimePolling, useLiveBridgeSelector, useLiveMarketStatus } from './data/liveRuntimeBridge';
 import { useMarketViewScope } from './api/useMarketLiveStream';
 import { parseOptionsUnderlyingKey } from './data/optionsUnderlying';
 import { resolveStockDetailRoute } from './components/stock-detail/stockDetailRouting';
@@ -59,7 +59,7 @@ import {
   SettingsAndDesignSystemModule,
 } from './components/MarketModules';
 import { MarketTickerBar, MarketSessionState } from './components/MarketTickerBar';
-import { useFeedsHealthPulse } from './components/FeedsHealthDrawer';
+import { useFeedsHealthConnection, useGlobalConnectivityProviders } from './components/FeedsHealthDrawer';
 import { resolveGlobalConnectivityStatus } from '../../src/core/stockDetailStability';
 import {
   OrderTicketDrawer,
@@ -87,6 +87,93 @@ type PageId =
 
 const EMPTY_TICK_FLASHES: Readonly<Record<string, 'up' | 'down' | null>> = Object.freeze({});
 
+function cycleMarketStatus(current: MarketSessionState): MarketSessionState {
+  const order: readonly MarketSessionState[] = ['Abierto', 'Pre-Market', 'After-Hours', 'Cerrado', 'Feriado'];
+  return order[(order.indexOf(current) + 1) % order.length] ?? 'Abierto';
+}
+
+const MarketClosedBanner = memo(function MarketClosedBanner({
+  arMarketStatus, onDismiss,
+}: { readonly arMarketStatus: MarketSessionState; readonly onDismiss: () => void }) {
+  const liveMarket = useLiveMarketStatus();
+  return (
+    <div className="fixed left-0 right-0 top-[50px] z-30 bg-[#35280F] border-b border-[#F5B544]/40 px-4 py-1.5 flex items-center justify-between text-[12px] text-[#F5B544] shadow-[0_4px_16px_-6px_rgba(0,0,0,0.6)]">
+      <span>
+        Estado BYMA ({liveMarket.feedStatus}): <strong>{arMarketStatus}</strong> — {liveMarket.marketStateLabel}
+      </span>
+      <button type="button" onClick={onDismiss} className="underline font-semibold cursor-pointer">
+        Ocultar aviso
+      </button>
+    </div>
+  );
+});
+
+const AppMarketChrome = memo(function AppMarketChrome(props: React.ComponentProps<typeof MarketTickerBar>) {
+  const [arMarketStatus, setArMarketStatus] = useState<MarketSessionState>('Abierto');
+  const marketState = useLiveBridgeSelector(['status'], (snapshot) => snapshot.marketState);
+  useEffect(() => {
+    if (!marketState) return;
+    if (marketState === 'ABIERTO') setArMarketStatus('Abierto');
+    else if (marketState === 'SUBASTA' || marketState === 'PREMARKET') setArMarketStatus('Pre-Market');
+    else setArMarketStatus('Cerrado');
+  }, [marketState]);
+
+  const handleCycleMarketStatus = useCallback(() => setArMarketStatus(cycleMarketStatus), []);
+  const handleDismiss = useCallback(() => setArMarketStatus('Abierto'), []);
+  return (
+    <>
+      <MarketTickerBar {...props} marketStatus={arMarketStatus} onCycleMarketStatus={handleCycleMarketStatus} />
+      {arMarketStatus !== 'Abierto' && (
+        <MarketClosedBanner arMarketStatus={arMarketStatus} onDismiss={handleDismiss} />
+      )}
+    </>
+  );
+});
+
+const AppConnectivityBadges = memo(function AppConnectivityBadges() {
+  const liveMarket = useLiveMarketStatus();
+  const providers = useGlobalConnectivityProviders();
+  const globalConnectivity = resolveGlobalConnectivityStatus({
+    isBackendConnected: liveMarket.isBackendConnected,
+    feedStatus: liveMarket.feedStatus,
+    providers,
+  });
+  return (
+    <>
+    {/* Pieza 49.1: slot de altura/ancho reservado (invisible al conectar) → CLS 0 */}
+    <span
+      title={
+        !liveMarket.isBackendConnected
+          ? 'Reconectando con el servidor backend...'
+          : liveMarket.warmupStatus === 'WARMING_UP'
+            ? 'Precargando universo 24/7 EOD e indicadores...'
+            : 'Backend conectado y warmup completo'
+      }
+      className={`hidden sm:inline-flex items-center justify-center gap-1.5 min-w-[148px] px-2 py-1 rounded-[8px] border border-[#2A3347] bg-[#121722] text-[#9CA3AF] text-[10.5px] font-mono-num ${
+        !liveMarket.isBackendConnected || liveMarket.warmupStatus === 'WARMING_UP' ? '' : 'invisible'
+      }`}
+    >
+      <span className="w-1.5 h-1.5 rounded-full bg-[#EAB308]" />
+      {!liveMarket.isBackendConnected ? 'CONECTANDO...' : 'PRECARGANDO EOD...'}
+    </span>
+    <span
+      title={liveMarket.marketStateLabel}
+      className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[11px] font-mono-num font-semibold ${
+        globalConnectivity.tone === 'LIVE'
+          ? 'bg-[#0D221E] text-[#22C55E] border-[#164E3F]'
+          : globalConnectivity.tone === 'EOD'
+          ? 'bg-[#132033] text-[#38BDF8] border-[#1E3A5F]'
+          : globalConnectivity.tone === 'PARTIAL'
+          ? 'bg-[#281E0E] text-[#F5B544] border-[#59411A]'
+          : 'bg-[#1A1318] text-[#F23645] border-[#4A2229]'
+      }`}
+    >
+      {globalConnectivity.label}
+    </span>
+    </>
+  );
+});
+
 export default function App() {
   // Estado principal de navegación
   const [activePage, setActivePage] = useState<PageId>('inicio');
@@ -101,7 +188,6 @@ export default function App() {
   const [optionsGroupOpen, setOptionsGroupOpen] = useState(true);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [density, setDensity] = useState<'densa' | 'normal' | 'comoda'>('normal');
-  const [arMarketStatus, setArMarketStatus] = useState<MarketSessionState>('Abierto');
   const [liveTicksEnabled, setLiveTicksEnabled] = useState(true);
 
   // Modales y Drawers
@@ -111,8 +197,7 @@ export default function App() {
   const [orderPreset, setOrderPreset] = useState<OrderTicketPreset | null>(null);
 
   // Estado de conectividad/warmup ligero (sin precios calientes en el árbol raíz)
-  const liveMarket = useLiveMarketStatus();
-  const feedsHealth = useFeedsHealthPulse();
+  useFeedsHealthConnection();
 
   const viewScope = useMemo((): {
     readonly view: string;
@@ -158,19 +243,6 @@ export default function App() {
 
   useMarketViewScope(viewScope.view, viewScope.focusSymbol, viewScope.focusMarket);
 
-  const globalConnectivity = useMemo(
-    () =>
-      resolveGlobalConnectivityStatus({
-        isBackendConnected: liveMarket.isBackendConnected,
-        feedStatus: liveMarket.feedStatus,
-        providers: (feedsHealth.snapshot?.providers ?? []).map((p) => ({
-          id: p.id,
-          state: p.state,
-          configured: p.configured,
-        })),
-      }),
-    [feedsHealth.snapshot?.providers, liveMarket.feedStatus, liveMarket.isBackendConnected],
-  );
   const [positions, setPositions] = useState<PortfolioPosition[]>(INITIAL_POSITIONS);
   const [alerts, setAlerts] = useState<AlertItem[]>(INITIAL_ALERTS);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -187,13 +259,6 @@ export default function App() {
   useEffect(() => {
     return startLiveRuntimePolling(liveTicksEnabled);
   }, [liveTicksEnabled]);
-
-  useEffect(() => {
-    if (!liveMarket.marketState) return;
-    if (liveMarket.marketState === 'ABIERTO') setArMarketStatus('Abierto');
-    else if (liveMarket.marketState === 'SUBASTA' || liveMarket.marketState === 'PREMARKET') setArMarketStatus('Pre-Market');
-    else setArMarketStatus('Cerrado');
-  }, [liveMarket.marketState]);
 
   // Atajos de teclado globales (Ctrl+K, N, [, ?)
   useEffect(() => {
@@ -229,33 +294,44 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activePage]);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4200);
-  };
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+  }, []);
 
-  const handleOpenOrderTicket = (preset: OrderTicketPreset) => {
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => {
+      toastTimer.current = null;
+      setToastMessage(null);
+    }, 4_200);
+  }, []);
+
+  const handleOpenOrderTicket = useCallback((preset: OrderTicketPreset) => {
     setOrderPreset(preset);
     setOrderDrawerOpen(true);
-  };
+  }, []);
 
-  const handleSelectStockDetail = (ticker: string) => {
+  const handleSelectStockDetail = useCallback((ticker: string) => {
     setSelectedTicker(ticker);
     setActivePage('acciones');
-  };
+  }, []);
 
-  const cycleMarketStatus = (current: MarketSessionState): MarketSessionState => {
-    const order: MarketSessionState[] = [
-      'Abierto',
-      'Pre-Market',
-      'After-Hours',
-      'Cerrado',
-      'Feriado',
-    ];
-    return order[(order.indexOf(current) + 1) % order.length] ?? 'Abierto';
-  };
+  const handleToggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
+  const handleOpenCommandPalette = useCallback(() => setCommandOpen(true), []);
+  const handleOpenAlerts = useCallback(() => setActivePage('alertas'), []);
+  const handleOpenShortcuts = useCallback(() => setShortcutsOpen(true), []);
+  const handleToggleTheme = useCallback(() => setTheme((t) => t === 'dark' ? 'light' : 'dark'), []);
+  const handleNavigate = useCallback((page: string) => setActivePage(page as PageId), []);
+  const handleGoToOptions = useCallback((ticker: string) => {
+    setSelectedOptionsUnderlying(ticker);
+    setActivePage('opciones');
+  }, []);
+  const handleBackToMonitor = useCallback(() => {
+    setMonitorPanel('acciones');
+    setActivePage('monitoreo');
+  }, []);
 
   const routePathLabel: Record<PageId, string> = {
     inicio: '/inicio',
@@ -302,39 +378,19 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-[var(--bg-app)] text-[var(--text-primary)]">
       {/* BARRA SUPERIOR DE MERCADO CON MARQUEE INFINITO (`MarketTickerBar`) */}
-      <MarketTickerBar
+      <AppMarketChrome
         sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-        marketStatus={arMarketStatus}
-        feedStatus={liveMarket.feedStatus}
-        onCycleMarketStatus={() => setArMarketStatus(cycleMarketStatus(arMarketStatus))}
+        onToggleSidebar={handleToggleSidebar}
         onSelectTicker={handleSelectStockDetail}
-        onOpenCommandPalette={() => setCommandOpen(true)}
-        onOpenAlerts={() => setActivePage('alertas')}
+        onOpenCommandPalette={handleOpenCommandPalette}
+        onOpenAlerts={handleOpenAlerts}
         hasUnreadAlerts={alerts.some((a) => a.status === 'Disparada')}
         theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-        onOpenShortcuts={() => setShortcutsOpen(true)}
+        onToggleTheme={handleToggleTheme}
+        onOpenShortcuts={handleOpenShortcuts}
         liveFeedEnabled={liveTicksEnabled}
-        feedsHealth={feedsHealth}
       />
 
-      {/* Banner contextual si el usuario simula mercado cerrado / feriado.
-          Pieza 49.1: overlay fijo (no empuja el layout → CLS 0). */}
-      {arMarketStatus !== 'Abierto' && (
-        <div className="fixed left-0 right-0 top-[50px] z-30 bg-[#35280F] border-b border-[#F5B544]/40 px-4 py-1.5 flex items-center justify-between text-[12px] text-[#F5B544] shadow-[0_4px_16px_-6px_rgba(0,0,0,0.6)]">
-          <span>
-            Estado BYMA ({liveMarket.feedStatus}): <strong>{arMarketStatus}</strong> — {liveMarket.marketStateLabel}
-          </span>
-          <button
-            type="button"
-            onClick={() => setArMarketStatus('Abierto')}
-            className="underline font-semibold cursor-pointer"
-          >
-            Ocultar aviso
-          </button>
-        </div>
-      )}
 
       {/* CUERPO PRINCIPAL: SIDEBAR (232 px / 64 px) + CONTENIDO */}
       <div className="flex-1 flex min-h-0">
@@ -672,36 +728,7 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
-                {/* Pieza 49.1: slot de altura/ancho reservado (invisible al conectar) → CLS 0 */}
-                <span
-                  title={
-                    !liveMarket.isBackendConnected
-                      ? 'Reconectando con el servidor backend...'
-                      : liveMarket.warmupStatus === 'WARMING_UP'
-                        ? 'Precargando universo 24/7 EOD e indicadores...'
-                        : 'Backend conectado y warmup completo'
-                  }
-                  className={`hidden sm:inline-flex items-center justify-center gap-1.5 min-w-[148px] px-2 py-1 rounded-[8px] border border-[#2A3347] bg-[#121722] text-[#9CA3AF] text-[10.5px] font-mono-num ${
-                    !liveMarket.isBackendConnected || liveMarket.warmupStatus === 'WARMING_UP' ? '' : 'invisible'
-                  }`}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#EAB308]" />
-                  {!liveMarket.isBackendConnected ? 'CONECTANDO...' : 'PRECARGANDO EOD...'}
-                </span>
-                <span
-                  title={liveMarket.marketStateLabel}
-                  className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] border text-[11px] font-mono-num font-semibold ${
-                    globalConnectivity.tone === 'LIVE'
-                      ? 'bg-[#0D221E] text-[#22C55E] border-[#164E3F]'
-                      : globalConnectivity.tone === 'EOD'
-                      ? 'bg-[#132033] text-[#38BDF8] border-[#1E3A5F]'
-                      : globalConnectivity.tone === 'PARTIAL'
-                      ? 'bg-[#281E0E] text-[#F5B544] border-[#59411A]'
-                      : 'bg-[#1A1318] text-[#F23645] border-[#4A2229]'
-                  }`}
-                >
-                  {globalConnectivity.label}
-                </span>
+                <AppConnectivityBadges />
                 <div className="hidden sm:flex items-center gap-1 p-1 rounded-[8px] bg-[var(--bg-sidebar)] border border-[var(--border-subtle)] text-[11px]">
                   <span className="px-2 text-[var(--text-tertiary)]">Densidad:</span>
                   {(['densa', 'normal', 'comoda'] as const).map((d) => (
@@ -727,7 +754,7 @@ export default function App() {
               <HomeDashboard
                 tickFlashes={EMPTY_TICK_FLASHES}
                 onSelectStock={handleSelectStockDetail}
-                onNavigate={(p) => setActivePage(p as PageId)}
+                onNavigate={handleNavigate}
                 onOpenOrderTicket={handleOpenOrderTicket}
               />
             )}
@@ -747,14 +774,8 @@ export default function App() {
               <StockDetailView
                 ticker={selectedTicker}
                 onSelectTicker={setSelectedTicker}
-                onGoToOptions={(t) => {
-                  setSelectedOptionsUnderlying(t === 'GGAL' ? 'GGAL' : t);
-                  setActivePage('opciones');
-                }}
-                onBackToMonitor={() => {
-                  setMonitorPanel('acciones');
-                  setActivePage('monitoreo');
-                }}
+                onGoToOptions={handleGoToOptions}
+                onBackToMonitor={handleBackToMonitor}
                 onOpenOrderTicket={handleOpenOrderTicket}
               />
             )}
@@ -785,7 +806,7 @@ export default function App() {
               />
             )}
             {activePage === 'espacios' && (
-              <WorkspacesModule onNavigate={(p) => setActivePage(p as PageId)} />
+              <WorkspacesModule onNavigate={handleNavigate} />
             )}
             {activePage === 'alertas' && (
               <AlertsModule
@@ -799,7 +820,7 @@ export default function App() {
             {activePage === 'configuracion' && (
               <SettingsAndDesignSystemModule
                 theme={theme}
-                onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+                onToggleTheme={handleToggleTheme}
                 density={density}
                 onChangeDensity={setDensity}
                 liveTicksEnabled={liveTicksEnabled}
@@ -830,9 +851,9 @@ export default function App() {
         open={commandOpen}
         onClose={() => setCommandOpen(false)}
         onSelectStock={handleSelectStockDetail}
-        onNavigate={(p) => setActivePage(p as PageId)}
+        onNavigate={handleNavigate}
         onOpenNewOrder={() => setOrderDrawerOpen(true)}
-        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        onToggleTheme={handleToggleTheme}
       />
 
       {/* MODAL DE ATAJOS (?) */}

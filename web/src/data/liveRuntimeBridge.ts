@@ -1,4 +1,4 @@
-import { useCallback, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { syncOptionEngineMarket } from '../components/options/engine';
 import type {
   ArMacroResponse,
@@ -43,6 +43,36 @@ import {
   type OptionExpiryGroup,
 } from './marketData';
 import { parseOptionsUnderlyingKey } from './optionsUnderlying';
+import { createVisibilityAwareInterval } from './visibilityLifecycle';
+
+interface UsProviderNodeDto {
+  readonly configured?: boolean;
+  readonly connected?: boolean | null;
+  readonly state?: string;
+  readonly keySlot?: {
+    readonly envName?: string;
+    readonly slotIndex?: number;
+    readonly poolSize?: number;
+  } | null;
+  readonly activeRole?: string;
+  readonly lastError?: string | null;
+  readonly poolSize?: number;
+  readonly lastSlotIndex?: number | null;
+  readonly roundRobinRequests?: number;
+  readonly slots?: readonly { readonly envName?: string; readonly slotIndex?: number }[];
+}
+
+export interface UsProvidersStatusDto {
+  readonly status?: string;
+  readonly asOfUtcSec?: number;
+  readonly usOptionsFeedBadge?: 'TRADIER LIVE + ORATS' | 'MASSIVE + ORATS';
+  readonly providers?: {
+    readonly MASSIVE_WS?: UsProviderNodeDto;
+    readonly MASSIVE_REST_POOL?: UsProviderNodeDto;
+    readonly TRADIER_LIVE?: UsProviderNodeDto;
+    readonly ORATS?: UsProviderNodeDto;
+  };
+}
 
 export interface LiveTickerUpdate {
   readonly id: string;
@@ -72,6 +102,7 @@ export interface LiveMarketState {
   readonly usSnapshotsBySymbol: Readonly<Record<string, UsSnapshotResponseDto>>;
   readonly optionsUnderlyings: readonly OptionsUnderlyingMetaDto[];
   readonly optionsUnderlyingsStatus: 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA';
+  readonly usProvidersStatus: UsProvidersStatusDto | null;
   readonly usVolSurfaceBySymbol: Readonly<Record<string, UsVolSurfaceResponseDto | null>>;
   readonly usVolSurfaceStatusBySymbol: Readonly<
     Record<string, 'IDLE' | 'LOADING' | 'OK' | 'NO_DATA'>
@@ -89,6 +120,13 @@ export interface LiveMarketState {
 
 type StoreListener = () => void;
 type TickerListener = (updates: readonly LiveTickerUpdate[]) => void;
+export type BridgeStaticChannel =
+  | 'status' | 'overview' | 'macro' | 'monitoring' | 'relations'
+  | 'optionsUnderlyings' | 'usProvidersStatus' | 'lastSync' | '__legacy_all__';
+export type BridgeKeyedChannel =
+  | `usSnapshot:${string}` | `stockDetail:${string}` | `options:${string}`
+  | `optionLoading:${string}` | `volSurface:${string}` | `catalysts:${string}`;
+export type BridgeChannelKey = BridgeStaticChannel | BridgeKeyedChannel;
 
 let state: LiveMarketState = {
   version: 0,
@@ -107,12 +145,13 @@ let state: LiveMarketState = {
   usSnapshotsBySymbol: {},
   optionsUnderlyings: [],
   optionsUnderlyingsStatus: 'IDLE',
+  usProvidersStatus: null,
   usVolSurfaceBySymbol: {},
   usVolSurfaceStatusBySymbol: {},
   optionsCatalystsBySymbol: {},
   optionsCatalystsStatusBySymbol: {},
   loadingOptionExpiries: {},
-  tickFlashes: {},
+  tickFlashes: Object.freeze({}),
   isBackendConnected: false,
   warmupStatus: 'IDLE',
 };
@@ -133,17 +172,18 @@ let statusSnapshot: LiveMarketStatus = {
   warmupStatus: state.warmupStatus,
 };
 
-const listeners = new Set<StoreListener>();
-const statusListeners = new Set<StoreListener>();
+const channelListeners = new Map<BridgeChannelKey, Map<StoreListener, number>>();
 const tickerListeners = new Set<TickerListener>();
 const seqByKey = new Map<string, number>();
-const abortByKey = new Map<string, AbortController>();
-const inFlightByKey = new Map<
-  string,
-  { readonly url: string; readonly token: number; readonly promise: Promise<unknown> }
->();
+interface InFlightEntry {
+  readonly url: string;
+  readonly token: number;
+  readonly controller: AbortController;
+  readonly waiters: Set<symbol>;
+  readonly promise: Promise<unknown>;
+}
+const inFlightByKey = new Map<string, InFlightEntry>();
 const lastKnownPriceBySymbol = new Map<string, number>();
-let flashClearTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Pieza 50.9 (Bloque B): publicación ordenada por símbolo canónico y alcance.
 // `base:US:SYM` para el snapshot base; `point:US:SYM:FECHA` para cargas puntuales.
@@ -157,6 +197,8 @@ type PendingPointFact =
   | { readonly kind: 'snapshot'; readonly snapshot: UsSnapshotResponseDto }
   | { readonly kind: 'chain'; readonly chain: UsOptionExpiryChainResponseDto };
 const pendingPointFactsBySymbol = new Map<string, Map<string, PendingPointFact>>();
+const publishedSnapshotResponses = new WeakMap<UsSnapshotResponseDto, UsSnapshotResponseDto>();
+const publishedOptionResponses = new WeakSet<UsSnapshotResponseDto>();
 // Evaluación (asOfUtcSec) de los datos cargados vigentes, por símbolo y fecha.
 const loadedDateEvaluationsBySymbol = new Map<string, Map<string, number>>();
 
@@ -331,25 +373,77 @@ function publishBaseSnapshot(
 
 const DEFAULT_FETCH_TIMEOUT_MS = 25_000;
 
-function notify(): void {
-  state = { ...state, version: state.version + 1 };
+export function subscribeBridgeChannel(channel: BridgeChannelKey, listener: StoreListener): () => void {
+  return subscribeBridgeChannels([channel], listener);
+}
+
+export function subscribeBridgeChannels(
+  channels: readonly BridgeChannelKey[],
+  listener: StoreListener,
+): () => void {
+  const uniqueChannels = new Set(channels);
+  for (const channel of uniqueChannels) {
+    const registered = channelListeners.get(channel) ?? new Map<StoreListener, number>();
+    registered.set(listener, (registered.get(listener) ?? 0) + 1);
+    channelListeners.set(channel, registered);
+  }
+  let subscribed = true;
+  return () => {
+    if (!subscribed) return;
+    subscribed = false;
+    for (const channel of uniqueChannels) {
+      const registered = channelListeners.get(channel);
+      const references = registered?.get(listener);
+      if (registered === undefined || references === undefined) continue;
+      if (references === 1) registered.delete(listener);
+      else registered.set(listener, references - 1);
+      if (registered.size === 0) channelListeners.delete(channel);
+    }
+  };
+}
+
+export function getBridgeListenerStats() {
+  const byChannel = {
+    __legacy_all__: 0,
+    ...Object.fromEntries([...channelListeners].map(([channel, registered]) => [channel, registered.size])),
+  };
+  return {
+    totalChannels: channelListeners.size,
+    totalListeners: new Set([...channelListeners.values()].flatMap((registered) => [...registered.keys()])).size,
+    byChannel,
+  };
+}
+
+function commitBridgeState(next: LiveMarketState, dirtyChannels: readonly BridgeChannelKey[]): void {
+  const dirty = new Set(dirtyChannels);
   if (
-    statusSnapshot.isBackendConnected !== state.isBackendConnected ||
-    statusSnapshot.feedStatus !== state.feedStatus ||
-    statusSnapshot.marketState !== state.marketState ||
-    statusSnapshot.marketStateLabel !== state.marketStateLabel ||
-    statusSnapshot.warmupStatus !== state.warmupStatus
+    statusSnapshot.isBackendConnected !== next.isBackendConnected ||
+    statusSnapshot.feedStatus !== next.feedStatus ||
+    statusSnapshot.marketState !== next.marketState ||
+    statusSnapshot.marketStateLabel !== next.marketStateLabel ||
+    statusSnapshot.warmupStatus !== next.warmupStatus
   ) {
     statusSnapshot = {
-      isBackendConnected: state.isBackendConnected,
-      feedStatus: state.feedStatus,
-      marketState: state.marketState,
-      marketStateLabel: state.marketStateLabel,
-      warmupStatus: state.warmupStatus,
+      isBackendConnected: next.isBackendConnected,
+      feedStatus: next.feedStatus,
+      marketState: next.marketState,
+      marketStateLabel: next.marketStateLabel,
+      warmupStatus: next.warmupStatus,
     };
-    statusListeners.forEach((fn) => fn());
+    dirty.add('status');
   }
-  listeners.forEach((fn) => fn());
+  if (state.lastSyncUtcSec !== next.lastSyncUtcSec || state.providerErrors !== next.providerErrors) {
+    dirty.add('lastSync');
+  }
+  if (dirty.size === 0) return;
+
+  state = { ...next, version: state.version + 1 };
+  dirty.add('__legacy_all__');
+  const pending = new Set<StoreListener>();
+  for (const channel of dirty) {
+    channelListeners.get(channel)?.forEach((_references, listener) => pending.add(listener));
+  }
+  for (const listener of pending) listener();
 }
 
 function publishTickerUpdatesFromMemory(): void {
@@ -386,90 +480,58 @@ function publishTickerUpdatesFromMemory(): void {
   }
 }
 
-function recordPriceFlashes(nextPrices: ReadonlyMap<string, number>): void {
-  const flashes: Record<string, 'up' | 'down' | null> = {};
-  let hasAny = false;
-  nextPrices.forEach((price, symbol) => {
-    if (!Number.isFinite(price)) return;
-    const prev = lastKnownPriceBySymbol.get(`ROW:${symbol}`);
-    if (prev !== undefined && Math.abs(price - prev) > 1e-6) {
-      flashes[symbol] = price > prev ? 'up' : 'down';
-      hasAny = true;
-    }
-    lastKnownPriceBySymbol.set(`ROW:${symbol}`, price);
-  });
-
-  if (!hasAny) return;
-  state = { ...state, tickFlashes: { ...state.tickFlashes, ...flashes } };
-  if (flashClearTimer) clearTimeout(flashClearTimer);
-  flashClearTimer = setTimeout(() => {
-    state = { ...state, tickFlashes: {} };
-    notify();
-  }, 620);
-}
-
-async function fetchJsonGuarded<T>(
+function fetchJsonGuarded<T>(
   key: string,
   url: string,
   options?: { readonly force?: boolean; readonly timeoutMs?: number; readonly signal?: AbortSignal },
 ): Promise<T | null> {
-  if (options?.signal?.aborted) {
-    return null;
-  }
-  const force = options?.force === true;
-  if (!force) {
-    const existing = inFlightByKey.get(key);
-    if (existing !== undefined && existing.url === url) {
-      return existing.promise as Promise<T | null>;
-    }
-  }
+  const signal = options?.signal;
+  if (signal?.aborted) return Promise.resolve(null);
 
-  const prevAbort = abortByKey.get(key);
-  if (prevAbort) prevAbort.abort();
-  const controller = new AbortController();
-  abortByKey.set(key, controller);
-  const nextSeq = (seqByKey.get(key) ?? 0) + 1;
-  seqByKey.set(key, nextSeq);
-
-  const onExternalAbort = () => controller.abort();
-  options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
-
-  const timeoutMs = options?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-
-  const run = (async (): Promise<T | null> => {
-    try {
-      const resp = await fetch(url, {
+  let entry = inFlightByKey.get(key);
+  if (entry === undefined || entry.url !== url || entry.controller.signal.aborted || options?.force) {
+    entry?.controller.abort();
+    const controller = new AbortController();
+    const token = (seqByKey.get(key) ?? 0) + 1;
+    seqByKey.set(key, token);
+    const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
+    const promise = Promise.resolve().then(async () => {
+      if (controller.signal.aborted) return null;
+      const response = await fetch(url, {
         signal: controller.signal,
         headers: { accept: 'application/json' },
       });
-      if (!resp.ok) {
-        return null;
-      }
-      const parsed = (await resp.json()) as T;
-      if (seqByKey.get(key) !== nextSeq || options?.signal?.aborted) {
-        return null;
-      }
-      return parsed;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeoutId);
-      options?.signal?.removeEventListener('abort', onExternalAbort);
-      if (abortByKey.get(key) === controller) {
-        abortByKey.delete(key);
-      }
-      const cur = inFlightByKey.get(key);
-      if (cur !== undefined && cur.token === nextSeq) {
-        inFlightByKey.delete(key);
-      }
-    }
-  })();
+      if (!response.ok) return null;
+      const body: unknown = await response.json();
+      return controller.signal.aborted || seqByKey.get(key) !== token ? null : body;
+    }).catch(() => null).finally(() => {
+      clearTimeout(timeout);
+      if (inFlightByKey.get(key)?.token === token) inFlightByKey.delete(key);
+    });
+    entry = { url, token, controller, promise, waiters: new Set() };
+    inFlightByKey.set(key, entry);
+  }
 
-  inFlightByKey.set(key, { url, token: nextSeq, promise: run });
-  return run;
+  const shared = entry;
+  const waiter = Symbol();
+  shared.waiters.add(waiter);
+  return new Promise((resolve) => {
+    const finish = (body: T | null) => {
+      if (!shared.waiters.delete(waiter)) return;
+      signal?.removeEventListener('abort', cancel);
+      shared.controller.signal.removeEventListener('abort', cancel);
+      resolve(body);
+    };
+    const cancel = () => {
+      finish(null);
+      if (shared.waiters.size === 0) shared.controller.abort();
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+    shared.controller.signal.addEventListener('abort', cancel, { once: true });
+    void shared.promise.then((body) => {
+      finish(signal?.aborted || shared.controller.signal.aborted ? null : body as T | null);
+    });
+  });
 }
 
 function combineFeedStatus(a: FeedStatus, b: FeedStatus): FeedStatus {
@@ -481,27 +543,23 @@ function combineFeedStatus(a: FeedStatus, b: FeedStatus): FeedStatus {
   return 'PARTIAL';
 }
 
-export async function refreshOverview(force = false): Promise<void> {
+export async function refreshOverview(force = false, signal?: AbortSignal): Promise<void> {
   const res = await fetchJsonGuarded<ArOverviewResponse>(
     'overview',
     `/api/ar/overview${force ? '?refresh=1' : ''}`,
-    { force }
+    { force, signal }
   );
+  if (signal?.aborted) return;
   if (!res) {
     if (!state.overview) {
-      state = { ...state, feedStatus: 'NO_DATA' };
-      notify();
+      commitBridgeState({ ...state, feedStatus: 'NO_DATA' }, []);
     }
     return;
   }
-  const priceMap = new Map<string, number>();
-  for (const s of res.mervalStocks) {
-    if (s.last !== null && Number.isFinite(s.last)) priceMap.set(s.ticker, s.last);
-  }
-  recordPriceFlashes(priceMap);
+  if (state.overview === res) return;
   hydrateFromArOverview(res);
 
-  state = {
+  commitBridgeState({
     ...state,
     isBackendConnected: true,
     overview: res,
@@ -510,66 +568,63 @@ export async function refreshOverview(force = false): Promise<void> {
     marketStateLabel: res.marketStateLabel,
     providerErrors: [...res.providerErrors],
     lastSyncUtcSec: res.asOfUtcSec,
-  };
+  }, ['overview']);
   publishTickerUpdatesFromMemory();
-  notify();
 }
 
-export async function refreshMacro(force = false): Promise<void> {
+export async function refreshMacro(force = false, signal?: AbortSignal): Promise<void> {
   const res = await fetchJsonGuarded<ArMacroResponse>(
     'macro',
     `/api/ar/macro${force ? '?refresh=1' : ''}`,
-    { force }
+    { force, signal }
   );
-  if (!res) return;
+  if (!res || signal?.aborted || state.macro === res) return;
   hydrateFromArMacro(res);
-  state = {
+  commitBridgeState({
     ...state,
     isBackendConnected: true,
     macro: res,
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
-  };
+  }, ['macro']);
   publishTickerUpdatesFromMemory();
-  notify();
 }
 
 export async function requestMonitoringPanel(
   panel: 'acciones' | 'bonos' | 'cedears' | 'cauciones',
-  force = false
+  force = false,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetchJsonGuarded<ArMonitoringResponse>(
     'monitoring',
     `/api/ar/monitoring?panel=${encodeURIComponent(panel)}${force ? '&refresh=1' : ''}`,
-    { force }
+    { force, signal }
   );
-  if (!res) return;
+  if (!res || signal?.aborted || state.monitoring === res) return;
   hydrateFromArMonitoring(res);
-  state = {
+  commitBridgeState({
     ...state,
     monitoring: res,
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
-  };
+  }, ['monitoring']);
   publishTickerUpdatesFromMemory();
-  notify();
 }
 
-export async function requestRelations(force = false): Promise<void> {
+export async function requestRelations(force = false, signal?: AbortSignal): Promise<void> {
   const res = await fetchJsonGuarded<ArRelationsResponse>(
     'relations',
     `/api/ar/relations${force ? '?refresh=1' : ''}`,
-    { force }
+    { force, signal }
   );
-  if (!res) return;
+  if (!res || signal?.aborted || state.relations === res) return;
   hydrateFromArRelations(res);
-  state = {
+  commitBridgeState({
     ...state,
     relations: res,
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
-  };
-  notify();
+  }, ['relations']);
 }
 
 export async function requestStockDetail(
@@ -585,14 +640,14 @@ export async function requestStockDetail(
     `/api/ar/stock?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}${force ? '&refresh=1' : ''}`,
     { force, signal }
   );
-  if (!res) return null;
-  state = {
+  if (!res || signal?.aborted) return null;
+  if (state.stockDetailsBySymbol[clean] === res) return res;
+  commitBridgeState({
     ...state,
     stockDetailsBySymbol: { ...state.stockDetailsBySymbol, [clean]: res },
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
-  };
-  notify();
+  }, [keyed('stockDetail', clean)]);
   return res;
 }
 
@@ -627,23 +682,22 @@ interface HealthResponseDto {
   readonly warmupStatus?: 'IDLE' | 'WARMING_UP' | 'READY';
 }
 
-export async function refreshBackendHealth(): Promise<boolean> {
-  const health = await fetchJsonGuarded<HealthResponseDto>('health', '/api/health');
+export async function refreshBackendHealth(signal?: AbortSignal): Promise<boolean> {
+  const health = await fetchJsonGuarded<HealthResponseDto>('health', '/api/health', { signal });
+  if (signal?.aborted) return false;
   if (!health || health.ok !== true) {
     if (state.isBackendConnected) {
-      state = { ...state, isBackendConnected: false };
-      notify();
+      commitBridgeState({ ...state, isBackendConnected: false }, []);
     }
     return false;
   }
   const nextWarmup = health.warmupStatus ?? 'READY';
   if (!state.isBackendConnected || state.warmupStatus !== nextWarmup) {
-    state = {
+    commitBridgeState({
       ...state,
       isBackendConnected: true,
       warmupStatus: nextWarmup,
-    };
-    notify();
+    }, []);
   }
   return true;
 }
@@ -734,13 +788,14 @@ export function getOptionExpiriesForUnderlying(
   marketState: LiveMarketState,
   rawKey: string,
 ): readonly OptionExpiryGroup[] {
-  return marketState.optionExpiriesByUnderlyingKey[parseOptionsUnderlyingKey(rawKey).canonicalKey] ?? [];
+  return marketState.optionExpiriesByUnderlyingKey[parseOptionsUnderlyingKey(rawKey).canonicalKey] ?? EMPTY_EXPIRIES;
 }
 
 export async function requestOptionsChain(
   underlying: string,
   force = false,
   expiration?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const selection = parseOptionsUnderlyingKey(underlying);
   // Pieza 50.3: el almacenamiento y el motor se aíslan por `market:symbol`.
@@ -753,9 +808,11 @@ export async function requestOptionsChain(
     const revision = beginPublication(scopeKey);
     const snap = await fetchJsonGuarded<UsSnapshotResponseDto>(
       `us:opt:${selection.key}${expiration ? `:${expiration}` : ''}`,
-      `/api/snapshot?symbol=${encodeURIComponent(clean)}${expiration ? `&expiration=${encodeURIComponent(expiration)}` : ''}`
+      `/api/snapshot?symbol=${encodeURIComponent(clean)}${expiration ? `&expiration=${encodeURIComponent(expiration)}` : ''}`,
+      { force, signal },
     );
-    if (!snap) return;
+    if (!snap || signal?.aborted) return;
+    if (publishedOptionResponses.has(snap)) return;
     const stamps = isPointScope ? pointPublicationStamps : basePublicationStamps;
     // Comprobación antes de mutar estado o hidratar consumidores.
     if (!acceptPublication(stamps, scopeKey, revision, snap.asOfUtcSec)) return;
@@ -770,6 +827,7 @@ export async function requestOptionsChain(
         currentFactState(clean, previousSnap, expiration),
       );
       if (decision !== 'publish') return;
+      publishedOptionResponses.add(snap);
       stashPointSnapshot(clean, expiration, snap);
       if (previousSnap !== undefined) {
         publishedSnap = mergeLoadedExpiriesIntoBaseSnapshot(previousSnap, snap, expiration);
@@ -782,7 +840,7 @@ export async function requestOptionsChain(
       if (activeOptionsCanonicalKey === canonicalKey) {
         syncOptionEngineMarket(merged);
       }
-      state = {
+      commitBridgeState({
         ...state,
         isBackendConnected: true,
         ...(publishedSnap !== null
@@ -801,12 +859,12 @@ export async function requestOptionsChain(
           : {}),
         feedStatus: combineFeedStatus(state.feedStatus, mapped.feedStatus),
         lastSyncUtcSec: snap.asOfUtcSec,
-      };
-      notify();
+      }, [keyed('options', canonicalKey), ...(publishedSnap !== null ? [keyed('usSnapshot', clean)] : []), ...(snap.catalysts ? [keyed('catalysts', clean)] : [])]);
       return;
     }
 
     publishedSnap = publishBaseSnapshot(clean, snap, previousSnap);
+    publishedOptionResponses.add(snap);
     hydrateFromUsSnapshot(publishedSnap);
     const mapped = mapUsSnapshotToArOptions(clean, publishedSnap);
     // Pieza 50.1: fusionar el vencimiento recién cargado sin borrar los otros ya hidratados.
@@ -815,7 +873,7 @@ export async function requestOptionsChain(
     if (activeOptionsCanonicalKey === canonicalKey) {
       syncOptionEngineMarket(merged);
     }
-    state = {
+    commitBridgeState({
       ...state,
       isBackendConnected: true,
       usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: publishedSnap },
@@ -832,16 +890,15 @@ export async function requestOptionsChain(
         : {}),
       feedStatus: combineFeedStatus(state.feedStatus, mapped.feedStatus),
       lastSyncUtcSec: snap.asOfUtcSec,
-    };
-    notify();
+    }, [keyed('options', canonicalKey), keyed('usSnapshot', clean), ...(snap.catalysts ? [keyed('catalysts', clean)] : [])]);
     return;
   }
   const res = await fetchJsonGuarded<ArOptionsResponse>(
     `options:${selection.key}`,
     `/api/ar/options?underlying=${encodeURIComponent(clean)}${force ? '&refresh=1' : ''}`,
-    { force }
+    { force, signal }
   );
-  if (!res) return;
+  if (!res || signal?.aborted || state.optionsByUnderlying[canonicalKey] === res) return;
   const groups = buildOptionExpiryGroupsFromArOptions(res);
   // Espejo retrocompatible exclusivo de AR:GGAL (jamás toca claves US:*).
   if (canonicalKey === 'AR:GGAL') {
@@ -850,16 +907,17 @@ export async function requestOptionsChain(
   if (activeOptionsCanonicalKey === canonicalKey) {
     syncOptionEngineMarket(res);
   }
-  state = {
+  commitBridgeState({
     ...state,
     isBackendConnected: true,
     optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: res },
     optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
     feedStatus: combineFeedStatus(state.feedStatus, res.feedStatus),
     lastSyncUtcSec: res.asOfUtcSec,
-  };
-  notify();
+  }, [keyed('options', canonicalKey)]);
 }
+
+const expiryLoadWaiters = new Map<string, Set<symbol>>();
 
 /**
  * Pieza 50.2: carga on-demand la cadena de UN vencimiento US (`GET /api/options/expiry`)
@@ -871,6 +929,7 @@ export async function requestUsOptionExpiry(
   underlying: string,
   expirationDate: string,
   force = false,
+  signal?: AbortSignal,
 ): Promise<void> {
   const selection = parseOptionsUnderlyingKey(underlying);
   if (selection.market !== 'US') return;
@@ -878,24 +937,39 @@ export async function requestUsOptionExpiry(
   const expiration = expirationDate.trim();
   if (!clean || !/^\d{4}-\d{2}-\d{2}$/.test(expiration)) return;
   const loadKey = `${selection.key}:${expiration}`;
-  state = {
-    ...state,
-    loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: true },
+  const requestKey = `us:opt-expiry:${loadKey}`;
+  if (signal?.aborted) return;
+  const canonicalKey = selection.canonicalKey;
+  const loadingChannel = keyed('optionLoading', canonicalKey);
+  const waiters = expiryLoadWaiters.get(loadKey) ?? new Set<symbol>();
+  const waiter = Symbol();
+  waiters.add(waiter);
+  expiryLoadWaiters.set(loadKey, waiters);
+  if (state.loadingOptionExpiries[loadKey] !== true) {
+    commitBridgeState({
+      ...state,
+      loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: true },
+    }, [loadingChannel]);
+  }
+  const releaseLoading = (published = false) => {
+    waiters.delete(waiter);
+    if (published && !inFlightByKey.has(requestKey)) waiters.clear();
+    if (waiters.size !== 0 || expiryLoadWaiters.get(loadKey) !== waiters) return false;
+    expiryLoadWaiters.delete(loadKey);
+    return true;
   };
-  notify();
   let clearedLoadingInCommit = false;
   try {
     const scopeKey = `point:US:${clean}:${expiration}`;
     const revision = beginPublication(scopeKey);
     const resp = await fetchJsonGuarded<UsOptionExpiryChainResponseDto>(
-      `us:opt-expiry:${loadKey}${force ? ':force' : ''}`,
+      requestKey,
       `/api/options/expiry?symbol=${encodeURIComponent(clean)}&expiration=${encodeURIComponent(expiration)}${force ? '&refresh=1' : ''}`,
-      { force },
+      { force, signal },
     );
-    if (!resp) return;
+    if (!resp || signal?.aborted) return;
     // Comprobación antes de mutar estado o hidratar consumidores.
     if (!acceptPublication(pointPublicationStamps, scopeKey, revision, resp.asOfUtcSec)) return;
-    const canonicalKey = selection.canonicalKey;
     const previousSnap = state.usSnapshotsBySymbol[clean];
     const fact = chainFactState(resp);
     const decision = resolveExpiryFactDecision(
@@ -916,10 +990,13 @@ export async function requestUsOptionExpiry(
       nextSnap = applyUsExpiryChainToSnapshot(previousSnap, resp);
       setLoadedDateEvaluation(clean, expiration, fact.evaluationSec);
     }
-    state = {
+    clearedLoadingInCommit = releaseLoading(true);
+    commitBridgeState({
       ...state,
       isBackendConnected: true,
-      loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: false },
+      loadingOptionExpiries: clearedLoadingInCommit
+        ? { ...state.loadingOptionExpiries, [loadKey]: false }
+        : state.loadingOptionExpiries,
       optionsByUnderlying: { ...state.optionsByUnderlying, [canonicalKey]: merged },
       optionExpiriesByUnderlyingKey: { ...state.optionExpiriesByUnderlyingKey, [canonicalKey]: groups },
       // Alcance puntual: actualiza los hechos de SU vencimiento sobre la base
@@ -936,125 +1013,136 @@ export async function requestUsOptionExpiry(
         : {}),
       feedStatus: combineFeedStatus(state.feedStatus, resp.feedMode),
       lastSyncUtcSec: resp.asOfUtcSec,
-    };
-    clearedLoadingInCommit = true;
-    notify();
+    }, [
+      keyed('options', canonicalKey),
+      ...(clearedLoadingInCommit ? [loadingChannel] : []),
+      ...(nextSnap !== undefined ? [keyed('usSnapshot', clean)] : []),
+    ]);
   } finally {
-    if (!clearedLoadingInCommit) {
-      state = {
+    if (!clearedLoadingInCommit && releaseLoading()) {
+      commitBridgeState({
         ...state,
         loadingOptionExpiries: { ...state.loadingOptionExpiries, [loadKey]: false },
-      };
-      notify();
+      }, [loadingChannel]);
     }
   }
 }
 
-export async function requestOptionsUniverse(force = false): Promise<void> {
+export async function requestOptionsUniverse(force = false, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
   if (state.optionsUnderlyingsStatus === 'OK' && !force) return;
-  state = { ...state, optionsUnderlyingsStatus: 'LOADING' };
-  notify();
+  if (state.optionsUnderlyingsStatus !== 'LOADING') {
+    commitBridgeState({ ...state, optionsUnderlyingsStatus: 'LOADING' }, ['optionsUnderlyings']);
+  }
   const res = await fetchJsonGuarded<OptionsUnderlyingsResponseDto>(
     'options:underlyings',
     '/api/options/underlyings',
-    { force },
+    { force, signal },
   );
-  if (!res || !Array.isArray(res.underlyings) || res.underlyings.length === 0) {
-    state = { ...state, optionsUnderlyingsStatus: 'NO_DATA' };
-    notify();
+  if (signal?.aborted) {
+    if (!inFlightByKey.has('options:underlyings') && state.optionsUnderlyingsStatus === 'LOADING') {
+      const status = state.optionsUnderlyings.length > 0 ? 'OK' : 'IDLE';
+      commitBridgeState({ ...state, optionsUnderlyingsStatus: status }, ['optionsUnderlyings']);
+    }
     return;
   }
-  state = {
+  if (!res || !Array.isArray(res.underlyings) || res.underlyings.length === 0) {
+    if (state.optionsUnderlyingsStatus === 'LOADING') {
+      commitBridgeState({ ...state, optionsUnderlyingsStatus: 'NO_DATA' }, ['optionsUnderlyings']);
+    }
+    return;
+  }
+  if (state.optionsUnderlyings === res.underlyings && state.optionsUnderlyingsStatus === 'OK') return;
+  commitBridgeState({
     ...state,
     optionsUnderlyings: res.underlyings,
     optionsUnderlyingsStatus: 'OK',
     isBackendConnected: true,
-  };
-  notify();
+  }, ['optionsUnderlyings']);
 }
 
 export async function requestUsVolSurface(
   underlying: string,
   force = false,
+  signal?: AbortSignal,
 ): Promise<void> {
   const selection = parseOptionsUnderlyingKey(underlying);
   if (selection.market !== 'US') return;
+  if (signal?.aborted) return;
+  const channel = keyed('volSurface', selection.canonicalKey);
+  const requestKey = 'us:vol-surface:' + selection.key;
   const status = state.usVolSurfaceStatusBySymbol[selection.key] ?? 'IDLE';
-  if (status === 'LOADING' || (status === 'OK' && !force)) return;
-  state = {
-    ...state,
-    usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: 'LOADING' },
-  };
-  notify();
-  const res = await fetchJsonGuarded<UsVolSurfaceResponseDto>(
-    `us:vol-surface:${selection.key}${force ? ':force' : ''}`,
-    `/api/us/vol-surface?symbol=${encodeURIComponent(selection.symbol)}${force ? '&refresh=1' : ''}`,
-    { force },
-  );
-  if (!res) {
-    state = {
+  if (status === 'OK' && !force) return;
+  if (status !== 'LOADING') {
+    commitBridgeState({
       ...state,
-      usVolSurfaceBySymbol: { ...state.usVolSurfaceBySymbol, [selection.key]: null },
-      usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: 'NO_DATA' },
-    };
-    notify();
+      usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: 'LOADING' },
+    }, [channel]);
+  }
+  const res = await fetchJsonGuarded<UsVolSurfaceResponseDto>(
+    requestKey,
+    `/api/us/vol-surface?symbol=${encodeURIComponent(selection.symbol)}${force ? '&refresh=1' : ''}`,
+    { force, signal },
+  );
+  if (signal?.aborted) {
+    if (inFlightByKey.has(requestKey) || state.usVolSurfaceStatusBySymbol[selection.key] !== 'LOADING') return;
+    const cached = state.usVolSurfaceBySymbol[selection.key];
+    commitBridgeState({
+      ...state,
+      usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: cached === undefined ? 'IDLE' : cached === null ? 'NO_DATA' : 'OK' },
+    }, [channel]);
     return;
   }
-  state = {
+  const nextStatus = res === null ? 'NO_DATA' : res.status === 'NO_DATA' ? 'NO_DATA' : 'OK';
+  if (state.usVolSurfaceBySymbol[selection.key] === res && state.usVolSurfaceStatusBySymbol[selection.key] === nextStatus) return;
+  commitBridgeState({
     ...state,
     usVolSurfaceBySymbol: { ...state.usVolSurfaceBySymbol, [selection.key]: res },
-    usVolSurfaceStatusBySymbol: {
-      ...state.usVolSurfaceStatusBySymbol,
-      [selection.key]: res.status === 'NO_DATA' ? 'NO_DATA' : 'OK',
-    },
-  };
-  notify();
+    usVolSurfaceStatusBySymbol: { ...state.usVolSurfaceStatusBySymbol, [selection.key]: nextStatus },
+  }, [channel]);
 }
 
 export async function requestOptionsCatalysts(
   underlying: string,
   force = false,
+  signal?: AbortSignal,
 ): Promise<void> {
   const selection = parseOptionsUnderlyingKey(underlying);
   if (selection.market !== 'US') return;
   const symbolKey = selection.symbol;
   if (!symbolKey) return;
+  if (signal?.aborted) return;
+  const channel = keyed('catalysts', symbolKey);
+  const requestKey = 'options:catalysts:' + symbolKey;
   const status = state.optionsCatalystsStatusBySymbol[symbolKey] ?? 'IDLE';
-  if (status === 'LOADING' || (status === 'OK' && !force)) return;
-  state = {
-    ...state,
-    optionsCatalystsStatusBySymbol: {
-      ...state.optionsCatalystsStatusBySymbol,
-      [symbolKey]: 'LOADING',
-    },
-  };
-  notify();
-  const res = await fetchJsonGuarded<SymbolCatalystsResponseDto>(
-    `options:catalysts:${symbolKey}${force ? ':force' : ''}`,
-    `/api/options/catalysts?symbol=${encodeURIComponent(symbolKey)}${force ? '&refresh=1' : ''}`,
-    { force },
-  );
-  if (!res) {
-    state = {
+  if (status === 'OK' && !force) return;
+  if (status !== 'LOADING') {
+    commitBridgeState({
       ...state,
-      optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [symbolKey]: null },
-      optionsCatalystsStatusBySymbol: {
-        ...state.optionsCatalystsStatusBySymbol,
-        [symbolKey]: 'NO_DATA',
-      },
-    };
-    notify();
+      optionsCatalystsStatusBySymbol: { ...state.optionsCatalystsStatusBySymbol, [symbolKey]: 'LOADING' },
+    }, [channel]);
+  }
+  const res = await fetchJsonGuarded<SymbolCatalystsResponseDto>(
+    requestKey,
+    `/api/options/catalysts?symbol=${encodeURIComponent(symbolKey)}${force ? '&refresh=1' : ''}`,
+    { force, signal },
+  );
+  if (signal?.aborted) {
+    if (inFlightByKey.has(requestKey) || state.optionsCatalystsStatusBySymbol[symbolKey] !== 'LOADING') return;
+    const cached = state.optionsCatalystsBySymbol[symbolKey];
+    commitBridgeState({
+      ...state,
+      optionsCatalystsStatusBySymbol: { ...state.optionsCatalystsStatusBySymbol, [symbolKey]: cached === undefined ? 'IDLE' : cached === null ? 'NO_DATA' : 'OK' },
+    }, [channel]);
     return;
   }
-  state = {
+  const nextStatus = res === null ? 'NO_DATA' : res.available ? 'OK' : 'NO_DATA';
+  if (state.optionsCatalystsBySymbol[symbolKey] === res && state.optionsCatalystsStatusBySymbol[symbolKey] === nextStatus) return;
+  commitBridgeState({
     ...state,
     optionsCatalystsBySymbol: { ...state.optionsCatalystsBySymbol, [symbolKey]: res },
-    optionsCatalystsStatusBySymbol: {
-      ...state.optionsCatalystsStatusBySymbol,
-      [symbolKey]: res.available ? 'OK' : 'NO_DATA',
-    },
-  };
-  notify();
+    optionsCatalystsStatusBySymbol: { ...state.optionsCatalystsStatusBySymbol, [symbolKey]: nextStatus },
+  }, [channel]);
 }
 
 export async function requestUsSnapshot(
@@ -1075,147 +1163,270 @@ export async function requestUsSnapshot(
     `/api/snapshot?symbol=${encodeURIComponent(clean)}&timeframe=5m${options?.force ? '&refresh=1' : ''}${options?.prefetch === false ? '&prefetch=0' : ''}`,
     { force: options?.force === true, signal: options?.signal },
   );
-  if (!res || !res.marketContext) return null;
+  if (!res || !res.marketContext || options?.signal?.aborted) return null;
+  const alreadyPublished = publishedSnapshotResponses.get(res);
+  if (alreadyPublished !== undefined) return alreadyPublished;
   // Comprobación antes de mutar estado o hidratar consumidores.
   if (!acceptPublication(basePublicationStamps, scopeKey, revision, res.asOfUtcSec)) return null;
   const published = publishBaseSnapshot(clean, res, state.usSnapshotsBySymbol[clean]);
+  publishedSnapshotResponses.set(res, published);
   hydrateFromUsSnapshot(published);
-  state = {
+  commitBridgeState({
     ...state,
     isBackendConnected: true,
     usSnapshotsBySymbol: { ...state.usSnapshotsBySymbol, [clean]: published },
     ...(res.feedMode ? { feedStatus: combineFeedStatus(state.feedStatus, res.feedMode) } : {}),
     lastSyncUtcSec: published.asOfUtcSec,
-  };
+  }, [keyed('usSnapshot', clean)]);
   publishTickerUpdatesFromMemory();
-  notify();
   return published;
 }
 
 export function startLiveRuntimePolling(enabled: boolean): () => void {
-  let disposed = false;
-
-  const runInitialAndCycle = async () => {
-    if (disposed) return;
-    // Fase 1: ruta crítica de Inicio + panel AR (<= 5 requests simultáneos para no saturar pool HTTP/1.1)
-    await Promise.all([
-      refreshBackendHealth(),
-      refreshOverview(),
-      refreshMacro(),
-      requestMonitoringPanel('bonos'),
-      requestOptionsChain('AR:GGAL'),
-    ]);
-    if (disposed) return;
-    // Fase 2: pares relativos + mercado US prioritario, sin bloquear el render inicial AR
-    await Promise.all([
-      requestRelations(),
-      requestUsSnapshot('SPY'),
-      requestUsSnapshot('QQQ'),
-      requestOptionsUniverse(),
-    ]);
-    if (disposed) return;
-    await Promise.all([
-      requestUsSnapshot('NVDA'),
-      requestUsSnapshot('AAPL'),
-      requestUsSnapshot('MSFT'),
-    ]);
-    await refreshBackendHealth();
-  };
-
-  void runInitialAndCycle();
-
-  if (!enabled) {
-    return () => {
-      disposed = true;
-    };
-  }
-
-  let prevWarmupStatus = state.warmupStatus;
-  let prevConnected = state.isBackendConnected;
-
-  const retryMissingSlices = async () => {
+  const retryMissingSlices = async (signal: AbortSignal) => {
     const tasks: Promise<unknown>[] = [];
-    if (state.overview === null || state.feedStatus === 'NO_DATA') tasks.push(refreshOverview());
-    if (state.macro === null) tasks.push(refreshMacro());
-    if (state.monitoring === null) tasks.push(requestMonitoringPanel('bonos'));
-    if (state.optionsByUnderlying['AR:GGAL'] === undefined) tasks.push(requestOptionsChain('AR:GGAL'));
-    if (state.relations === null) tasks.push(requestRelations());
-    if (state.usSnapshotsBySymbol['SPY'] === undefined) tasks.push(requestUsSnapshot('SPY'));
-    if (state.usSnapshotsBySymbol['QQQ'] === undefined) tasks.push(requestUsSnapshot('QQQ'));
-    if (tasks.length > 0) {
-      await Promise.all(tasks);
-    }
+    if (state.macro === null) tasks.push(refreshMacro(false, signal));
+    if (state.optionsByUnderlying['AR:GGAL'] === undefined) tasks.push(requestOptionsChain('AR:GGAL', false, undefined, signal));
+    if (state.usSnapshotsBySymbol['SPY'] === undefined) tasks.push(requestUsSnapshot('SPY', { signal }));
+    if (state.usSnapshotsBySymbol['QQQ'] === undefined) tasks.push(requestUsSnapshot('QQQ', { signal }));
+    await Promise.all(tasks);
   };
 
-  const fastRetryId = setInterval(() => {
-    if (disposed) return;
-    const needReconnectOrWarmup =
-      !state.isBackendConnected ||
-      state.warmupStatus === 'WARMING_UP' ||
-      state.overview === null ||
-      state.macro === null ||
-      state.feedStatus === 'NO_DATA';
-    if (needReconnectOrWarmup) {
-      void (async () => {
-        const ok = await refreshBackendHealth();
-        if (ok) {
-          const justConnected = !prevConnected;
-          const justWarmed = prevWarmupStatus === 'WARMING_UP' && state.warmupStatus === 'READY';
-          if (justConnected || justWarmed) {
-            await runInitialAndCycle();
-          } else if (state.overview === null || state.macro === null || state.feedStatus === 'NO_DATA') {
-            await retryMissingSlices();
-          }
-        }
-        prevConnected = state.isBackendConnected;
-        prevWarmupStatus = state.warmupStatus;
-      })();
+  const cycle = createVisibilityAwareInterval(async (signal) => {
+    await Promise.all([refreshBackendHealth(signal), refreshOverview(false, signal), retryMissingSlices(signal)]);
+  }, 20_000, { runImmediately: true, reconcileAfterMs: 15_000, repeat: enabled });
+  const retry = enabled ? createVisibilityAwareInterval(async (signal) => {
+    if (state.isBackendConnected && state.warmupStatus !== 'WARMING_UP' &&
+        state.overview !== null && state.macro !== null && state.feedStatus !== 'NO_DATA') return;
+    if (await refreshBackendHealth(signal)) {
+      await Promise.all([refreshOverview(false, signal), retryMissingSlices(signal)]);
     }
-  }, 3_000);
-
-  const intervalId = setInterval(() => {
-    if (disposed) return;
-    if (state.overview === null || state.macro === null || state.feedStatus === 'NO_DATA') {
-      void retryMissingSlices();
-      return;
-    }
-    void refreshBackendHealth();
-    void refreshOverview();
-  }, 20_000);
+  }, 3_000, { reconcileAfterMs: Infinity }) : undefined;
 
   return () => {
-    disposed = true;
-    clearInterval(fastRetryId);
-    clearInterval(intervalId);
+    retry?.();
+    cycle();
   };
+}
+
+const EMPTY_EXPIRIES: readonly OptionExpiryGroup[] = Object.freeze([]);
+const EMPTY_LOADING: Readonly<Record<string, boolean>> = Object.freeze({});
+
+function keyed(
+  domain: 'options' | 'optionLoading' | 'usSnapshot' | 'stockDetail' | 'volSurface' | 'catalysts',
+  key: string,
+): BridgeKeyedChannel {
+  return `${domain}:${key}`;
+}
+
+export function useLiveBridgeSelector<T>(
+  channels: readonly BridgeChannelKey[],
+  selector: (snapshot: LiveMarketState) => T,
+  isEqual: (previous: T, next: T) => boolean = Object.is,
+): T {
+  const signature = channels.join('|');
+  const subscribe = useCallback(
+    (listener: StoreListener) => subscribeBridgeChannels(signature ? signature.split('|') as BridgeChannelKey[] : [], listener),
+    [signature],
+  );
+  const committed = useRef<{ value: T } | null>(null);
+  const getSnapshot = useMemo(() => {
+    let previous: LiveMarketState | undefined;
+    let selected: T;
+    return () => {
+      if (previous === state) return selected;
+      const candidate = selector(state);
+      const comparable = previous === undefined ? committed.current : { value: selected };
+      selected = comparable !== null && isEqual(comparable.value, candidate) ? comparable.value : candidate;
+      previous = state;
+      return selected;
+    };
+  }, [selector, isEqual]);
+  const selected = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  useEffect(() => { committed.current = { value: selected }; }, [selected]);
+  return selected;
 }
 
 export function useLiveMarketState(): LiveMarketState {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    () => state,
-    () => state
-  );
+  return useLiveBridgeSelector(['__legacy_all__'], (snapshot) => snapshot);
 }
+
+const subscribeStatus = (listener: StoreListener) => subscribeBridgeChannel('status', listener);
+const getStatus = () => statusSnapshot;
 
 export function useLiveMarketStatus(): LiveMarketStatus {
-  return useSyncExternalStore(
-    (listener) => {
-      statusListeners.add(listener);
-      return () => {
-        statusListeners.delete(listener);
-      };
-    },
-    () => statusSnapshot,
-    () => statusSnapshot,
+  return useSyncExternalStore(subscribeStatus, getStatus, getStatus);
+}
+
+export function useLiveOverview(): ArOverviewResponse | null {
+  return useLiveBridgeSelector(['overview'], (snapshot) => snapshot.overview);
+}
+
+export function useLiveMacro(): ArMacroResponse | null {
+  return useLiveBridgeSelector(['macro'], (snapshot) => snapshot.macro);
+}
+
+export function useLiveMonitoring(): ArMonitoringResponse | null {
+  return useLiveBridgeSelector(['monitoring'], (snapshot) => snapshot.monitoring);
+}
+
+export function useLiveRelations(): ArRelationsResponse | null {
+  return useLiveBridgeSelector(['relations'], (snapshot) => snapshot.relations);
+}
+
+export function useLiveUsSnapshot(symbol: string | null | undefined): UsSnapshotResponseDto | undefined {
+  const clean = symbol?.trim().toUpperCase();
+  return useLiveBridgeSelector(clean ? [keyed('usSnapshot', clean)] : [], (snapshot) =>
+    clean ? snapshot.usSnapshotsBySymbol[clean] : undefined,
   );
 }
 
+export function useLiveStockDetail(symbol: string | null | undefined): ArStockDetailResponse | undefined {
+  const clean = symbol?.trim().toUpperCase();
+  return useLiveBridgeSelector(clean ? [keyed('stockDetail', clean)] : [], (snapshot) =>
+    clean ? snapshot.stockDetailsBySymbol[clean] : undefined,
+  );
+}
+
+export interface LiveOptionsSlice {
+  readonly options: ArOptionsResponse | undefined;
+  readonly expiries: readonly OptionExpiryGroup[];
+  readonly loading: Readonly<Record<string, boolean>>;
+}
+
+const EMPTY_OPTIONS: LiveOptionsSlice = Object.freeze({ options: undefined, expiries: EMPTY_EXPIRIES, loading: EMPTY_LOADING });
+const optionsSliceCache = new Map<string, { source: LiveMarketState['loadingOptionExpiries']; slice: LiveOptionsSlice }>();
+const MAX_SLICE_CACHE_ENTRIES = 64;
+
+export function getLiveOptionsSlice(rawKey: string | null | undefined): LiveOptionsSlice {
+  if (!rawKey) return EMPTY_OPTIONS;
+  const { canonicalKey, key, market } = parseOptionsUnderlyingKey(rawKey);
+  const previous = optionsSliceCache.get(canonicalKey);
+  const options = state.optionsByUnderlying[canonicalKey];
+  const expiries = state.optionExpiriesByUnderlyingKey[canonicalKey] ?? EMPTY_EXPIRIES;
+  let loading = previous?.slice.loading ?? EMPTY_LOADING;
+  if (market === 'US' && previous?.source !== state.loadingOptionExpiries) {
+    const prefix = `${key}:`;
+    const entries = Object.entries(state.loadingOptionExpiries).filter(([loadKey, active]) => active && loadKey.startsWith(prefix));
+    if (entries.length !== Object.keys(loading).length || entries.some(([loadKey]) => loading[loadKey] !== true)) {
+      loading = entries.length === 0 ? EMPTY_LOADING : Object.fromEntries(entries);
+    }
+  }
+  const slice = previous?.slice.options === options && previous?.slice.expiries === expiries && previous.slice.loading === loading
+    ? previous.slice
+    : options === undefined && expiries === EMPTY_EXPIRIES && loading === EMPTY_LOADING
+      ? EMPTY_OPTIONS
+      : { options, expiries, loading };
+  optionsSliceCache.delete(canonicalKey);
+  optionsSliceCache.set(canonicalKey, { source: state.loadingOptionExpiries, slice });
+  if (optionsSliceCache.size > MAX_SLICE_CACHE_ENTRIES) {
+    const oldest = optionsSliceCache.keys().next().value;
+    if (oldest !== undefined) optionsSliceCache.delete(oldest);
+  }
+  return slice;
+}
+
+export function useLiveOptionsSlice(rawKey: string | null | undefined): LiveOptionsSlice {
+  const canonicalKey = rawKey ? parseOptionsUnderlyingKey(rawKey).canonicalKey : null;
+  return useLiveBridgeSelector(
+    canonicalKey ? [keyed('options', canonicalKey), keyed('optionLoading', canonicalKey)] : [],
+    () => getLiveOptionsSlice(canonicalKey),
+    (a, b) => a.options === b.options && a.expiries === b.expiries &&
+      Object.keys(a.loading).length === Object.keys(b.loading).length &&
+      Object.keys(a.loading).every((key) => a.loading[key] === b.loading[key]),
+  );
+}
+
+export interface LiveOptionsUniverseSlice {
+  readonly underlyings: readonly OptionsUnderlyingMetaDto[];
+  readonly status: LiveMarketState['optionsUnderlyingsStatus'];
+}
+
+export function useLiveOptionsUniverse(): LiveOptionsUniverseSlice {
+  return useLiveBridgeSelector(
+    ['optionsUnderlyings'],
+    (snapshot) => ({ underlyings: snapshot.optionsUnderlyings, status: snapshot.optionsUnderlyingsStatus }),
+    (a, b) => a.underlyings === b.underlyings && a.status === b.status,
+  );
+}
+
+export interface LiveUsVolSurfaceSlice {
+  readonly surface: UsVolSurfaceResponseDto | null;
+  readonly status: LiveMarketState['usVolSurfaceStatusBySymbol'][string];
+}
+
+export function useLiveUsVolSurface(rawKey: string | null | undefined): LiveUsVolSurfaceSlice {
+  const selection = rawKey ? parseOptionsUnderlyingKey(rawKey) : null;
+  const key = selection?.market === 'US' ? selection.key : null;
+  return useLiveBridgeSelector(
+    selection?.market === 'US' ? [keyed('volSurface', selection.canonicalKey)] : [],
+    (snapshot) => ({
+      surface: key ? snapshot.usVolSurfaceBySymbol[key] ?? null : null,
+      status: key ? snapshot.usVolSurfaceStatusBySymbol[key] ?? 'IDLE' : 'IDLE',
+    }),
+    (a, b) => a.surface === b.surface && a.status === b.status,
+  );
+}
+
+export interface LiveOptionsCatalystsSlice {
+  readonly catalysts: SymbolCatalystsResponseDto | null;
+  readonly status: LiveMarketState['optionsCatalystsStatusBySymbol'][string];
+}
+
+export function useLiveOptionsCatalysts(symbol: string | null | undefined): LiveOptionsCatalystsSlice {
+  const clean = symbol?.trim().toUpperCase();
+  return useLiveBridgeSelector(
+    clean ? [keyed('catalysts', clean)] : [],
+    (snapshot) => ({
+      catalysts: clean ? snapshot.optionsCatalystsBySymbol[clean] ?? null : null,
+      status: clean ? snapshot.optionsCatalystsStatusBySymbol[clean] ?? 'IDLE' : 'IDLE',
+    }),
+    (a, b) => a.catalysts === b.catalysts && a.status === b.status,
+  );
+}
+
+const US_PROVIDERS_TTL_MS = 30_000;
+let providerSubscribers = 0;
+let stopProviders: (() => void) | undefined;
+let providersLoadedAtMs = -Infinity;
+
+export function subscribeUsProvidersStatus(listener: StoreListener): () => void {
+  const unsubscribe = subscribeBridgeChannel('usProvidersStatus', listener);
+  providerSubscribers += 1;
+  if (providerSubscribers === 1) {
+    stopProviders = createVisibilityAwareInterval(async (signal, reason) => {
+      if (reason === 'reconcile' && Date.now() - providersLoadedAtMs < US_PROVIDERS_TTL_MS) return;
+      const next = await fetchJsonGuarded<UsProvidersStatusDto>(
+        'us:providers', '/api/us/providers-status', { signal, timeoutMs: 5_000 },
+      );
+      if (signal.aborted) return;
+      providersLoadedAtMs = Date.now();
+      if (state.usProvidersStatus !== next) {
+        commitBridgeState({ ...state, usProvidersStatus: next }, ['usProvidersStatus']);
+      }
+    }, US_PROVIDERS_TTL_MS, { runImmediately: true, reconcileAfterMs: 0 });
+  }
+  let subscribed = true;
+  return () => {
+    if (!subscribed) return;
+    subscribed = false;
+    unsubscribe();
+    providerSubscribers -= 1;
+    if (providerSubscribers === 0) {
+      stopProviders?.();
+      stopProviders = undefined;
+    }
+  };
+}
+
+const getProvidersStatus = () => state.usProvidersStatus;
+const getDisabledProvidersStatus = () => null;
+const subscribeDisabled = () => () => undefined;
+
+export function useLiveUsProvidersStatus(enabled = true): UsProvidersStatusDto | null {
+  const read = enabled ? getProvidersStatus : getDisabledProvidersStatus;
+  return useSyncExternalStore(enabled ? subscribeUsProvidersStatus : subscribeDisabled, read, read);
+}
 export interface LiveStockDetailRuntimeSlice {
   readonly feedStatus: FeedStatus;
   readonly optionsUnderlyingsStatus: LiveMarketState['optionsUnderlyingsStatus'];
@@ -1238,12 +1449,12 @@ export function useLiveStockDetailRuntimeSlice(
   const clean = cleanTicker.trim().toUpperCase();
   const cachedRef = useRef<LiveStockDetailRuntimeSlice | null>(null);
 
-  const subscribe = useCallback((listener: () => void) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  }, []);
+  const subscribe = useCallback((listener: StoreListener) => subscribeBridgeChannels([
+    'overview',
+    'status',
+    'optionsUnderlyings',
+    ...(isArMarket ? [keyed('stockDetail', clean), keyed('options', 'AR:' + clean)] : [keyed('usSnapshot', clean)]),
+  ], listener), [clean, isArMarket]);
 
   const getSnapshot = useCallback((): LiveStockDetailRuntimeSlice => {
     const ov = state.overview;
