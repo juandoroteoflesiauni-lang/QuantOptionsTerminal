@@ -12,6 +12,23 @@ export interface ChartLogicalRange {
   readonly to: number;
 }
 
+export interface InitialLogicalRangeOptions {
+  readonly defaultBars?: number;
+  readonly minBars?: number;
+  readonly maxBars?: number;
+  readonly rightOffsetBars?: number;
+}
+
+/** Last real index is N-1; right-hand whitespace is included exactly once. */
+export function computeInitialVisibleLogicalRange(barCount: number, options: InitialLogicalRangeOptions = {}): ChartLogicalRange | null {
+  const { defaultBars = 150, minBars = 120, maxBars = 180, rightOffsetBars = 3 } = options;
+  if (!Number.isSafeInteger(barCount) || barCount <= 0 ||
+      ![defaultBars, minBars, maxBars, rightOffsetBars].every(Number.isSafeInteger) ||
+      minBars < 1 || maxBars < minBars || rightOffsetBars < 0) return null;
+  const targetBars = Math.max(minBars, Math.min(maxBars, defaultBars));
+  return { from: barCount - Math.min(barCount, targetBars), to: barCount - 1 + rightOffsetBars };
+}
+
 export type ChartSeriesUpdateMode = 'CLEAR' | 'SET_DATA' | 'UPDATE_LAST';
 
 export interface ChartViewportTransitionInput {

@@ -657,6 +657,8 @@ export async function requestTerminalBars(
   options?: {
     readonly force?: boolean;
     readonly visibleBars?: number;
+    /** Let the backend resolve the exchange-session default when no override is supplied. */
+    readonly adaptiveWindow?: boolean;
     readonly signal?: AbortSignal;
     readonly market?: 'US' | 'AR';
     readonly includeOverlays?: boolean;
@@ -665,14 +667,16 @@ export async function requestTerminalBars(
   const clean = symbol.trim().toUpperCase();
   if (!clean) return null;
   const vis = options?.visibleBars ?? 180;
+  const adaptiveWindow = options?.adaptiveWindow === true && options.visibleBars === undefined;
+  const visibleParam = adaptiveWindow ? '' : `&visibleBars=${String(vis)}`;
   // Pieza 38: `market=AR` desambigua el ticker local ARS (p. ej. NVDA CEDEAR)
   // del subyacente US en USD (SPEC punto 10). La clave de caché incluye el
   // mercado para no pisar `NVDA:1D:US` con `NVDA:1D:AR`.
   const market = options?.market ?? 'US';
   const overlaysParam = options?.includeOverlays === false ? '&overlays=0' : '';
   return fetchJsonGuarded<UsTerminalBarsResponseDto>(
-    `bars:${clean}:${timeframe}:${market}${overlaysParam}`,
-    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&market=${market}&visibleBars=${String(vis)}${options?.force ? '&refresh=1' : ''}${overlaysParam}`,
+    `bars:${clean}:${timeframe}:${market}:${adaptiveWindow ? 'adaptive' : String(vis)}${overlaysParam}`,
+    `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&market=${market}${visibleParam}${options?.force ? '&refresh=1' : ''}${overlaysParam}`,
     { force: options?.force === true, signal: options?.signal },
   );
 }

@@ -1,7 +1,7 @@
 import type { Bar } from './types.js';
 import { getMarketParts } from './sessions.js';
 import { etWallTimeToUtc } from '../data/alignment.js';
-import { restHistoricalFromUtcSec } from '../data/restHistoricalWindow.js';
+import { resolveAdaptiveVisibleBars, restHistoricalFromUtcSec } from '../data/restHistoricalWindow.js';
 
 export type HistoricalPriceSource = 'REAL_VW' | 'HLC3_PROXY' | 'MIXED_VW_HLC3';
 export type HistoricalProvider = 'MASSIVE_REST' | 'FMP';
@@ -155,11 +155,14 @@ export interface HistoricalPlan {
   readonly requiredBars: number;
   readonly visibleBars: number;
   readonly warmupBars: number;
+  /** Adaptive defaults cover actual sessions; nominal budget never pulls warm-up into view. */
+  readonly visibleFrom?: number;
+  readonly expectedVisibleBars?: number;
   readonly segments: readonly { readonly from: number; readonly to: number; readonly sourceMinutes: number }[];
 }
 
 /** Count actual session buckets backwards, keeping the monthly prefix independent. */
-export function planUsHistorical(tf: UsHistoricalTimeframe, now: number, rthOnly: boolean, explicitVisible?: number): HistoricalPlan {
+export function planUsHistorical(tf: UsHistoricalTimeframe, now: number, rthOnly: boolean, explicitVisible?: number, adaptiveWindow = false): HistoricalPlan {
   if (explicitVisible !== undefined && (!Number.isInteger(explicitVisible) || explicitVisible < 1)) throw new Error('Invalid historical visibleBars');
   const p = getMarketParts(now, 'EQUITY');
   const monthStart = etWallTimeToUtc(p.year, p.month, 1, 0);
@@ -176,6 +179,7 @@ export function planUsHistorical(tf: UsHistoricalTimeframe, now: number, rthOnly
   const windowSessions = tf === '5m' ? Math.min(23, Math.max(22, mtd)) : tf === '15m' ? 40 : tf === '1m' ? rthOnly ? 5 : 3 : 0;
   const warmupBars = 1000;
   let from = now; let available = 0; let visible = 0; let sessions = 0; let requiredBars = 0;
+  let visibleFrom: number | undefined;
   for (let day = 0; ; day += 1) {
     const session = usHistoricalSession(now - day * 86400);
     if (session === null) continue;
@@ -185,6 +189,7 @@ export function planUsHistorical(tf: UsHistoricalTimeframe, now: number, rthOnly
     if (count === 0) continue;
     sessions += 1;
     if (sessions <= windowSessions) visible += count;
+    if (sessions === windowSessions) visibleFrom = open;
     available += count; from = open;
     const targetVisible = explicitVisible ?? (tf === '1h' ? 1000 : visible);
     // 1H explicitly requests visibleBars + 1000; its default visibleBars is 1000.
@@ -200,7 +205,22 @@ export function planUsHistorical(tf: UsHistoricalTimeframe, now: number, rthOnly
   const segments: { from: number; to: number; sourceMinutes: number }[] = [];
   if (from < canonicalFrom) segments.push({ from, to: canonicalFrom, sourceMinutes: tf === '15m' ? 15 : 30 });
   segments.push({ from: canonicalFrom, to, sourceMinutes: 1 });
-  return { historicalProvider: 'MASSIVE_REST', historyFrom: from, monthAnchor, visibleBars: visible, warmupBars, requiredBars, segments };
+  const sessionCoverage = adaptiveWindow && visibleFrom !== undefined
+    ? { visibleFrom, expectedVisibleBars: visible } : {};
+  return { historicalProvider: 'MASSIVE_REST', historyFrom: from, monthAnchor,
+    visibleBars: adaptiveWindow ? resolveAdaptiveVisibleBars(tf, rthOnly ? 'RTH' : 'EXTENDED', mtd) : visible,
+    warmupBars, requiredBars, segments, ...sessionCoverage };
+}
+
+/** Current ET month, exchange sessions whose open has occurred (never server-local days). */
+export function usHistoricalMtdSessions(now: number): number {
+  const p = getMarketParts(now, 'EQUITY');
+  let count = 0;
+  for (let day = 1; day <= p.day; day += 1) {
+    const session = usHistoricalSession(etWallTimeToUtc(p.year, p.month, day, 720));
+    if (session !== null && session.open <= now) count += 1;
+  }
+  return count;
 }
 
 /** FMP floor is deliberately independent of Massive's optimized session lookback. */

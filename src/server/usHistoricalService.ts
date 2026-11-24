@@ -41,6 +41,7 @@ interface Request {
   readonly now: number;
   readonly rthOnly: boolean;
   readonly visibleBars?: number;
+  readonly adaptiveWindow?: boolean;
   readonly signal?: AbortSignal;
 }
 interface CacheEntry {
@@ -91,7 +92,7 @@ export class UsHistoricalService {
 
   public load(request: Request): Promise<UsHistoricalResult> {
     if (request.signal?.aborted === true) return Promise.reject(new DOMException('Aborted', 'AbortError'));
-    const key = JSON.stringify([request.symbol, request.timeframe, request.rthOnly, request.visibleBars, Math.floor(request.now / 60)]);
+    const key = JSON.stringify([request.symbol, request.timeframe, request.rthOnly, request.visibleBars, request.adaptiveWindow, Math.floor(request.now / 60)]);
     let flight = this.flights.get(key);
     if (flight === undefined) {
       const controller = new AbortController();
@@ -131,7 +132,10 @@ export class UsHistoricalService {
   private async compute(request: Request, signal: AbortSignal): Promise<UsHistoricalResult> {
     const started = this.deps.nowMs();
     const activePool = this.deps.router.status().domains.STOCKS_REST.activeSlotCount > 0;
-    let plan = activePool ? planUsHistorical(request.timeframe, request.now, request.rthOnly, request.visibleBars) : planUsFmpHistorical(request.timeframe, request.now, request.rthOnly, request.visibleBars ?? 1000);
+    const adaptivePlan = request.adaptiveWindow === true
+      ? planUsHistorical(request.timeframe, request.now, request.rthOnly, undefined, true) : undefined;
+    let plan = activePool ? adaptivePlan ?? planUsHistorical(request.timeframe, request.now, request.rthOnly, request.visibleBars)
+      : planUsFmpHistorical(request.timeframe, request.now, request.rthOnly, request.visibleBars ?? 1000, adaptivePlan?.historyFrom);
     const counters: Counters = { requests: 0, pages: 0, downloadedBars: 0, baseAggregates: 0, bytes: 0 };
     const segments: (readonly HistoricalObservation[])[] = [];
     let fallbackCause: string | null = null;
@@ -149,7 +153,8 @@ export class UsHistoricalService {
       fallbackCause = error instanceof Error && error.message.startsWith('HISTORICAL_') ? error.message : 'MASSIVE_UNAVAILABLE';
       // Discard the entire operation's Massive segments, including successful pages.
       segments.length = 0;
-      plan = planUsFmpHistorical(request.timeframe, request.now, request.rthOnly, request.visibleBars ?? plan.visibleBars);
+      plan = planUsFmpHistorical(request.timeframe, request.now, request.rthOnly, request.visibleBars ?? plan.visibleBars, adaptivePlan?.historyFrom);
+      if (adaptivePlan?.visibleFrom !== undefined && adaptivePlan.expectedVisibleBars !== undefined) plan = { ...plan, visibleFrom: adaptivePlan.visibleFrom, expectedVisibleBars: adaptivePlan.expectedVisibleBars };
       const from = plan.historyFrom;
       const transport = {
         signal,
@@ -196,7 +201,9 @@ export class UsHistoricalService {
       ? rows.filter((row) => row.bar.time >= plan.monthAnchor)
       : rollupUsHistorical(source.filter((row) => row.sourceMinutes === 1 && row.bar.time >= plan.monthAnchor), 1, request.rthOnly, request.now);
     const cacheRows = [...this.cache.values()].reduce((sum, entry) => sum + entry.rows.length, 0);
-    return { rows, canonicalMonth, plan, warmupSatisfied: rows.filter((row) => row.bar.time >= plan.historyFrom).length >= plan.requiredBars,
+    return { rows, canonicalMonth, plan, warmupSatisfied: plan.visibleFrom === undefined
+      ? rows.filter((row) => row.bar.time >= plan.historyFrom).length >= plan.requiredBars
+      : rows.filter((row) => row.bar.time >= plan.historyFrom && row.endExclusive <= (plan.visibleFrom as number)).length >= plan.warmupBars,
       coverage: { requestedFrom: plan.historyFrom, firstTime: rows[0]?.bar.time ?? null, lastEndExclusive: rows[rows.length - 1]?.endExclusive ?? null, receivedBars: rows.length,
         canonicalPrefix: canonicalMonth[0]?.bar.time === plan.monthAnchor ? 'OBSERVED_1M' : 'MISSING_1M', adjustment: fmpRows === null ? 'SPLIT_ADJUSTED' : 'FMP_NATIVE_UNVERIFIED' },
       metrics: { ...counters, fmpRequests, massiveRequests: counters.requests - fmpRequests, peakCacheRows: this.peakCacheRows, latencyMs: this.deps.nowMs() - started, cacheHit: counters.requests === 0, cacheRows, fallbackCause } };

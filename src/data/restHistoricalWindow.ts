@@ -33,6 +33,27 @@ import type { Timeframe } from './types.js';
 
 export type RestHistoricalProvider = 'FMP_ENTERPRISE_REST' | 'TRADIER_REST';
 
+export type HistoricalSessionMode = 'EXTENDED' | 'RTH';
+
+/** Nominal visible budget only. Missing/invalid MTD uses the approved 22 sessions.
+ * Unsupported timeframes return NaN so their caller can retain its legacy policy.
+ */
+export function resolveAdaptiveVisibleBars(tf: Timeframe, sessionMode: HistoricalSessionMode, mtdSessions?: number): number {
+  if (!(['EXTENDED', 'RTH'] as readonly string[]).includes(sessionMode)) return Number.NaN;
+  const minutes = sessionMode === 'RTH' ? 390 : 960;
+  switch (tf) {
+    case '1m': return minutes * (sessionMode === 'RTH' ? 5 : 3);
+    case '5m': {
+      const mtd = mtdSessions !== undefined && Number.isInteger(mtdSessions) && mtdSessions >= 0 ? mtdSessions : 22;
+      return Math.min(23, Math.max(22, mtd)) * minutes / 5;
+    }
+    case '15m': return 40 * minutes / 15;
+    case '1h': return 1000;
+    case '1D': return 1250;
+    default: return Number.NaN;
+  }
+}
+
 export interface RestHistoricalWindowInput {
   /** Fin de la ventana (normalmente `nowSec` del runtime). */
   readonly toUtcSec: number;

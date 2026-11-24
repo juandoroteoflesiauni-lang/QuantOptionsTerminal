@@ -70,6 +70,7 @@ import {
   resolveAvwapClickAnchor,
   resolveChartFitKey,
   resolveChartViewportTransition,
+  computeInitialVisibleLogicalRange,
   shouldApplyExternalLogicalRange,
   shouldEmitLogicalRangeSync,
 } from '../../../src/core/stockDetailChartNavigation';
@@ -626,7 +627,8 @@ export const StockDetailView: React.FC<{
           setLoading(false);
         } else {
           const barsPromise = requestTerminalBars(cleanTicker, apiTimeframe, {
-            visibleBars: apiTimeframe === '1D' ? 1_250 : 1_000,
+            // Omit visibleBars: the backend owns adaptive defaults and ET sessions.
+            adaptiveWindow: true,
             includeOverlays: false,
             signal: controller.signal,
           });
@@ -2186,6 +2188,7 @@ const PanoramicPriceChart: React.FC<{
     lastBarTime: number | null;
   }>({ key: null, barCount: 0, firstBarTime: null, lastBarTime: null });
   const lastRenderedBarsRef = useRef<readonly MinimalOhlcvBar[]>([]);
+  const initialViewportKeyRef = useRef<string | null>(null);
   const formingBarRef = useRef<{
     timeSec: number;
     open: number;
@@ -2466,6 +2469,7 @@ const PanoramicPriceChart: React.FC<{
       externalCrosshairTimeRef.current = null;
       getLogicalRangeRef.current = null;
       lastFitStateRef.current = { key: null, barCount: 0, firstBarTime: null, lastBarTime: null };
+      initialViewportKeyRef.current = null;
       lastRenderedBarsRef.current = [];
     };
   }, [externalCrosshairTimeRef, externalLogicalRangeRef, getLogicalRangeRef]);
@@ -2588,7 +2592,12 @@ const PanoramicPriceChart: React.FC<{
     };
 
     if (transition.shouldFitContent) {
-      chart.timeScale().fitContent();
+      const viewportKey = `${ticker}|${timeframe}`;
+      const initialRange = computeInitialVisibleLogicalRange(bundle.bars.length);
+      if (initialRange !== null && initialViewportKeyRef.current !== viewportKey) {
+        chart.timeScale().setVisibleLogicalRange(initialRange);
+        initialViewportKeyRef.current = viewportKey;
+      }
     }
   }, [bundle, ticker, timeframe]);
 

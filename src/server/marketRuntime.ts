@@ -330,6 +330,8 @@ import {
   type MassiveEnvSource,
 } from './massiveKeyPool.js';
 import { UsHistoricalService, serializeHistoricalIntegrity, type UsHistoricalResult } from './usHistoricalService.js';
+import { usHistoricalMtdSessions } from '../core/usHistorical.js';
+import { resolveAdaptiveVisibleBars } from '../data/restHistoricalWindow.js';
 import {
   OratsHybridClient,
   type OratsIvRankPayload,
@@ -11588,14 +11590,17 @@ export class MarketRuntime {
   ): Promise<TerminalBarsResponse> {
     const parsed = parseTerminalSymbol(rawSymbol, this.secrets);
     const timeframe = parseTimeframe(rawTimeframe, this.secrets);
-    const maxVisible = timeframe === '1D' ? 1_250 : 1_000;
-    const defaultVisible = maxVisible;
-    const visibleBars = Math.min(Math.max(options.visibleBars ?? defaultVisible, 20), maxVisible);
     const requestedRthOnly = options.rthOnly ?? false;
     const effectiveRthOnly = requestedRthOnly && timeframe !== '1D' && timeframe !== '4h';
+    const explicitVisible = options.visibleBars !== undefined && Number.isInteger(options.visibleBars) && options.visibleBars > 0;
+    const adaptiveVisible = resolveAdaptiveVisibleBars(timeframe, effectiveRthOnly ? 'RTH' : 'EXTENDED',
+      !explicitVisible && timeframe === '5m' ? usHistoricalMtdSessions(Math.floor(this.nowMsFn() / 1000)) : undefined);
+    const defaultVisible = Number.isFinite(adaptiveVisible) ? adaptiveVisible : 1000;
+    const visibleBars = Math.min(explicitVisible ? options.visibleBars : defaultVisible, timeframe === '1D' ? 1250 : 5000);
+    const adaptiveWindow = !explicitVisible && Number.isFinite(adaptiveVisible);
     const includeOverlays = options.includeOverlays ?? true;
     const fullHistory = options.fullHistory ?? true;
-    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}`;
+    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}`;
 
     const result = await this.barsCache.getOrCompute(
       cacheKey,
@@ -11603,6 +11608,7 @@ export class MarketRuntime {
         this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly, cacheKey, {
           includeOverlays,
           fullHistory,
+          adaptiveWindow,
         }),
       options.forceRefresh === undefined ? {} : { forceRefresh: options.forceRefresh },
     );
@@ -11618,6 +11624,7 @@ export class MarketRuntime {
     opts: {
       readonly includeOverlays: boolean;
       readonly fullHistory: boolean;
+      readonly adaptiveWindow?: boolean;
     } = { includeOverlays: true, fullHistory: true },
   ): Promise<TerminalBarsResponse> {
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
@@ -11654,10 +11661,15 @@ export class MarketRuntime {
     let historicalIntegrity: UsHistoricalResult | undefined;
     if (!useDeepHistory && !parsed.isIndex && this.usHistoricalService !== null &&
         (timeframe === '1m' || timeframe === '5m' || timeframe === '15m' || timeframe === '1h')) {
-      historicalIntegrity = await this.usHistoricalService.load({ symbol: parsed.canonicalSymbol, timeframe, now: nowSec, rthOnly, visibleBars });
+      historicalIntegrity = await this.usHistoricalService.load({ symbol: parsed.canonicalSymbol, timeframe, now: nowSec, rthOnly, visibleBars, adaptiveWindow: opts.adaptiveWindow === true });
       bars = historicalIntegrity.rows.map((row) => row.bar);
       barsStatusOk = historicalIntegrity.warmupSatisfied;
       visibleStart = Math.max(0, bars.length - visibleBars);
+      if (historicalIntegrity.plan.visibleFrom !== undefined) {
+        const from = historicalIntegrity.plan.visibleFrom;
+        const first = bars.findIndex((bar) => bar.time >= from);
+        visibleStart = first < 0 ? bars.length : first;
+      }
       barsProvider = historicalIntegrity.metrics.fallbackCause === null ? 'MASSIVE_REST' : 'FMP_ENTERPRISE_REST';
       if (historicalIntegrity.metrics.fallbackCause !== null) providerFallbackUsed.push('MASSIVE_REST');
     } else if (useDeepHistory) {
