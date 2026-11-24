@@ -1,5 +1,4 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { layoutCurveLabels } from '../../../src/core/bondCurveLayout';
 import {
   TrendingUp,
@@ -46,7 +45,6 @@ import {
   useLiveMacro,
   useLiveMarketStatus,
   useLiveMonitoring,
-  useLiveOptionsSlice,
   useLiveOverview,
   useLiveRelations,
   useLiveUsProvidersStatus,
@@ -73,10 +71,11 @@ import {
   useMarketLiveFutures,
   useMarketLiveFx,
   useMarketScopedQuotesTick,
-  useMarketStreamClock,
   useTickFlash,
   type LiveUsSessionPhase,
 } from '../api/useMarketLiveStream';
+import { LiveClockBadge } from './common/LiveClockBadge';
+export { LiveClockBadge };
 
 const PCT_WIDTH_STYLES: readonly React.CSSProperties[] = Array.from({ length: 101 }, (_, i) =>
   Object.freeze({ width: `${String(i)}%` }),
@@ -103,94 +102,6 @@ const TickFlash: React.FC<{
     >
       {children}
     </span>
-  );
-};
-
-export const LiveClockBadge = memo(function LiveClockBadge({
-  enabled = true,
-  extended = null,
-  showClosed = false,
-}: {
-  readonly enabled?: boolean;
-  readonly extended?: 'PRE' | 'AH' | null;
-  readonly showClosed?: boolean;
-}) {
-  const { clock } = useMarketStreamClock();
-  const visible = enabled && clock !== null;
-  if (!visible && showClosed) {
-    return (
-      <span className="inline-flex min-w-[130px] items-center rounded-full border border-[#F5B544]/35 bg-[#F5B544]/10 px-2 py-0.5 font-mono-num text-[10px] font-semibold text-[#F5B544]">
-        ● CIERRE EOD
-      </span>
-    );
-  }
-  return (
-    <span
-      aria-hidden={!visible}
-      className={`inline-flex min-w-[130px] items-center gap-1 rounded-full border px-2 py-0.5 font-mono-num text-[10px] font-semibold ${
-        extended ? 'border-[#F5B544]/35 bg-[#F5B544]/10 text-[#F5B544]' : 'border-[#22C55E]/35 bg-[#22C55E]/10 text-[#22C55E]'
-      } ${visible ? '' : 'invisible'}`}
-    >
-      ● {extended ?? 'Tiempo real'} {clock}
-    </span>
-  );
-});
-
-const LogoHeatTileImpl: React.FC<{
-  readonly ticker: string;
-  readonly name?: string;
-  readonly deltaPct: number;
-  readonly price?: string;
-  readonly priceValue?: number;
-  readonly onClick?: () => void;
-}> = ({ ticker, name, deltaPct, price, priceValue, onClick }) => {
-  const effectiveDelta = deltaPct;
-  const effectivePrice = priceValue ?? Number.NaN;
-  const flashDirection = useTickFlash(effectivePrice);
-  const finiteDelta = Number.isFinite(effectiveDelta);
-  const isPos = finiteDelta && effectiveDelta > 0.001;
-  const isNeg = finiteDelta && effectiveDelta < -0.001;
-
-  let bgStyle = 'bg-[#1A1E29] border-[#262B3B]';
-  if (isPos) {
-    bgStyle =
-      effectiveDelta >= 2.5
-        ? 'bg-[#0E382B]/90 border-[#165B43]/70'
-        : 'bg-[#0D281E]/85 border-[#144634]/60';
-  } else if (isNeg) {
-    bgStyle =
-      effectiveDelta <= -2.0
-        ? 'bg-[#381419]/90 border-[#63222B]/70'
-        : 'bg-[#2D1418]/85 border-[#4D1E26]/60';
-  }
-
-  const pctColor = isPos ? 'text-[#22C55E]' : isNeg ? 'text-[#F23645]' : 'text-[#787B86]';
-  const sign = isPos ? '+' : isNeg ? '-' : '';
-  const formattedPct = finiteDelta ? `${sign}${Math.abs(effectiveDelta).toFixed(2).replace('.', ',')} %` : '—';
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative px-3.5 py-2.5 rounded-[8px] text-left cursor-pointer flex flex-col justify-between min-h-[64px] border hover:border-[#3B82F6]/80 hover:brightness-110 ${bgStyle}`}
-    >
-      <div className="flex items-center justify-between gap-2 w-full">
-        <div className="flex items-center gap-2 min-w-0">
-          <CompanyLogo ticker={ticker} name={name} size="sm" />
-          <span className="font-bold text-[13.5px] text-[#FFFFFF] tracking-tight truncate">
-            {ticker}
-          </span>
-        </div>
-        <span className={`inline-block w-[62px] shrink-0 text-right font-mono-num tabular-nums text-[11px] ${tickFlashClass(flashDirection)}`}>
-          {Number.isFinite(effectivePrice) ? '$' + fmtNum(effectivePrice, effectivePrice < 1000 ? 1 : 0) : price ?? '—'}
-        </span>
-      </div>
-      <div className="mt-1.5 flex items-center justify-between w-full">
-        <span className={`font-mono-num text-[12.5px] font-semibold ${pctColor}`}>
-          {formattedPct}
-        </span>
-      </div>
-    </button>
   );
 };
 
@@ -307,22 +218,6 @@ const formatVolMillionsShared = (value: number | null | undefined, currencyPrefi
   return `${currencyPrefix}${fmtNum(value, 1)}M`;
 };
 
-const areLogoHeatTilePropsEqual = (
-  prev: React.ComponentProps<typeof LogoHeatTileImpl>,
-  next: React.ComponentProps<typeof LogoHeatTileImpl>,
-): boolean => (
-  prev.ticker === next.ticker &&
-  prev.name === next.name &&
-  prev.deltaPct === next.deltaPct &&
-  prev.price === next.price &&
-  prev.priceValue === next.priceValue
-);
-
-const LogoHeatTile: React.FC<React.ComponentProps<typeof LogoHeatTileImpl>> = memo(
-  LogoHeatTileImpl,
-  areLogoHeatTilePropsEqual,
-);
-
 const PANEL_GRID_CLASS =
   'grid grid-cols-[minmax(190px,1.5fr)_minmax(88px,0.75fr)_minmax(78px,0.7fr)_minmax(86px,0.75fr)_minmax(170px,1.1fr)]';
 const RISK_GRID_CLASS = 'grid grid-cols-[minmax(115px,1.15fr)_repeat(5,minmax(78px,0.85fr))]';
@@ -424,6 +319,37 @@ const PanelVirtualRow: React.FC<{
   );
 });
 
+function useFixedRowWindow(
+  count: number,
+  rowHeightPx: number,
+  viewportHeightPx: number,
+  overscan = 1,
+): {
+  readonly totalHeightPx: number;
+  readonly startIndex: number;
+  readonly endIndex: number;
+  readonly onScroll: (e: React.UIEvent<HTMLDivElement>) => void;
+} {
+  const [scrollTop, setScrollTop] = useState(0);
+  const stepPx = Math.max(1, rowHeightPx >> 1);
+  const onScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const nextTop = e.currentTarget.scrollTop;
+      setScrollTop((prev) => (Math.abs(prev - nextTop) >= stepPx ? nextTop : prev));
+    },
+    [stepPx],
+  );
+  const totalHeightPx = count * rowHeightPx;
+  if (count <= 0) {
+    return { totalHeightPx: 0, startIndex: 0, endIndex: -1, onScroll };
+  }
+  const rawStart = Math.floor(scrollTop / rowHeightPx);
+  const visibleCount = Math.ceil(viewportHeightPx / rowHeightPx);
+  const startIndex = Math.max(0, rawStart - overscan);
+  const endIndex = Math.min(count - 1, rawStart + visibleCount + overscan);
+  return { totalHeightPx, startIndex, endIndex, onScroll };
+}
+
 const VirtualizedEquityPanelTable: React.FC<{
   readonly mode: 'AR' | 'US';
   readonly list: readonly NormalizedPanelRow[];
@@ -431,18 +357,16 @@ const VirtualizedEquityPanelTable: React.FC<{
   readonly currencyPrefix: string;
   readonly onSelectRow: (symbol: string) => void;
 }> = memo(({ mode, list, denseRowClass, currencyPrefix, onSelectRow }) => {
-  const parentRef = useRef<HTMLDivElement | null>(null);
   const onSelectRowRef = useRef(onSelectRow);
   onSelectRowRef.current = onSelectRow;
   const rowHeightPx = denseRowClass.includes('h-11') ? 42 : denseRowClass.includes('h-9') ? 34 : 28;
 
-  const rowVirtualizer = useVirtualizer({
-    count: list.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => rowHeightPx,
-    overscan: 6,
-    getItemKey: (idx) => list[idx]?.symbol ?? idx,
-  });
+  const { totalHeightPx, startIndex, endIndex, onScroll } = useFixedRowWindow(
+    list.length,
+    rowHeightPx,
+    520,
+    1,
+  );
 
   const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
@@ -450,20 +374,18 @@ const VirtualizedEquityPanelTable: React.FC<{
     if (symbol) onSelectRowRef.current(symbol);
   }, []);
 
-  const virtualRows = rowVirtualizer.getVirtualItems();
   const visibleScopeId = useId();
 
   useEffect(() => {
     const syms: string[] = [];
-    for (let i = 0; i < virtualRows.length; i += 1) {
-      const vr = virtualRows[i];
-      const item = vr !== undefined ? list[vr.index] : undefined;
+    for (let idx = startIndex; idx <= endIndex; idx += 1) {
+      const item = list[idx];
       if (item !== undefined) {
         syms.push(`${mode}:${item.symbol}`);
       }
     }
     setVisibleMarketSymbols(syms, `panel:${visibleScopeId}`);
-  }, [list, mode, virtualRows, visibleScopeId]);
+  }, [endIndex, list, mode, startIndex, visibleScopeId]);
 
   useEffect(() => {
     return () => {
@@ -472,7 +394,7 @@ const VirtualizedEquityPanelTable: React.FC<{
   }, [visibleScopeId]);
 
   return (
-    <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[520px]">
+    <div onScroll={onScroll} className="perf-table-viewport overflow-auto max-h-[520px]">
       <div className="min-w-[612px]">
         <div
           className={`${PANEL_GRID_CLASS} sticky top-0 z-10 bg-[#0D0D14] border-b border-[#1E1E2B] text-right text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]`}
@@ -491,18 +413,17 @@ const VirtualizedEquityPanelTable: React.FC<{
           <div
             onClick={handleContainerClick}
             className="relative w-full"
-            style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+            style={{ height: `${String(totalHeightPx)}px` }}
           >
-            {virtualRows.map((virtualRow) => {
-              const row = list[virtualRow.index];
-              if (!row) return null;
+            {list.slice(startIndex, endIndex + 1).map((row, offset) => {
+              const rowIndex = startIndex + offset;
               return (
                 <div
-                  key={virtualRow.key}
+                  key={row.symbol}
                   className="perf-virtual-row absolute left-0 top-0 w-full"
                   style={{
                     height: `${String(rowHeightPx)}px`,
-                    transform: `translateY(${String(virtualRow.start)}px)`,
+                    transform: `translateY(${String(rowIndex * rowHeightPx)}px)`,
                   }}
                 >
                   <PanelVirtualRow
@@ -527,17 +448,15 @@ const VirtualizedRankingList: React.FC<{
   readonly rankHorizon: 'Día' | 'Mes' | 'Año';
   readonly onSelectRow: (symbol: string) => void;
 }> = memo(({ rankedRows, maxAbsRank, rankHorizon, onSelectRow }) => {
-  const parentRef = useRef<HTMLDivElement | null>(null);
   const onSelectRowRef = useRef(onSelectRow);
   onSelectRowRef.current = onSelectRow;
 
-  const rowVirtualizer = useVirtualizer({
-    count: rankedRows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 28,
-    overscan: 6,
-    getItemKey: (idx) => rankedRows[idx]?.row.symbol ?? idx,
-  });
+  const { totalHeightPx, startIndex, endIndex, onScroll } = useFixedRowWindow(
+    rankedRows.length,
+    28,
+    380,
+    1,
+  );
 
   const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
@@ -554,27 +473,26 @@ const VirtualizedRankingList: React.FC<{
   }
 
   return (
-    <div ref={parentRef} className="perf-table-viewport max-h-[380px] overflow-y-auto pr-1">
+    <div onScroll={onScroll} className="perf-table-viewport max-h-[380px] overflow-y-auto pr-1">
       <div
         onClick={handleContainerClick}
         className="relative w-full"
-        style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+        style={{ height: `${String(totalHeightPx)}px` }}
       >
-        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-          const item = rankedRows[virtualRow.index];
-          if (!item) return null;
+        {rankedRows.slice(startIndex, endIndex + 1).map((item, offset) => {
+          const rowIndex = startIndex + offset;
           const { row, val } = item;
           const pos = val >= 0;
           const widthBucket = Math.max(4, Math.min(100, Math.round((Math.abs(val) / maxAbsRank) * 100)));
           return (
             <button
-              key={virtualRow.key}
+              key={row.symbol}
               type="button"
               data-id={row.symbol}
               className="perf-virtual-row absolute left-0 top-0 w-full flex items-center gap-2.5 px-2 rounded-[6px] hover:bg-[#171724] text-left cursor-pointer"
               style={{
                 height: '28px',
-                transform: `translateY(${String(virtualRow.start)}px)`,
+                transform: `translateY(${String(rowIndex * 28)}px)`,
               }}
             >
               <CompanyLogo ticker={row.symbol} name={row.name} size="xs" />
@@ -607,17 +525,15 @@ const VirtualizedRiskTable: React.FC<{
   readonly currencyPrefix: string;
   readonly onSelectRow: (symbol: string) => void;
 }> = memo(({ riskRows, currencyPrefix, onSelectRow }) => {
-  const parentRef = useRef<HTMLDivElement | null>(null);
   const onSelectRowRef = useRef(onSelectRow);
   onSelectRowRef.current = onSelectRow;
 
-  const rowVirtualizer = useVirtualizer({
-    count: riskRows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 28,
-    overscan: 6,
-    getItemKey: (idx) => riskRows[idx]?.symbol ?? idx,
-  });
+  const { totalHeightPx, startIndex, endIndex, onScroll } = useFixedRowWindow(
+    riskRows.length,
+    28,
+    395,
+    1,
+  );
 
   const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-id]');
@@ -626,7 +542,7 @@ const VirtualizedRiskTable: React.FC<{
   }, []);
 
   return (
-    <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[395px]">
+    <div onScroll={onScroll} className="perf-table-viewport overflow-auto max-h-[395px]">
       <div className="min-w-[520px]">
         <div
           className={`${RISK_GRID_CLASS} sticky top-0 z-10 bg-[#0D0D14] border-b border-[#1E1E2B] text-right text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]`}
@@ -641,19 +557,18 @@ const VirtualizedRiskTable: React.FC<{
         <div
           onClick={handleContainerClick}
           className="relative w-full font-mono-num tabular-nums text-[12px]"
-          style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+          style={{ height: `${String(totalHeightPx)}px` }}
         >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const row = riskRows[virtualRow.index];
-            if (!row) return null;
+          {riskRows.slice(startIndex, endIndex + 1).map((row, offset) => {
+            const rowIndex = startIndex + offset;
             return (
               <div
-                key={virtualRow.key}
+                key={row.symbol}
                 data-id={row.symbol}
                 className={`perf-virtual-row ${RISK_GRID_CLASS} absolute left-0 top-0 w-full items-center border-b border-[#1A1A26] hover:bg-[#171724] cursor-pointer text-right`}
                 style={{
                   height: '28px',
-                  transform: `translateY(${String(virtualRow.start)}px)`,
+                  transform: `translateY(${String(rowIndex * 28)}px)`,
                 }}
               >
                 <div className="px-3 text-left flex items-center gap-2 min-w-0">
@@ -930,7 +845,6 @@ const VirtualizedCedearsTable: React.FC<{
     instrumentLabel: string;
   }) => void;
 }> = memo(({ rows, cclMedian, density, onSelectStock, onOpenOrderTicket }) => {
-  const parentRef = useRef<HTMLDivElement | null>(null);
   const rowsByKeyRef = useRef<ReadonlyMap<string, CedearAdrDisplayRow>>(new Map());
   rowsByKeyRef.current = useMemo(() => new Map(rows.map((r) => [r.key, r])), [rows]);
   const onSelectStockRef = useRef(onSelectStock);
@@ -939,13 +853,12 @@ const VirtualizedCedearsTable: React.FC<{
   onOpenTicketRef.current = onOpenOrderTicket;
 
   const rowHeightPx = 48;
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => rowHeightPx,
-    overscan: 6,
-    getItemKey: (idx) => rows[idx]?.key ?? idx,
-  });
+  const { totalHeightPx, startIndex, endIndex, onScroll } = useFixedRowWindow(
+    rows.length,
+    rowHeightPx,
+    580,
+    1,
+  );
 
   const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const detailBtn = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-action="detail"]');
@@ -978,21 +891,19 @@ const VirtualizedCedearsTable: React.FC<{
     });
   }, []);
 
-  const virtualCedearRows = rowVirtualizer.getVirtualItems();
   const cedearScopeId = useId();
 
   useEffect(() => {
     const syms: string[] = [];
-    for (let i = 0; i < virtualCedearRows.length; i += 1) {
-      const vr = virtualCedearRows[i];
-      const item = vr !== undefined ? rows[vr.index] : undefined;
+    for (let idx = startIndex; idx <= endIndex; idx += 1) {
+      const item = rows[idx];
       if (item !== undefined) {
         syms.push(`AR:${item.ticker}`);
         if (item.usTicker) syms.push(`US:${item.usTicker}`);
       }
     }
     setVisibleMarketSymbols(syms, `cedears:${cedearScopeId}`);
-  }, [cedearScopeId, rows, virtualCedearRows]);
+  }, [cedearScopeId, endIndex, rows, startIndex]);
 
   useEffect(() => {
     return () => {
@@ -1001,7 +912,7 @@ const VirtualizedCedearsTable: React.FC<{
   }, [cedearScopeId]);
 
   return (
-    <div ref={parentRef} className="perf-table-viewport overflow-auto max-h-[580px]">
+    <div onScroll={onScroll} className="perf-table-viewport overflow-auto max-h-[580px]">
       <div className="min-w-[1105px]">
         <div
           className={`${CEDEAR_GRID_CLASS} sticky top-0 z-10 bg-[#0B0E14] border-b border-[#1E1E2B] text-right text-[10px] font-semibold uppercase tracking-[0.06em] text-[#787B86]`}
@@ -1025,18 +936,17 @@ const VirtualizedCedearsTable: React.FC<{
           <div
             onClick={handleContainerClick}
             className="relative w-full"
-            style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}
+            style={{ height: `${String(totalHeightPx)}px` }}
           >
-            {virtualCedearRows.map((virtualRow) => {
-              const r = rows[virtualRow.index];
-              if (!r) return null;
+            {rows.slice(startIndex, endIndex + 1).map((r, offset) => {
+              const rowIndex = startIndex + offset;
               return (
                 <div
-                  key={virtualRow.key}
+                  key={r.key}
                   className="perf-virtual-row absolute left-0 top-0 w-full"
                   style={{
                     height: `${String(rowHeightPx)}px`,
-                    transform: `translateY(${String(virtualRow.start)}px)`,
+                    transform: `translateY(${String(rowIndex * rowHeightPx)}px)`,
                   }}
                 >
                   <CedearVirtualRow
@@ -1103,6 +1013,21 @@ const EquitySixPanelsGrid: React.FC<{
   const [selectedSector, setSelectedSector] = useState<string>('Todos');
   const [restSearch, setRestSearch] = useState<string>('');
   const [rankHorizon, setRankHorizon] = useState<'Día' | 'Mes' | 'Año'>('Día');
+  const [belowFoldMounted, setBelowFoldMounted] = useState<boolean>(() => mode !== 'US');
+  useEffect(() => {
+    if (mode !== 'US') {
+      setBelowFoldMounted(true);
+      return;
+    }
+    const timerId = setTimeout(() => {
+      React.startTransition(() => {
+        setBelowFoldMounted(true);
+      });
+    }, 90);
+    return () => {
+      clearTimeout(timerId);
+    };
+  }, [mode]);
 
   const leaderRows = useMemo(() => {
     if (mode === 'US' && selectedSector !== 'Todos') {
@@ -1142,6 +1067,7 @@ const EquitySixPanelsGrid: React.FC<{
   const restStats = countAdvDec(restRows);
 
   const rankedRows = useMemo(() => {
+    if (!belowFoldMounted) return [];
     const pick = (r: NormalizedPanelRow) =>
       rankHorizon === 'Día'
         ? r.return1dPct
@@ -1152,24 +1078,27 @@ const EquitySixPanelsGrid: React.FC<{
       .map((r) => ({ row: r, val: pick(r) }))
       .filter((x) => Number.isFinite(x.val))
       .sort((a, b) => b.val - a.val);
-  }, [rows, rankHorizon]);
+  }, [belowFoldMounted, rows, rankHorizon]);
 
   const maxAbsRank = useMemo(() => {
-    if (rankedRows.length === 0) return 1;
+    if (!belowFoldMounted || rankedRows.length === 0) return 1;
     return Math.max(0.5, ...rankedRows.map((x) => Math.abs(x.val)));
-  }, [rankedRows]);
+  }, [belowFoldMounted, rankedRows]);
 
   const riskRows = useMemo(
     () =>
-      [...inputRows].sort((a, b) => {
-        const va = Number.isFinite(a.avgVolume40dM) ? a.avgVolume40dM : -1;
-        const vb = Number.isFinite(b.avgVolume40dM) ? b.avgVolume40dM : -1;
-        return vb - va;
-      }),
-    [inputRows],
+      !belowFoldMounted
+        ? []
+        : [...inputRows].sort((a, b) => {
+            const va = Number.isFinite(a.avgVolume40dM) ? a.avgVolume40dM : -1;
+            const vb = Number.isFinite(b.avgVolume40dM) ? b.avgVolume40dM : -1;
+            return vb - va;
+          }),
+    [belowFoldMounted, inputRows],
   );
 
   const topGainers = useMemo(() => {
+    if (!belowFoldMounted) return [];
     return [...rows]
       .filter((r) => Number.isFinite(r.return1dPct) && r.return1dPct > 0)
       .sort((a, b) => b.return1dPct - a.return1dPct)
@@ -1182,9 +1111,10 @@ const EquitySixPanelsGrid: React.FC<{
         volumeM: Number.isFinite(r.volumeM) ? r.volumeM : null,
         return1dPct: r.return1dPct,
       }));
-  }, [rows]);
+  }, [belowFoldMounted, rows]);
 
   const topLosers = useMemo(() => {
+    if (!belowFoldMounted) return [];
     return [...rows]
       .filter((r) => Number.isFinite(r.return1dPct) && r.return1dPct < 0)
       .sort((a, b) => a.return1dPct - b.return1dPct)
@@ -1197,7 +1127,7 @@ const EquitySixPanelsGrid: React.FC<{
         volumeM: Number.isFinite(r.volumeM) ? r.volumeM : null,
         return1dPct: r.return1dPct,
       }));
-  }, [rows]);
+  }, [belowFoldMounted, rows]);
 
   const volDays = analytics?.panelVolume40d ?? [];
   const maxDayVol = Math.max(1, ...volDays.map((d) => d.totalVolumeM));
@@ -1299,6 +1229,10 @@ const EquitySixPanelsGrid: React.FC<{
         </div>
       </div>
 
+      {!belowFoldMounted ? (
+        <div className="min-h-[880px]" aria-hidden="true" />
+      ) : (
+        <>
       {/* BLOQUE 2 (2 Columnas): Ranking del panel (Día|Mes|Año) + Volatilidad y beta */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
         <div className="xl:col-span-5 rounded-[10px] bg-[#11111A] border border-[#1E1E2B] p-4 flex flex-col gap-3">
@@ -1596,250 +1530,8 @@ const EquitySixPanelsGrid: React.FC<{
           </div>
         </div>
       </div>
-    </div>
-  );
-};
-
-export const HomeDashboard: React.FC<{
-  tickFlashes: Readonly<Record<string, 'up' | 'down' | null>>;
-  onSelectStock: (ticker: string) => void;
-  onNavigate: (page: string) => void;
-  onOpenOrderTicket: (preset: {
-    ticker: string;
-    side: 'Compra' | 'Venta';
-    price: number;
-    qty: number;
-    instrumentLabel: string;
-  }) => void;
-}> = ({ onSelectStock, onNavigate }) => {
-  const overview = useLiveOverview();
-  const macro = useLiveMacro();
-  const { feedStatus } = useLiveMarketStatus();
-  const ggal = useLiveOptionsSlice('AR:GGAL');
-  const streamMeta = useMarketLiveFx();
-  const quoteTick = useMarketScopedQuotesTick('AR');
-  useEffect(() => {
-    setVisibleMarketSymbols(
-      [...AR_STOCKS, ...AR_GENERAL_PANEL_STOCKS].map(({ ticker }) => 'AR:' + ticker),
-      'home',
-    );
-    return () => setVisibleMarketSymbols([], 'home');
-  }, []);
-  const liveLeaderStocks = useMemo(
-    () =>
-      AR_STOCKS.map((stock) => {
-        const quote = getAtomicMarketQuote('AR', stock.ticker);
-        return quote === null
-          ? stock
-          : {
-              ...stock,
-              last: quote.price,
-              deltaPct: quote.changePct ?? stock.deltaPct,
-              low: quote.dayLow ?? stock.low,
-              high: quote.dayHigh ?? stock.high,
-              volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : stock.volumeM,
-            };
-      }),
-    [overview, quoteTick],
-  );
-  const liveGeneralStocks = useMemo(
-    () =>
-      AR_GENERAL_PANEL_STOCKS.map((stock) => {
-        const quote = getAtomicMarketQuote('AR', stock.ticker);
-        return quote === null
-          ? stock
-          : {
-              ...stock,
-              last: quote.price,
-              deltaPct: quote.changePct ?? stock.deltaPct,
-              low: quote.dayLow ?? stock.low,
-              high: quote.dayHigh ?? stock.high,
-              volumeM: quote.turnover !== null ? quote.turnover / 1_000_000 : stock.volumeM,
-            };
-      }),
-    [overview, quoteTick],
-  );
-  const liveStreamFresh = streamMeta.isFresh;
-  const cclMedian =
-    (liveStreamFresh ? streamMeta.cclMedian : null) ??
-    overview?.cclMedian ??
-    macro?.variables.ccl ??
-    GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.value ??
-    null;
-  const mepMedian =
-    (liveStreamFresh ? streamMeta.mepMedian : null) ??
-    overview?.mepMedian ??
-    macro?.variables.mep ??
-    null;
-  const computedCanjePct =
-    cclMedian !== null &&
-    mepMedian !== null &&
-    Number.isFinite(cclMedian) &&
-    Number.isFinite(mepMedian) &&
-    mepMedian > 0
-      ? ((cclMedian / mepMedian) - 1) * 100
-      : null;
-  const canjeGapPct =
-    liveStreamFresh && streamMeta.cclMedian !== null
-      ? computedCanjePct
-      : overview?.mepCclGapPct ??
-        macro?.variables.canjePct ??
-        computedCanjePct;
-  const embiVal = GLOBAL_INDICATORS.find((g) => g.id === 'embi')?.value ?? Number.NaN;
-  const validTirs = useMemo(() => BONDS_DATA.map((b) => b.tir).filter((v) => Number.isFinite(v)).sort((a, b) => a - b), [overview]);
-  const medianTir =
-    validTirs.length > 0 ? validTirs[Math.floor(validTirs.length / 2)] ?? Number.NaN : Number.NaN;
-  const totalVolM = liveLeaderStocks.reduce((acc, s) => (Number.isFinite(s.volumeM) ? acc + s.volumeM : acc), 0);
-  const advCount = liveLeaderStocks.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct > 0).length;
-  const decCount = liveLeaderStocks.filter((s) => Number.isFinite(s.deltaPct) && s.deltaPct < 0).length;
-  const deltaFinite = liveLeaderStocks.filter((s) => Number.isFinite(s.deltaPct)).map((s) => s.deltaPct);
-  const avgDelta = deltaFinite.length > 0 ? deltaFinite.reduce((a, b) => a + b, 0) / deltaFinite.length : Number.NaN;
-  const overviewExt = overview as
-    | (typeof overview & {
-        readonly atmIvPct?: number | null;
-        readonly atmIvExpiryCode?: string | null;
-        readonly atmIvExpiryLabel?: string | null;
-        readonly atmIvDaysToExpiry?: number | null;
-        readonly atmIvRateTnaPct?: number | null;
-      })
-    | null;
-  // Pieza 50.3: la tarjeta héroe de Inicio lee SIEMPRE el subyacente AR:GGAL aislado.
-  const ggalOptionExpiries = ggal.expiries;
-  const ggalOptsMeta = ggal.options as
-    | ({
-        readonly primaryLiquidExpiryCode?: string | null;
-        readonly rateTna?: number | null;
-      })
-    | undefined;
-  const frontOpt =
-    (ggalOptsMeta?.primaryLiquidExpiryCode
-      ? ggalOptionExpiries.find((e) => e.id === ggalOptsMeta.primaryLiquidExpiryCode)
-      : undefined) ??
-    ggalOptionExpiries.find((e) => Number.isFinite(e.atmIV) && e.atmIV > 0) ??
-    ggalOptionExpiries[0];
-  const atmIvHeroVal =
-    overviewExt?.atmIvPct != null && Number.isFinite(overviewExt.atmIvPct)
-      ? overviewExt.atmIvPct
-      : (frontOpt?.atmIV ?? Number.NaN);
-  const atmIvBadge = overviewExt?.atmIvExpiryCode ?? frontOpt?.id ?? 'SIN CADENA';
-  const atmIvDays = overviewExt?.atmIvDaysToExpiry ?? frontOpt?.daysToExpiry ?? null;
-  const atmIvLabel = overviewExt?.atmIvExpiryLabel ?? frontOpt?.label ?? atmIvBadge;
-  const atmIvRateTna =
-    overviewExt?.atmIvRateTnaPct ?? ggalOptsMeta?.rateTna ?? frontOpt?.syntheticRateTNA ?? Number.NaN;
-
-  return (
-    <div className="space-y-4 animate-module">
-      <InsightBanner variant={Number.isFinite(avgDelta) && avgDelta < 0 ? 'neg' : 'pos'} tag="Resumen de Rueda">
-        <LiveClockBadge />{' '}
-        Panel Líder BYMA promedio{' '}
-        <strong className="text-[var(--text-primary)] font-mono-num">{fmtPct(avgDelta, 2)}</strong> ({advCount} en alza ·{' '}
-        {decCount} en baja) · Dólar CCL implícito:{' '}
-        <strong className="text-[var(--text-primary)] font-mono-num">
-          {cclMedian !== null && Number.isFinite(cclMedian) ? `$ ${fmtNum(cclMedian, 2)}` : '—'}
-        </strong>{' '}
-        · TIR mediana HD: <strong className="text-[#22C55E] font-mono-num">{fmtPct(medianTir, 2, false)}</strong> (
-        {feedStatus}).
-      </InsightBanner>
-
-      {/* KPIs Héroe de Inicio */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <KPICard
-          title="Dólar CCL Mediano"
-          heroValue={cclMedian !== null && Number.isFinite(cclMedian) ? `$ ${fmtNum(cclMedian, 2)}` : '—'}
-          deltaPct={GLOBAL_INDICATORS.find((g) => g.id === 'ccl')?.deltaPct}
-          badge={feedStatus}
-          subtitle={`MEP: ${fmtNum(mepMedian, 2)} | Canje: ${fmtPct(canjeGapPct, 2)}`}
-          helpText="Mediana ponderada del Contado con Liquidación implícito en ADRs, CEDEARs y bonos C."
-          onClick={() => onNavigate('monitoreo')}
-        />
-        <KPICard
-          title="TIR Mediana Soberanos HD"
-          heroValue={fmtPct(medianTir, 2, false)}
-          badge={`${validTirs.length} BONOS`}
-          subtitle={`Riesgo País: ${Number.isFinite(embiVal) ? `${fmtNum(embiVal, 0)} pb` : '—'}`}
-          helpText="Tasa Interna de Retorno mediana de los bonos soberanos en dólares calculada por XIRR."
-          onClick={() => onNavigate('bonos')}
-        />
-        <KPICard
-          title="Volumen Acumulado Merval"
-          heroValue={totalVolM > 0 ? fmtMoneyCompact(totalVolM) : '—'}
-          badge={`${advCount}▲ / ${decCount}▼`}
-          subtitle={`${AR_STOCKS.length} líderes monitoreadas en tiempo real`}
-          helpText="Monto efectivo acumulado reportado por Data912 / Open BYMA en acciones del Panel Líder."
-          onClick={() => onNavigate('monitoreo')}
-        />
-        <KPICard
-          title="VI ATM Cadena Activa"
-          heroValue={Number.isFinite(atmIvHeroVal) ? `${fmtNum(atmIvHeroVal, 1)} %` : '—'}
-          badge={atmIvBadge}
-          subtitle={
-            atmIvDays !== null && Number.isFinite(atmIvDays)
-              ? `Vto ${atmIvDays}d (${atmIvLabel}) · Tasa Ref: ${Number.isFinite(atmIvRateTna) ? `${fmtNum(atmIvRateTna, 1)} % TNA` : '—'}`
-              : 'Cargando cadena desde /api/ar/options'
-          }
-          helpText="Volatilidad implícita ATM calculada con modelo Americano Bjerksund-Stensland 2002."
-          onClick={() => onNavigate('opciones')}
-        />
-      </div>
-
-      {/* Panel de Acciones Expandido a Ancho Completo (Panel Líder + Resto del Panel) */}
-      <div className="rounded-[10px] bg-[#131722] border border-[#232733] p-5 space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <h3 className="text-[15px] font-bold text-[#FFFFFF] tracking-tight">
-              Panel Líder
-            </h3>
-            <span className="text-[11px] font-mono-num text-[#787B86]">
-              {AR_STOCKS.length} especies · Click para inspeccionar ficha y libro
-            </span>
-            <HelpTooltip
-              title="Panel de Acciones"
-              text="Tarjetas apaisadas con tinte condicional según rendimiento intradiario y variación directa en tipografía monoespaciada tabular."
-            />
-          </div>
-        </div>
-
-        {/* Grid de tarjetas rectangulares — Panel Líder */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-          {liveLeaderStocks.map((st) => (
-            <LogoHeatTile
-              key={st.ticker}
-              ticker={st.ticker}
-              name={st.name}
-              deltaPct={st.deltaPct}
-              price={Number.isFinite(st.last) ? `$${fmtNum(st.last, st.last < 1000 ? 1 : 0)}` : '—'}
-              priceValue={st.last}
-              onClick={() => onSelectStock(st.ticker)}
-            />
-          ))}
-        </div>
-
-        {/* Sección Resto del Panel (Panel General) */}
-        <div className="pt-4 border-t border-[#232733] space-y-3">
-          <div className="flex items-center gap-2.5">
-            <h4 className="text-[14px] font-bold text-[#D1D4DC] tracking-tight">
-              Resto del Panel
-            </h4>
-            <span className="text-[11px] font-mono-num text-[#787B86]">
-              {AR_GENERAL_PANEL_STOCKS.length} especies
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-            {liveGeneralStocks.map((st) => (
-              <LogoHeatTile
-                key={st.ticker}
-                ticker={st.ticker}
-                name={st.name}
-                deltaPct={st.deltaPct}
-                price={Number.isFinite(st.last) ? `$${fmtNum(st.last, st.last < 1000 ? 1 : 0)}` : '—'}
-                priceValue={st.last}
-                onClick={() => onSelectStock(st.ticker)}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 };
@@ -1867,8 +1559,13 @@ export const MonitoringModule: React.FC<MonitoringProps> = (props) => {
   const [cedearSearch, setCedearSearch] = useState('');
   useEffect(() => {
     const controller = new AbortController();
-    void requestMonitoringPanel(subPanel, false, controller.signal);
-    return () => controller.abort();
+    const timerId = setTimeout(() => {
+      void requestMonitoringPanel(subPanel, false, controller.signal);
+    }, 80);
+    return () => {
+      clearTimeout(timerId);
+      controller.abort();
+    };
   }, [subPanel]);
 
   switch (subPanel) {
@@ -3178,29 +2875,34 @@ export const USMarketModule: React.FC<{
   const usFeedBadge = usProviders?.usOptionsFeedBadge ?? null;
 
   useEffect(() => {
-    const stopAnalytics = createVisibilityAwareInterval(async (signal) => {
-      try {
-        const response = await fetch('/api/us/panel-analytics', {
-          signal, headers: { accept: 'application/json' },
-        });
-        if (!response.ok) return;
-        const payload = (await response.json()) as EquityPanelAnalyticsDto;
-        if (!signal.aborted && Array.isArray(payload?.rows)) setDirectUsPanelAnalytics(payload);
-      } catch {
-        // Mantiene el último panel válido.
-      }
-    }, 60_000, { runImmediately: true, reconcileAfterMs: 60_000 });
-    const stopSnapshots = createVisibilityAwareInterval(async (signal) => {
-      await Promise.all([
-        requestUsSnapshot('SPY', { signal }),
-        requestUsSnapshot('QQQ', { signal }),
-        requestUsSnapshot('IWM', { signal }),
-        requestMonitoringPanel('cedears', false, signal),
-      ]);
-    }, 60_000, { runImmediately: true, repeat: false, reconcileAfterMs: Infinity });
+    let stopAnalytics: (() => void) | null = null;
+    let stopSnapshots: (() => void) | null = null;
+    const timerId = setTimeout(() => {
+      stopAnalytics = createVisibilityAwareInterval(async (signal) => {
+        try {
+          const response = await fetch('/api/us/panel-analytics', {
+            signal, headers: { accept: 'application/json' },
+          });
+          if (!response.ok) return;
+          const payload = (await response.json()) as EquityPanelAnalyticsDto;
+          if (!signal.aborted && Array.isArray(payload?.rows)) setDirectUsPanelAnalytics(payload);
+        } catch {
+          // Mantiene el último panel válido.
+        }
+      }, 60_000, { runImmediately: true, reconcileAfterMs: 60_000 });
+      stopSnapshots = createVisibilityAwareInterval(async (signal) => {
+        await Promise.all([
+          requestUsSnapshot('SPY', { signal }),
+          requestUsSnapshot('QQQ', { signal }),
+          requestUsSnapshot('IWM', { signal }),
+          requestMonitoringPanel('cedears', false, signal),
+        ]);
+      }, 60_000, { runImmediately: true, repeat: false, reconcileAfterMs: Infinity });
+    }, 80);
     return () => {
-      stopAnalytics();
-      stopSnapshots();
+      clearTimeout(timerId);
+      stopAnalytics?.();
+      stopSnapshots?.();
     };
   }, []);
 
@@ -3223,7 +2925,7 @@ export const USMarketModule: React.FC<{
     US_PANEL_ANALYTICS;
 
   const spyUnifiedQuotes = spySnap?.marketContext?.unifiedQuotes;
-  const staticMetaMap = new Map(US_MARKET_DATA.map((u) => [u.ticker, u]));
+  const staticMetaMap = useMemo(() => new Map(US_MARKET_DATA.map((u) => [u.ticker, u])), []);
 
   const usPanelRows: NormalizedPanelRow[] = useMemo(() => {
     const analyticsRows = usPanelAnalytics?.rows ?? [];

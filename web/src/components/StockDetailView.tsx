@@ -48,7 +48,7 @@ import { ExecutionBottomDeck } from './stock-detail/ExecutionBottomDeck';
 import { GexStrikeProfileChart } from './stock-detail/GexStrikeProfileChart';
 import { SyncedLowerPaneChart } from './stock-detail/SyncedLowerPaneChart';
 import { CompanyLogo } from './common/CompanyLogo';
-import { LiveClockBadge } from './MarketModules';
+import { LiveClockBadge } from './common/LiveClockBadge';
 import { projectLiveEma } from '../../../src/core/ema';
 import { projectLiveCandle, type LiveCalendarProjection, type LiveChartBar } from '../../../src/core/realtimePropagation';
 import {

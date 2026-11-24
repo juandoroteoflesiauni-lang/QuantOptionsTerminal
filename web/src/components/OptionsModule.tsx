@@ -53,19 +53,24 @@ import {
   parseOptionsUnderlyingKey,
 } from '../data/optionsUnderlying';
 import { OptionsSymbolSelector } from './OptionsSymbolSelector';
-import { LiveClockBadge } from './MarketModules';
+import { LiveClockBadge } from './common/LiveClockBadge';
 import {
   useAtomicMarketQuote,
   useLivePriceFlash,
   useOptionsValuationQuote,
 } from '../api/useMarketLiveStream';
-import { VirtualizedOptionChainTable } from './options/VirtualizedOptionChainTable';
 import { VirtualizedRows } from './common/VirtualizedRows';
 import {
   HelpTooltip,
   InsightBanner,
 } from './DesignSystem';
 import { CompanyLogo } from './common/CompanyLogo';
+import {
+  createPrefetchHandlers,
+  createRegisteredLazyModule,
+} from '../perf/moduleRegistry';
+import { ModuleLoadErrorBoundary } from './common/ModuleLoadErrorBoundary';
+import { ModuleViewFallback } from './common/ModuleViewFallback';
 import {
   COMMISSION_RATE,
   FX_EASE,
@@ -79,8 +84,32 @@ import {
   ncdf,
   priceLegs,
 } from './options/engine';
-import { InteractiveOptionPriceMap } from './options/map/InteractiveOptionPriceMap';
-import { VolatilitySuiteView } from './options/VolatilitySuiteView';
+
+const LazyVirtualizedOptionChainTable = createRegisteredLazyModule('opciones:cadena', () =>
+  import('./options/VirtualizedOptionChainTable').then((m) => ({
+    default: m.VirtualizedOptionChainTable,
+  })),
+);
+
+const LazyInteractiveOptionPriceMap = createRegisteredLazyModule('opciones:mapa', () =>
+  import('./options/map/InteractiveOptionPriceMap').then((m) => ({
+    default: m.InteractiveOptionPriceMap,
+  })),
+);
+
+const LazyVolatilitySuiteView = createRegisteredLazyModule('opciones:volatilidad', () =>
+  import('./options/VolatilitySuiteView').then((m) => ({
+    default: m.VolatilitySuiteView,
+  })),
+);
+
+const OPTIONS_SUBVIEW_PREFETCH: Partial<
+  Record<OptionsSubView, ReturnType<typeof createPrefetchHandlers>>
+> = {
+  mapa: createPrefetchHandlers('opciones:mapa'),
+  cadena: createPrefetchHandlers('opciones:cadena'),
+  volatilidad: createPrefetchHandlers('opciones:volatilidad'),
+};
 import {
   computeVerticalSpreadMetrics,
   isValidButterflyStrikes,
@@ -2496,6 +2525,7 @@ export const OptionsModule: React.FC<{
                   key={sv.id}
                   type="button"
                   onClick={() => onSelectSubView(sv.id)}
+                  {...(OPTIONS_SUBVIEW_PREFETCH[sv.id] ?? {})}
                   className={`relative inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12.5px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
                     active
                       ? 'text-[#0B0E14]'
@@ -4082,7 +4112,13 @@ export const OptionsModule: React.FC<{
                       {activeTickAggression.label}
                     </div>
                     <div className="text-[10.5px] font-mono-num text-[#9CA3AF]">
-                      Ask {fmtNum(activeTickAggression.askPct, 0)}% · Bid {fmtNum(activeTickAggression.bidPct, 0)}% ({activeTickAggression.method === 'LEE_READY_BBO' ? 'Lee-Ready' : 'Cierre EOD'})
+                      Ask {fmtNum(activeTickAggression.askPct, 0)}% · Bid {fmtNum(activeTickAggression.bidPct, 0)}% ({activeTickAggression.method === 'LEE_READY_BBO' ? 'Flujo aprox. (Snapshot)' : 'Flujo aprox. (Cierre EOD)'}){' '}
+                      <span
+                        title="Print sintético del snapshot de cadena (último trade + BBO), no cinta OPRA tick a tick. TICK_TAPE solo cuando haya cinta real activa."
+                        className="ml-1 rounded border border-[#2A2E39] bg-[#1E222D] px-1.5 py-0.5 text-[9.5px] font-semibold tracking-wide text-[#9CA3AF]"
+                      >
+                        {activeTickAggression.method === 'LEE_READY_BBO' ? 'SNAPSHOT' : 'EOD'}
+                      </span>
                     </div>
                   </>
                 ) : (
@@ -4111,7 +4147,7 @@ export const OptionsModule: React.FC<{
             {activeQuantEngines && (
               <div className="pt-3 border-t border-[#1E222D] grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11.5px] font-mono-num">
                 <div>
-                  <div className="text-[10px] uppercase text-[#787B86]">LA PLATA NETA (CVD)</div>
+                  <div className="text-[10px] uppercase text-[#787B86]">LA PLATA NETA · Flujo aprox. (Snapshot)</div>
                   <div
                     className={`font-bold text-[14px] ${
                       (activeQuantEngines.orderFlowArs?.netDirectionalPremiumUsd ?? 0) >= 0
@@ -4661,18 +4697,33 @@ export const OptionsModule: React.FC<{
                         />
                       </div>
                     ) : (
-                      <VirtualizedOptionChainTable
-                        filteredRows={filteredRows}
-                        beforeFirst={beforeFirst}
-                        afterIndex={afterIndex}
-                        colMode={colMode}
-                        density={density}
-                        sigmaMultiplier={sigmaMultiplier}
-                        displaySpot={displaySpot}
-                        daysToExpiry={exp.daysToExpiry}
-                        effectiveRateDec={effectiveRateDec}
-                        onQuoteClick={handleQuoteClick}
-                      />
+                      <ModuleLoadErrorBoundary
+                        moduleId="opciones:cadena"
+                        resetKey={`${activeSubView}:${exp.id}`}
+                        variant="options-subview"
+                      >
+                        <React.Suspense
+                          fallback={
+                            <ModuleViewFallback
+                              moduleId="opciones:cadena"
+                              variant="options-subview"
+                            />
+                          }
+                        >
+                          <LazyVirtualizedOptionChainTable.Component
+                            filteredRows={filteredRows}
+                            beforeFirst={beforeFirst}
+                            afterIndex={afterIndex}
+                            colMode={colMode}
+                            density={density}
+                            sigmaMultiplier={sigmaMultiplier}
+                            displaySpot={displaySpot}
+                            daysToExpiry={exp.daysToExpiry}
+                            effectiveRateDec={effectiveRateDec}
+                            onQuoteClick={handleQuoteClick}
+                          />
+                        </React.Suspense>
+                      </ModuleLoadErrorBoundary>
                     ))}
                 </div>
               );
@@ -4692,30 +4743,60 @@ export const OptionsModule: React.FC<{
             transition={{ duration: 0.35, ease: FX_EASE }}
           >
             {activeSubView === 'mapa' && (
-              <InteractiveOptionPriceMap
-                mkt={labMarket}
-                onGoToBuilder={loadIntoBuilder}
-                onGoToSheet={() => onSelectSubView('cadena')}
-              />
+              <ModuleLoadErrorBoundary
+                moduleId="opciones:mapa"
+                resetKey={activeSubView}
+                variant="options-subview"
+              >
+                <React.Suspense
+                  fallback={
+                    <ModuleViewFallback
+                      moduleId="opciones:mapa"
+                      variant="options-subview"
+                    />
+                  }
+                >
+                  <LazyInteractiveOptionPriceMap.Component
+                    mkt={labMarket}
+                    onGoToBuilder={loadIntoBuilder}
+                    onGoToSheet={() => onSelectSubView('cadena')}
+                  />
+                </React.Suspense>
+              </ModuleLoadErrorBoundary>
             )}
             {activeSubView === 'volatilidad' && (
-              <VolatilitySuiteView
-                underlying={upperUnderlying}
-                stockName={stockName}
-                spot={displaySpot}
-                activeExpiry={activeExpiry}
-                expiries={activeExpiries}
-                onSelectExpiry={handleSelectExpiry}
-                effectiveTlrPct={effectiveTlrPct}
-                liveOptions={liveOptions}
-                activeQuantEngines={activeQuantEngines}
-                activeVolSuite={activeVolSuite}
-                usSnapshot={usSnapshot}
-                usVolSurface={usVolSurface.surface}
-                onSendToBuilder={(builderLegs) => {
-                  loadIntoBuilder(priceLegs(labMarket, builderLegs), 1);
-                }}
-              />
+              <ModuleLoadErrorBoundary
+                moduleId="opciones:volatilidad"
+                resetKey={activeSubView}
+                variant="options-subview"
+              >
+                <React.Suspense
+                  fallback={
+                    <ModuleViewFallback
+                      moduleId="opciones:volatilidad"
+                      variant="options-subview"
+                    />
+                  }
+                >
+                  <LazyVolatilitySuiteView.Component
+                    underlying={upperUnderlying}
+                    stockName={stockName}
+                    spot={displaySpot}
+                    activeExpiry={activeExpiry}
+                    expiries={activeExpiries}
+                    onSelectExpiry={handleSelectExpiry}
+                    effectiveTlrPct={effectiveTlrPct}
+                    liveOptions={liveOptions}
+                    activeQuantEngines={activeQuantEngines}
+                    activeVolSuite={activeVolSuite}
+                    usSnapshot={usSnapshot}
+                    usVolSurface={usVolSurface.surface}
+                    onSendToBuilder={(builderLegs) => {
+                      loadIntoBuilder(priceLegs(labMarket, builderLegs), 1);
+                    }}
+                  />
+                </React.Suspense>
+              </ModuleLoadErrorBoundary>
             )}
           </motion.div>
         )}

@@ -42,32 +42,198 @@ import { useMarketViewScope } from './api/useMarketLiveStream';
 import { parseOptionsUnderlyingKey } from './data/optionsUnderlying';
 import { resolveStockDetailRoute } from './components/stock-detail/stockDetailRouting';
 import { HelpTooltip } from './components/DesignSystem';
-import { OptionsModule, OptionsSubView } from './components/OptionsModule';
-import { StockDetailView } from './components/StockDetailView';
-import {
-  HomeDashboard,
-  MonitoringModule,
-  MonitorSubPanel,
-  MacroModule,
-  USMarketModule,
-  BondsCurveModule,
-  FuturesModule,
-  RatiosModule,
-  PositionsModule,
-  WorkspacesModule,
-  AlertsModule,
-  SettingsAndDesignSystemModule,
-} from './components/MarketModules';
+import { HomeDashboard } from './components/HomeDashboard';
+import type { OptionsSubView } from './components/OptionsModule';
+import type { MonitorSubPanel } from './components/MarketModules';
 import { MarketTickerBar, MarketSessionState } from './components/MarketTickerBar';
-import { useFeedsHealthConnection, useGlobalConnectivityProviders } from './components/FeedsHealthDrawer';
+import { useFeedsHealthConnection, useGlobalConnectivityProviders } from './data/feedsHealthStore';
 import { resolveGlobalConnectivityStatus } from '../../src/core/stockDetailStability';
+import type { OrderTicketPreset } from './components/Overlays';
 import {
-  OrderTicketDrawer,
-  OrderTicketPreset,
-  CommandPaletteModal,
-  ShortcutsModal,
-} from './components/Overlays';
-import { GgalSpecialistModule } from './components/ggal/GgalSpecialistModule';
+  createPrefetchHandlers,
+  createRegisteredLazyModule,
+  prefetchModule,
+  schedulePostStartupIdleWarmup,
+  type RoutedModuleId,
+} from './perf/moduleRegistry';
+import { ModuleLoadErrorBoundary } from './components/common/ModuleLoadErrorBoundary';
+import {
+  ModuleViewFallback,
+  type FallbackLayoutVariant,
+} from './components/common/ModuleViewFallback';
+
+let marketModulesPromise: Promise<typeof import('./components/MarketModules')> | null = null;
+function loadMarketModules(): Promise<typeof import('./components/MarketModules')> {
+  if (marketModulesPromise === null) {
+    marketModulesPromise = import('./components/MarketModules')
+      .then((mod) => {
+        queueMicrotask(() => {
+          void LazyMonitoringModule.preload();
+          void LazyMacroModule.preload();
+          void LazyUSMarketModule.preload();
+          void LazyBondsCurveModule.preload();
+          void LazyFuturesModule.preload();
+          void LazyRatiosModule.preload();
+          void LazyPositionsModule.preload();
+          void LazyWorkspacesModule.preload();
+          void LazyAlertsModule.preload();
+          void LazySettingsAndDesignSystemModule.preload();
+        });
+        return mod;
+      })
+      .catch((err: unknown) => {
+        marketModulesPromise = null;
+        throw err;
+      });
+  }
+  return marketModulesPromise;
+}
+
+let overlaysPromise: Promise<typeof import('./components/Overlays')> | null = null;
+function loadOverlays(): Promise<typeof import('./components/Overlays')> {
+  if (overlaysPromise === null) {
+    overlaysPromise = import('./components/Overlays')
+      .then((mod) => {
+        queueMicrotask(() => {
+          void LazyOrderTicketDrawer.preload();
+          void LazyCommandPaletteModal.preload();
+          void LazyShortcutsModal.preload();
+        });
+        return mod;
+      })
+      .catch((err: unknown) => {
+        overlaysPromise = null;
+        throw err;
+      });
+  }
+  return overlaysPromise;
+}
+
+const LazyStockDetailView = createRegisteredLazyModule('acciones', () =>
+  import('./components/StockDetailView').then((m) => ({ default: m.StockDetailView })),
+);
+const LazyOptionsModule = createRegisteredLazyModule('opciones', () =>
+  import('./components/OptionsModule').then((m) => ({ default: m.OptionsModule })),
+);
+const LazyGgalSpecialistModule = createRegisteredLazyModule('ggal-specialist', () =>
+  import('./components/ggal/GgalSpecialistModule').then((m) => ({ default: m.GgalSpecialistModule })),
+);
+
+const LazyMonitoringModule = createRegisteredLazyModule('monitoreo', () =>
+  loadMarketModules().then((m) => ({ default: m.MonitoringModule })),
+);
+const LazyMacroModule = createRegisteredLazyModule('macro', () =>
+  loadMarketModules().then((m) => ({ default: m.MacroModule })),
+);
+const LazyUSMarketModule = createRegisteredLazyModule('eeuu', () =>
+  loadMarketModules().then((m) => ({ default: m.USMarketModule })),
+);
+const LazyBondsCurveModule = createRegisteredLazyModule('bonos', () =>
+  loadMarketModules().then((m) => ({ default: m.BondsCurveModule })),
+);
+const LazyFuturesModule = createRegisteredLazyModule('futuros', () =>
+  loadMarketModules().then((m) => ({ default: m.FuturesModule })),
+);
+const LazyRatiosModule = createRegisteredLazyModule('relaciones', () =>
+  loadMarketModules().then((m) => ({ default: m.RatiosModule })),
+);
+const LazyPositionsModule = createRegisteredLazyModule('posiciones', () =>
+  loadMarketModules().then((m) => ({ default: m.PositionsModule })),
+);
+const LazyWorkspacesModule = createRegisteredLazyModule('espacios', () =>
+  loadMarketModules().then((m) => ({ default: m.WorkspacesModule })),
+);
+const LazyAlertsModule = createRegisteredLazyModule('alertas', () =>
+  loadMarketModules().then((m) => ({ default: m.AlertsModule })),
+);
+const LazySettingsAndDesignSystemModule = createRegisteredLazyModule('configuracion', () =>
+  loadMarketModules().then((m) => ({ default: m.SettingsAndDesignSystemModule })),
+);
+
+const LazyOrderTicketDrawer = createRegisteredLazyModule('overlay:order-ticket', () =>
+  loadOverlays().then((m) => ({ default: m.OrderTicketDrawer })),
+);
+const LazyCommandPaletteModal = createRegisteredLazyModule('overlay:command-palette', () =>
+  loadOverlays().then((m) => ({ default: m.CommandPaletteModal })),
+);
+const LazyShortcutsModal = createRegisteredLazyModule('overlay:shortcuts', () =>
+  loadOverlays().then((m) => ({ default: m.ShortcutsModal })),
+);
+
+type DeferredPageId = Exclude<PageId, 'inicio'>;
+
+const SIDEBAR_PREFETCH: Record<DeferredPageId, ReturnType<typeof createPrefetchHandlers>> = {
+  macro: createPrefetchHandlers('macro'),
+  eeuu: createPrefetchHandlers('eeuu'),
+  monitoreo: createPrefetchHandlers('monitoreo'),
+  acciones: createPrefetchHandlers('acciones'),
+  opciones: createPrefetchHandlers('opciones'),
+  futuros: createPrefetchHandlers('futuros'),
+  bonos: createPrefetchHandlers('bonos'),
+  relaciones: createPrefetchHandlers('relaciones'),
+  'ggal-specialist': createPrefetchHandlers('ggal-specialist'),
+  posiciones: createPrefetchHandlers('posiciones'),
+  espacios: createPrefetchHandlers('espacios'),
+  alertas: createPrefetchHandlers('alertas'),
+  configuracion: createPrefetchHandlers('configuracion'),
+};
+
+function createOptionsSubViewPrefetchHandlers(subId: OptionsSubView) {
+  const base = createPrefetchHandlers('opciones');
+  const subModule: RoutedModuleId | null =
+    subId === 'mapa'
+      ? 'opciones:mapa'
+      : subId === 'cadena'
+        ? 'opciones:cadena'
+        : subId === 'volatilidad'
+          ? 'opciones:volatilidad'
+          : null;
+  if (subModule === null) return base;
+  let hoverSubTimer: ReturnType<typeof setTimeout> | null = null;
+  const triggerBoth = (): void => {
+    void prefetchModule('opciones', 'intent').then((loaded) => {
+      if (loaded) void prefetchModule(subModule, 'intent');
+    });
+  };
+  return {
+    onPointerEnter: () => {
+      base.onPointerEnter();
+      if (hoverSubTimer !== null) clearTimeout(hoverSubTimer);
+      hoverSubTimer = setTimeout(() => {
+        hoverSubTimer = null;
+        triggerBoth();
+      }, 60);
+    },
+    onPointerLeave: () => {
+      base.onPointerLeave();
+      if (hoverSubTimer !== null) {
+        clearTimeout(hoverSubTimer);
+        hoverSubTimer = null;
+      }
+    },
+    onFocus: () => {
+      base.onFocus();
+      triggerBoth();
+    },
+  };
+}
+
+const OPTIONS_SIDEBAR_SUB_PREFETCH: Record<OptionsSubView, ReturnType<typeof createPrefetchHandlers>> = {
+  mapa: createOptionsSubViewPrefetchHandlers('mapa'),
+  estrategias: createOptionsSubViewPrefetchHandlers('estrategias'),
+  spreads: createOptionsSubViewPrefetchHandlers('spreads'),
+  flujo: createOptionsSubViewPrefetchHandlers('flujo'),
+  cadena: createOptionsSubViewPrefetchHandlers('cadena'),
+  volatilidad: createOptionsSubViewPrefetchHandlers('volatilidad'),
+  armado: createOptionsSubViewPrefetchHandlers('armado'),
+};
+
+function fallbackVariantForPage(page: DeferredPageId): FallbackLayoutVariant {
+  if (page === 'acciones') return 'chart-deck';
+  if (page === 'ggal-specialist') return 'dual-chart';
+  if (page === 'opciones') return 'options-suite';
+  return 'table-grid';
+}
 
 type PageId =
   | 'inicio'
@@ -192,9 +358,23 @@ export default function App() {
 
   // Modales y Drawers
   const [commandOpen, setCommandOpen] = useState(false);
+  const [commandEverOpened, setCommandEverOpened] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [shortcutsEverOpened, setShortcutsEverOpened] = useState(false);
   const [orderDrawerOpen, setOrderDrawerOpen] = useState(false);
+  const [orderDrawerEverOpened, setOrderDrawerEverOpened] = useState(false);
   const [orderPreset, setOrderPreset] = useState<OrderTicketPreset | null>(null);
+
+  useEffect(() => {
+    if (commandOpen) setCommandEverOpened(true);
+  }, [commandOpen]);
+  useEffect(() => {
+    if (shortcutsOpen) setShortcutsEverOpened(true);
+  }, [shortcutsOpen]);
+  useEffect(() => {
+    if (orderDrawerOpen) setOrderDrawerEverOpened(true);
+  }, [orderDrawerOpen]);
+  useEffect(() => schedulePostStartupIdleWarmup(), []);
 
   // Estado de conectividad/warmup ligero (sin precios calientes en el árbol raíz)
   useFeedsHealthConnection();
@@ -420,6 +600,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('macro')}
+                {...SIDEBAR_PREFETCH.macro}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'macro'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -434,6 +615,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('eeuu')}
+                {...SIDEBAR_PREFETCH.eeuu}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'eeuu'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -452,6 +634,7 @@ export default function App() {
                     setActivePage('monitoreo');
                     if (!sidebarCollapsed) setMonitorGroupOpen((v) => !v);
                   }}
+                  {...SIDEBAR_PREFETCH.monitoreo}
                   className={`w-full flex items-center justify-between px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                     activePage === 'monitoreo'
                       ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -486,6 +669,7 @@ export default function App() {
                           setMonitorPanel(sub.id);
                           setActivePage('monitoreo');
                         }}
+                        {...SIDEBAR_PREFETCH.monitoreo}
                         className={`w-full text-left px-2.5 py-1 rounded-[6px] text-[11px] font-medium cursor-pointer ${
                           activePage === 'monitoreo' && monitorPanel === sub.id
                             ? 'text-[var(--accent-primary)] font-bold bg-[var(--surface-2)]'
@@ -503,6 +687,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('acciones')}
+                {...SIDEBAR_PREFETCH.acciones}
                 className={`w-full flex items-center justify-between px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'acciones'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -528,6 +713,7 @@ export default function App() {
                     setActivePage('opciones');
                     if (!sidebarCollapsed) setOptionsGroupOpen((v) => !v);
                   }}
+                  {...SIDEBAR_PREFETCH.opciones}
                   className={`w-full flex items-center justify-between px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                     activePage === 'opciones'
                       ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -565,6 +751,7 @@ export default function App() {
                           setOptionsSubView(sub.id);
                           setActivePage('opciones');
                         }}
+                        {...OPTIONS_SIDEBAR_SUB_PREFETCH[sub.id]}
                         className={`w-full text-left px-2.5 py-1 rounded-[6px] text-[11px] font-medium cursor-pointer ${
                           activePage === 'opciones' && optionsSubView === sub.id
                             ? 'text-[#4BA3FF] font-bold bg-[var(--surface-2)]'
@@ -582,6 +769,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('futuros')}
+                {...SIDEBAR_PREFETCH.futuros}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'futuros'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -596,6 +784,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('bonos')}
+                {...SIDEBAR_PREFETCH.bonos}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'bonos'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -610,6 +799,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('relaciones')}
+                {...SIDEBAR_PREFETCH.relaciones}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'relaciones'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -624,6 +814,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('ggal-specialist')}
+                {...SIDEBAR_PREFETCH['ggal-specialist']}
                 className={`w-full flex items-center justify-between px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'ggal-specialist'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -645,6 +836,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('posiciones')}
+                {...SIDEBAR_PREFETCH.posiciones}
                 className={`w-full flex items-center justify-between px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'posiciones'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -666,6 +858,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage('espacios')}
+                {...SIDEBAR_PREFETCH.espacios}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] font-semibold transition-colors cursor-pointer ${
                   activePage === 'espacios'
                     ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)] border border-[var(--accent-primary)]/50'
@@ -699,6 +892,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActivePage('configuracion')}
+              {...SIDEBAR_PREFETCH.configuracion}
               className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] text-[12px] font-semibold transition-colors cursor-pointer ${
                 activePage === 'configuracion'
                   ? 'bg-[var(--accent-subtle)] text-[var(--text-primary)]'
@@ -750,114 +944,145 @@ export default function App() {
             </div>
 
             {/* Renderizado del módulo activo */}
-            {activePage === 'inicio' && (
+            {activePage === 'inicio' ? (
               <HomeDashboard
                 tickFlashes={EMPTY_TICK_FLASHES}
                 onSelectStock={handleSelectStockDetail}
                 onNavigate={handleNavigate}
                 onOpenOrderTicket={handleOpenOrderTicket}
               />
-            )}
+            ) : (
+              <ModuleLoadErrorBoundary
+                moduleId={activePage}
+                resetKey={activePage}
+                variant={fallbackVariantForPage(activePage)}
+              >
+                <React.Suspense
+                  fallback={
+                    <ModuleViewFallback
+                      moduleId={activePage}
+                      variant={fallbackVariantForPage(activePage)}
+                    />
+                  }
+                >
+                  <div data-qot-module-ready={activePage}>
+                    {activePage === 'monitoreo' && (
+                      <LazyMonitoringModule.Component
+                        subPanel={monitorPanel}
+                        onSelectSubPanel={setMonitorPanel}
+                        density={density}
+                        tickFlashes={EMPTY_TICK_FLASHES}
+                        onSelectStock={handleSelectStockDetail}
+                        onOpenOrderTicket={handleOpenOrderTicket}
+                      />
+                    )}
 
-            {activePage === 'monitoreo' && (
-              <MonitoringModule
-                subPanel={monitorPanel}
-                onSelectSubPanel={setMonitorPanel}
-                density={density}
-                tickFlashes={EMPTY_TICK_FLASHES}
-                onSelectStock={handleSelectStockDetail}
-                onOpenOrderTicket={handleOpenOrderTicket}
-              />
-            )}
+                    {activePage === 'acciones' && (
+                      <LazyStockDetailView.Component
+                        ticker={selectedTicker}
+                        onSelectTicker={setSelectedTicker}
+                        onGoToOptions={handleGoToOptions}
+                        onBackToMonitor={handleBackToMonitor}
+                        onOpenOrderTicket={handleOpenOrderTicket}
+                      />
+                    )}
 
-            {activePage === 'acciones' && (
-              <StockDetailView
-                ticker={selectedTicker}
-                onSelectTicker={setSelectedTicker}
-                onGoToOptions={handleGoToOptions}
-                onBackToMonitor={handleBackToMonitor}
-                onOpenOrderTicket={handleOpenOrderTicket}
-              />
-            )}
+                    {activePage === 'opciones' && (
+                      <LazyOptionsModule.Component
+                        activeSubView={optionsSubView}
+                        onSelectSubView={setOptionsSubView}
+                        selectedUnderlying={selectedOptionsUnderlying}
+                        onSelectUnderlying={setSelectedOptionsUnderlying}
+                        density={density}
+                        onOpenOrderTicket={handleOpenOrderTicket}
+                      />
+                    )}
 
-            {activePage === 'opciones' && (
-              <OptionsModule
-                activeSubView={optionsSubView}
-                onSelectSubView={setOptionsSubView}
-                selectedUnderlying={selectedOptionsUnderlying}
-                onSelectUnderlying={setSelectedOptionsUnderlying}
-                density={density}
-                onOpenOrderTicket={handleOpenOrderTicket}
-              />
-            )}
-
-            {activePage === 'macro' && <MacroModule />}
-            {activePage === 'eeuu' && <USMarketModule onOpenOrderTicket={handleOpenOrderTicket} />}
-            {activePage === 'bonos' && <BondsCurveModule />}
-            {activePage === 'futuros' && <FuturesModule />}
-            {activePage === 'relaciones' && <RatiosModule />}
-            {activePage === 'ggal-specialist' && (
-              <GgalSpecialistModule onOpenOrderTicket={handleOpenOrderTicket} />
-            )}
-            {activePage === 'posiciones' && (
-              <PositionsModule
-                positions={positions}
-                onOpenOrderTicket={handleOpenOrderTicket}
-              />
-            )}
-            {activePage === 'espacios' && (
-              <WorkspacesModule onNavigate={handleNavigate} />
-            )}
-            {activePage === 'alertas' && (
-              <AlertsModule
-                alerts={alerts}
-                onAddAlert={(newAlert) => {
-                  setAlerts((prev) => [newAlert, ...prev]);
-                  showToast(`Alerta creada para ${newAlert.ticker} (${newAlert.target})`);
-                }}
-              />
-            )}
-            {activePage === 'configuracion' && (
-              <SettingsAndDesignSystemModule
-                theme={theme}
-                onToggleTheme={handleToggleTheme}
-                density={density}
-                onChangeDensity={setDensity}
-                liveTicksEnabled={liveTicksEnabled}
-                onToggleLiveTicks={() => setLiveTicksEnabled((v) => !v)}
-              />
+                    {activePage === 'macro' && <LazyMacroModule.Component />}
+                    {activePage === 'eeuu' && (
+                      <LazyUSMarketModule.Component onOpenOrderTicket={handleOpenOrderTicket} />
+                    )}
+                    {activePage === 'bonos' && <LazyBondsCurveModule.Component />}
+                    {activePage === 'futuros' && <LazyFuturesModule.Component />}
+                    {activePage === 'relaciones' && <LazyRatiosModule.Component />}
+                    {activePage === 'ggal-specialist' && (
+                      <LazyGgalSpecialistModule.Component onOpenOrderTicket={handleOpenOrderTicket} />
+                    )}
+                    {activePage === 'posiciones' && (
+                      <LazyPositionsModule.Component
+                        positions={positions}
+                        onOpenOrderTicket={handleOpenOrderTicket}
+                      />
+                    )}
+                    {activePage === 'espacios' && (
+                      <LazyWorkspacesModule.Component onNavigate={handleNavigate} />
+                    )}
+                    {activePage === 'alertas' && (
+                      <LazyAlertsModule.Component
+                        alerts={alerts}
+                        onAddAlert={(newAlert) => {
+                          setAlerts((prev) => [newAlert, ...prev]);
+                          showToast(`Alerta creada para ${newAlert.ticker} (${newAlert.target})`);
+                        }}
+                      />
+                    )}
+                    {activePage === 'configuracion' && (
+                      <LazySettingsAndDesignSystemModule.Component
+                        theme={theme}
+                        onToggleTheme={handleToggleTheme}
+                        density={density}
+                        onChangeDensity={setDensity}
+                        liveTicksEnabled={liveTicksEnabled}
+                        onToggleLiveTicks={() => setLiveTicksEnabled((v) => !v)}
+                      />
+                    )}
+                  </div>
+                </React.Suspense>
+              </ModuleLoadErrorBoundary>
             )}
           </div>
         </main>
       </div>
 
       {/* DRAWER DE TICKET DE ORDEN (380 px) */}
-      <OrderTicketDrawer
-        open={orderDrawerOpen}
-        preset={orderPreset}
-        onClose={() => setOrderDrawerOpen(false)}
-        onSubmitOrder={(ord) => {
-          showToast(
-            `Orden simulada enviada: ${ord.side.toUpperCase()} ${ord.qty} ${ord.ticker} @ $ ${fmtNum(
-              ord.price,
-              2
-            )} (${ord.settlement})`
-          );
-        }}
-      />
+      {(orderDrawerEverOpened || orderDrawerOpen) && (
+        <React.Suspense fallback={null}>
+          <LazyOrderTicketDrawer.Component
+            open={orderDrawerOpen}
+            preset={orderPreset}
+            onClose={() => setOrderDrawerOpen(false)}
+            onSubmitOrder={(ord) => {
+              showToast(
+                `Orden simulada enviada: ${ord.side.toUpperCase()} ${ord.qty} ${ord.ticker} @ $ ${fmtNum(
+                  ord.price,
+                  2
+                )} (${ord.settlement})`
+              );
+            }}
+          />
+        </React.Suspense>
+      )}
 
       {/* PALETA DE COMANDOS (CTRL K) */}
-      <CommandPaletteModal
-        open={commandOpen}
-        onClose={() => setCommandOpen(false)}
-        onSelectStock={handleSelectStockDetail}
-        onNavigate={handleNavigate}
-        onOpenNewOrder={() => setOrderDrawerOpen(true)}
-        onToggleTheme={handleToggleTheme}
-      />
+      {(commandEverOpened || commandOpen) && (
+        <React.Suspense fallback={null}>
+          <LazyCommandPaletteModal.Component
+            open={commandOpen}
+            onClose={() => setCommandOpen(false)}
+            onSelectStock={handleSelectStockDetail}
+            onNavigate={handleNavigate}
+            onOpenNewOrder={() => setOrderDrawerOpen(true)}
+            onToggleTheme={handleToggleTheme}
+          />
+        </React.Suspense>
+      )}
 
       {/* MODAL DE ATAJOS (?) */}
-      <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      {(shortcutsEverOpened || shortcutsOpen) && (
+        <React.Suspense fallback={null}>
+          <LazyShortcutsModal.Component open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+        </React.Suspense>
+      )}
 
       {/* TOAST DE CONFIRMACIÓN */}
       {toastMessage && (

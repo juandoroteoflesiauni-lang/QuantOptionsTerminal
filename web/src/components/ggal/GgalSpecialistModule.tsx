@@ -72,7 +72,7 @@ import {
 } from '../../api/useMarketLiveStream';
 import { useLiveUsProvidersStatus } from '../../data/liveRuntimeBridge';
 import { isDocumentVisible, subscribeDocumentVisibility } from '../../data/visibilityLifecycle';
-import { LiveClockBadge } from '../MarketModules';
+import { LiveClockBadge } from '../common/LiveClockBadge';
 
 export type GgalTabId =
   | 'parity-gap'

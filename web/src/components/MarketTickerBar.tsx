@@ -23,10 +23,18 @@ import {
   type MarketLiveQuote,
 } from '../api/useMarketLiveStream';
 import { CompanyLogo } from './common/CompanyLogo';
+import { useFeedsBadgeSummary } from '../data/feedsHealthStore';
 import {
-  FeedsHealthDrawer,
-  useFeedsBadgeSummary,
-} from './FeedsHealthDrawer';
+  createPrefetchHandlers,
+  createRegisteredLazyModule,
+} from '../perf/moduleRegistry';
+
+const LazyFeedsHealthDrawer = createRegisteredLazyModule('overlay:feeds-health', () =>
+  import('./FeedsHealthDrawer').then((m) => ({ default: m.FeedsHealthDrawer })),
+);
+const FEEDS_PREFETCH_HANDLERS = createPrefetchHandlers('overlay:feeds-health');
+const CMD_PREFETCH_HANDLERS = createPrefetchHandlers('overlay:command-palette');
+const SHORTCUTS_PREFETCH_HANDLERS = createPrefetchHandlers('overlay:shortcuts');
 
 /* ============================================================================
    1. INTERFACES Y TIPOS ESTRICTOS
@@ -445,6 +453,7 @@ const FeedsHealthTriggerButton = memo(function FeedsHealthTriggerButton({
         <button
           type="button"
           onClick={onOpen}
+          {...FEEDS_PREFETCH_HANDLERS}
           aria-expanded={open}
           aria-haspopup="dialog"
           title="Monitor unificado de salud, latencia y ticks de proveedores"
@@ -477,7 +486,11 @@ export const MarketTickerBar = memo(function MarketTickerBar({
 }: MarketTickerBarProps) {
   useMarketStreamConnection(liveFeedEnabled);
   const [feedsDrawerOpen, setFeedsDrawerOpen] = useState(false);
-  const openFeedsDrawer = useCallback(() => setFeedsDrawerOpen(true), []);
+  const [feedsDrawerEverOpened, setFeedsDrawerEverOpened] = useState(false);
+  const openFeedsDrawer = useCallback(() => {
+    setFeedsDrawerEverOpened(true);
+    setFeedsDrawerOpen(true);
+  }, []);
   const closeFeedsDrawer = useCallback(() => setFeedsDrawerOpen(false), []);
 
   useEffect(() => {
@@ -598,6 +611,7 @@ export const MarketTickerBar = memo(function MarketTickerBar({
         <button
           type="button"
           onClick={onOpenCommandPalette}
+          {...CMD_PREFETCH_HANDLERS}
           className="inline-flex items-center gap-2.5 px-2.5 h-[30px] rounded-[8px] bg-[#131722] hover:bg-[#1A1F2C] border border-[#2A2E3D] hover:border-[#3D4358] text-[12px] text-[#787B86] hover:text-[#D1D4DC] transition-colors cursor-pointer"
         >
           <Search className="w-3.5 h-3.5 text-[#8B7CF6]" />
@@ -640,6 +654,7 @@ export const MarketTickerBar = memo(function MarketTickerBar({
         <button
           type="button"
           onClick={onOpenShortcuts}
+          {...SHORTCUTS_PREFETCH_HANDLERS}
           title="Atajos de teclado y ayuda (?)"
           className="w-8 h-[30px] rounded-[8px] inline-flex items-center justify-center text-[#8A8F9E] hover:text-[#D1D4DC] hover:bg-[#131722] border border-transparent hover:border-[#2A2E3D] transition-colors cursor-pointer"
         >
@@ -656,7 +671,11 @@ export const MarketTickerBar = memo(function MarketTickerBar({
         </button>
       </div>
     </header>
-    <FeedsHealthDrawer open={feedsDrawerOpen} onClose={closeFeedsDrawer} />
+    {(feedsDrawerEverOpened || feedsDrawerOpen) && (
+      <React.Suspense fallback={null}>
+        <LazyFeedsHealthDrawer.Component open={feedsDrawerOpen} onClose={closeFeedsDrawer} />
+      </React.Suspense>
+    )}
     </>
   );
 });
