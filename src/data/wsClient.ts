@@ -2,12 +2,14 @@ import { parseWsJsonPayload } from './liveBarConsolidator.js';
 import { redact, toErrorMessage } from './normalizeShared.js';
 import type { SleepFn } from './types.js';
 import {
+  DEFAULT_CONNECTION_LIMIT_COOLDOWN_MS,
   DEFAULT_MAX_RECONNECT_BACKOFF_MS,
   DEFAULT_WS_MAX_QUEUE_SIZE,
   MIN_RECONNECT_BACKOFF_MS,
   OPTIONS_MAX_QUOTE_SUBSCRIPTIONS,
   WS_CLUSTER_URLS,
   type MassiveWsClientOptions,
+  type WsCircuitBreakerReason,
   type WsClientError,
   type WsClientSnapshot,
   type WsCluster,
@@ -20,10 +22,12 @@ import {
 const DEFAULT_BASE_RECONNECT_BACKOFF_MS = 15_000;
 const SUBSCRIBE_CHUNK_SIZE = 50;
 
-const defaultSleep: SleepFn = (ms) =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+const CONNECTION_LIMIT_PATTERN =
+  /\b(?:max[_\s-]*connections?|connection[_\s-]*limit|maximum\s+(?:number\s+of\s+)?(?:concurrent\s+)?connections?|too\s+many\s+(?:concurrent\s+)?connections?|connections?\s+(?:limit\s+)?exceeded|concurrent\s+connections?)\b/i;
+
+export function isConnectionLimitMessage(text: string): boolean {
+  return CONNECTION_LIMIT_PATTERN.test(text);
+}
 
 interface NativeWebSocketLike {
   send(data: string): void;
@@ -237,7 +241,9 @@ export class MassiveWsClient {
   private readonly cluster: WsCluster;
   private readonly url: string;
   private readonly socketFactory: WsSocketFactory;
-  private readonly sleep: SleepFn;
+  private readonly injectedSleep: SleepFn | undefined;
+  private readonly nowMsFn: () => number;
+  private readonly connectionLimitCooldownMs: number;
   private readonly maxQueueSize: number;
   private readonly autoReconnect: boolean;
   private readonly minReconnectDelayMs: number;
@@ -256,6 +262,14 @@ export class MassiveWsClient {
   private closed = false;
   private reconnectAttempts = 0;
   private reconnectLoopActive = false;
+  private reconnectGeneration = 0;
+  private reconnectTimerId: ReturnType<typeof setTimeout> | null = null;
+  private activeSleepCancel: (() => void) | null = null;
+  private pendingTimerCount = 0;
+  private circuitBreakerOpen = false;
+  private circuitBreakerReason: WsCircuitBreakerReason | null = null;
+  private circuitBreakerOpenedAtMs: number | null = null;
+  private circuitBreakerCooldownUntilMs: number | null = null;
   private droppedQueueMessages = 0;
   private totalMessagesReceived = 0;
   private discardedPayloads = 0;
@@ -272,12 +286,22 @@ export class MassiveWsClient {
 
     this.apiKey = options.apiKey;
     this.cluster = options.cluster;
+    const rawCluster = options.cluster as string;
+    const candidateUrl = options.url ?? WS_CLUSTER_URLS[options.cluster];
+    if (rawCluster === 'futures' || (typeof candidateUrl === 'string' && /\/futures(?:[/?#]|$)/i.test(candidateUrl))) {
+      throw new Error('Massive /futures WebSocket stream is disabled by policy');
+    }
     this.url = validateUrl(
-      options.url ?? WS_CLUSTER_URLS[options.cluster],
+      candidateUrl,
       options.allowInsecureWs ?? false,
     );
     this.socketFactory = options.socketFactory ?? createRuntimeSocketFactory();
-    this.sleep = options.sleep ?? defaultSleep;
+    this.injectedSleep = options.sleep;
+    this.nowMsFn = options.nowMsFn ?? ((): number => Date.now());
+    this.connectionLimitCooldownMs = Math.max(
+      1_000,
+      options.connectionLimitCooldownMs ?? DEFAULT_CONNECTION_LIMIT_COOLDOWN_MS,
+    );
 
     const queueCap = options.maxQueueSize ?? DEFAULT_WS_MAX_QUEUE_SIZE;
     if (!Number.isInteger(queueCap) || queueCap < 1) {
@@ -316,6 +340,16 @@ export class MassiveWsClient {
     if (this.closed) {
       return Promise.reject(new Error('Cannot connect a closed MassiveWsClient'));
     }
+    if (this.circuitBreakerOpen) {
+      return Promise.reject(
+        new Error(
+          redact(
+            `MassiveWsClient circuit breaker open (${this.circuitBreakerReason ?? 'max_connections'})`,
+            [this.apiKey],
+          ),
+        ),
+      );
+    }
     if (this.state === 'ready') {
       return Promise.resolve();
     }
@@ -339,6 +373,38 @@ export class MassiveWsClient {
       this.pendingConnectReject = reject;
       this.openSocket();
     });
+  }
+
+  /**
+   * Re-habilita explícitamente un circuit breaker abierto tras cumplir su cooldown largo.
+   * `/stocks` permanece cerrado incluso al expirar cooldowns (requiere autorización independiente).
+   */
+  authorizeCircuitRecovery(options?: { readonly force?: boolean }): void {
+    if (this.closed) {
+      throw new Error('Cannot recover a closed MassiveWsClient');
+    }
+    if (this.cluster === 'stocks') {
+      throw new Error(
+        'Massive /stocks WebSocket remains closed under STANDBY_TRADIER_FMP_PRIMARY policy',
+      );
+    }
+    if (!this.circuitBreakerOpen) {
+      return;
+    }
+    const nowMs = this.nowMsFn();
+    if (
+      options?.force !== true &&
+      this.circuitBreakerCooldownUntilMs !== null &&
+      nowMs < this.circuitBreakerCooldownUntilMs
+    ) {
+      throw new Error('Connection-limit circuit breaker cooldown still active');
+    }
+    this.circuitBreakerOpen = false;
+    this.circuitBreakerReason = null;
+    this.circuitBreakerOpenedAtMs = null;
+    this.circuitBreakerCooldownUntilMs = null;
+    this.reconnectAttempts = 0;
+    this.transitionState('disconnected');
   }
 
   /**
@@ -434,12 +500,18 @@ export class MassiveWsClient {
       totalMessagesReceived: this.totalMessagesReceived,
       discardedPayloads: this.discardedPayloads,
       lastError: this.lastError,
+      circuitBreakerOpen: this.circuitBreakerOpen,
+      circuitBreakerReason: this.circuitBreakerReason,
+      circuitBreakerOpenedAtMs: this.circuitBreakerOpenedAtMs,
+      circuitBreakerCooldownUntilMs: this.circuitBreakerCooldownUntilMs,
+      pendingReconnectTimers: this.pendingTimerCount,
     };
   }
 
   /** Cleanly shuts down the client and suppresses all further reconnect attempts. */
   close(code = 1000, reason = 'client_closed'): void {
     this.closed = true;
+    this.cancelPendingReconnect();
     const sock = this.socket;
     this.detachSocket(sock);
     if (sock !== null) {
@@ -451,6 +523,49 @@ export class MassiveWsClient {
     }
     this.transitionState('closed');
     this.rejectPendingConnect(new Error('WebSocket client closed before authentication completed'));
+  }
+
+  private cancelPendingReconnect(): void {
+    this.reconnectGeneration += 1;
+    if (this.reconnectTimerId !== null) {
+      clearTimeout(this.reconnectTimerId);
+      this.reconnectTimerId = null;
+    }
+    const cancel = this.activeSleepCancel;
+    this.activeSleepCancel = null;
+    cancel?.();
+    this.pendingTimerCount = 0;
+    this.reconnectLoopActive = false;
+  }
+
+  private tripCircuitBreaker(kind: WsCircuitBreakerReason, rawMessage: string): void {
+    if (this.closed || this.circuitBreakerOpen) {
+      return;
+    }
+    this.circuitBreakerOpen = true;
+    this.circuitBreakerReason = kind;
+    const nowMs = this.nowMsFn();
+    this.circuitBreakerOpenedAtMs = nowMs;
+    this.circuitBreakerCooldownUntilMs = nowMs + this.connectionLimitCooldownMs;
+
+    this.cancelPendingReconnect();
+
+    const sock = this.socket;
+    this.detachSocket(sock);
+    if (sock !== null) {
+      try {
+        sock.close(kind === 'max_connections' ? 4000 : 1008, kind);
+      } catch {
+        // Ignore transport close errors
+      }
+    }
+
+    const msg = redact(rawMessage, [this.apiKey]);
+    const code = kind === 'max_connections' ? 'max_connections' : 'ws_policy_violation_1008';
+    const err = makeProviderError(code, msg, false, [this.apiKey]);
+    this.emitError(err);
+    this.transitionState('error');
+    this.rejectPendingConnect(new Error(err.message));
   }
 
   private transitionState(next: WsConnectionState): void {
@@ -493,7 +608,7 @@ export class MassiveWsClient {
   }
 
   private openSocket(): void {
-    if (this.closed) {
+    if (this.closed || this.circuitBreakerOpen) {
       return;
     }
     this.transitionState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
@@ -516,27 +631,39 @@ export class MassiveWsClient {
     };
 
     sock.onMessage = (rawData: string) => {
-      if (this.closed || this.socket !== sock) {
+      if (this.closed || this.circuitBreakerOpen || this.socket !== sock) {
         return;
       }
       this.handleRawInboundMessage(rawData);
     };
 
     sock.onError = (rawErr: unknown) => {
-      if (this.closed || this.socket !== sock) {
+      if (this.closed || this.circuitBreakerOpen || this.socket !== sock) {
         return;
       }
       const msg = redact(toErrorMessage(rawErr, 'WebSocket transport error'), [this.apiKey]);
+      if (isConnectionLimitMessage(msg)) {
+        this.tripCircuitBreaker('max_connections', msg);
+        return;
+      }
       const pErr = makeProviderError('ws_transport_error', msg, true, [this.apiKey]);
       this.emitError(pErr);
     };
 
     sock.onClose = (info) => {
-      if (this.closed || this.socket !== sock) {
+      if (this.closed || this.circuitBreakerOpen || this.socket !== sock) {
         return;
       }
       this.detachSocket(sock);
       const reasonText = redact(info.reason || `Socket closed (${String(info.code)})`, [this.apiKey]);
+      if (isConnectionLimitMessage(reasonText)) {
+        this.tripCircuitBreaker('max_connections', reasonText);
+        return;
+      }
+      if (info.code === 1008) {
+        this.tripCircuitBreaker('policy_violation_1008', reasonText);
+        return;
+      }
       this.handleTransportFailure(reasonText);
     };
   }
@@ -589,24 +716,14 @@ export class MassiveWsClient {
         this.rejectPendingConnect(new Error(err.message));
         abortedOnFatalStatus = true;
         break;
-      } else if (event.status === 'max_connections') {
-        const msg = redact(
-          event.message.length > 0 ? event.message : 'Maximum concurrent WebSocket connections reached',
-          [this.apiKey],
-        );
-        const err = makeProviderError('max_connections', msg, true, [this.apiKey]);
-        this.emitError(err);
-        const sock = this.socket;
-        this.detachSocket(sock);
-        if (sock !== null) {
-          try {
-            sock.close(4000, 'max_connections');
-          } catch {
-            // Ignore close errors
-          }
-        }
+      } else if (
+        event.status === 'max_connections' ||
+        isConnectionLimitMessage(event.message)
+      ) {
+        const rawMsg =
+          event.message.length > 0 ? event.message : 'Maximum concurrent WebSocket connections reached';
+        this.tripCircuitBreaker('max_connections', rawMsg);
         abortedOnFatalStatus = true;
-        this.handleTransportFailure(err.message);
         break;
       }
     }
@@ -617,7 +734,7 @@ export class MassiveWsClient {
       this.flushScheduled = true;
       queueMicrotask(() => {
         this.flushScheduled = false;
-        if (!this.closed && this.inboundQueue.length > 0) {
+        if (!this.closed && !this.circuitBreakerOpen && this.inboundQueue.length > 0) {
           this.drainInboundQueue();
         }
       });
@@ -658,7 +775,7 @@ export class MassiveWsClient {
   }
 
   private handleTransportFailure(reason: string): void {
-    if (this.closed || this.state === 'error' || this.state === 'closed') {
+    if (this.closed || this.circuitBreakerOpen || this.state === 'error' || this.state === 'closed') {
       return;
     }
 
@@ -682,7 +799,58 @@ export class MassiveWsClient {
     void this.runReconnectAttempt();
   }
 
+  private sleepCancelable(delayMs: number, generation: number): Promise<boolean> {
+    if (this.injectedSleep !== undefined) {
+      const customSleep = this.injectedSleep;
+      return new Promise<boolean>((resolve, reject) => {
+        let settled = false;
+        this.activeSleepCancel = () => {
+          if (!settled) {
+            settled = true;
+            resolve(false);
+          }
+        };
+        customSleep(delayMs).then(
+          () => {
+            if (!settled) {
+              settled = true;
+              this.activeSleepCancel = null;
+              resolve(this.reconnectGeneration === generation && !this.closed && !this.circuitBreakerOpen);
+            }
+          },
+          (err: unknown) => {
+            if (!settled) {
+              settled = true;
+              this.activeSleepCancel = null;
+              reject(err instanceof Error ? err : new Error(String(err)));
+            }
+          },
+        );
+      });
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      this.activeSleepCancel = () => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      };
+      this.reconnectTimerId = setTimeout(() => {
+        this.reconnectTimerId = null;
+        if (!settled) {
+          settled = true;
+          this.activeSleepCancel = null;
+          resolve(this.reconnectGeneration === generation && !this.closed && !this.circuitBreakerOpen);
+        }
+      }, delayMs);
+    });
+  }
+
   private async runReconnectAttempt(): Promise<void> {
+    const gen = this.reconnectGeneration;
+    this.pendingTimerCount = 1;
     let sleepErrorMessage: string | null = null;
     try {
       const delayMs = computeReconnectBackoffMs({
@@ -692,12 +860,21 @@ export class MassiveWsClient {
         maxDelayMs: this.maxReconnectDelayMs,
       });
       this.reconnectAttempts += 1;
-      await this.sleep(delayMs);
+      const shouldContinue = await this.sleepCancelable(delayMs, gen);
 
-      if (this.closed || this.state === 'error' || this.state === 'closed') {
+      if (
+        !shouldContinue ||
+        this.closed ||
+        this.circuitBreakerOpen ||
+        this.state === 'error' ||
+        this.state === 'closed' ||
+        this.reconnectGeneration !== gen
+      ) {
         return;
       }
 
+      this.pendingTimerCount = 0;
+      this.reconnectLoopActive = false;
       this.openSocket();
     } catch (err) {
       sleepErrorMessage = redact(toErrorMessage(err, 'Reconnect sleep failed'), [this.apiKey]);
@@ -706,7 +883,11 @@ export class MassiveWsClient {
       this.transitionState('error');
       this.rejectPendingConnect(new Error(pErr.message));
     } finally {
-      this.reconnectLoopActive = false;
+      if (this.reconnectGeneration === gen) {
+        this.pendingTimerCount = 0;
+        this.reconnectLoopActive = false;
+        this.activeSleepCancel = null;
+      }
     }
   }
 }

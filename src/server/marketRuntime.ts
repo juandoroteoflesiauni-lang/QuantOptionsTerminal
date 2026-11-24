@@ -274,7 +274,6 @@ import type {
   UnifiedStockSnapshot,
 } from '../data/macroTypes.js';
 import { interpolateTreasuryYield, TREASURY_TENORS } from '../data/normalizeMacro.js';
-import { toErrorMessage } from '../data/normalizeShared.js';
 import {
   parseExpirationDate,
   parseProviderTimestampSeconds,
@@ -312,6 +311,7 @@ import type {
 import {
   SingleFlightRuntimeCache,
   computeDynamicTtlMs,
+  formatRedactedError,
   redactSecrets,
 } from './runtimeCache.js';
 import {
@@ -324,10 +324,10 @@ import {
   emptyFeedTelemetrySnapshot,
 } from './feedsHealthMonitor.js';
 import {
-  getMassiveKeyPoolStatus,
-  getMassiveRestKey,
-  getMassiveStocksWsKey,
-  type MassiveKeySlot,
+  MassiveKeyRouter,
+  collectMassiveSecretsFromSource,
+  readMassiveEnvSource,
+  type MassiveEnvSource,
 } from './massiveKeyPool.js';
 import {
   OratsHybridClient,
@@ -390,6 +390,12 @@ const KEY_ENV_NAMES = [
 
 const EXTRA_SECRET_ENV_NAMES = [
   ...KEY_ENV_NAMES,
+  'MASSIVE_WS_STOCKS_KEY',
+  'MASSIVE_REST_KEY',
+  'MASSIVE_REST_KEYS',
+  'MASSIVE_KEY_1',
+  'MASSIVE_KEY_2',
+  'MASSIVE_KEY_3',
   'MASSIVE_KEY_FUTURES',
   'BINGX_API_KEY',
   'FMP_KEY_CALENDARS',
@@ -1286,6 +1292,8 @@ export interface MassiveWsClientLike {
 export interface MarketRuntimeDeps {
   readonly apiKey?: string;
   readonly secrets?: readonly string[];
+  /** Mapa explícito de variables Massive para tests sin leer `.env` ni mutar `process.env`. */
+  readonly massiveEnv?: NodeJS.ProcessEnv;
   readonly baseUrl?: string;
   readonly fetchFn?: FetchFn;
   readonly loadBarsFn?: typeof loadBars;
@@ -2510,11 +2518,8 @@ export function sanitizeFinite(value: number | null | undefined): number | null 
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function extractErrorMessage(err: unknown, fallback: string): string {
-  if (err instanceof Error && err.message.trim() !== '') {
-    return err.message;
-  }
-  return toErrorMessage(err, fallback);
+function extractErrorMessage(err: unknown, fallback: string, secrets: readonly string[] = []): string {
+  return formatRedactedError(err, secrets, fallback);
 }
 
 function parseEnvFile(path: string): ReadonlyMap<string, string> {
@@ -2561,7 +2566,7 @@ export function loadRuntimeAuth(
   envFilePath: string = resolve(process.cwd(), '.env'),
 ): MassiveAuthConfig {
   const fileValues = parseEnvFile(envFilePath);
-  const secretSet = new Set<string>();
+  const secretSet = new Set<string>(collectMassiveSecretsFromSource({ env, fileValues }));
 
   for (const keyName of EXTRA_SECRET_ENV_NAMES) {
     for (const candidate of [env[keyName], fileValues.get(keyName)]) {
@@ -2589,7 +2594,8 @@ export function loadRuntimeAuth(
   };
 }
 
-export function createRedactingFetch(secrets: readonly string[]): FetchFn {  return async (url: string) => {
+export function createRedactingFetch(secrets: readonly string[]): FetchFn {
+  return async (url: string) => {
     const parsedUrl = new URL(url);
     const endpoint = `${parsedUrl.origin}${parsedUrl.pathname}`;
     try {
@@ -2610,7 +2616,7 @@ export function createRedactingFetch(secrets: readonly string[]): FetchFn {  ret
     } catch (err: unknown) {
       throw new Error(
         redactSecrets(
-          `HTTP GET ${endpoint} failed: ${extractErrorMessage(err, 'network error')}`,
+          `HTTP GET ${endpoint} failed: ${extractErrorMessage(err, 'network error', secrets)}`,
           secrets,
         ),
       );
@@ -4233,14 +4239,6 @@ function asPositiveNum(raw: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : Number.NaN;
 }
 
-function withMassiveAuthUrl(rawUrl: string, apiKey: string): string {
-  const parsed = new URL(rawUrl);
-  const host = parsed.hostname.toLowerCase();
-  const paramName = host === 'api.massive.com' || host.endsWith('.massive.com') ? 'apikey' : 'apiKey';
-  parsed.searchParams.set(paramName, apiKey);
-  return parsed.toString();
-}
-
 function parseV2StockTickerSnapshot(raw: unknown): V2StockBatchQuote | null {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     return null;
@@ -4899,6 +4897,10 @@ export class MarketRuntime {
   private readonly secrets: readonly string[];
   private readonly baseUrl: string | undefined;
   private readonly fetchFn: FetchFn;
+  private readonly stocksMassiveFetchFn: FetchFn;
+  private readonly optionsMassiveFetchFn: FetchFn;
+  private readonly massiveKeyRouter: MassiveKeyRouter;
+  private readonly hasCustomOptionLoaders: boolean;
   private readonly restTelemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
   });
@@ -4986,7 +4988,10 @@ export class MarketRuntime {
 
   private get massiveStocksMode(): ReturnType<typeof resolveMassiveStocksMode> {
     if (this.massiveStocksModeOverride !== null) return this.massiveStocksModeOverride;
-    return this.injectedMarketHarness ? 'MASSIVE_STOCKS_ENABLED' : resolveMassiveStocksMode();
+    // Pieza 0A: mantener STANDBY_TRADIER_FMP_PRIMARY salvo harness legacy con `deps.apiKey` explícito.
+    return this.depsApiKey !== null && this.injectedMarketHarness
+      ? 'MASSIVE_STOCKS_ENABLED'
+      : 'STANDBY_TRADIER_FMP_PRIMARY';
   }
 
   private readonly snapshotCache: SingleFlightRuntimeCache<TerminalSnapshotResponse>;
@@ -5584,13 +5589,17 @@ export class MarketRuntime {
     // Pieza 32: `deps.apiKey` es una inyección explícita (tests/harness) SOLO cuando
     // difiere de la clave resuelta por la cadena de entorno. Cuando el entrypoint
     // re-pasa `loadRuntimeAuth().apiKey` (mismo valor), se delega al pool multi-key
-    // (`MASSIVE_WS_STOCKS_KEY` / `MASSIVE_REST_KEY` / `MASSIVE_REST_KEYS`) para que
-    // la separación WS/REST y el round-robin operen en producción.
+    // segregado por dominio (`STOCKS_REST`, `OPTIONS_REST`, `FUTURES_REST`).
     this.depsApiKey =
       deps.apiKey !== undefined && deps.apiKey.trim() !== '' && deps.apiKey !== auth.apiKey
         ? deps.apiKey
         : null;
-    this.apiKey = deps.apiKey ?? auth.apiKey;
+    this.apiKey =
+      deps.apiKey !== undefined
+        ? deps.apiKey
+        : deps.massiveEnv !== undefined
+          ? (deps.massiveEnv['MASSIVE_API_KEY']?.trim() ?? '')
+          : auth.apiKey;
     const secretSet = new Set<string>(auth.secrets);
     if (deps.secrets !== undefined) {
       for (const s of deps.secrets) {
@@ -5600,6 +5609,17 @@ export class MarketRuntime {
     if (this.apiKey !== '') {
       secretSet.add(this.apiKey);
     }
+    const massiveEnvSource: MassiveEnvSource =
+      deps.massiveEnv !== undefined
+        ? { env: deps.massiveEnv, fileValues: new Map() }
+        : deps.apiKey !== undefined && deps.apiKey.trim() === ''
+          ? { env: {}, fileValues: new Map() }
+          : this.depsApiKey !== null
+            ? { env: { MASSIVE_API_KEY: this.depsApiKey }, fileValues: new Map() }
+            : readMassiveEnvSource();
+    for (const s of collectMassiveSecretsFromSource(massiveEnvSource)) {
+      secretSet.add(s);
+    }
     // Pieza 32/41.1: en harness Tradier/FMP quedan explícitamente vacíos salvo
     // inyección directa, para no golpear la red real ni depender del orden dotenv.
     const isMockFetch = deps.fetchFn !== undefined;
@@ -5608,6 +5628,8 @@ export class MarketRuntime {
       deps.loadBarsFn !== undefined ||
       deps.createWsClientFn !== undefined ||
       deps.apiKey !== undefined;
+    this.hasCustomOptionLoaders =
+      deps.loadOptionChainFn !== undefined || deps.loadOptionContractsFn !== undefined;
     this.tradierConfigOverride = deps.tradierConfig ?? null;
     if (this.tradierConfig.accessToken !== null) {
       secretSet.add(this.tradierConfig.accessToken);
@@ -5630,7 +5652,12 @@ export class MarketRuntime {
     this.tradierQuotesFetchFn = deps.tradierQuotesFetchFn ?? fetchTradierQuotes;
     this.tradierCreateSocketFn = deps.tradierCreateSocketFn;
     this.tradierHttpFn = deps.tradierHttpFn;
+    this.nowMsFn = deps.nowMsFn ?? ((): number => Date.now());
     this.secrets = [...secretSet];
+    this.massiveKeyRouter = new MassiveKeyRouter(massiveEnvSource, {
+      nowMsFn: () => this.nowMsFn(),
+      secrets: this.secrets,
+    });
     const harnessFmpConfig = loadFmpConfigFromEnv({});
     this.fmpClient = new FmpEnterpriseClient({
       config: this.fmpConfigOverride ?? harnessFmpConfig,
@@ -5710,6 +5737,8 @@ export class MarketRuntime {
         throw err;
       }
     };
+    this.stocksMassiveFetchFn = this.massiveKeyRouter.createDomainFetchFn('STOCKS_REST', this.fetchFn);
+    this.optionsMassiveFetchFn = this.massiveKeyRouter.createDomainFetchFn('OPTIONS_REST', this.fetchFn);
     this.loadBarsFn = deps.loadBarsFn ?? loadBars;
     this.loadOptionChainFn = deps.loadOptionChainFn ?? loadOptionChain;
     this.loadOptionContractsFn = deps.loadOptionContractsFn ?? loadOptionContracts;
@@ -5721,7 +5750,6 @@ export class MarketRuntime {
     this.createWsClientFn =
       deps.createWsClientFn ??
       ((options: MassiveWsClientOptions): MassiveWsClientLike => new MassiveWsClient(options));
-    this.nowMsFn = deps.nowMsFn ?? ((): number => Date.now());
     this.enableWs = deps.enableWs ?? true;
     this.watchedSymbols = deps.watchedSymbols ?? [...DEFAULT_TERMINAL_SYMBOLS];
 
@@ -5862,67 +5890,39 @@ export class MarketRuntime {
     }
   }
 
-  private assertApiKey(): string {
-    if (this.apiKey.trim() === '') {
+  private assertStocksRestConfigured(): string {
+    if (!this.massiveKeyRouter.isDomainConfigured('STOCKS_REST')) {
       throw new RuntimeNoDataError(
         'MISSING_API_KEY',
-        'MASSIVE_API_KEY is not configured in server environment or .env',
+        'Massive STOCKS_REST key pool is empty: MASSIVE_KEY_2 / MASSIVE_KEY_3 / MASSIVE_KEY_1 / MASSIVE_API_KEY missing',
         this.secrets,
         503,
       );
     }
-    return this.apiKey;
+    return this.depsApiKey ?? '__MASSIVE_STOCKS_POOL__';
   }
 
-  /**
-   * Pieza 32: slot REST del pool round-robin (`MASSIVE_REST_KEY` ->
-   * `MASSIVE_REST_KEYS` -> `MASSIVE_API_KEY`). Con una inyección explícita de
-   * `deps.apiKey` distinta de la cadena de entorno (tests/harness) se usa esa
-   * clave directamente sin rotación.
-   */
-  private restKeySlot(): MassiveKeySlot {
-    if (this.depsApiKey !== null) {
-      return {
-        key: this.depsApiKey,
-        envName: 'deps.apiKey',
-        slotIndex: 0,
-        poolSize: 1,
-        role: 'REST',
-      };
-    }
-    return getMassiveRestKey();
-  }
-
-  /** Pieza 32: clave del socket de stocks (`MASSIVE_WS_STOCKS_KEY` -> `MASSIVE_API_KEY`). */
-  private wsStocksKeySlot(): MassiveKeySlot {
-    if (this.depsApiKey !== null) {
-      return {
-        key: this.depsApiKey,
-        envName: 'deps.apiKey',
-        slotIndex: 0,
-        poolSize: 1,
-        role: 'WS_STOCKS',
-      };
-    }
-    return getMassiveStocksWsKey();
-  }
-
-  private restBatchApiKey(): string {
-    return this.restKeySlot().key;
-  }
-
-  /** Clave REST obligatoria para loaders Massive (lanza 503 si el pool está vacío). */
-  private assertRestApiKey(): string {
-    const key = this.restKeySlot().key;
-    if (key.trim() === '') {
+  private assertOptionsRestConfigured(): string {
+    if (!this.massiveKeyRouter.isDomainConfigured('OPTIONS_REST')) {
       throw new RuntimeNoDataError(
         'MISSING_API_KEY',
-        'Massive REST key pool is empty: MASSIVE_REST_KEY / MASSIVE_REST_KEYS / MASSIVE_API_KEY missing',
+        'Massive OPTIONS_REST pool is empty: MASSIVE_API_KEY is not configured in server environment or .env',
         this.secrets,
         503,
       );
     }
-    return key;
+    return this.depsApiKey ?? '__MASSIVE_OPTIONS_POOL__';
+  }
+
+  private optionsWsApiKey(): string {
+    if (this.depsApiKey !== null) {
+      return this.depsApiKey;
+    }
+    return this.massiveKeyRouter.getOptionsWsKey().key;
+  }
+
+  public getMassiveKeyRouterStatus() {
+    return this.massiveKeyRouter.status();
   }
 
   public getOratsClient() { return this.oratsClient; }
@@ -5950,7 +5950,10 @@ export class MarketRuntime {
       ok: true,
       orats: this.getOratsFeedHealth(),
       nowUtcSec: Math.floor(this.nowMsFn() / 1_000),
-      hasApiKey: this.apiKey.trim() !== '',
+      hasApiKey:
+        this.apiKey.trim() !== '' ||
+        this.massiveKeyRouter.isDomainConfigured('STOCKS_REST') ||
+        this.massiveKeyRouter.isDomainConfigured('OPTIONS_REST'),
       watchedSymbols: this.watchedSymbols,
       ws: {
         stocks: this.stockWsClient?.getSnapshot() ?? this.massiveStocksStream?.getWsSnapshot() ?? null,
@@ -6005,7 +6008,10 @@ export class MarketRuntime {
       this.startFmpExtendedQuoteLoop();
     }
     this.ensureTradierLiveStream(symbols);
-    const wsStocksKey = this.wsStocksKeySlot();
+    const wsStocksKey =
+      this.depsApiKey !== null
+        ? { key: this.depsApiKey, envName: 'deps.apiKey', slotIndex: 0, poolSize: 1, role: 'WS_STOCKS' as const }
+        : this.massiveKeyRouter.getStocksWsKey();
     if (this.massiveStocksMode === 'STANDBY_TRADIER_FMP_PRIMARY') {
       if (this.massiveStocksStream !== null) {
         await this.massiveStocksStream.stopAndWait(4_000).catch(() => undefined);
@@ -6023,10 +6029,10 @@ export class MarketRuntime {
 
     const stream = new MassiveStocksStream({
       apiKey: wsStocksKey.key,
-      restApiKeyFn: () => this.restBatchApiKey(),
+      restApiKeyFn: () => this.depsApiKey ?? '__MASSIVE_STOCKS_POOL__',
       symbols,
       coreSymbols: MASSIVE_WS_CORE_SYMBOLS,
-      fetchFn: this.fetchFn,
+      fetchFn: this.stocksMassiveFetchFn,
       createWsClientFn: this.createWsClientFn,
       nowMsFn: this.nowMsFn,
       ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
@@ -6618,7 +6624,8 @@ export class MarketRuntime {
     contractTickers: readonly string[],
     options: { readonly prioritize?: boolean } = {},
   ): Promise<void> {
-    if (!this.enableWs || this.apiKey.trim() === '' || contractTickers.length === 0) {
+    const optionsWsKey = this.optionsWsApiKey();
+    if (!this.enableWs || optionsWsKey.trim() === '' || contractTickers.length === 0) {
       return;
     }
 
@@ -6693,7 +6700,7 @@ export class MarketRuntime {
 
     if (this.optionsWsClient === null) {
       const client = this.createWsClientFn({
-        apiKey: this.apiKey,
+        apiKey: optionsWsKey,
         cluster: 'options',
         initialSubscriptions: channels,
         autoReconnect: true,
@@ -7125,13 +7132,17 @@ export class MarketRuntime {
    */
   public getUsProvidersStatus(): UsProvidersStatus {
     const nowUtcSec = Math.floor(this.nowMsFn() / 1_000);
-    const wsSlot = this.wsStocksKeySlot();
+    const wsSlot =
+      this.depsApiKey !== null
+        ? { key: this.depsApiKey, envName: 'deps.apiKey', slotIndex: 0, poolSize: 1, role: 'WS_STOCKS' as const }
+        : this.massiveKeyRouter.getStocksWsKey();
     const wsSnapshot = this.massiveStocksStream?.getWsSnapshot() ?? null;
     const wsConfigured = wsSlot.key.trim() !== '';
-    const poolStatus = this.depsApiKey !== null ? null : getMassiveKeyPoolStatus();
+    const poolStatus = this.massiveKeyRouter.status();
     const restSlots: readonly { readonly envName: string; readonly slotIndex: number }[] =
-      poolStatus?.rest.slots ??
-      (this.depsApiKey !== null ? [{ envName: 'deps.apiKey', slotIndex: 0 }] : []);
+      this.depsApiKey !== null
+        ? [{ envName: 'deps.apiKey', slotIndex: 0 }]
+        : poolStatus.rest.slots;
     const wsKeySlot: UsProviderKeySlotStatus | null =
       wsSlot.envName === ''
         ? null
@@ -7152,11 +7163,11 @@ export class MarketRuntime {
         subscribedOptionQuotes: this.subscribedOptionContracts.size,
       },
       MASSIVE_REST_POOL: {
-        configured: this.depsApiKey !== null ? true : poolStatus?.rest.configured === true,
-        poolSize: poolStatus?.rest.poolSize ?? (this.depsApiKey !== null ? 1 : 0),
+        configured: poolStatus.rest.configured,
+        poolSize: poolStatus.rest.poolSize,
         slots: restSlots,
-        lastSlotIndex: poolStatus?.rest.lastSlotIndex ?? (this.depsApiKey !== null ? 0 : null),
-        roundRobinRequests: poolStatus?.rest.roundRobinRequests ?? 0,
+        lastSlotIndex: poolStatus.rest.lastSlotIndex,
+        roundRobinRequests: poolStatus.rest.roundRobinRequests,
         activeRole: 'REST_LOADERS',
       },
       TRADIER_LIVE: this.getTradierLiveStatus(),
@@ -7167,7 +7178,10 @@ export class MarketRuntime {
   public getMassiveWsFeedHealth() {
     const nowMs = this.nowMsFn();
     const stream = this.massiveStocksStream;
-    const wsSlot = this.wsStocksKeySlot();
+    const wsSlot =
+      this.depsApiKey !== null
+        ? { key: this.depsApiKey, envName: 'deps.apiKey', slotIndex: 0, poolSize: 1, role: 'WS_STOCKS' as const }
+        : this.massiveKeyRouter.getStocksWsKey();
     const diagnostics = stream?.getDiagnostics() ?? null;
     const wsSnapshot = stream?.getWsSnapshot() ?? null;
     return {
@@ -7184,7 +7198,8 @@ export class MarketRuntime {
             },
       lastError: wsSnapshot?.lastError?.message ?? null,
       telemetry: stream?.getFeedTelemetrySnapshot() ?? emptyFeedTelemetrySnapshot(),
-      subscribedSymbols: stream?.getSubscribedSymbols() ?? [],      activeSymbolCount: diagnostics?.quoteCount ?? 0,
+      subscribedSymbols: stream?.getSubscribedSymbols() ?? [],
+      activeSymbolCount: diagnostics?.quoteCount ?? 0,
       subscribedOptionQuotes: this.subscribedOptionContracts.size,
       lastWsMessageAgeMs:
         diagnostics?.lastWsMessageMs !== null &&
@@ -7197,15 +7212,16 @@ export class MarketRuntime {
 
   /** Pieza 33: telemetría HTTP del pool REST (sin avanzar round-robin). */
   public getMassiveRestFeedHealth() {
-    const poolStatus = this.depsApiKey !== null ? null : getMassiveKeyPoolStatus();
+    const poolStatus = this.massiveKeyRouter.status();
     return {
-      configured: this.depsApiKey !== null ? true : poolStatus?.rest.configured === true,
-      poolSize: poolStatus?.rest.poolSize ?? (this.depsApiKey !== null ? 1 : 0),
+      configured: poolStatus.rest.configured,
+      poolSize: poolStatus.rest.poolSize,
       slots:
-        poolStatus?.rest.slots ??
-        (this.depsApiKey !== null ? [{ envName: 'deps.apiKey', slotIndex: 0 }] : []),
-      lastSlotIndex: poolStatus?.rest.lastSlotIndex ?? (this.depsApiKey !== null ? 0 : null),
-      roundRobinRequests: poolStatus?.rest.roundRobinRequests ?? 0,
+        this.depsApiKey !== null
+          ? [{ envName: 'deps.apiKey', slotIndex: 0 }]
+          : poolStatus.rest.slots,
+      lastSlotIndex: poolStatus.rest.lastSlotIndex,
+      roundRobinRequests: poolStatus.rest.roundRobinRequests,
       telemetry: this.restTelemetry.snapshot(this.nowMsFn()),
     };
   }
@@ -7247,7 +7263,8 @@ export class MarketRuntime {
     if (!this.enableWs) {
       throw new Error('Massive WS is disabled by runtime configuration');
     }
-    const wsKey = this.wsStocksKeySlot().key;
+    const wsKey =
+      this.depsApiKey !== null ? this.depsApiKey : this.massiveKeyRouter.getStocksWsKey().key;
     if (wsKey.trim() === '') {
       throw new Error('MASSIVE_WS_STOCKS_KEY / MASSIVE_API_KEY not configured');
     }
@@ -7731,9 +7748,8 @@ export class MarketRuntime {
       async () => {
         const base = (this.baseUrl ?? 'https://api.massive.com').replace(/\/+$/, '');
         const rawUrl = `${base}/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(cleanTickers.join(','))}`;
-        const authedUrl = withMassiveAuthUrl(rawUrl, this.restBatchApiKey());
         try {
-          const httpRes = await this.fetchFn(authedUrl);
+          const httpRes = await this.stocksMassiveFetchFn(rawUrl);
           if (!httpRes.ok) {
             return {
               map: new Map<string, V2StockBatchQuote>(),
@@ -8752,7 +8768,7 @@ export class MarketRuntime {
     parsed: ParsedSymbol,
     options: { readonly expiration?: string; readonly forceRefresh?: boolean } = {},
   ): Promise<TerminalSnapshotResponse> {
-    const apiKey = this.assertRestApiKey();
+    const stocksApiKey = this.assertStocksRestConfigured();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const { canonicalSymbol, correlatedSymbol, isIndex } = parsed;
     const warnings: string[] = [];
@@ -8779,9 +8795,9 @@ export class MarketRuntime {
       ]),
     ];
 
-    const baseTransport = {
-      apiKey,
-      fetchFn: this.fetchFn,
+    const stocksTransport = {
+      apiKey: stocksApiKey,
+      fetchFn: this.stocksMassiveFetchFn,
       ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
     };
 
@@ -8808,7 +8824,7 @@ export class MarketRuntime {
               ...(req.rthOnly === undefined ? {} : { rthOnly: req.rthOnly }),
               maxPages: req.maxPages,
               now: nowSec,
-              ...baseTransport,
+              ...stocksTransport,
             }),
           {
             ...(this.snapshotBarsAuxUseFixedTtl ? { ttlMs } : {}),
@@ -8833,17 +8849,17 @@ export class MarketRuntime {
     ] = await Promise.all([
       this.treasuryCache
         .getOrCompute(`treasury:${macroDateGte}`, () =>
-          this.loadTreasuryYieldsFn({ ...baseTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
+          this.loadTreasuryYieldsFn({ ...stocksTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
         )
         .then((r) => r.value),
       this.fundingCache
         .getOrCompute(`funding:${macroDateGte}`, () =>
-          this.loadFundingConditionsFn({ ...baseTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
+          this.loadFundingConditionsFn({ ...stocksTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
         )
         .then((r) => r.value),
       this.unifiedCache
         .getOrCompute(`unified:${[...new Set(unifiedTickers)].sort().join(',')}`, () =>
-          this.loadUnifiedSnapshotFn({ ...baseTransport, tickers: unifiedTickers, limit: 250, maxPages: 1 }),
+          this.loadUnifiedSnapshotFn({ ...stocksTransport, tickers: unifiedTickers, limit: 250, maxPages: 1 }),
         )
         .then((r) => r.value),
       this.getUsStocksV2Batch(
@@ -9040,186 +9056,38 @@ export class MarketRuntime {
       const maxStrike = Math.ceil(spot * 1.25 * 100) / 100;
       const optionMaxDte = canonicalSymbol === 'GGAL' ? 95 : 45;
       const referenceMaxDte = canonicalSymbol === 'GGAL' ? 95 : 60;
-      try {
-        if (canonicalSymbol === 'GGAL') {
-          // GGAL conserva el camino legacy (índice liviano 0–95 DTE) para no alterar
-          // la cadena exacta que fija su test de integración Pieza 44.
-          const refRes = await this.loadOptionContractsFn({
-            underlying: canonicalSymbol,
-            isIndex,
-            minDte: 0,
-            maxDte: referenceMaxDte,
-            now: nowSec,
-            minStrike,
-            maxStrike,
-            excludeBinary: false,
-            excludeAdjusted: false,
-            limit: 1_000,
-            maxPages: 3,
-            ...baseTransport,
-          });
-          referenceContracts = refRes.contracts;
+      const hasOptionsAccess =
+        this.hasCustomOptionLoaders || this.massiveKeyRouter.isDomainConfigured('OPTIONS_REST');
+      if (!hasOptionsAccess) {
+        warnings.push(
+          'Massive OPTIONS_REST unavailable (MASSIVE_API_KEY missing); stocks pool keys are isolated from options',
+        );
+      } else {
+        const optionsTransport = {
+          apiKey: this.depsApiKey ?? '__MASSIVE_OPTIONS_POOL__',
+          fetchFn: this.optionsMassiveFetchFn,
+          ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+        };
+        try {
+          if (canonicalSymbol === 'GGAL') {
+            // GGAL conserva el camino legacy (índice liviano 0–95 DTE) para no alterar
+            // la cadena exacta que fija su test de integración Pieza 44.
+            const refRes = await this.loadOptionContractsFn({
+              underlying: canonicalSymbol,
+              isIndex,
+              minDte: 0,
+              maxDte: referenceMaxDte,
+              now: nowSec,
+              minStrike,
+              maxStrike,
+              excludeBinary: false,
+              excludeAdjusted: false,
+              limit: 1_000,
+              maxPages: 3,
+              ...optionsTransport,
+            });
+            referenceContracts = refRes.contracts;
 
-          const chainRes = await this.loadOptionChainFn({
-            underlying: canonicalSymbol,
-            isIndex,
-            minDte: 0,
-            maxDte: optionMaxDte,
-            now: nowSec,
-            minStrike,
-            maxStrike,
-            excludeBinary: true,
-            excludeAdjusted: true,
-            referenceContracts,
-            snapshotLimit: 250,
-            maxPages: 4,
-            ...baseTransport,
-          });
-          contracts = chainRes.contracts;
-          chainUnderlying = chainRes.underlying;
-          // Pieza 50.9: evidencia de la carga por rango DTE (no equivale a fechas pedidas).
-          chainDateReports.push({
-            dateKey: null,
-            kind: 'DTE_RANGE',
-            stoppedReason: chainRes.report.stoppedReason,
-            providerError: chainRes.report.providerError !== null,
-            contractCount: chainRes.contracts.length,
-          });
-          if (chainRes.report.providerError !== null) {
-            warnings.push(
-              `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
-            );
-          }
-        } else {
-          // Pieza 50.2: catálogo 100 % de vencimientos (calls, banda ATM angosta, sin
-          // horizonte máximo) en 1–2 páginas + precarga de ≤6 anclas representativas
-          // con carga puntual por fecha (concurrencia ≤3) y relleno curado Pieza 50.1.
-          usExpiryCatalog = await this.getUsExpiryCatalog(
-            canonicalSymbol,
-            isIndex,
-            spot,
-            nowSec,
-            baseTransport,
-            warnings,
-          );
-          referenceContracts = usExpiryCatalog.contracts;
-
-          const curated = selectCuratedUsExpirations(
-            referenceContracts,
-            spot,
-            nowSec,
-            options.expiration,
-          );
-          if (curated.reason !== null) {
-            warnings.push(`US options curated expirations: ${curated.reason}`);
-          }
-
-          const anchorDates = selectAnchorUsExpirations(usExpiryCatalog.expirations, options.expiration);
-          const loadDates: string[] = [];
-          const pushLoadDate = (date: string | null | undefined): void => {
-            if (date === null || date === undefined || date === '') return;
-            if (loadDates.includes(date)) return;
-            if (loadDates.length >= MAX_PRELOAD_EXPIRY_DATES) return;
-            loadDates.push(date);
-          };
-          const requestedValid =
-            options.expiration !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(options.expiration);
-          if (requestedValid) {
-            pushLoadDate(options.expiration);
-          }
-          for (const date of anchorDates) {
-            pushLoadDate(date);
-          }
-          for (const date of curated.curatedExpirationDates) {
-            pushLoadDate(date);
-          }
-          loadDates.sort((a, b) => a.localeCompare(b));
-
-          if (loadDates.length > 0) {
-            chainRequestedDates = [...loadDates];
-            const chainResultsByDate = new Map<
-              string,
-              {
-                readonly contracts: readonly OptionSnapshotContract[];
-                readonly underlying: OptionUnderlyingSnapshot | null;
-              }
-            >();
-            const loadExpiry = async (expirationDate: string, isPrimary: boolean): Promise<void> => {
-              // Banda adaptativa al horizonte (clave para LEAPS donde 1σ supera ±25 %).
-              const dteForDate = calendarDteEt(expirationDate, nowSec * 1_000);
-              const horizon = Number.isFinite(dteForDate) ? dteForDate : 30;
-              const bandPct =
-                horizon >= 180
-                  ? isPrimary
-                    ? 0.45
-                    : 0.3
-                  : horizon >= 90
-                    ? isPrimary
-                      ? 0.35
-                      : 0.25
-                    : isPrimary
-                      ? 0.25
-                      : 0.15;
-              const bandMin = Math.max(0.01, Math.floor(spot * (1 - bandPct) * 100) / 100);
-              const bandMax = Math.ceil(spot * (1 + bandPct) * 100) / 100;
-              // Referencia por fecha (del catálogo liviano) para etiquetar binarias/ajustadas.
-              const referenceForDate = referenceContracts.filter(
-                (c) => c.expirationDate === expirationDate,
-              );
-              const chainRes = await this.loadOptionChainFn({
-                underlying: canonicalSymbol,
-                isIndex,
-                expirationDate,
-                now: nowSec,
-                minStrike: bandMin,
-                maxStrike: bandMax,
-                excludeBinary: true,
-                excludeAdjusted: true,
-                referenceContracts:
-                  referenceForDate.length > 0 ? referenceForDate : referenceContracts,
-                snapshotLimit: 250,
-                maxPages: 2,
-                ...baseTransport,
-              });
-              if (chainRes.report.providerError !== null) {
-                warnings.push(
-                  `options chain error (${expirationDate}): ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
-                );
-              }
-              // El proveedor puede devolver más fechas de las pedidas: filtrado determinista
-              // por fecha exacta para fusionar sin duplicados entre cargas paralelas.
-              const filteredContracts = chainRes.contracts.filter((c) => c.expirationDate === expirationDate);
-              // Pieza 50.9: evidencia real de corte/error/faltante por fecha.
-              chainDateReports.push({
-                dateKey: expirationDate,
-                kind: 'DATE',
-                stoppedReason: chainRes.report.stoppedReason,
-                providerError: chainRes.report.providerError !== null,
-                contractCount: filteredContracts.length,
-              });
-              chainResultsByDate.set(expirationDate, {
-                contracts: filteredContracts,
-                underlying: chainRes.underlying,
-              });
-            };
-            const loadConcurrency = 3;
-            for (let i = 0; i < loadDates.length; i += loadConcurrency) {
-              const batch = loadDates.slice(i, i + loadConcurrency);
-              await Promise.all(batch.map((date, idx) => loadExpiry(date, i + idx === 0)));
-            }
-            const mergedContracts: OptionSnapshotContract[] = [];
-            let mergedUnderlying: OptionUnderlyingSnapshot | null = null;
-            for (const date of loadDates) {
-              const res = chainResultsByDate.get(date);
-              if (res === undefined) continue;
-              mergedContracts.push(...res.contracts);
-              if (mergedUnderlying === null && res.underlying !== null) {
-                mergedUnderlying = res.underlying;
-              }
-            }
-            contracts = mergedContracts;
-            chainUnderlying = mergedUnderlying;
-          } else {
             const chainRes = await this.loadOptionChainFn({
               underlying: canonicalSymbol,
               isIndex,
@@ -9233,11 +9101,11 @@ export class MarketRuntime {
               referenceContracts,
               snapshotLimit: 250,
               maxPages: 4,
-              ...baseTransport,
+              ...optionsTransport,
             });
             contracts = chainRes.contracts;
             chainUnderlying = chainRes.underlying;
-            // Pieza 50.9: evidencia de la carga por rango DTE sin lista de fechas.
+            // Pieza 50.9: evidencia de la carga por rango DTE (no equivale a fechas pedidas).
             chainDateReports.push({
               dateKey: null,
               kind: 'DTE_RANGE',
@@ -9250,12 +9118,173 @@ export class MarketRuntime {
                 `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
               );
             }
+          } else {
+            // Pieza 50.2: catálogo 100 % de vencimientos (calls, banda ATM angosta, sin
+            // horizonte máximo) en 1–2 páginas + precarga de ≤6 anclas representativas
+            // con carga puntual por fecha (concurrencia ≤3) y relleno curado Pieza 50.1.
+            usExpiryCatalog = await this.getUsExpiryCatalog(
+              canonicalSymbol,
+              isIndex,
+              spot,
+              nowSec,
+              optionsTransport,
+              warnings,
+            );
+            referenceContracts = usExpiryCatalog.contracts;
+
+            const curated = selectCuratedUsExpirations(
+              referenceContracts,
+              spot,
+              nowSec,
+              options.expiration,
+            );
+            if (curated.reason !== null) {
+              warnings.push(`US options curated expirations: ${curated.reason}`);
+            }
+
+            const anchorDates = selectAnchorUsExpirations(usExpiryCatalog.expirations, options.expiration);
+            const loadDates: string[] = [];
+            const pushLoadDate = (date: string | null | undefined): void => {
+              if (date === null || date === undefined || date === '') return;
+              if (loadDates.includes(date)) return;
+              if (loadDates.length >= MAX_PRELOAD_EXPIRY_DATES) return;
+              loadDates.push(date);
+            };
+            const requestedValid =
+              options.expiration !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(options.expiration);
+            if (requestedValid) {
+              pushLoadDate(options.expiration);
+            }
+            for (const date of anchorDates) {
+              pushLoadDate(date);
+            }
+            for (const date of curated.curatedExpirationDates) {
+              pushLoadDate(date);
+            }
+            loadDates.sort((a, b) => a.localeCompare(b));
+
+            if (loadDates.length > 0) {
+              chainRequestedDates = [...loadDates];
+              const chainResultsByDate = new Map<
+                string,
+                {
+                  readonly contracts: readonly OptionSnapshotContract[];
+                  readonly underlying: OptionUnderlyingSnapshot | null;
+                }
+              >();
+              const loadExpiry = async (expirationDate: string, isPrimary: boolean): Promise<void> => {
+                // Banda adaptativa al horizonte (clave para LEAPS donde 1σ supera ±25 %).
+                const dteForDate = calendarDteEt(expirationDate, nowSec * 1_000);
+                const horizon = Number.isFinite(dteForDate) ? dteForDate : 30;
+                const bandPct =
+                  horizon >= 180
+                    ? isPrimary
+                      ? 0.45
+                      : 0.3
+                    : horizon >= 90
+                      ? isPrimary
+                        ? 0.35
+                        : 0.25
+                      : isPrimary
+                        ? 0.25
+                        : 0.15;
+                const bandMin = Math.max(0.01, Math.floor(spot * (1 - bandPct) * 100) / 100);
+                const bandMax = Math.ceil(spot * (1 + bandPct) * 100) / 100;
+                // Referencia por fecha (del catálogo liviano) para etiquetar binarias/ajustadas.
+                const referenceForDate = referenceContracts.filter(
+                  (c) => c.expirationDate === expirationDate,
+                );
+                const chainRes = await this.loadOptionChainFn({
+                  underlying: canonicalSymbol,
+                  isIndex,
+                  expirationDate,
+                  now: nowSec,
+                  minStrike: bandMin,
+                  maxStrike: bandMax,
+                  excludeBinary: true,
+                  excludeAdjusted: true,
+                  referenceContracts:
+                    referenceForDate.length > 0 ? referenceForDate : referenceContracts,
+                  snapshotLimit: 250,
+                  maxPages: 2,
+                  ...optionsTransport,
+                });
+                if (chainRes.report.providerError !== null) {
+                  warnings.push(
+                    `options chain error (${expirationDate}): ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
+                  );
+                }
+                // El proveedor puede devolver más fechas de las pedidas: filtrado determinista
+                // por fecha exacta para fusionar sin duplicados entre cargas paralelas.
+                const filteredContracts = chainRes.contracts.filter((c) => c.expirationDate === expirationDate);
+                // Pieza 50.9: evidencia real de corte/error/faltante por fecha.
+                chainDateReports.push({
+                  dateKey: expirationDate,
+                  kind: 'DATE',
+                  stoppedReason: chainRes.report.stoppedReason,
+                  providerError: chainRes.report.providerError !== null,
+                  contractCount: filteredContracts.length,
+                });
+                chainResultsByDate.set(expirationDate, {
+                  contracts: filteredContracts,
+                  underlying: chainRes.underlying,
+                });
+              };
+              const loadConcurrency = 3;
+              for (let i = 0; i < loadDates.length; i += loadConcurrency) {
+                const batch = loadDates.slice(i, i + loadConcurrency);
+                await Promise.all(batch.map((date, idx) => loadExpiry(date, i + idx === 0)));
+              }
+              const mergedContracts: OptionSnapshotContract[] = [];
+              let mergedUnderlying: OptionUnderlyingSnapshot | null = null;
+              for (const date of loadDates) {
+                const res = chainResultsByDate.get(date);
+                if (res === undefined) continue;
+                mergedContracts.push(...res.contracts);
+                if (mergedUnderlying === null && res.underlying !== null) {
+                  mergedUnderlying = res.underlying;
+                }
+              }
+              contracts = mergedContracts;
+              chainUnderlying = mergedUnderlying;
+            } else {
+              const chainRes = await this.loadOptionChainFn({
+                underlying: canonicalSymbol,
+                isIndex,
+                minDte: 0,
+                maxDte: optionMaxDte,
+                now: nowSec,
+                minStrike,
+                maxStrike,
+                excludeBinary: true,
+                excludeAdjusted: true,
+                referenceContracts,
+                snapshotLimit: 250,
+                maxPages: 4,
+                ...optionsTransport,
+              });
+              contracts = chainRes.contracts;
+              chainUnderlying = chainRes.underlying;
+              // Pieza 50.9: evidencia de la carga por rango DTE sin lista de fechas.
+              chainDateReports.push({
+                dateKey: null,
+                kind: 'DTE_RANGE',
+                stoppedReason: chainRes.report.stoppedReason,
+                providerError: chainRes.report.providerError !== null,
+                contractCount: chainRes.contracts.length,
+              });
+              if (chainRes.report.providerError !== null) {
+                warnings.push(
+                  `options chain error: ${redactSecrets(chainRes.report.providerError.message, this.secrets)}`,
+                );
+              }
+            }
           }
+        } catch (err: unknown) {
+          warnings.push(
+            `options load skipped: ${redactSecrets(extractErrorMessage(err, 'options fetch failed', this.secrets), this.secrets)}`,
+          );
         }
-      } catch (err: unknown) {
-        warnings.push(
-          `options load skipped: ${redactSecrets(extractErrorMessage(err, 'options fetch failed'), this.secrets)}`,
-        );
       }
 
       if (!isIndex) {
@@ -9263,7 +9292,7 @@ export class MarketRuntime {
           ticker: toReferenceUnderlyingTicker(canonicalSymbol, false),
           limit: 12,
           maxPages: 1,
-          ...baseTransport,
+          ...stocksTransport,
         }).catch(() => null);
       }
     }
@@ -10930,7 +10959,10 @@ export class MarketRuntime {
     parsed: ParsedSymbol,
     expirationDate: string,
   ): Promise<UsOptionExpiryChainResponse> {
-    const apiKey = this.assertRestApiKey();
+    const stocksApiKey = this.assertStocksRestConfigured();
+    const optionsApiKey = this.hasCustomOptionLoaders
+      ? (this.depsApiKey ?? '__MASSIVE_OPTIONS_POOL__')
+      : this.assertOptionsRestConfigured();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
     const { canonicalSymbol, correlatedSymbol, isIndex } = parsed;
     const warnings: string[] = [];
@@ -10952,9 +10984,14 @@ export class MarketRuntime {
         'I:DXY',
       ]),
     ];
-    const baseTransport = {
-      apiKey,
-      fetchFn: this.fetchFn,
+    const stocksTransport = {
+      apiKey: stocksApiKey,
+      fetchFn: this.stocksMassiveFetchFn,
+      ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
+    };
+    const optionsTransport = {
+      apiKey: optionsApiKey,
+      fetchFn: this.optionsMassiveFetchFn,
       ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
     };
 
@@ -10963,17 +11000,17 @@ export class MarketRuntime {
     const [treasuryRes, fundingRes, unifiedRes, bars1dRes] = await Promise.all([
       this.treasuryCache
         .getOrCompute(`treasury:${macroDateGte}`, () =>
-          this.loadTreasuryYieldsFn({ ...baseTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
+          this.loadTreasuryYieldsFn({ ...stocksTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
         )
         .then((r) => r.value),
       this.fundingCache
         .getOrCompute(`funding:${macroDateGte}`, () =>
-          this.loadFundingConditionsFn({ ...baseTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
+          this.loadFundingConditionsFn({ ...stocksTransport, dateGte: macroDateGte, limit: 100, maxPages: 1 }),
         )
         .then((r) => r.value),
       this.unifiedCache
         .getOrCompute(`unified:${[...new Set(unifiedTickers)].sort().join(',')}`, () =>
-          this.loadUnifiedSnapshotFn({ ...baseTransport, tickers: unifiedTickers, limit: 250, maxPages: 1 }),
+          this.loadUnifiedSnapshotFn({ ...stocksTransport, tickers: unifiedTickers, limit: 250, maxPages: 1 }),
         )
         .then((r) => r.value),
       this.loadBarsFn({
@@ -10984,7 +11021,7 @@ export class MarketRuntime {
         warmupBars: 0,
         maxPages: 3,
         now: nowSec,
-        ...baseTransport,
+        ...stocksTransport,
       }),
     ]);
 
@@ -11036,7 +11073,7 @@ export class MarketRuntime {
         excludeAdjusted: false,
         limit: 1_000,
         maxPages: 2,
-        ...baseTransport,
+        ...optionsTransport,
       });
       referenceForChain = refRes.contracts;
       if (refRes.report.providerError !== null) {
@@ -11046,7 +11083,7 @@ export class MarketRuntime {
       }
     } catch (err: unknown) {
       warnings.push(
-        `options expiry reference skipped (${expirationDate}): ${redactSecrets(extractErrorMessage(err, 'options reference fetch failed'), this.secrets)}`,
+        `options expiry reference skipped (${expirationDate}): ${redactSecrets(extractErrorMessage(err, 'options reference fetch failed', this.secrets), this.secrets)}`,
       );
     }
     if (referenceForChain.length === 0) {
@@ -11071,7 +11108,7 @@ export class MarketRuntime {
         referenceContracts: referenceForChain,
         snapshotLimit: 250,
         maxPages: 3,
-        ...baseTransport,
+        ...optionsTransport,
       });
       contracts = chainRes.contracts.filter((c) => c.expirationDate === expirationDate);
       chainUnderlying = chainRes.underlying;
@@ -11624,7 +11661,7 @@ export class MarketRuntime {
         })).bars;
       };
       const massiveDeepLoad = async (): Promise<readonly Bar[]> => {
-        const apiKey = this.assertRestApiKey();
+        const apiKey = this.assertStocksRestConfigured();
         const res = await this.loadBarsFn({
           provider: 'massive',
           symbol: parsed.canonicalSymbol,
@@ -11635,7 +11672,7 @@ export class MarketRuntime {
           maxPages: 8,
           now: nowSec,
           apiKey,
-          fetchFn: this.fetchFn,
+          fetchFn: this.stocksMassiveFetchFn,
           ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
           window: { from: fromSec, to: nowSec },
           sort: 'asc',
@@ -11770,7 +11807,7 @@ export class MarketRuntime {
       bars = rthOnly && timeframe !== '1D' ? tradierResult.bars.filter((b) => isRth(b.time)) : tradierResult.bars;
       visibleStart = Math.max(0, bars.length - visibleBars);
     } else {
-      const apiKey = this.assertRestApiKey();
+      const apiKey = this.assertStocksRestConfigured();
       const res = await this.loadBarsFn({
         provider: 'massive',
         symbol: parsed.canonicalSymbol,
@@ -11781,7 +11818,7 @@ export class MarketRuntime {
         maxPages: timeframe === '1D' ? 12 : 8,
         now: nowSec,
         apiKey,
-        fetchFn: this.fetchFn,
+        fetchFn: this.stocksMassiveFetchFn,
         ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
       });
       if (res.bars.length === 0) {
@@ -12290,12 +12327,12 @@ export class MarketRuntime {
     readonly limit: number;
     readonly minPremium?: number;
   }): Promise<TerminalUnusualResponse> {
-    const apiKey = this.assertRestApiKey();
+    const apiKey = this.assertOptionsRestConfigured();
     const nowSec = Math.floor(this.nowMsFn() / 1_000);
 
     const loadOpts: LoadUnusualTradesOptions = {
       apiKey,
-      fetchFn: this.fetchFn,
+      fetchFn: this.optionsMassiveFetchFn,
       ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
       ...(params.ticker === undefined ? {} : { ticker: params.ticker }),
       ...(params.root === undefined ? {} : { root: params.root }),
@@ -12362,7 +12399,7 @@ export class MarketRuntime {
     const cleanInput = rawSymbol.trim().toUpperCase();
     const boundedLookback = Math.min(Math.max(Math.trunc(lookbackBars), 20), 365);
 
-    if (this.apiKey.trim() === '') {
+    if (!this.massiveKeyRouter.isDomainConfigured('STOCKS_REST')) {
       return {
         symbol: cleanInput,
         bars: [],
@@ -12387,8 +12424,8 @@ export class MarketRuntime {
             rthOnly: false,
             maxPages: 2,
             now: nowSec,
-            apiKey: this.restBatchApiKey(),
-            fetchFn: this.fetchFn,
+            apiKey: this.assertStocksRestConfigured(),
+            fetchFn: this.stocksMassiveFetchFn,
             ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
           });
           const bars = res.bars.slice(-boundedLookback);
@@ -12483,7 +12520,7 @@ export class MarketRuntime {
         const errors: string[] = [];
         const universeSymbols = US_EQUITY_UNIVERSE.map((u) => u.symbol);
 
-        if (!this.apiKey) {
+        if (!this.massiveKeyRouter.isDomainConfigured('STOCKS_REST')) {
           return {
             asOfUtcSec: nowSec,
             benchmarkSymbol: 'SPY',
@@ -12501,8 +12538,8 @@ export class MarketRuntime {
         }
 
         const baseTransport = {
-          apiKey: this.restBatchApiKey(),
-          fetchFn: this.fetchFn,
+          apiKey: this.assertStocksRestConfigured(),
+          fetchFn: this.stocksMassiveFetchFn,
           ...(this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }),
         };
 

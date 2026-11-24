@@ -219,6 +219,12 @@ export interface WsSocketLike {
 /** Factory creating a new socket instance for a target WebSocket URL. */
 export type WsSocketFactory = (url: string) => WsSocketLike;
 
+/** Razones de apertura del circuit breaker de reconexión WS. */
+export type WsCircuitBreakerReason = 'max_connections' | 'policy_violation_1008';
+
+/** Cooldown por defecto del circuit breaker ante límite de conexiones (15 minutos). */
+export const DEFAULT_CONNECTION_LIMIT_COOLDOWN_MS = 15 * 60 * 1_000;
+
 /** Configuration options for `MassiveWsClient`. */
 export interface MassiveWsClientOptions {
   readonly apiKey: string;
@@ -231,11 +237,15 @@ export interface MassiveWsClientOptions {
   readonly initialSubscriptions?: string | readonly string[];
   /** Custom socket transport factory; defaults to runtime global `WebSocket`. */
   readonly socketFactory?: WsSocketFactory;
-  /** Async sleep function for backoff delays (default `setTimeout` promise). */
+  /** Async sleep function for backoff delays (default cancelable timer). */
   readonly sleep?: SleepFn;
+  /** Clock source in ms for circuit-breaker cooldowns (default `Date.now`). */
+  readonly nowMsFn?: () => number;
+  /** Cooldown (ms) before manual recovery may reset a tripped connection-limit circuit breaker. */
+  readonly connectionLimitCooldownMs?: number;
   /** Maximum inbound buffered batches for slow-consumer decoupling (default `50_000`). */
   readonly maxQueueSize?: number;
-  /** Auto-reconnect when disconnected unexpectedly, on midnight ET reset, or `max_connections` (default `true`). */
+  /** Auto-reconnect when disconnected unexpectedly or on midnight ET reset (max_connections trips circuit breaker). */
   readonly autoReconnect?: boolean;
   /** Minimum reconnect delay in ms (enforced `>= 15_000`, default `15_000`). */
   readonly minReconnectDelayMs?: number;
@@ -266,4 +276,9 @@ export interface WsClientSnapshot {
   readonly totalMessagesReceived: number;
   readonly discardedPayloads: number;
   readonly lastError: WsClientError | null;
+  readonly circuitBreakerOpen?: boolean;
+  readonly circuitBreakerReason?: WsCircuitBreakerReason | null;
+  readonly circuitBreakerOpenedAtMs?: number | null;
+  readonly circuitBreakerCooldownUntilMs?: number | null;
+  readonly pendingReconnectTimers?: number;
 }

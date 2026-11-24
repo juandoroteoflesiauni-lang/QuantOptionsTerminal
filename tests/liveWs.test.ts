@@ -627,7 +627,7 @@ describe('MassiveWsClient — protocol state machine, limits, reconnect backoff,
     expect(JSON.stringify(snap)).not.toContain(secret);
   });
 
-  it('enforces >= 15s reconnect backoff on max_connections & midnight ET reset and re-subscribes automatically', async () => {
+  it('preserves >= 15s midnight ET reconnect and re-subscription, and trips the circuit on max_connections', async () => {
     const harness = createMockSocketHarness();
     const fakeSleep = createFakeSleep();
     const errors: WsClientError[] = [];
@@ -693,10 +693,20 @@ describe('MassiveWsClient — protocol state machine, limits, reconnect backoff,
       { ev: 'status', status: 'max_connections', message: 'Maximum number of connections exceeded' },
     ]);
     expect(errors.some((e) => e.code === 'max_connections')).toBe(true);
-    expect(fakeSleep.delays).toEqual([MIN_RECONNECT_BACKOFF_MS, MIN_RECONNECT_BACKOFF_MS]);
+    expect(client.getSnapshot().circuitBreakerOpen).toBe(true);
+    expect(client.getSnapshot().circuitBreakerReason).toBe('max_connections');
+    expect(client.getSnapshot().pendingReconnectTimers).toBe(0);
+    expect(fakeSleep.delays).toEqual([MIN_RECONNECT_BACKOFF_MS]);
     expect(harness.sockets).toHaveLength(2);
 
-    // Close client cleanly before second backoff finishes -> no sock3 opened!
+    // Duplicate callbacks cannot schedule a reconnect after the circuit opens.
+    sock2.triggerError(new Error('Maximum number of connections exceeded'));
+    sock2.triggerClose(1008, 'Maximum number of connections exceeded', false);
+    expect(client.getSnapshot().pendingReconnectTimers).toBe(0);
+    expect(fakeSleep.delays).toEqual([MIN_RECONNECT_BACKOFF_MS]);
+    expect(errors.filter((e) => e.code === 'max_connections')).toHaveLength(1);
+
+    // Closing the client leaves no pending backoff and no third socket.
     client.close();
     fakeSleep.releaseNext();
     await flushMicrotasks();

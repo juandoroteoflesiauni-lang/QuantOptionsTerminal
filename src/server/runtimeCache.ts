@@ -60,18 +60,159 @@ function expandSecretVariants(secrets: readonly string[]): readonly string[] {
       }
     }
   }
-  return [...unique];
+  // Longer secrets first so short secrets/prefixes never produce partial unredacted suffixes.
+  return [...unique].sort((a, b) => b.length - a.length);
 }
 
 /**
- * Redacta cualquier secreto conocido (`apiKey` y su versión URL-encoded) y parámetros
- * de consulta sensibles (`?apiKey=...`, `&token=...`, `secret=...`) en textos y errores.
+ * Redacta cualquier secreto conocido (`apiKey` y su versión URL-encoded), parámetros
+ * de consulta sensibles (`?apiKey=...`, `&token=...`, `secret=...`) y cabeceras HTTP de auth.
  */
 export function redactSecrets(text: string, secrets: readonly string[]): string {
   const expanded = expandSecretVariants(secrets);
   return redact(text, expanded)
-    .replace(/([?&](?:api_?key|token|secret)=)[^&\s]+/gi, '$1[REDACTED]')
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1[REDACTED]');
+    .replace(/([?&](?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret)=)[^&\s"']+/gi, '$1[REDACTED]')
+    .replace(/\b(Bearer\s+)(?:<redacted>|[A-Za-z0-9._~+/-]+=*)/gi, '$1[REDACTED]')
+    .replace(
+      /("?(?:authorization|x-api-key|api-key|apikey|x-auth-token)"?\s*:\s*"?(?:(?:Bearer|Basic|Token)\s+)?)(?:<redacted>|[^\r\n"',}\]]+)/gi,
+      '$1[REDACTED]',
+    );
+}
+
+const SENSITIVE_HEADER_NAMES: ReadonlySet<string> = new Set([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'api-key',
+  'apikey',
+  'x-auth-token',
+  'cookie',
+  'set-cookie',
+]);
+
+/** Redacta valores de cabeceras sensibles y cualquier secreto embebido en otras cabeceras. */
+export function redactHeaders(
+  headers: Readonly<Record<string, string | readonly string[] | undefined>>,
+  secrets: readonly string[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [rawName, rawValue] of Object.entries(headers)) {
+    if (rawValue === undefined) {
+      continue;
+    }
+    const normalizedName = rawName.toLowerCase();
+    if (SENSITIVE_HEADER_NAMES.has(normalizedName)) {
+      out[rawName] = '[REDACTED]';
+      continue;
+    }
+    const serialized = typeof rawValue === 'string' ? rawValue : rawValue.join(', ');
+    out[rawName] = redactSecrets(serialized, secrets);
+  }
+  return out;
+}
+
+/**
+ * Extrae y redacta un mensaje completo incluyendo la cadena anidada de `err.cause`
+ * (o `AggregateError.errors`), evitando ciclos mediante `WeakSet`.
+ */
+export function formatRedactedError(
+  err: unknown,
+  secrets: readonly string[],
+  fallback = 'error',
+  maxDepth = 6,
+): string {
+  const parts: string[] = [];
+  const visited = new WeakSet<object>();
+
+  const collect = (node: unknown, depth: number, label?: string): void => {
+    if (depth > maxDepth || node === null || node === undefined) {
+      return;
+    }
+    if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') {
+      const cleaned = redactSecrets(String(node).trim(), secrets);
+      if (cleaned !== '') {
+        parts.push(label ? `${label}: ${cleaned}` : cleaned);
+      }
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+    if (visited.has(node)) {
+      return;
+    }
+    visited.add(node);
+
+    const record = node as {
+      readonly message?: unknown;
+      readonly cause?: unknown;
+      readonly errors?: unknown;
+      readonly code?: unknown;
+    };
+    const msgRaw =
+      typeof record.message === 'string' && record.message.trim() !== ''
+        ? record.message.trim()
+        : '';
+    if (msgRaw !== '') {
+      const cleaned = redactSecrets(msgRaw, secrets);
+      if (cleaned !== '') {
+        parts.push(label ? `${label}: ${cleaned}` : cleaned);
+      }
+    } else if (typeof record.code === 'string' && record.code.trim() !== '') {
+      parts.push(redactSecrets(record.code.trim(), secrets));
+    }
+
+    if (record.cause !== undefined) {
+      collect(record.cause, depth + 1, 'cause');
+    }
+    if (Array.isArray(record.errors)) {
+      for (const nested of record.errors) {
+        collect(nested, depth + 1, 'error');
+      }
+    }
+  };
+
+  collect(err, 0);
+  if (parts.length === 0) {
+    return redactSecrets(fallback, secrets);
+  }
+  const deduped: string[] = [];
+  for (const part of parts) {
+    if (!deduped.includes(part)) {
+      deduped.push(part);
+    }
+  }
+  return redactSecrets(deduped.join(' | '), secrets);
+}
+
+/** Construye una instancia `Error` con mensaje, stack y `cause` completamente redactados. */
+export function redactErrorDeep(
+  err: unknown,
+  secrets: readonly string[],
+  maxDepth = 6,
+): Error {
+  const seen = new WeakSet<object>();
+
+  const cloneNode = (node: unknown, depth: number): Error => {
+    if (node instanceof Error && !seen.has(node)) {
+      seen.add(node);
+      const nestedCause =
+        depth < maxDepth && node.cause !== undefined ? cloneNode(node.cause, depth + 1) : undefined;
+      const sanitized = new Error(
+        redactSecrets(node.message, secrets),
+        nestedCause !== undefined ? { cause: nestedCause } : undefined,
+      );
+      sanitized.name = node.name;
+      if (typeof node.stack === 'string') {
+        sanitized.stack = redactSecrets(node.stack, secrets);
+      }
+      return sanitized;
+    }
+    const msg = formatRedactedError(node, secrets, 'error', Math.max(1, maxDepth - depth));
+    return new Error(msg);
+  };
+
+  return cloneNode(err, 0);
 }
 
 export interface CacheEntry<T> {

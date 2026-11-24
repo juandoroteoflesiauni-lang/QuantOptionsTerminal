@@ -677,9 +677,16 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     'FMP_KEY_ETF',
     'FMP_KEY_MACRO',
     'MASSIVE_API_KEY',
+    'MASSIVE_KEY',
+    'MASSIVE_KEY_OPTIONS',
+    'MASSIVE_OPTIONS',
     'MASSIVE_WS_STOCKS_KEY',
     'MASSIVE_REST_KEY',
     'MASSIVE_REST_KEYS',
+    'MASSIVE_KEY_1',
+    'MASSIVE_KEY_2',
+    'MASSIVE_KEY_3',
+    'MASSIVE_KEY_FUTURES',
     'TRADIER_ACCESS_TOKEN',
     'TRADIER_TOKEN',
     'TRADIER_API_TOKEN',
@@ -698,6 +705,14 @@ export function collectBrokerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env
     const val = (env[key] ?? '').trim();
     if (val !== '') {
       out.add(val);
+      if (key === 'MASSIVE_REST_KEYS' && val.includes(',')) {
+        for (const item of val.split(',')) {
+          const clean = item.trim();
+          if (clean !== '') {
+            out.add(clean);
+          }
+        }
+      }
     }
   }
   return [...out];
