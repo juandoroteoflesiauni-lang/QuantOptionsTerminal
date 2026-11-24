@@ -83,6 +83,10 @@ export interface FmpKeySelection {
 }
 
 export interface FmpHistoricalRequest {
+  readonly signal?: AbortSignal;
+  /** Historical transport counters; never includes URLs or credentials. */
+  readonly onHttp?: (status: number | null, bytes: number) => void;
+  readonly onPage?: (rows: number) => void;
   readonly symbol: string;
   readonly timeframe: Timeframe;
   readonly fromUtcSec?: number;
@@ -192,7 +196,7 @@ export interface FmpHttpResult {
   readonly text: string;
 }
 
-export type FmpHttpFn = (url: string) => Promise<FmpHttpResult>;
+export type FmpHttpFn = (url: string, signal?: AbortSignal) => Promise<FmpHttpResult>;
 
 export interface FmpClientDeps {
   /** Configuración estática (tests/harness). Si falta, se resuelve `process.env`. */
@@ -687,8 +691,9 @@ export function buildFmpHistoricalPath(request: FmpHistoricalRequest): string {
 }
 
 export function createDefaultFmpHttpFn(timeoutMs = 12_000): FmpHttpFn {
-  return async (url) => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  return async (url, signal) => {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const response = await fetch(url, { signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]) });
     return { ok: response.ok, status: response.status, text: await response.text() };
   };
 }
@@ -827,18 +832,23 @@ export class FmpEnterpriseClient {
     };
   }
 
-  private async fetchRawWithTiming(url: string): Promise<{
+  private async fetchRawWithTiming(url: string, signal?: AbortSignal, onHttp?: FmpHistoricalRequest['onHttp']): Promise<{
     readonly response: FmpHttpResult;
     readonly latencyMs: number | null;
   }> {
     this.requests += 1;
     const startedAtMs = this.nowMsFn();
     try {
-      const response = await this.fetchFn(url);
+      signal?.throwIfAborted();
+      const response = await this.fetchFn(url, signal);
+      signal?.throwIfAborted();
+      onHttp?.(response.status, Buffer.byteLength(response.text, 'utf8'));
       const finishedAtMs = this.nowMsFn();
       const latencyMs = finishedAtMs >= startedAtMs ? finishedAtMs - startedAtMs : null;
       return { response, latencyMs };
     } catch (err: unknown) {
+      onHttp?.(null, 0);
+      if (signal?.aborted === true) throw new DOMException('Aborted', 'AbortError');
       const finishedAtMs = this.nowMsFn();
       const latencyMs = finishedAtMs >= startedAtMs ? finishedAtMs - startedAtMs : null;
       this.onResponse?.({ httpStatus: null, rows: 0, latencyMs });
@@ -849,8 +859,8 @@ export class FmpEnterpriseClient {
     }
   }
 
-  private async fetchRedacted(url: string): Promise<FmpHttpResult> {
-    const { response, latencyMs } = await this.fetchRawWithTiming(url);
+  private async fetchRedacted(url: string, signal?: AbortSignal, onHttp?: FmpHistoricalRequest['onHttp']): Promise<FmpHttpResult> {
+    const { response, latencyMs } = await this.fetchRawWithTiming(url, signal, onHttp);
     this.onResponse?.({ httpStatus: response.status, rows: 0, latencyMs });
     return response;
   }
@@ -863,7 +873,7 @@ export class FmpEnterpriseClient {
     }
     const requestedAtUtcSec = Math.floor(this.nowMsFn() / 1_000);
     const path = buildFmpHistoricalPath(request);
-    let response = await this.fetchRedacted(buildAuthUrl(path, keySelection.key));
+    let response = await this.fetchRedacted(buildAuthUrl(path, keySelection.key), request.signal, request.onHttp);
     let source: FmpSource = 'FMP_STABLE';
     let legacyFallbackUsed = false;
     const includeExtended = request.timeframe !== '1D' && request.includeExtended === true;
@@ -876,6 +886,7 @@ export class FmpEnterpriseClient {
       if (pathName === '') throw new Error(`FMP chart HTTP ${String(response.status)}`);
       response = await this.fetchRedacted(
         buildLegacyChartUrl(symbol, pathName, keySelection.key, includeExtended),
+        request.signal, request.onHttp,
       );
       source = 'FMP_LEGACY';
       legacyFallbackUsed = true;
@@ -893,6 +904,7 @@ export class FmpEnterpriseClient {
       rthOnly: request.timeframe !== '1D' && request.includeExtended === false,
     });
     this.recordResponse(response.ok, normalized.bars.length);
+    request.onPage?.(normalized.bars.length);
     return {
       bars: normalized.bars,
       source,

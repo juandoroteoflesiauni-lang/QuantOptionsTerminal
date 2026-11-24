@@ -329,6 +329,7 @@ import {
   readMassiveEnvSource,
   type MassiveEnvSource,
 } from './massiveKeyPool.js';
+import { UsHistoricalService, serializeHistoricalIntegrity, type UsHistoricalResult } from './usHistoricalService.js';
 import {
   OratsHybridClient,
   type OratsIvRankPayload,
@@ -1157,6 +1158,7 @@ export interface SerializedKeyLevel {
 }
 
 export interface TerminalBarsResponse {
+  readonly historicalIntegrity?: ReturnType<typeof serializeHistoricalIntegrity>;
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;
   readonly timeframe: Timeframe;
@@ -4900,6 +4902,7 @@ export class MarketRuntime {
   private readonly stocksMassiveFetchFn: FetchFn;
   private readonly optionsMassiveFetchFn: FetchFn;
   private readonly massiveKeyRouter: MassiveKeyRouter;
+  private readonly usHistoricalService: UsHistoricalService | null;
   private readonly hasCustomOptionLoaders: boolean;
   private readonly restTelemetry = new RollingFeedTelemetry({
     latencyKind: 'HTTP_ROUND_TRIP',
@@ -5739,6 +5742,21 @@ export class MarketRuntime {
     };
     this.stocksMassiveFetchFn = this.massiveKeyRouter.createDomainFetchFn('STOCKS_REST', this.fetchFn);
     this.optionsMassiveFetchFn = this.massiveKeyRouter.createDomainFetchFn('OPTIONS_REST', this.fetchFn);
+    this.usHistoricalService = deps.loadBarsFn !== undefined ? null : new UsHistoricalService({
+      router: this.massiveKeyRouter,
+      fmp: this.fmpClient,
+      nowMs: this.nowMsFn,
+      fetchFn: async (url, signal) => {
+        if (deps.fetchFn !== undefined) return deps.fetchFn(url);
+        try {
+          const response = await fetch(url, { signal });
+          return { ok: response.ok, status: response.status, text: await response.text(), headers: Object.fromEntries(response.headers.entries()) };
+        } catch (error: unknown) {
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+          throw new Error(formatRedactedError(error, this.secrets));
+        }
+      },
+    });
     this.loadBarsFn = deps.loadBarsFn ?? loadBars;
     this.loadOptionChainFn = deps.loadOptionChainFn ?? loadOptionChain;
     this.loadOptionContractsFn = deps.loadOptionContractsFn ?? loadOptionContracts;
@@ -11633,7 +11651,16 @@ export class MarketRuntime {
     // ordinarias FMP/Tradier; el recorte y el payload conservan `visibleBars`
     // y la EMA se calcula sobre la serie completa antes del recorte.
     const restFetchTargetBars = visibleBars + REST_EMA_WARMUP_BARS;
-    if (useDeepHistory) {
+    let historicalIntegrity: UsHistoricalResult | undefined;
+    if (!useDeepHistory && !parsed.isIndex && this.usHistoricalService !== null &&
+        (timeframe === '1m' || timeframe === '5m' || timeframe === '15m' || timeframe === '1h')) {
+      historicalIntegrity = await this.usHistoricalService.load({ symbol: parsed.canonicalSymbol, timeframe, now: nowSec, rthOnly, visibleBars });
+      bars = historicalIntegrity.rows.map((row) => row.bar);
+      barsStatusOk = historicalIntegrity.warmupSatisfied;
+      visibleStart = Math.max(0, bars.length - visibleBars);
+      barsProvider = historicalIntegrity.metrics.fallbackCause === null ? 'MASSIVE_REST' : 'FMP_ENTERPRISE_REST';
+      if (historicalIntegrity.metrics.fallbackCause !== null) providerFallbackUsed.push('MASSIVE_REST');
+    } else if (useDeepHistory) {
       const fromSec = deepHistoryFromUtcSec(nowSec);
       const fmpLoad = async (): Promise<readonly Bar[]> => {
         const result = await this.fmpClient.fetchHistoricalPaginated({
@@ -11876,6 +11903,7 @@ export class MarketRuntime {
       const emptyOverlay = slicedBars.map(() => null);
       const cachedSnapshot = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
       const payload: TerminalBarsResponse = {
+        ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
         status: barsStatusOk ? 'OK' : 'PARTIAL',
         symbol: parsed.canonicalSymbol,
         timeframe,
@@ -12009,6 +12037,7 @@ export class MarketRuntime {
       });
 
     const payload: TerminalBarsResponse = {
+      ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
       status: barsStatusOk ? 'OK' : 'PARTIAL',
       symbol: parsed.canonicalSymbol,
       timeframe,
