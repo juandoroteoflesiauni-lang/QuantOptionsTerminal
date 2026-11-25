@@ -32,6 +32,35 @@ export const FVG_BEARISH_BORDER_COLOR = 'rgba(244, 63, 94, 0.48)';
 export const IFVG_FILL_COLOR = 'rgba(168, 85, 247, 0.13)';
 export const IFVG_BORDER_COLOR = 'rgba(168, 85, 247, 0.58)';
 
+export const BAND_LABEL_MIN_VISIBLE_HEIGHT_PX = 14;
+export const BAND_LABEL_TOP_PADDING_PX = 11;
+
+/**
+ * Clampeo vertical de la etiqueta `HVN`/`LVN` al viewport visible `[0, canvasHeight]`.
+ * Devuelve la coordenada baseline `y` dentro de la porción visible siempre que
+ * `clippedBottom - clippedTop >= 14` px; en caso contrario devuelve `null`.
+ */
+export function computeClippedBandLabelY(
+  yTop: number,
+  yBottom: number,
+  canvasHeight: number,
+): number | null {
+  if (
+    !Number.isFinite(yTop) ||
+    !Number.isFinite(yBottom) ||
+    !Number.isFinite(canvasHeight) ||
+    canvasHeight <= 0
+  ) {
+    return null;
+  }
+  const clippedTop = Math.max(Math.min(yTop, yBottom), 0);
+  const clippedBottom = Math.min(Math.max(yTop, yBottom), canvasHeight);
+  if (clippedBottom - clippedTop < BAND_LABEL_MIN_VISIBLE_HEIGHT_PX) {
+    return null;
+  }
+  return Math.min(clippedBottom - 3, clippedTop + BAND_LABEL_TOP_PADDING_PX);
+}
+
 export interface PanoramicBandsDrawState {
   readonly enabled: boolean;
   readonly tickSize: number | null;
@@ -177,7 +206,8 @@ export class PanoramicBandsPrimitive implements ISeriesPrimitive<Time> {
               const rawHeight = Math.abs(yLow - yHigh);
               const boxH = Math.max(3, rawHeight);
               const top = rawHeight < 3 ? rawTop - (3 - rawHeight) * 0.5 : rawTop;
-              if (top > height || top + boxH < 0) return;
+              const bottom = top + boxH;
+              if (top > height || bottom < 0) return;
 
               const isHvn = zone.kind === 'HVN';
               context.save();
@@ -192,15 +222,16 @@ export class PanoramicBandsPrimitive implements ISeriesPrimitive<Time> {
               context.beginPath();
               context.moveTo(0, top);
               context.lineTo(width, top);
-              context.moveTo(0, top + boxH);
-              context.lineTo(width, top + boxH);
+              context.moveTo(0, bottom);
+              context.lineTo(width, bottom);
               context.stroke();
 
-              if (boxH >= 10) {
-                context.fillStyle = isHvn ? 'rgba(56, 189, 248, 0.78)' : 'rgba(245, 158, 11, 0.82)';
+              const labelY = computeClippedBandLabelY(top, bottom, height);
+              if (labelY !== null) {
+                context.fillStyle = isHvn ? 'rgba(56, 189, 248, 0.85)' : 'rgba(245, 158, 11, 0.90)';
                 context.font = "9px 'Geist Mono', ui-monospace, SFMono-Regular, monospace";
                 const label = isHvn ? 'HVN' : zone.isPriceGap ? 'LVN · GAP' : 'LVN';
-                context.fillText(label, 6, Math.min(top + boxH - 2, top + 10));
+                context.fillText(label, 6, labelY);
               }
               context.restore();
             };

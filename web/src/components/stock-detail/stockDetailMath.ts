@@ -17,6 +17,7 @@ import {
   RTH_START_MINUTES,
   getMarketParts,
   isRth,
+  isRthFromParts,
 } from '../../../../src/core/sessions.js';
 import {
   findNearestBarIndex,
@@ -276,6 +277,77 @@ export function alignSessionVwapOverlayByTime(
     byTime.set(bar.time, value !== null && Number.isFinite(value) ? value : null);
   }
   return renderedBars.map((bar) => byTime.get(bar.time) ?? null);
+}
+
+export const SESSION_VWAP_BREAK_COLOR = 'rgba(0,0,0,0)';
+
+export interface SessionVwapLinePoint {
+  readonly time: number;
+  readonly value: number;
+  readonly color?: string;
+}
+
+/**
+ * Construye los puntos finitos del Session VWAP para `LineSeries` (`LineType.Simple`
+ * en lightweight-charts 5.3.0), cortando exclusivamente el segmento vertical de
+ * unión entre dos sesiones consecutivas sin insertar timestamps sintéticos.
+ *
+ * En LWC 5.3.0 (`walkLine`), el segmento `items[i - 1] -> items[i]` toma su estilo
+ * del punto `items[i - 1]`. Por eso se aplica `color: 'rgba(0,0,0,0)'` únicamente
+ * al último punto emitido de la sesión saliente (`k - 1`) cuando el siguiente punto
+ * emitido (`k`) pertenece a una sesión efectiva distinta:
+ *  - US (`market === 'US'`): coincide con el reinicio real de `sessionVwap.ts` al
+ *    ingresar a RTH de una fecha ET nueva (pre-market conserva la sesión previa).
+ *  - AR (`market === 'AR'`): coincide con `computeSessionVwapPure` (`floor((t + tz) / 86400)`).
+ */
+export function buildSessionVwapLinePoints(
+  bars: readonly MinimalOhlcvBar[],
+  values: readonly (number | null)[],
+  market: 'US' | 'AR',
+  arTzOffsetSec = -10_800,
+): readonly SessionVwapLinePoint[] {
+  const out: SessionVwapLinePoint[] = [];
+  let activeUsSessionKey: string | null = null;
+  let prevEmittedSessionKey: string | null = null;
+
+  for (let i = 0; i < bars.length; i += 1) {
+    const bar = bars[i];
+    if (bar === undefined || !Number.isFinite(bar.time)) continue;
+
+    let currentSessionKey: string;
+    if (market === 'US') {
+      const parts = getMarketParts(bar.time, 'EQUITY');
+      if (isRthFromParts(parts)) {
+        activeUsSessionKey = parts.dateKey;
+      }
+      currentSessionKey = activeUsSessionKey ?? '__PRE_FIRST_RTH__';
+    } else {
+      currentSessionKey = String(Math.floor((bar.time + arTzOffsetSec) / 86_400));
+    }
+
+    const value = values[i];
+    if (value == null || !Number.isFinite(value)) continue;
+
+    if (
+      out.length > 0 &&
+      prevEmittedSessionKey !== null &&
+      currentSessionKey !== prevEmittedSessionKey
+    ) {
+      const prevPoint = out[out.length - 1];
+      if (prevPoint !== undefined) {
+        out[out.length - 1] = {
+          time: prevPoint.time,
+          value: prevPoint.value,
+          color: SESSION_VWAP_BREAK_COLOR,
+        };
+      }
+    }
+
+    out.push({ time: bar.time, value });
+    prevEmittedSessionKey = currentSessionKey;
+  }
+
+  return out;
 }
 
 /** Calcula el timestamp UTC (00:00 UTC) del 3er viernes del mes dado `(year, month0)`. */

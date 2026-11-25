@@ -140,10 +140,24 @@ describe("S1-5 exact Decimal thresholds and explicit hysteresis states", () => {
       }
     expect(institutionalRepresentation({ ...base, firstBarTime: undefined })).toBe("HIDDEN");
     expect(institutionalRepresentation({ ...base, anchorTimeSec: 101 })).toBe("HIDDEN");
+    for (const intradayTf of ["1m", "5m", "15m", "1h"] as const) {
+      expect(institutionalRepresentation({ ...base, timeframe: intradayTf })).toBe("PROJECTION");
+      expect(
+        institutionalRepresentation({ ...base, timeframe: intradayTf, firstBarTime: 10 }),
+      ).toBe("TRAJECTORY");
+      expect(
+        institutionalRepresentation({
+          ...base,
+          timeframe: intradayTf,
+          legacyInRange: true,
+          visible: false,
+        }),
+      ).toBe("HIDDEN");
+    }
     expect(
       institutionalRepresentation({
         ...base,
-        timeframe: "15m",
+        timeframe: "4h",
         legacyInRange: true,
         visible: false,
       }),

@@ -10,6 +10,7 @@ export default tseslint.config(
       'tools/**',
       'web/**',
       'Sin título/**',
+      'research/**',
       'eslint.config.mjs',
     ],
   },

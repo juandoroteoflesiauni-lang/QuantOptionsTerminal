@@ -503,7 +503,12 @@ export function institutionalRepresentation(input: {
   readonly visible: boolean;
   readonly legacyInRange: boolean;
 }): "HIDDEN" | "TRAJECTORY" | "PROJECTION" {
-  if (input.timeframe !== "1m" && input.timeframe !== "5m")
+  if (
+    input.timeframe !== "1m" &&
+    input.timeframe !== "5m" &&
+    input.timeframe !== "15m" &&
+    input.timeframe !== "1h"
+  )
     return input.legacyInRange ? "TRAJECTORY" : "HIDDEN";
   if (
     input.firstBarTime === undefined ||

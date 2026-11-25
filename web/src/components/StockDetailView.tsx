@@ -111,6 +111,7 @@ import {
   type AvwapAnchorCoverage,
   type MinimalOhlcvBar,
   alignSessionVwapOverlayByTime,
+  buildSessionVwapLinePoints,
   computeAnchoredVwapWithAnchor,
   computeEmaSeriesPure,
   computeExpectedMoveBounds,
@@ -2201,7 +2202,7 @@ export const StockDetailView: React.FC<{
             <select aria-label="Opening Range" value={openingRange} onChange={e=>setOpeningRange(Number(e.target.value) as OpeningRangeMinutes)} className="h-6 bg-[#111118] text-[11px] tabular-nums">
               {[5,15,30].map(m=><option key={m} value={m}>OR {m}m</option>)}
             </select>
-            {isAutoAvwapMode && (effectiveChartTimeframe==='1m'||effectiveChartTimeframe==='5m') && <select aria-label="Proximidad Auto-AVWAP" value={proximityMode} onChange={e=>setProximityMode(e.target.value as AutoAvwapProximityMode)} className="h-6 bg-[#111118] text-[11px] tabular-nums">
+            {isAutoAvwapMode && (effectiveChartTimeframe==='1m'||effectiveChartTimeframe==='5m'||effectiveChartTimeframe==='15m'||effectiveChartTimeframe==='1h') && <select aria-label="Proximidad Auto-AVWAP" value={proximityMode} onChange={e=>setProximityMode(e.target.value as AutoAvwapProximityMode)} className="h-6 bg-[#111118] text-[11px] tabular-nums">
               <option value="PCT_1_5">±1,5%</option><option value="ATR_1_5">±1,5 ATR diario</option><option value="SHOW_ALL">Mostrar todos</option>
             </select>}
             <ToolbarChip active={overlays.optionWalls} label="Walls" onClick={() => handleToggleOverlay('optionWalls')} />
@@ -2692,8 +2693,10 @@ const PanoramicPriceChart: React.FC<{
           Number.isFinite(pt.close)
         ) {
           legendEl.textContent = `O ${fmtNum(pt.open ?? Number.NaN, 2)}  H ${fmtNum(pt.high ?? Number.NaN, 2)}  L ${fmtNum(pt.low ?? Number.NaN, 2)}  C ${fmtNum(pt.close, 2)}`;
+          legendEl.hidden = false;
         } else {
           legendEl.textContent = '';
+          legendEl.hidden = true;
         }
       }
       if (param.time !== undefined && typeof param.time === 'number') {
@@ -2844,12 +2847,18 @@ const PanoramicPriceChart: React.FC<{
     );
 
     const toLineData = (values: readonly (number | null)[]) =>
-      bundle.bars
-        .map((bar, index) => {
-          const value = values[index];
-          return value != null && Number.isFinite(value) ? { time: bar.time as UTCTimestamp, value } : null;
-        })
-        .filter((point): point is { time: UTCTimestamp; value: number } => point !== null);
+      values === bundle.sessionVwap && values.length > 0
+        ? buildSessionVwapLinePoints(bundle.bars, values, market).map((point) =>
+            point.color !== undefined
+              ? { time: point.time as UTCTimestamp, value: point.value, color: point.color }
+              : { time: point.time as UTCTimestamp, value: point.value },
+          )
+        : bundle.bars
+            .map((bar, index) => {
+              const value = values[index];
+              return value != null && Number.isFinite(value) ? { time: bar.time as UTCTimestamp, value } : null;
+            })
+            .filter((point): point is { time: UTCTimestamp; value: number } => point !== null);
 
     const maValues=bundle.movingAverages?.values;
     emaRefs.current[0]?.setData(toLineData(maValues!==undefined&&maPreset.fastType==='VWMA'?maValues.vwma9:bundle.ema9));
@@ -3251,7 +3260,7 @@ const PanoramicPriceChart: React.FC<{
         apply(id, sessionLevelsEnabled && bundle.barsAvailable && level?.status !== 'UNAVAILABLE',
           level?.value ?? null, `${id.toUpperCase()}${level?.status==='PROVISIONAL'?' (prov)':''}`,level?.status==='PROVISIONAL');
       }
-      const intraday = timeframe==='1m'||timeframe==='5m';
+      const intraday = timeframe==='1m'||timeframe==='5m'||timeframe==='15m'||timeframe==='1h';
       const markers: SeriesMarker<Time>[] = [];
       const timezone=market==='US'?'America/New_York':'America/Argentina/Buenos_Aires';
       const filtered = filterAutoAvwapByProximity({levels:bundle.autoAvwapLines,symbol:ticker,context:`${timeframe}:${String(session?.sessionDate)}:${String(bundle.monthStartCanonicalAvwap?.adjSig)}`,
@@ -3592,14 +3601,15 @@ const PanoramicPriceChart: React.FC<{
   return (
     <div className="relative h-[72vh] min-h-[560px] w-full">
       <div ref={containerRef} className="h-full w-full" />
-      <span ref={maLegendRef} hidden={!overlays.emas} className="pointer-events-none absolute left-3 top-8 text-[11px] tabular-nums text-[#CBD5E1]" />
+      <span ref={maLegendRef} hidden={!overlays.emas} className="pointer-events-none absolute left-3 top-8 text-[11px] tabular-nums text-[#CBD5E1] empty:hidden" />
       {maPreset.mtfEma20&&timeframe==='1m'&&<span ref={mtfLegendRef} className="pointer-events-none absolute left-3 top-14 text-[11px] tabular-nums text-[#E879F9]">5m EMA20 (prov) {bundle.ema20_5m?.provisional===null||bundle.ema20_5m?.provisional===undefined?'—':fmtNum(bundle.ema20_5m.provisional,6)} · {bundle.ema20_5m?.status??'UNAVAILABLE'}</span>}
 
       <span ref={proximityBadgeRef} hidden className="absolute right-3 top-7 text-[11px] text-[#E5B567]">ATR n/d</span>
       <span ref={canonicalCoverageRef} hidden className="pointer-events-none absolute right-3 top-2 text-[11px] text-[#E5B567]">AVWAP parcial</span>
       <div
         ref={crosshairLegendRef}
-        className="pointer-events-none absolute left-3 top-2 z-20 rounded bg-[#08080D]/85 px-2 py-0.5 font-mono-num tabular-nums text-[11px] text-[#CBD5E1]"
+        hidden
+        className="pointer-events-none absolute left-3 top-2 z-20 rounded bg-[#08080D]/85 px-2 py-0.5 font-mono-num tabular-nums text-[11px] text-[#CBD5E1] empty:hidden"
       />
       {!bundle.barsAvailable && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#08080D]/90 px-6 text-center">
