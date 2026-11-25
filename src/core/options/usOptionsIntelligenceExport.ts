@@ -11,6 +11,7 @@
  */
 
 import { calculateAnchoredVwap } from '../avwap.js';
+import { toInstitutionalAvwapMarkdownInput } from '../avwap/index.js';
 import { calculateEma } from '../ema.js';
 import { computeSessionVwap } from '../sessionVwap.js';
 import {
@@ -1642,6 +1643,12 @@ export function buildUsOptionsIntelligenceSnapshot(
     `${ticker}|${request.mode}|${expDatesSelected.join(',')}|${String(valuationSpot)}`,
   )}`;
 
+  const institutionalAvwapContext =
+    input.institutionalAvwapContext === null
+      ? undefined
+      : (input.institutionalAvwapContext ??
+        toInstitutionalAvwapMarkdownInput(usSnapshot.institutionalAvwapContext, barsTimeframe));
+
   return {
     schemaVersion: US_OPTIONS_EXPORT_SCHEMA_VERSION,
     snapshotId,
@@ -1747,6 +1754,7 @@ export function buildUsOptionsIntelligenceSnapshot(
         isApproximation: true,
         label: 'CVD aprox. (CLV sobre barras OHLCV — no cinta real de órdenes)',
       },
+      ...(institutionalAvwapContext !== undefined ? { institutionalAvwapContext } : {}),
     },
     flowGlobal,
     flowByExpiry,

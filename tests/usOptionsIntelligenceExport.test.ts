@@ -25,6 +25,11 @@ import {
   validateSnapshotIntegrity,
 } from '../src/core/options/usOptionsIntelligenceExport.js';
 import { renderUsOptionsSnapshotMarkdown } from '../src/core/options/usOptionsSnapshotMarkdown.js';
+import {
+  DEFAULT_AVWAP_CONTEXT_POLICY,
+  type InstitutionalAvwapAnchor,
+  type UsOptionsAvwapContextExportPayload,
+} from '../src/core/avwap/index.js';
 import type {
   ExportUsOptionContractRowDto,
   ExportUsOptionsSnapshotRequest,
@@ -1286,5 +1291,395 @@ describe('US Options Intelligence Export Engine (Pieza EXPORT-1)', () => {
     expect(html).toContain('tabular-nums');
     expect(html).toContain('font-mono-num');
     expect(html).not.toMatch(/backdrop-blur-|animate-pulse|animate-ping/);
+  });
+
+  it('8. Retrocompatibilidad Institutional AVWAP Context: cuando es undefined/null omite la sección sin alterar el snapshot', () => {
+    const asOf = SUMMER_RTH_UTC_SEC;
+    const frontExp = makeExpiryIso(asOf, 1);
+    const swingExp1 = makeExpiryIso(asOf, 8);
+    const swingExp2 = makeExpiryIso(asOf, 15);
+    const snap = makeRichUsSnapshot({
+      asOfUtcSec: asOf,
+      frontExp,
+      swingExp1,
+      swingExp2,
+      spot: 585.4,
+      netGex: 120_000_000,
+      zeroGammaSpot: 579,
+      putWallStrike: 575,
+      callWallStrike: 595,
+    });
+
+    const rawBase: RawUsOptionsSnapshotInput = {
+      request: {
+        ticker: 'SPY',
+        expirations: [swingExp1],
+        mode: 'swing',
+        format: 'markdown',
+        includeCharts: false,
+      },
+      capturedAtUtcSec: asOf,
+      usSnapshot: snap,
+      expiries: [
+        {
+          expirationDate: swingExp1,
+          daysToExpiry: 8,
+          expiryUtcSec: asOf + 8 * 86_400,
+          contracts: buildRichChainForExpiry(swingExp1, 8, asOf, 585.4),
+          exposureSummary: snap.exposureSummary ?? null,
+          volAnalyticsExpiry: null,
+          volSlice: snap.volSurfaceSummary?.slices?.[1] ?? null,
+          sourceKind: 'SNAPSHOT_PRELOADED',
+        },
+      ],
+      barsResponse: null,
+      barsTimeframe: '1h',
+      barsAsOfUtcSec: asOf - 30,
+      usVolSurface: null,
+      liveSpotQuote: null,
+      additionalRequestsCount: 0,
+    };
+
+    const builtUndef = buildUsOptionsIntelligenceSnapshot(rawBase);
+    expect(builtUndef.technical.institutionalAvwapContext).toBeUndefined();
+    const mdUndef = renderUsOptionsSnapshotMarkdown(
+      filterSnapshotByMode(builtUndef),
+      validateSnapshotIntegrity(builtUndef),
+    );
+    expect(mdUndef.markdown).not.toContain('### Institutional AVWAP Context');
+    expect(() => {
+      assertNoSecretsInExportText(mdUndef.markdown);
+    }).not.toThrow();
+
+    const builtNull = buildUsOptionsIntelligenceSnapshot({
+      ...rawBase,
+      institutionalAvwapContext: null,
+    });
+    expect(builtNull.technical.institutionalAvwapContext).toBeUndefined();
+    const mdNull = renderUsOptionsSnapshotMarkdown(
+      filterSnapshotByMode(builtNull),
+      validateSnapshotIntegrity(builtNull),
+    );
+    expect(mdNull.markdown).toBe(mdUndef.markdown);
+  });
+
+  it('9. Integración Institutional AVWAP Context: propaga payload activo y DTO de snapshot sin bloquear si viene null', async () => {
+    const cacheSpec: string = '../web/src/data/usBarsMemoryCache.js';
+    const collectorSpec: string = '../web/src/components/options/export/usOptionsSnapshotCollector.js';
+    const {
+      clearUsBarsMemoryCache,
+      getUsBarsMemoryEntry,
+      setUsBarsMemoryEntry,
+    } = (await import(/* @vite-ignore */ cacheSpec)) as {
+      clearUsBarsMemoryCache: () => void;
+      getUsBarsMemoryEntry: TestCollectorDependencies['getBarsEntry'];
+      setUsBarsMemoryEntry: TestCollectorDependencies['setBarsEntry'];
+    };
+    const { exportUsOptionsSnapshot } = (await import(/* @vite-ignore */ collectorSpec)) as {
+      exportUsOptionsSnapshot: (
+        request: ExportUsOptionsSnapshotRequest,
+        signal: AbortSignal | undefined,
+        deps: TestCollectorDependencies,
+      ) => Promise<SnapshotExportResult>;
+    };
+
+    const asOf = SUMMER_RTH_UTC_SEC;
+    const frontExp = makeExpiryIso(asOf, 1);
+    const swingExp1 = makeExpiryIso(asOf, 8);
+    const swingExp2 = makeExpiryIso(asOf, 15);
+    const snap = makeRichUsSnapshot({
+      asOfUtcSec: asOf,
+      frontExp,
+      swingExp1,
+      swingExp2,
+      spot: 585.4,
+      netGex: -600_000,
+      zeroGammaSpot: 586,
+      putWallStrike: 575,
+      callWallStrike: 595,
+    });
+
+    const anchor: InstitutionalAvwapAnchor = {
+      anchorId: 'SPY:EARNINGS_BLOWOUT:1740000000',
+      symbol: 'SPY',
+      role: 'INSTITUTIONAL_CONTEXT_ONLY',
+      family: 'EARNINGS_BLOWOUT',
+      policyTier: 'EVENT_AND_STRUCTURAL_CONTEXT',
+      empiricalGateStatus: 'TIER_2_CONTEXT_ONLY',
+      polarity: 'LONG',
+      anchorTimeSec: asOf - 10 * 86_400,
+      activatedTimeSec: asOf - 9 * 86_400,
+      availableAtUtcSec: asOf - 9 * 86_400,
+      lifecycleState: 'ACTIVE_PRIMARY',
+      visibleOnChart: true,
+      pinchPartnerId: null,
+      moments: {
+        count: 10,
+        cumWeight: 1_000_000,
+        mean: 582.35,
+        m2: 18_500_000,
+        varianceSource: 'PEBAY_EXACT_1M',
+      },
+      bands: {
+        avwapMu: 582.35,
+        welfordSd: 4.3,
+        sigmaOratsPath: 0.24,
+        expectedMove1d: 8.8,
+        alpha: 0.45,
+        sigmaHybrid: 6.1,
+        bandSource: 'HYBRID_ORATS_WELFORD',
+        upper1: 588.45,
+        lower1: 576.25,
+        upper2: 594.55,
+        lower2: 570.15,
+        upper2_5: 597.6,
+        lower2_5: 567.1,
+      },
+      iass: {
+        configVersion: 'test-v1',
+        family: 'EARNINGS_BLOWOUT',
+        polarity: 'LONG',
+        dataCoverage: 1.0,
+        prior: 50,
+        componentCoverage: { M: 1, D: 1, F: 1, S: 1 },
+        scoreRenormalized: 84.5,
+        scoreConservative: 84.5,
+        pillarScores: { M: 85, D: 80, F: 88, S: 85 },
+        componentScores: {},
+        tier: 'TIER_1',
+        status: 'OK',
+        degradationReasons: [],
+        featureAsof: asOf,
+      },
+      confluence: {
+        role: 'INSTITUTIONAL_CONTEXT_ONLY',
+        bounceConfluenceScore: 31.2,
+        breakoutConfluenceScore: 78.6,
+        netGexNormalizedG: -0.54,
+        g0DollarVolScale: 1_000_000,
+        gammaRegime: 'NEGATIVE_GAMMA',
+        volRegime: 'HIGH_VOL_TREND',
+        meanReversionContextActive: false,
+        alignedLevels: [],
+        spatialKernels: {
+          callWall: 595,
+          putWall: 575,
+          zeroGamma: 586,
+          vpPoc: 583,
+          vpVah: 590,
+          vpVal: 578,
+          vpHvnMax: 583,
+          vpLvnMax: 580,
+        },
+        hazardFlags: ['SHORT_GAMMA_BOUNCE_HAZARD'],
+        flags: ['SHORT_GAMMA_BOUNCE_HAZARD', 'NO_ORATS_COVERAGE'],
+        bounceMultiplier: 0.5,
+        breakoutMultiplier: 1.3,
+      },
+      distanceToSpotAtr: 0.42,
+      degradationFlags: ['SHORT_GAMMA_BOUNCE_HAZARD', 'NO_ORATS_COVERAGE'],
+    };
+
+    const payload: UsOptionsAvwapContextExportPayload = {
+      role: 'INSTITUTIONAL_CONTEXT_ONLY',
+      policyVersion: DEFAULT_AVWAP_CONTEXT_POLICY.policyVersion,
+      timeframe: '15m',
+      activeAnchors: [anchor],
+      opexResetMarkerDates: [],
+      degradationFlags: ['SHORT_GAMMA_BOUNCE_HAZARD', 'NO_ORATS_COVERAGE'],
+    };
+
+    const rawWithPayload: RawUsOptionsSnapshotInput = {
+      request: {
+        ticker: 'SPY',
+        expirations: [swingExp1],
+        mode: 'swing',
+        format: 'markdown',
+        includeCharts: false,
+      },
+      capturedAtUtcSec: asOf,
+      usSnapshot: snap,
+      expiries: [
+        {
+          expirationDate: swingExp1,
+          daysToExpiry: 8,
+          expiryUtcSec: asOf + 8 * 86_400,
+          contracts: buildRichChainForExpiry(swingExp1, 8, asOf, 585.4),
+          exposureSummary: snap.exposureSummary ?? null,
+          volAnalyticsExpiry: null,
+          volSlice: snap.volSurfaceSummary?.slices?.[1] ?? null,
+          sourceKind: 'SNAPSHOT_PRELOADED',
+        },
+      ],
+      barsResponse: null,
+      barsTimeframe: '15m',
+      barsAsOfUtcSec: asOf - 30,
+      usVolSurface: null,
+      liveSpotQuote: null,
+      additionalRequestsCount: 0,
+      institutionalAvwapContext: payload,
+    };
+
+    const built = buildUsOptionsIntelligenceSnapshot(rawWithPayload);
+    const integrity = validateSnapshotIntegrity(built);
+    expect(integrity.valid).toBe(true);
+    const md = renderUsOptionsSnapshotMarkdown(filterSnapshotByMode(built), integrity);
+    expect(md.markdown).toContain('### Institutional AVWAP Context');
+    expect(md.markdown).toContain('Context Only');
+    expect(md.markdown).toContain('NEGATIVE_GAMMA');
+    expect(md.markdown).toContain('HIGH_VOL_TREND');
+    expect(md.markdown).toContain('SHORT_GAMMA_BOUNCE_HAZARD');
+    expect(md.markdown).toContain('SPY:EARNINGS_BLOWOUT:1740000000');
+    expect(md.markdown).toContain('Bounce `31.2` vs Breakout `78.6`');
+    expect(md.markdown).toContain('Degradation Flags:');
+    expect(md.markdown).toContain('NO_ORATS_COVERAGE');
+
+    clearUsBarsMemoryCache();
+    setUsBarsMemoryEntry('SPY', '1h', {
+      status: 'OK',
+      symbol: 'SPY',
+      timeframe: '1h',
+      barSeconds: 3600,
+      rthOnly: true,
+      asOfUtcSec: asOf - 30,
+      visibleStartIndex: 0,
+      bars: Array.from({ length: 60 }, (_, idx) => ({
+        time: asOf - (60 - idx) * 3600,
+        open: 580 + idx * 0.05,
+        high: 581 + idx * 0.05,
+        low: 579.5 + idx * 0.05,
+        close: 580.5 + idx * 0.05,
+        volume: 150_000,
+      })),
+      formingBar: null,
+      overlays: {
+        ema21: [],
+        sma50: [],
+        sma200: [],
+        hma55: [],
+        sessionVwap: [],
+        sessionVwapSupported: false,
+        avwap: [],
+      },
+      subPanes: {
+        rsi14: [],
+        sessionCvd: [],
+        deltaMode: 'CLV',
+      },
+    }, asOf);
+
+    const dtoSnap: ExportUsSnapshotInputDto = {
+      ...snap,
+      institutionalAvwapContext: {
+        role: 'INSTITUTIONAL_CONTEXT_ONLY',
+        bounceConfluenceScore: 68.4,
+        breakoutConfluenceScore: 42.1,
+        netGexNormalizedG: 0.45,
+        g0DollarVolScale: 1_000_000,
+        gammaRegime: 'POSITIVE_GAMMA',
+        volRegime: 'MID_VOL',
+        meanReversionContextActive: true,
+        alignedLevels: [],
+        spatialKernels: {
+          callWall: 595,
+          putWall: 575,
+          zeroGamma: 585,
+          vpPoc: 584,
+          vpVah: 590,
+          vpVal: 578,
+          vpHvnMax: null,
+          vpLvnMax: null,
+        },
+        hazardFlags: [],
+        flags: ['ORATS_OI_FALLBACK_MASSIVE'],
+        bounceMultiplier: 1.2,
+        breakoutMultiplier: 0.9,
+      },
+    };
+    const depsWithAvwap: TestCollectorDependencies = {
+      getMarketSnapshot: () => ({
+        usSnapshotsBySymbol: { SPY: dtoSnap },
+        optionsCatalystsBySymbol: snap.catalysts ? { SPY: snap.catalysts } : {},
+        optionsCatalystsStatusBySymbol: { SPY: 'OK' },
+        usVolSurfaceBySymbol: {},
+      }),
+      getOptionsSlice: () => ({
+        options: {
+          asOfUtcSec: asOf,
+          feedStatus: 'LIVE',
+          underlying: 'SPY',
+          market: 'US',
+          spot: 585.4,
+          rateTna: null,
+          continuousRate: 0.045,
+          dividendYield: 0.012,
+          lotSize: 100,
+          settlement: 'T+0',
+          exerciseCutoffArt: '15:30 ART',
+          realizedVol20d: 18,
+          realizedVol60d: 17.5,
+          histMedianIv: 21,
+          vrpSpread: 3,
+          historicalCloses: [],
+          termStructure: [],
+          expiries: [
+            {
+              expiryCode: swingExp1,
+              expiryLabel: swingExp1,
+              expirationDate: swingExp1,
+              expiryUtcSec: asOf + 8 * 86_400,
+              days: 8,
+              ivAtm: 0.218,
+              riskReversal25: 0.052,
+              butterfly25: 0.009,
+              butterflyArbitrageFree: true,
+              strikes: [],
+              calls: [],
+              puts: [],
+              loaded: true,
+            },
+          ],
+          exposureSummary: null,
+          costSchedule: { rvMarketFeeRate: 0, optionsFeeRate: 0, shortLoanFeeRate: 0, vatRate: 0, bondsVatExempt: true },
+          providerErrors: [],
+        },
+        expiryGroups: [],
+        loadingExpiries: {},
+      }),
+      getAtomicQuote: () => null,
+      getBarsEntry: getUsBarsMemoryEntry,
+      setBarsEntry: setUsBarsMemoryEntry,
+      fetchUsSnapshot: () => Promise.resolve(snap),
+      fetchUsOptionExpiry: () => Promise.resolve(undefined),
+      fetchTerminalBars: () => Promise.resolve(null),
+      fetchOptionsCatalysts: () => Promise.resolve(undefined),
+      nowMs: () => asOf * 1_000,
+    };
+
+    const collected = await exportUsOptionsSnapshot(
+      { ticker: 'SPY', expirations: [swingExp1], mode: 'swing', format: 'markdown', includeCharts: false },
+      undefined,
+      depsWithAvwap,
+    );
+    expect(collected.markdown).toContain('### Institutional AVWAP Context');
+    expect(collected.markdown).toContain('POSITIVE_GAMMA');
+    expect(collected.markdown).toContain('Bounce `68.4` vs Breakout `42.1`');
+    expect(collected.markdown).toContain('ORATS_OI_FALLBACK_MASSIVE');
+
+    const collectedNull = await exportUsOptionsSnapshot(
+      { ticker: 'SPY', expirations: [swingExp1], mode: 'swing', format: 'markdown', includeCharts: false },
+      undefined,
+      {
+        ...depsWithAvwap,
+        getMarketSnapshot: () => ({
+          usSnapshotsBySymbol: { SPY: { ...snap, institutionalAvwapContext: null } },
+          optionsCatalystsBySymbol: snap.catalysts ? { SPY: snap.catalysts } : {},
+          optionsCatalystsStatusBySymbol: { SPY: 'OK' },
+          usVolSurfaceBySymbol: {},
+        }),
+      },
+    );
+    expect(collectedNull.integrity.valid).toBe(true);
+    expect(collectedNull.markdown).not.toContain('### Institutional AVWAP Context');
   });
 });

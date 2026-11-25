@@ -23,6 +23,7 @@ import type {
   SnapshotExportResult,
   UsVolAnalyticsExpiryRef,
 } from '../../../../../src/core/options/usOptionsIntelligenceExportTypes.js';
+import { toInstitutionalAvwapMarkdownInput } from '../../../../../src/core/avwap/index.js';
 import { calendarDteEt, etExpiryUtcSecFromDate } from '../../../../../src/core/options/zeroDteFixes.js';
 import { getAtomicMarketQuote } from '../../../api/useMarketLiveStream.js';
 import {
@@ -370,6 +371,11 @@ export async function collectSnapshotData(
     });
   }
 
+  const institutionalAvwapContext = toInstitutionalAvwapMarkdownInput(
+    frozenSnap.institutionalAvwapContext,
+    barsTimeframe,
+  );
+
   return {
     request,
     capturedAtUtcSec,
@@ -390,6 +396,7 @@ export async function collectSnapshotData(
         }
       : null,
     additionalRequestsCount,
+    ...(institutionalAvwapContext !== undefined ? { institutionalAvwapContext } : {}),
   };
 }
 

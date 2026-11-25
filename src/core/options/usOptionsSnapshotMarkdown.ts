@@ -9,6 +9,7 @@
  * - Ejecuta `assertNoSecretsInExportText()` antes de devolver.
  */
 
+import { renderInstitutionalAvwapContextMarkdown } from '../avwap/index.js';
 import { assertNoSecretsInExportText } from './usOptionsIntelligenceExport.js';
 import {
   PRECISION_POLICY,
@@ -135,6 +136,11 @@ export function renderUsOptionsSnapshotMarkdown(
   lines.push(`- Opening Range (Initial Balance 09:30–10:30 ET): IBH=${fmtUsd(tech.keyLevels.ibh)} | IBL=${fmtUsd(tech.keyLevels.ibl)} | Ancho=${fmtUsd(tech.keyLevels.ibWidth)} | Clasificación=${escapeMarkdownCell(tech.keyLevels.ibClassification)} (ORB 5m/15m separado: N/D no implementado)`);
   lines.push(`- FVG / IFVG activos: FVG=[${tech.activeFvgs.length > 0 ? tech.activeFvgs.map((f) => `${f.type === 'BULLISH_FVG' ? 'Bull' : 'Bear'} ${fmtNum(f.gapLow, 2)}-${fmtNum(f.gapHigh, 2)} USD (CE ${fmtNum(f.consequentEncroachment, 2)}, ${fmtPct(f.distanceSpotPct, true)})`).join(' | ') : 'Ninguno activo'}] | IFVG: N/D (no implementado) | Liquidity Sweeps: N/D (no implementado)`);
   lines.push(`- CVD aproximado (CLV): ${fmtNum(tech.cvdApprox.value, 0, true)} acc. (${tech.cvdApprox.bias} · ${escapeMarkdownCell(tech.cvdApprox.label)})`);
+  const avwapContextMd = renderInstitutionalAvwapContextMarkdown(tech.institutionalAvwapContext);
+  if (avwapContextMd !== '') {
+    lines.push('');
+    lines.push(avwapContextMd);
+  }
   lines.push('');
 
   // ## 2. Flujo y régimen GEX

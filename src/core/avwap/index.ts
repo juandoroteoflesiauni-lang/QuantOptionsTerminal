@@ -6,3 +6,4 @@ export * from './liveO1.js';
 export * from './iass.js';
 export * from './lifecycle.js';
 export * from './confluence.js';
+export * from './markdownExport.js';

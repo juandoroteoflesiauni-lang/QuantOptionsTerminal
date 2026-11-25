@@ -9,6 +9,7 @@ import type {
   UsTerminalBarsResponseDto,
   UsVolSurfaceResponseDto,
 } from '../../../web/src/data/liveTypes.js';
+import type { InstitutionalAvwapMarkdownInput } from '../avwap/index.js';
 import type { CatalystWindowResult } from './catalysts.js';
 import type { LiquiditySemaphore } from './verticalSpreads.js';
 
@@ -409,6 +410,7 @@ export interface RawUsOptionsSnapshotInput {
     readonly sessionPhase?: string | null;
   } | null;
   readonly additionalRequestsCount: number;
+  readonly institutionalAvwapContext?: InstitutionalAvwapMarkdownInput | null;
 }
 
 export interface ExportAvwapReference {
@@ -743,6 +745,7 @@ export interface UsOptionsIntelligenceSnapshotV1 {
       readonly isApproximation: true;
       readonly label: string;
     };
+    readonly institutionalAvwapContext?: InstitutionalAvwapMarkdownInput | null;
   };
   readonly flowGlobal: ExportFlowSummaryBlock;
   readonly flowByExpiry: Readonly<Record<string, ExportFlowSummaryBlock>>;
