@@ -449,7 +449,7 @@ export const SyncedLowerPaneChart: React.FC<{
   }, [bundle, ticker, timeframe, mode, flowPoints, rsPoints, rollingRvSeries]);
 
   const modes: readonly { readonly id: LowerPaneMode; readonly label: string }[] = [
-    { id: 'CVD', label: 'CVD Lee-Ready (Flujo Agresor)' },
+    { id: 'CVD', label: 'CVD aprox. (CLV)' },
     {
       id: 'RS',
       label: market === 'AR' ? 'Fuerza Relativa (vs. SPY CEDEAR)' : 'Fuerza Relativa (RS vs. SPY)',
@@ -481,6 +481,12 @@ export const SyncedLowerPaneChart: React.FC<{
         <div className="flex flex-wrap items-center gap-4 font-mono-num text-[11px]">
           {mode === 'CVD' && (
             <>
+              <span
+                title="Estimado por barra OHLCV (volumen × CLV). No es cinta tick a tick: el modo cambia a TICK_TAPE solo cuando haya cinta real activa."
+                className="rounded border border-[#2A2A3B] bg-[#161622] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[#8E95B3]"
+              >
+                CLV · Barras
+              </span>
               <span className="text-[#2EDC7E]">
                 Comprador:{' '}
                 {latestFlow && Number.isFinite(latestFlow.buyerPct)

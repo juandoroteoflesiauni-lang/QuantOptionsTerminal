@@ -67,6 +67,13 @@ export function mapSerializedContractRowToArContract(
     extrinsic: mark !== null ? Math.max(0, mark - intrinsic) : null,
     previousClose: r.previousClose ?? null,
     changePct: r.changePct ?? null,
+    ...(r.contractRoot !== undefined ? { contractRoot: r.contractRoot } : {}),
+    ...(r.exerciseStyle !== undefined ? { exerciseStyle: r.exerciseStyle } : {}),
+    ...(r.settlementType !== undefined ? { settlementType: r.settlementType } : {}),
+    ...(r.valuationModel !== undefined ? { valuationModel: r.valuationModel } : {}),
+    ...(r.ivQualityStatus !== undefined ? { ivQualityStatus: r.ivQualityStatus } : {}),
+    ...(r.quoteQuality !== undefined ? { quoteQuality: r.quoteQuality } : {}),
+    quoteAsOfUtcSec: r.quoteTimestampUtcSec ?? null,
     source: 'DATA912' as const,
   };
 }

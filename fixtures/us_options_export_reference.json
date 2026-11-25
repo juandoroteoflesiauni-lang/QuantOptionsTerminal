@@ -1,0 +1,414 @@
+{
+  "schema": "us_options_export_reference_v1",
+  "scalarsInput": {
+    "spot": 585.4,
+    "atr14": 7.25,
+    "dayHigh": 588.1,
+    "dayLow": 582.3,
+    "ivAtmPct": 21.6,
+    "rv20Pct": 18.0,
+    "rv23Pct": 17.4,
+    "iv25PutPct": 24.85,
+    "iv25CallPct": 19.15
+  },
+  "scalarsExpected": {
+    "atrTravelledPct": 80.0,
+    "ivRv20Ratio": 1.2,
+    "vrpVolDiffPts": 4.2,
+    "skew25PutMinusCallPts": 5.7
+  },
+  "contractsInput": [
+    {
+      "ticker": "O:SPY261204C00580000",
+      "contractType": "call",
+      "strike": 580.0,
+      "bid": 7.1,
+      "ask": 7.4,
+      "lastPrice": 7.25,
+      "volume": 1200,
+      "openInterest": 4500,
+      "delta": 0.68,
+      "quoteQuality": "LIVE_VALID"
+    },
+    {
+      "ticker": "O:SPY261204C00585000",
+      "contractType": "call",
+      "strike": 585.0,
+      "bid": 3.55,
+      "ask": 3.65,
+      "lastPrice": 3.6,
+      "volume": 3400,
+      "openInterest": 0,
+      "delta": 0.52,
+      "quoteQuality": "LIVE_VALID"
+    },
+    {
+      "ticker": "O:SPY261204C00595000",
+      "contractType": "call",
+      "strike": 595.0,
+      "bid": 0.42,
+      "ask": 0.48,
+      "lastPrice": 0.45,
+      "volume": 890,
+      "openInterest": null,
+      "delta": 0.19,
+      "quoteQuality": "LIVE_VALID"
+    },
+    {
+      "ticker": "O:SPY261204P00585000",
+      "contractType": "put",
+      "strike": 585.0,
+      "bid": 3.1,
+      "ask": 3.3,
+      "lastPrice": 3.2,
+      "volume": 2100,
+      "openInterest": 5200,
+      "delta": -0.48,
+      "quoteQuality": "LIVE_VALID"
+    },
+    {
+      "ticker": "O:SPY261204P00575000",
+      "contractType": "put",
+      "strike": 575.0,
+      "bid": 0.85,
+      "ask": 0.91,
+      "lastPrice": 0.88,
+      "volume": 1500,
+      "openInterest": 8000,
+      "delta": -0.22,
+      "quoteQuality": "LIVE_VALID"
+    },
+    {
+      "ticker": "O:SPY261204P00570000",
+      "contractType": "put",
+      "strike": 570.0,
+      "bid": 1.2,
+      "ask": 1.1,
+      "lastPrice": 1.15,
+      "volume": 100,
+      "openInterest": 900,
+      "delta": -0.15,
+      "quoteQuality": "LIVE_VALID"
+    },
+    {
+      "ticker": "O:SPY261204C00600000",
+      "contractType": "call",
+      "strike": 600.0,
+      "bid": null,
+      "ask": 0.25,
+      "lastPrice": 0.2,
+      "volume": 50,
+      "openInterest": 300,
+      "delta": 0.08,
+      "quoteQuality": "MISSING_BBO"
+    }
+  ],
+  "contractsExpected": [
+    {
+      "ticker": "O:SPY261204C00580000",
+      "contractType": "call",
+      "strike": 580.0,
+      "validBook": true,
+      "bid": 7.1,
+      "ask": 7.4,
+      "mid": 7.25,
+      "spreadUsd": 0.3,
+      "spreadPct": 4.137931034482759,
+      "intrinsic": 5.4,
+      "timeValue": 1.85,
+      "distanceSpotPct": -0.9224461906388794,
+      "moneynessClass": "ITM",
+      "openInterestKnown": true
+    },
+    {
+      "ticker": "O:SPY261204C00585000",
+      "contractType": "call",
+      "strike": 585.0,
+      "validBook": true,
+      "bid": 3.55,
+      "ask": 3.65,
+      "mid": 3.6,
+      "spreadUsd": 0.1,
+      "spreadPct": 2.7777777777777777,
+      "intrinsic": 0.4,
+      "timeValue": 3.2,
+      "distanceSpotPct": -0.0683293474547318,
+      "moneynessClass": "ATM",
+      "openInterestKnown": true
+    },
+    {
+      "ticker": "O:SPY261204C00595000",
+      "contractType": "call",
+      "strike": 595.0,
+      "validBook": true,
+      "bid": 0.42,
+      "ask": 0.48,
+      "mid": 0.45,
+      "spreadUsd": 0.06,
+      "spreadPct": 13.333333333333334,
+      "intrinsic": 0.0,
+      "timeValue": 0.45,
+      "distanceSpotPct": 1.6399043389135635,
+      "moneynessClass": "OTM",
+      "openInterestKnown": false
+    },
+    {
+      "ticker": "O:SPY261204P00585000",
+      "contractType": "put",
+      "strike": 585.0,
+      "validBook": true,
+      "bid": 3.1,
+      "ask": 3.3,
+      "mid": 3.2,
+      "spreadUsd": 0.2,
+      "spreadPct": 6.25,
+      "intrinsic": 0.0,
+      "timeValue": 3.2,
+      "distanceSpotPct": -0.0683293474547318,
+      "moneynessClass": "ATM",
+      "openInterestKnown": true
+    },
+    {
+      "ticker": "O:SPY261204P00575000",
+      "contractType": "put",
+      "strike": 575.0,
+      "validBook": true,
+      "bid": 0.85,
+      "ask": 0.91,
+      "mid": 0.88,
+      "spreadUsd": 0.06,
+      "spreadPct": 6.818181818181818,
+      "intrinsic": 0.0,
+      "timeValue": 0.88,
+      "distanceSpotPct": -1.776563033823027,
+      "moneynessClass": "OTM",
+      "openInterestKnown": true
+    },
+    {
+      "ticker": "O:SPY261204P00570000",
+      "contractType": "put",
+      "strike": 570.0,
+      "validBook": false,
+      "bid": null,
+      "ask": null,
+      "mid": null,
+      "spreadUsd": null,
+      "spreadPct": null,
+      "intrinsic": 0.0,
+      "timeValue": null,
+      "distanceSpotPct": -2.6306798770071746,
+      "moneynessClass": "OTM",
+      "openInterestKnown": true
+    },
+    {
+      "ticker": "O:SPY261204C00600000",
+      "contractType": "call",
+      "strike": 600.0,
+      "validBook": false,
+      "bid": null,
+      "ask": null,
+      "mid": null,
+      "spreadUsd": null,
+      "spreadPct": null,
+      "intrinsic": 0.0,
+      "timeValue": null,
+      "distanceSpotPct": 2.494021182097711,
+      "moneynessClass": "OTM",
+      "openInterestKnown": true
+    }
+  ],
+  "creditCasesInput": [
+    {
+      "name": "bull_put_100x",
+      "multiplier": 100,
+      "legs": [
+        {
+          "contractType": "put",
+          "side": "SELL",
+          "strike": 580.0,
+          "quantity": 1,
+          "bid": 2.4,
+          "ask": 2.5,
+          "quoteQuality": "LIVE_VALID"
+        },
+        {
+          "contractType": "put",
+          "side": "BUY",
+          "strike": 575.0,
+          "quantity": 1,
+          "bid": 1.4,
+          "ask": 1.5,
+          "quoteQuality": "LIVE_VALID"
+        }
+      ]
+    },
+    {
+      "name": "iron_condor_50x_adjusted",
+      "multiplier": 50,
+      "legs": [
+        {
+          "contractType": "put",
+          "side": "SELL",
+          "strike": 580.0,
+          "quantity": 1,
+          "bid": 2.1,
+          "ask": 2.2,
+          "quoteQuality": "LIVE_VALID"
+        },
+        {
+          "contractType": "put",
+          "side": "BUY",
+          "strike": 576.0,
+          "quantity": 1,
+          "bid": 1.25,
+          "ask": 1.35,
+          "quoteQuality": "LIVE_VALID"
+        },
+        {
+          "contractType": "call",
+          "side": "SELL",
+          "strike": 592.0,
+          "quantity": 1,
+          "bid": 1.8,
+          "ask": 1.9,
+          "quoteQuality": "LIVE_VALID"
+        },
+        {
+          "contractType": "call",
+          "side": "BUY",
+          "strike": 596.0,
+          "quantity": 1,
+          "bid": 1.0,
+          "ask": 1.1,
+          "quoteQuality": "LIVE_VALID"
+        }
+      ]
+    },
+    {
+      "name": "missing_leg_bbo_invalid",
+      "multiplier": 100,
+      "legs": [
+        {
+          "contractType": "put",
+          "side": "SELL",
+          "strike": 580.0,
+          "quantity": 1,
+          "bid": 2.4,
+          "ask": 2.5,
+          "quoteQuality": "LIVE_VALID"
+        },
+        {
+          "contractType": "put",
+          "side": "BUY",
+          "strike": 575.0,
+          "quantity": 1,
+          "bid": null,
+          "ask": 1.5,
+          "quoteQuality": "MISSING_BBO"
+        }
+      ]
+    }
+  ],
+  "creditCasesExpected": [
+    {
+      "name": "bull_put_100x",
+      "validBboAllLegs": true,
+      "midCreditPerShare": 1.0,
+      "conservativeCreditPerShare": 0.9,
+      "midCreditContractUsd": 100.0,
+      "conservativeCreditContractUsd": 90.0,
+      "widthPerShare": 5.0,
+      "widthContractUsd": 500.0,
+      "maxProfitContractUsd": 90.0,
+      "maxLossContractUsd": 410.0,
+      "riskRewardRatio": 4.555555555555555,
+      "breakevens": [
+        579.1
+      ]
+    },
+    {
+      "name": "iron_condor_50x_adjusted",
+      "validBboAllLegs": true,
+      "midCreditPerShare": 1.65,
+      "conservativeCreditPerShare": 1.45,
+      "midCreditContractUsd": 82.5,
+      "conservativeCreditContractUsd": 72.5,
+      "widthPerShare": 4.0,
+      "widthContractUsd": 200.0,
+      "maxProfitContractUsd": 72.5,
+      "maxLossContractUsd": 127.5,
+      "riskRewardRatio": 1.7586206896551724,
+      "breakevens": [
+        578.55,
+        593.45
+      ]
+    },
+    {
+      "name": "missing_leg_bbo_invalid",
+      "validBboAllLegs": false,
+      "midCreditPerShare": null,
+      "conservativeCreditPerShare": null,
+      "midCreditContractUsd": null,
+      "conservativeCreditContractUsd": null,
+      "widthPerShare": null,
+      "widthContractUsd": null,
+      "maxProfitContractUsd": null,
+      "maxLossContractUsd": null,
+      "riskRewardRatio": null,
+      "breakevens": []
+    }
+  ],
+  "byStrikeUniverse": [
+    {
+      "strike": 565.0,
+      "callOi": 200,
+      "putOi": 4000,
+      "callVolume": 50,
+      "putVolume": 900,
+      "netGex": -2000000
+    },
+    {
+      "strike": 575.0,
+      "callOi": 800,
+      "putOi": 8500,
+      "callVolume": 300,
+      "putVolume": 2200,
+      "netGex": -6500000
+    },
+    {
+      "strike": 585.0,
+      "callOi": 5000,
+      "putOi": 5200,
+      "callVolume": 3400,
+      "putVolume": 2100,
+      "netGex": 4200000
+    },
+    {
+      "strike": 595.0,
+      "callOi": 9500,
+      "putOi": 600,
+      "callVolume": 4100,
+      "putVolume": 200,
+      "netGex": 12800000
+    },
+    {
+      "strike": 605.0,
+      "callOi": 3000,
+      "putOi": 100,
+      "callVolume": 500,
+      "putVolume": 40,
+      "netGex": 3100000
+    }
+  ],
+  "flowTotalsExpected": {
+    "totalCallVolume": 8350.0,
+    "totalPutVolume": 5440.0,
+    "totalLots": 13790.0,
+    "totalCallOi": 18500.0,
+    "totalPutOi": 18400.0,
+    "putCallRatioVol": 0.651497005988024,
+    "putCallRatioOi": 0.9945945945945946,
+    "maxPainStrike": 585.0,
+    "totalNetGex": 11600000
+  }
+}

@@ -2580,11 +2580,19 @@ export function GgalDualChartView({
         <div className="mb-1 flex flex-wrap items-center justify-between gap-1 px-1">
           <span className="text-[11px] font-medium text-[#9CA3AF]">
             Sub-panel CVD (eje X acoplado)
+            {subPaneMode === 'CVD_LEE_READY' && (
+              <span
+                title="Estimado por barra OHLCV (volumen × CLV). No es cinta tick a tick: el modo cambia a TICK_TAPE solo cuando haya cinta real activa."
+                className="ml-2 rounded border border-[#1C1C24] bg-[#111116] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[#9CA3AF]"
+              >
+                CLV · Barras
+              </span>
+            )}
           </span>
           <div className="flex flex-wrap gap-1">
             {(
               [
-                ['CVD_LEE_READY', 'CVD (Lee-Ready)'],
+                ['CVD_LEE_READY', 'CVD aprox. (CLV)'],
                 ['CCL_BRECHA_PCT', 'Brecha CCL (%)'],
                 ['REL_STRENGTH_BANKS', 'Fuerza Rel. vs BMA/BBAR/SUPV'],
               ] as const

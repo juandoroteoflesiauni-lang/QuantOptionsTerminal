@@ -65,7 +65,7 @@ export default defineConfig({
               test: (id: string) =>
                 /preload-helper/.test(id) ||
                 /[\\/]node_modules[\\/]lucide-react[\\/]/.test(id) ||
-                /[\\/]web[\\/]src[\\/](?:data[\\/](?:liveRuntimeBridge|marketData|visibilityLifecycle|feedsHealthStore|optionsUnderlying|snapshotPublication|expiryChainMerge)|api[\\/]useMarketLiveStream|store[\\/]marketStoreSoa|perf[\\/](?:loafTelemetry|moduleRegistry)|components[\\/](?:DesignSystem|ImperativePriceCell|common[\\/](?:CompanyLogo|LiveClockBadge|ModuleViewFallback|ModuleLoadErrorBoundary)|options[\\/]engine|stock-detail[\\/]stockDetailRouting))\.(?:ts|tsx)$/.test(
+                /[\\/]web[\\/]src[\\/](?:data[\\/](?:liveRuntimeBridge|marketData|visibilityLifecycle|feedsHealthStore|optionsUnderlying|snapshotPublication|expiryChainMerge|usBarsMemoryCache)|api[\\/]useMarketLiveStream|store[\\/]marketStoreSoa|perf[\\/](?:loafTelemetry|moduleRegistry)|components[\\/](?:DesignSystem|ImperativePriceCell|common[\\/](?:CompanyLogo|LiveClockBadge|ModuleViewFallback|ModuleLoadErrorBoundary)|options[\\/]engine|stock-detail[\\/]stockDetailRouting))\.(?:ts|tsx)$/.test(
                   id,
                 ) ||
                 /[\\/]src[\\/]core[\\/](?:ema|stockDetailStability)\.ts$/.test(id),
@@ -99,6 +99,15 @@ export default defineConfig({
               name: 'mod-options-chain',
               test: /[\\/]web[\\/]src[\\/]components[\\/]options[\\/]VirtualizedOptionChainTable\.tsx$/,
               priority: 23,
+            },
+            {
+              name: 'mod-options-export',
+              test: (id: string) =>
+                /[\\/]web[\\/]src[\\/]components[\\/]options[\\/]export[\\/]/.test(id) ||
+                /[\\/]src[\\/]core[\\/]options[\\/]usOptions(?:IntelligenceExport|IntelligenceExportTypes|SnapshotMarkdown)\.ts$/.test(
+                  id,
+                ),
+              priority: 22,
             },
             {
               name: 'mod-options',

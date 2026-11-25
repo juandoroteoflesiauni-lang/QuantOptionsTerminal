@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronDown,
@@ -101,6 +101,10 @@ const LazyVolatilitySuiteView = createRegisteredLazyModule('opciones:volatilidad
   import('./options/VolatilitySuiteView').then((m) => ({
     default: m.VolatilitySuiteView,
   })),
+);
+
+const LazyExportSnapshotModal = React.lazy(
+  () => import('./options/export/ExportSnapshotModal'),
 );
 
 const OPTIONS_SUBVIEW_PREFETCH: Partial<
@@ -895,6 +899,7 @@ export const OptionsModule: React.FC<{
   // Pieza 32: origen del feed de opciones US (Tradier Live + ORATS / Massive + ORATS).
   const usOptionsFeedBadge = useLiveUsProvidersStatus(isUsMarket)?.usOptionsFeedBadge ?? null;
   const [symbolSelectorOpen, setSymbolSelectorOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2504,10 +2509,20 @@ export const OptionsModule: React.FC<{
               </button>
             );
           })}
+          {isUsMarket && (
+            <button
+              type="button"
+              onClick={() => setExportModalOpen(true)}
+              data-qot-export-trigger="options-us"
+              className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#8B7CF6]/55 bg-[#8B7CF6]/15 px-3 py-1 text-[11px] font-bold text-[#E9E4FF] hover:bg-[#8B7CF6]/25 cursor-pointer tabular-nums"
+            >
+              <span>Exportar Snapshot</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSymbolSelectorOpen(true)}
-            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#232733] bg-[#0B0E14] px-2.5 py-1 text-[11px] font-semibold text-[#9CA3AF] hover:border-[#2E3446] hover:text-white cursor-pointer"
+            className={`${isUsMarket ? '' : 'ml-auto '}inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#232733] bg-[#0B0E14] px-2.5 py-1 text-[11px] font-semibold text-[#9CA3AF] hover:border-[#2E3446] hover:text-white cursor-pointer`}
           >
             <Search className="w-3.5 h-3.5" />
             <span>Buscar</span>
@@ -5603,6 +5618,22 @@ export const OptionsModule: React.FC<{
           fallbackSpot={displaySpot}
           fallbackDeltaPct={displayDeltaPct}
         />
+      )}
+
+      {isUsMarket && exportModalOpen && (
+        <Suspense fallback={null}>
+          <LazyExportSnapshotModal
+            open={exportModalOpen}
+            onClose={() => setExportModalOpen(false)}
+            ticker={upperUnderlying}
+            activeExpiryDate={activeExpiry?.expiryDate ?? activeExpiry?.id ?? null}
+            availableExpirations={expirySelectorEntries.map((entry) => ({
+              expirationDate: entry.expiryDate,
+              daysToExpiry: entry.daysToExpiry,
+              isLoaded: entry.isLoaded,
+            }))}
+          />
+        </Suspense>
       )}
     </div>
   );
