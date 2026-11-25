@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avwap-oracle"
+version = "0.1.0"
+description = "Isolated Phase 1 empirical audit and research environment for AVWAP Oracle"
+requires-python = ">=3.12"
+dependencies = [
+    "polars[timezone]",
+    "scipy",
+    "numpy",
+    "pyarrow",
+    "httpx",
+    "pydantic",
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avwap_oracle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+cache_dir = ".pytest_cache"

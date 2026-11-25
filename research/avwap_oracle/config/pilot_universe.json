@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "frozen_at_date": "2026-11-24",
+  "methodology_note": "Frozen 56-symbol stratified pilot universe for offline falsification. Freezing reduces retrospective cherry-picking risk during testing, but does NOT eliminate survivorship bias because instruments were selected retrospectively rather than from a point-in-time master of all tradable US securities.",
+  "windows": {
+    "core": {
+      "start": "2021-01-15",
+      "end": "2026-11-24"
+    },
+    "opra_flow": {
+      "start": "2022-09-01",
+      "end": "2026-11-24"
+    },
+    "macro_wham": {
+      "start": "2023-01-01",
+      "end": "2026-11-24"
+    }
+  },
+  "instruments": [
+    {"ticker": "SPY", "asset_class": "US_ETF", "stratum": "US_ETF", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "QQQ", "asset_class": "US_ETF", "stratum": "US_ETF", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "IWM", "asset_class": "US_ETF", "stratum": "US_ETF", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "DIA", "asset_class": "US_ETF", "stratum": "US_ETF", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "XLK", "asset_class": "US_ETF", "stratum": "US_ETF", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "XLF", "asset_class": "US_ETF", "stratum": "US_ETF", "in_repo_universe": true, "is_delisted": false},
+
+    {"ticker": "AAPL", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "MSFT", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "NVDA", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "AMZN", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "GOOGL", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "META", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "TSLA", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "AVGO", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "AMD", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "NFLX", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "JPM", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "LLY", "asset_class": "US_EQUITY", "stratum": "MEGA_CAP", "in_repo_universe": true, "is_delisted": false},
+
+    {"ticker": "PLTR", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "CRWD", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "APP", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "COIN", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "MSTR", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "HOOD", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "UBER", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "ANET", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "PANW", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "SHOP", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "SNOW", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "DDOG", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "COST", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "CMG", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "VRT", "asset_class": "US_EQUITY", "stratum": "MID_HIGH_BETA_CATALYST", "in_repo_universe": true, "is_delisted": false},
+
+    {"ticker": "TSM", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "ASML", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "NVO", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "MELI", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "NU", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "PBR", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "YPF", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "VIST", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "PAM", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "GGAL", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "BMA", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": true, "is_delisted": false},
+    {"ticker": "BABA", "asset_class": "US_ADR", "stratum": "US_ADR", "in_repo_universe": false, "is_delisted": false},
+
+    {"ticker": "TWTR", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2022-10-31", "composite_figi": "BBG000H6HNW3", "cik": "0001418091"},
+    {"ticker": "ATVI", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2023-10-16", "composite_figi": "BBG000CVWGS6", "cik": "0000718877"},
+    {"ticker": "VMW", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2023-11-24", "composite_figi": "BBG000GNV649", "cik": "0001124610"},
+    {"ticker": "SPLK", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2024-03-19", "composite_figi": "BBG001C7TST4", "cik": "0001353283"},
+    {"ticker": "PXD", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2024-05-06", "composite_figi": "BBG000CM6TW2", "cik": "0001038357"},
+    {"ticker": "MRO", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2024-11-25", "composite_figi": "BBG000J6ZLZ2", "cik": "0000101778"},
+    {"ticker": "SIVB", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2023-03-28", "composite_figi": "BBG000BT0CM2", "cik": "0000719739"},
+    {"ticker": "FRC", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2023-05-03", "composite_figi": "BBG0019LSQ49", "cik": "0001132979"},
+    {"ticker": "HES", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2025-07-21", "composite_figi": "BBG000BBD070", "cik": "0000004447"},
+    {"ticker": "DFS", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2025-05-19", "composite_figi": "BBG000QBR5J5", "cik": "0001393612"},
+    {"ticker": "CERN", "asset_class": "DELISTED", "stratum": "DELISTED", "in_repo_universe": false, "is_delisted": true, "delisted_date": "2022-06-09", "composite_figi": "BBG000BFDLV8", "cik": "0000804753"}
+  ]
+}
