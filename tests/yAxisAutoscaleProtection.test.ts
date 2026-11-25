@@ -12,6 +12,7 @@ import {
   type SessionSnapshot,
   type SessionObservation,
 } from "../src/core/sessionKeyLevels.js";
+import { PanoramicBandsPrimitive } from "../web/src/components/stock-detail/PanoramicBandsPrimitive.js";
 import { fmtNum } from "../web/src/data/marketData.js";
 const src = readFileSync("web/src/components/StockDetailView.tsx", "utf8");
 const ast = ts.createSourceFile("view.tsx", src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -67,7 +68,7 @@ const libAst = ts.createSourceFile(
   true,
   ts.ScriptKind.JS,
 );
-const classNames = ["PriceRangeImpl", "AutoscaleInfoImpl", "Series"];
+const classNames = ["PriceRangeImpl", "AutoscaleInfoImpl", "PrimitiveWrapper", "SeriesPrimitiveWrapper", "Series"];
 const classes = libAst.statements
   .filter(
     (n): n is ts.ClassDeclaration =>
@@ -76,14 +77,16 @@ const classes = libAst.statements
   .map((n) => n.getText(libAst))
   .join("\n");
 const installed = runInNewContext(`(()=>{class PriceDataSource {}
+class PrimitivePaneViewWrapper {}
 const isInteger=v=>typeof v==='number'&&v%1===0;
 ${classes}
-return (options,type,min,max,lines)=>{const series=Object.create(Series.prototype);series._private__options=options;series._private__seriesType=type;series._private__data={_internal_isEmpty:()=>false,_internal_minMaxOnRangeCached:()=>({_internal_min:min,_internal_max:max})};series._private__primitives=[];series._private__customPriceLines=lines;const result=series._internal_autoscaleInfo(0,10);return result===null?null:result._internal_toRaw();};})()`) as (
+return (options,type,min,max,lines,primitives=[])=>{const series=Object.create(Series.prototype);series._private__options=options;series._private__seriesType=type;series._private__data={_internal_isEmpty:()=>false,_internal_minMaxOnRangeCached:()=>({_internal_min:min,_internal_max:max})};series._private__primitives=primitives.map(p=>new SeriesPrimitiveWrapper(p,series));series._private__customPriceLines=lines;const result=series._internal_autoscaleInfo(0,10);return result===null?null:result._internal_toRaw();};})()`) as (
   options: EffectiveOptions,
   type: string,
   min: number,
   max: number,
   lines: readonly unknown[],
+  primitives?: readonly unknown[],
 ) => Info | null;
 interface PriceLineOptions {
   price: number;
@@ -419,4 +422,53 @@ describe("S1-7 effective configuration and installed LWC autoscale behavior", ()
       expect(body).not.toMatch(/setData\(|createPriceLine\(|addSeries\(/);
     }
   });
+  it.each([
+    { min: 499, max: 501, farLow: 100, farHigh: 2500 },
+    { min: 79000, max: 81000, farLow: 10000, farHigh: 350000 },
+  ])(
+    "PanoramicBandsPrimitive.autoscaleInfo() returns null and leaves candlestick Y-axis range unchanged at [$farLow, $farHigh]",
+    ({ min, max, farLow, farHigh }) => {
+      const primitive = new PanoramicBandsPrimitive({
+        enabled: true,
+        tickSize: 1,
+        hvnZones: [
+          {
+            kind: "HVN",
+            startBinIndex: 1,
+            endBinIndex: 2,
+            lowPrice: farLow,
+            highPrice: farLow + 10,
+            centerPrice: farLow + 5,
+            volume: 1000,
+            volumeSharePct: 50,
+            prominence: 500,
+            prominenceRatio: 0.9,
+            isPriceGap: false,
+          },
+        ],
+        lvnZones: [
+          {
+            kind: "LVN",
+            startBinIndex: 3,
+            endBinIndex: 4,
+            lowPrice: farHigh - 10,
+            highPrice: farHigh,
+            centerPrice: farHigh - 5,
+            volume: 0,
+            volumeSharePct: 0,
+            prominence: 400,
+            prominenceRatio: 0.7,
+            isPriceGap: true,
+          },
+        ],
+      });
+      expect(primitive.autoscaleInfo()).toBeNull();
+      expect(src).toContain("candles.attachPrimitive(bandsPrimitive)");
+      const candleOptions = options.find((o) => o.type === "CandlestickSeries")?.options;
+      if (candleOptions === undefined) throw new Error("Missing real candlestick options");
+      const baseline = installed(candleOptions, "Candlestick", min, max, []);
+      expect(installed(candleOptions, "Candlestick", min, max, [], [primitive])).toEqual(baseline);
+      expect(baseline?.priceRange).toEqual({ minValue: min, maxValue: max });
+    },
+  );
 });

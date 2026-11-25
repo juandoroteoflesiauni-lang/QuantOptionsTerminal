@@ -63,6 +63,13 @@ import {
   type VolumeProfileAmtResult,
 } from '../core/microstructure/volumeProfileAmt.js';
 import {
+  DailySessionHistogramCache,
+  computeMultiHorizonVolumeProfile,
+  serializeMultiHorizonVolumeProfile,
+  type MultiHorizonVpLiveSeed,
+  type VolumeProfilesByHorizonPayloadDto,
+} from '../core/microstructure/multiHorizonVolumeProfile.js';
+import {
   detectFreshOrderBlocks,
   detectQuantitativeFvgs,
   type FreshOrderBlockResult,
@@ -1095,6 +1102,7 @@ export interface SerializedTerminalEngines {
   readonly atr14d: number | null;
   readonly cvdSlopeSign: number | null;
   readonly volumeProfile: JsonSafeValue<VolumeProfileAmtResult> | null;
+  readonly volumeProfilesByHorizon?: JsonSafeValue<VolumeProfilesByHorizonPayloadDto> | null;
   readonly nakedPocs: JsonSafeValue<TrackNakedPocsResult> | null;
   readonly fvgs: JsonSafeValue<QuantitativeFvgResult> | null;
   readonly orderBlocks: JsonSafeValue<FreshOrderBlockResult> | null;
@@ -1168,6 +1176,8 @@ export interface TerminalBarsResponse {
   readonly ema20_5m?: import('../core/movingAverages.js').MtfEmaDto;
   readonly sessionKeyLevels?: SessionLevelsDto;
   readonly monthStartCanonicalAvwap?: CanonicalMonthDto;
+  readonly volumeProfilesByHorizon?: VolumeProfilesByHorizonPayloadDto;
+  readonly vpLiveSeed?: MultiHorizonVpLiveSeed | null;
   readonly historicalIntegrity?: ReturnType<typeof serializeHistoricalIntegrity>;
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;
@@ -5043,6 +5053,8 @@ export class MarketRuntime {
   /** Perf-1: caché dedicada para las 7 consultas auxiliares de barras en computeSnapshot. */
   private readonly snapshotBarsAuxCache: SingleFlightRuntimeCache<Awaited<ReturnType<typeof loadBars>>>;
   private readonly snapshotBarsAuxUseFixedTtl: boolean;
+  /** S2-1: caché LRU acotada de histogramas diarios cerrados inmutables por rueda efectiva. */
+  private readonly vpDailyHistogramCache = new DailySessionHistogramCache({ maxEntries: 512 });
 
   private stockWsClient: MassiveWsClientLike | null = null;
   private optionsWsClient: MassiveWsClientLike | null = null;
@@ -10062,6 +10074,41 @@ export class MarketRuntime {
             lookbackBars: DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
           })
         : null;
+    const vpIntradaySourcesSnap =
+      !isIndex && this.usHistoricalService !== null
+        ? await this.usHistoricalService.resolveVpIntradaySources({
+            symbol: canonicalSymbol,
+            now: evalSecUs,
+            rthOnly: false,
+            provider: this.fmpHistoricalProviderEnabled ? 'FMP' : 'MASSIVE_REST',
+            allowAcquisition: false,
+          })
+        : null;
+    const vp5mBarsSnap =
+      vpIntradaySourcesSnap !== null && vpIntradaySourcesSnap.bars5m.length > 0
+        ? vpIntradaySourcesSnap.bars5m
+        : bars5mRes.bars;
+    const vp5mCoveredFromSnap =
+      vpIntradaySourcesSnap !== null && vpIntradaySourcesSnap.bars5m.length > 0
+        ? vpIntradaySourcesSnap.coveredFrom5m
+        : (bars5mRes.bars[0]?.time ?? null);
+    const volumeProfilesByHorizonUs = serializeMultiHorizonVolumeProfile(
+      computeMultiHorizonVolumeProfile({
+        market: 'US',
+        symbol: canonicalSymbol,
+        asOfUtcSec: evalSecUs,
+        rthOnly: false,
+        referencePrice: Number.isFinite(spot) && spot > 0 ? spot : undefined,
+        bars1m: vpIntradaySourcesSnap?.bars1m,
+        coveredFrom1m: vpIntradaySourcesSnap?.coveredFrom1m ?? null,
+        bars5m: vp5mBarsSnap,
+        coveredFrom5m: vp5mCoveredFromSnap,
+        bars1d: closedDailyUs,
+        existingProfile252R: volumeProfileUs,
+        cache: this.vpDailyHistogramCache,
+        adjustmentRevision: this.usHistoricalService?.adjustmentRevision(canonicalSymbol) ?? 0,
+      }),
+    );
     const nakedPocsUs =
       closedDailyUs.length >= 2
         ? trackNakedPocs(closedDailyUs, {
@@ -10792,6 +10839,7 @@ export class MarketRuntime {
       atr14d: sanitizeFinite(atrDaily14),
       cvdSlopeSign,
       volumeProfile: volumeProfileUs,
+      volumeProfilesByHorizon: volumeProfilesByHorizonUs,
       nakedPocs: nakedPocsUs,
       fvgs: fvgsUs,
       orderBlocks: orderBlocksUs,
@@ -11594,6 +11642,7 @@ export class MarketRuntime {
       readonly forceRefresh?: boolean;
       readonly includeOverlays?: boolean;
       readonly includeMtfEma?: boolean;
+      readonly includeVpHorizons?: boolean;
       readonly fullHistory?: boolean;
     } = {},
   ): Promise<TerminalBarsResponse> {
@@ -11611,7 +11660,8 @@ export class MarketRuntime {
     const fullHistory = options.fullHistory ?? true;
     const canonicalRevision = this.usHistoricalService?.adjustmentRevision(parsed.canonicalSymbol) ?? 0;
     const mtfCacheSuffix = options.includeMtfEma === true && timeframe === '1m' ? ':mtf5m' : '';
-    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}${canonicalRevision === 0 ? '' : `:canonicalRevision=${String(canonicalRevision)}`}${mtfCacheSuffix}`;
+    const vpCacheSuffix = options.includeVpHorizons === true ? ':vph' : '';
+    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}${canonicalRevision === 0 ? '' : `:canonicalRevision=${String(canonicalRevision)}`}${mtfCacheSuffix}${vpCacheSuffix}`;
 
     const result = await this.barsCache.getOrCompute(
       cacheKey,
@@ -11619,6 +11669,7 @@ export class MarketRuntime {
         this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly, cacheKey, {
           includeOverlays,
           includeMtfEma: options.includeMtfEma === true,
+          includeVpHorizons: options.includeVpHorizons === true,
           fullHistory,
           adaptiveWindow,
         }),
@@ -11636,6 +11687,7 @@ export class MarketRuntime {
     opts: {
       readonly includeOverlays: boolean;
       readonly includeMtfEma?: boolean;
+      readonly includeVpHorizons?: boolean;
       readonly fullHistory: boolean;
       readonly adaptiveWindow?: boolean;
     } = { includeOverlays: true, fullHistory: true },
@@ -11953,6 +12005,103 @@ export class MarketRuntime {
       autoAvwapAnchors = [];
     }
 
+    const cachedSnapshotForVp = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
+    let vpIntradaySourcesBars: Awaited<ReturnType<UsHistoricalService['resolveVpIntradaySources']>> | null = null;
+    if (!parsed.isIndex && this.usHistoricalService !== null && (barsProvider === 'MASSIVE_REST' || barsProvider === 'FMP_ENTERPRISE_REST')) {
+      try {
+        vpIntradaySourcesBars = await this.usHistoricalService.resolveVpIntradaySources({
+          symbol: parsed.canonicalSymbol,
+          now: nowSec,
+          rthOnly,
+          provider: barsProvider === 'FMP_ENTERPRISE_REST' ? 'FMP' : 'MASSIVE_REST',
+          allowAcquisition: opts.includeVpHorizons === true,
+        });
+      } catch {
+        vpIntradaySourcesBars = null;
+      }
+    }
+    const vpBars1m =
+      vpIntradaySourcesBars !== null && vpIntradaySourcesBars.bars1m.length > 0
+        ? vpIntradaySourcesBars.bars1m
+        : timeframe === '1m'
+          ? bars
+          : undefined;
+    const vpCoveredFrom1m =
+      vpIntradaySourcesBars !== null && vpIntradaySourcesBars.bars1m.length > 0
+        ? vpIntradaySourcesBars.coveredFrom1m
+        : timeframe === '1m'
+          ? (bars[0]?.time ?? null)
+          : null;
+    const vpBars5m =
+      vpIntradaySourcesBars !== null && vpIntradaySourcesBars.bars5m.length > 0
+        ? vpIntradaySourcesBars.bars5m
+        : timeframe === '5m'
+          ? bars
+          : undefined;
+    const vpCoveredFrom5m =
+      vpIntradaySourcesBars !== null && vpIntradaySourcesBars.bars5m.length > 0
+        ? vpIntradaySourcesBars.coveredFrom5m
+        : timeframe === '5m'
+          ? (bars[0]?.time ?? null)
+          : null;
+    const cachedSnap1d = this.snapshotBarsAuxCache.peek(`snapBars:massive:${parsed.canonicalSymbol}:1D:60:720:all`)?.value;
+    const vpBars1d =
+      timeframe === '1D'
+        ? bars
+        : cachedSnap1d !== undefined && cachedSnap1d.bars.length > 0
+          ? cachedSnap1d.bars
+          : undefined;
+    const lastBarClose = bars[bars.length - 1]?.close;
+    const vpMultiResult = computeMultiHorizonVolumeProfile({
+      market: 'US',
+      symbol: parsed.canonicalSymbol,
+      asOfUtcSec: nowSec,
+      rthOnly,
+      referencePrice: lastBarClose !== undefined && Number.isFinite(lastBarClose) && lastBarClose > 0 ? lastBarClose : undefined,
+      bars1m: vpBars1m,
+      coveredFrom1m: vpCoveredFrom1m,
+      bars5m: vpBars5m,
+      coveredFrom5m: vpCoveredFrom5m,
+      bars1d: vpBars1d,
+      cache: this.vpDailyHistogramCache,
+      adjustmentRevision: this.usHistoricalService?.adjustmentRevision(parsed.canonicalSymbol) ?? 0,
+    });
+    const baseVpDto = serializeMultiHorizonVolumeProfile(vpMultiResult, {
+      acquisitionAttempted: opts.includeVpHorizons === true || vpIntradaySourcesBars?.acquisitionAttempted === true,
+    });
+    const cached252R = cachedSnapshotForVp?.terminalEngines?.volumeProfilesByHorizon?.horizons['252R'];
+    const volumeProfilesByHorizon: VolumeProfilesByHorizonPayloadDto =
+      baseVpDto.horizons['252R'].coverageStatus === 'UNAVAILABLE' &&
+      cached252R !== undefined &&
+      cached252R.coverageStatus !== 'UNAVAILABLE' &&
+      cached252R.sessionsTarget !== null &&
+      cached252R.sessionsCovered !== null &&
+      cached252R.closedBarCount !== null
+        ? {
+            ...baseVpDto,
+            horizons: {
+              ...baseVpDto.horizons,
+              '252R': {
+                ...cached252R,
+                sessionsTarget: cached252R.sessionsTarget,
+                sessionsCovered: cached252R.sessionsCovered,
+                closedBarCount: cached252R.closedBarCount,
+                hvnZones: cached252R.hvnZones.map((z) => ({
+                  ...z,
+                  startBinIndex: z.startBinIndex ?? 0,
+                  endBinIndex: z.endBinIndex ?? 0,
+                })),
+                lvnZones: cached252R.lvnZones.map((z) => ({
+                  ...z,
+                  startBinIndex: z.startBinIndex ?? 0,
+                  endBinIndex: z.endBinIndex ?? 0,
+                })),
+              },
+            },
+          }
+        : baseVpDto;
+    const vpLiveSeed = vpMultiResult.liveSeed;
+
     if (!opts.includeOverlays) {
       // StockDetailView computa EMA/AVWAP en cliente sobre `bars` y lee solo
       // `overlays.sessionVwap` + `sessionVwapSupported` (Pieza 50.6) y `autoAvwapAnchors`.
@@ -11961,13 +12110,15 @@ export class MarketRuntime {
         ? computeSessionVwap(sessionVwapInput, { market: 'EQUITY', barSeconds })
         : null;
       const emptyOverlay = slicedBars.map(() => null);
-      const cachedSnapshot = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
+      const cachedSnapshot = cachedSnapshotForVp;
       const payload: TerminalBarsResponse = {
         movingAverages,
         ...(weeklyMovingAverages===undefined?{}:{weeklyMovingAverages}),
         ...(ema20_5m===undefined?{}:{ema20_5m}),
         sessionKeyLevels,
         monthStartCanonicalAvwap,
+        volumeProfilesByHorizon,
+        ...(vpLiveSeed === null ? {} : { vpLiveSeed }),
         ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
         status: barsStatusOk ? 'OK' : 'PARTIAL',
         symbol: parsed.canonicalSymbol,
@@ -12107,6 +12258,8 @@ export class MarketRuntime {
       ...(ema20_5m===undefined?{}:{ema20_5m}),
       sessionKeyLevels,
       monthStartCanonicalAvwap,
+      volumeProfilesByHorizon,
+      ...(vpLiveSeed === null ? {} : { vpLiveSeed }),
       ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
       status: barsStatusOk ? 'OK' : 'PARTIAL',
       symbol: parsed.canonicalSymbol,

@@ -954,6 +954,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           rthOnly,
           forceRefresh,
           ...(parseBooleanFlag(params.get('ema20_5m')) ? {includeMtfEma:true} : {}),
+          ...(parseBooleanFlag(params.get('vpHorizons')) ? { includeVpHorizons: true } : {}),
           ...(!includeOverlays ? { includeOverlays: false } : {}),
           ...(fullHistory ? { fullHistory: true } : {}),
         });

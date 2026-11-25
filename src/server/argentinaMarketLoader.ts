@@ -94,6 +94,11 @@ import {
   type VolumeProfileAmtResult,
 } from '../core/microstructure/volumeProfileAmt.js';
 import {
+  computeMultiHorizonVolumeProfile,
+  serializeMultiHorizonVolumeProfile,
+  type VolumeProfilesByHorizonPayloadDto,
+} from '../core/microstructure/multiHorizonVolumeProfile.js';
+import {
   detectFreshOrderBlocks,
   detectQuantitativeFvgs,
   type FreshOrderBlockResult,
@@ -570,6 +575,7 @@ export interface ArStockInstitutionalEnginesDto {
   readonly atr14: number | null;
   readonly cvdSlopeSign: number | null;
   readonly volumeProfile: JsonSafe<VolumeProfileAmtResult> | null;
+  readonly volumeProfilesByHorizon?: JsonSafe<VolumeProfilesByHorizonPayloadDto> | null;
   readonly nakedPocs: JsonSafe<TrackNakedPocsResult> | null;
   readonly fvgs: JsonSafe<QuantitativeFvgResult> | null;
   readonly orderBlocks: JsonSafe<FreshOrderBlockResult> | null;
@@ -7092,6 +7098,18 @@ export class ArgentinaMarketRuntime {
             lookbackBars: DEFAULT_VOLUME_PROFILE_LOOKBACK_BARS,
           })
         : null;
+    const volumeProfilesByHorizon = serializeMultiHorizonVolumeProfile(
+      computeMultiHorizonVolumeProfile({
+        market: 'AR',
+        symbol: 'AR',
+        asOfUtcSec: evalSec,
+        rthOnly: false,
+        tickSize,
+        referencePrice: spot !== null && Number.isFinite(spot) && spot > 0 ? spot : undefined,
+        bars1d: closedBarsVp,
+        existingProfile252R: volumeProfile,
+      }),
+    );
 
     const nakedPocs =
       closedBars.length >= 2
@@ -7198,6 +7216,7 @@ export class ArgentinaMarketRuntime {
       atr14: sanitizeFinite(atr14),
       cvdSlopeSign,
       volumeProfile,
+      volumeProfilesByHorizon,
       nakedPocs,
       fvgs,
       orderBlocks,
@@ -7292,10 +7311,27 @@ export class ArgentinaMarketRuntime {
     const full = computeArTerminalBarsPayload(symbol, timeframe, bars, nowSec);
     // Pieza 50.5: anclas institucionales Auto-AVWAP en ARS (Data912 diario, sin
     // earnings/macro FMP): degradación limpia a PIVOT + RVOL, cacheada por día.
+    const arVpSpot = bars[bars.length - 1]?.close;
+    const arVpTickSize =
+      arVpSpot !== undefined && Number.isFinite(arVpSpot) && arVpSpot > 0
+        ? Math.max(0.01, Math.round((arVpSpot / 120) * 100) / 100)
+        : 0.05;
+    const arVpByHorizon = serializeMultiHorizonVolumeProfile(
+      computeMultiHorizonVolumeProfile({
+        market: 'AR',
+        symbol,
+        asOfUtcSec: nowSec,
+        rthOnly: false,
+        tickSize: arVpTickSize,
+        referencePrice: arVpSpot !== undefined && Number.isFinite(arVpSpot) && arVpSpot > 0 ? arVpSpot : undefined,
+        bars1d: bars,
+      }),
+    );
     const anchoredFull: ArTerminalBarsResponse = {
       movingAverages:serializeMovingAverages(bars,Math.max(0,bars.length-visibleBars)),
       weeklyMovingAverages:serializeWeeklyMovingAverages(bars,bars[Math.max(0,bars.length-visibleBars)]?.time ?? nowSec,AR_MARKET_TIMEZONE),
       ...full,
+      volumeProfilesByHorizon: arVpByHorizon,
       sessionKeyLevels: serializeSessionKeyLevels(computeSessionKeyLevels({symbol,market:'AR',evalTimeSec:nowSec,observations:bars.map(bar=>({bar,endExclusive:bar.time+86400}))})),
       monthStartCanonicalAvwap: serializeCanonicalMonth(buildCanonicalMonthAccumulator({bars,now:nowSec,sessionMode:'RTH',
         symbol,adjSig:'DATA912_NATIVE_UNVERIFIED',sourceResolution:'1D',market:'AR'}),

@@ -394,6 +394,55 @@ export interface VolumeProfileAmtDto {
   readonly lvnBins: readonly VolumeProfileBinDto[];
 }
 
+export type VolumeProfileHorizon = '1D' | '5D' | '20D' | '252R';
+export type VolumeProfileCoverageStatus = 'COMPLETE' | 'PARTIAL' | 'UNAVAILABLE';
+
+export interface VolumeProfileNodeZoneDto {
+  readonly kind: 'HVN' | 'LVN';
+  readonly startBinIndex: number;
+  readonly endBinIndex: number;
+  readonly lowPrice: number | null;
+  readonly highPrice: number | null;
+  readonly centerPrice: number | null;
+  readonly volume: number | null;
+  readonly volumeSharePct: number | null;
+  readonly prominence: number | null;
+  readonly prominenceRatio: number | null;
+  readonly isPriceGap: boolean;
+}
+
+export interface HorizonVolumeProfileDto {
+  readonly horizon: VolumeProfileHorizon;
+  readonly coverageStatus: VolumeProfileCoverageStatus;
+  readonly methodology: 'OHLCV_UNIFORM_BIN';
+  readonly nodesMethodology: 'OHLCV_UNIFORM_SMOOTHED_PROMINENCE';
+  readonly sourceTimeframe: '1m' | '5m' | '1D';
+  readonly sessionsTarget: number;
+  readonly sessionsCovered: number;
+  readonly tickSize: number | null;
+  readonly closedBarCount: number;
+  readonly minPrice: number | null;
+  readonly maxPrice: number | null;
+  readonly poc: number | null;
+  readonly vah: number | null;
+  readonly val: number | null;
+  readonly profileVwap: number | null;
+  readonly totalVolume: number | null;
+  readonly valueAreaVolume: number | null;
+  readonly valueAreaCoverage: number | null;
+  readonly hvnZones: readonly VolumeProfileNodeZoneDto[];
+  readonly lvnZones: readonly VolumeProfileNodeZoneDto[];
+}
+
+export interface VolumeProfilesByHorizonPayloadDto {
+  readonly asOfUtcSec: number;
+  readonly rthOnly: boolean;
+  readonly tickSize: number | null;
+  readonly methodology: 'OHLCV_UNIFORM_BIN';
+  readonly horizons: Readonly<Record<VolumeProfileHorizon, HorizonVolumeProfileDto>>;
+  readonly acquisitionAttempted?: boolean;
+}
+
 export interface NakedPocRecordDto {
   readonly sessionDate: string;
   readonly sessionPoc: number | null;
@@ -698,6 +747,7 @@ export interface ArStockInstitutionalEnginesDto {
   readonly atr14: number | null;
   readonly cvdSlopeSign: number | null;
   readonly volumeProfile: VolumeProfileAmtDto | null;
+  readonly volumeProfilesByHorizon?: VolumeProfilesByHorizonPayloadDto | null;
   readonly nakedPocs: TrackNakedPocsDto | null;
   readonly fvgs: QuantitativeFvgDto | null;
   readonly orderBlocks: FreshOrderBlockDto | null;
@@ -731,6 +781,7 @@ export interface SerializedTerminalEnginesDto {
   readonly atr14d: number | null;
   readonly cvdSlopeSign: number | null;
   readonly volumeProfile: VolumeProfileAmtDto | null;
+  readonly volumeProfilesByHorizon?: VolumeProfilesByHorizonPayloadDto | null;
   readonly nakedPocs: TrackNakedPocsDto | null;
   readonly fvgs: QuantitativeFvgDto | null;
   readonly orderBlocks: FreshOrderBlockDto | null;
@@ -1121,6 +1172,8 @@ export interface UsTerminalBarsResponseDto {
   readonly ema20_5m?: import('../../../src/core/movingAverages.js').MtfEmaDto;
   readonly sessionKeyLevels?: import('../../../src/core/sessionKeyLevels.js').SessionLevelsDto;
   readonly monthStartCanonicalAvwap?: import('../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto;
+  readonly volumeProfilesByHorizon?: VolumeProfilesByHorizonPayloadDto;
+  readonly vpLiveSeed?: import('../../../src/core/microstructure/multiHorizonVolumeProfile.js').MultiHorizonVpLiveSeed | null;
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;
   readonly timeframe: TerminalTimeframe;

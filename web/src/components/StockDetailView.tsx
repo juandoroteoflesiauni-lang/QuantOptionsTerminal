@@ -1,5 +1,13 @@
 import { resolveMaPresetForTimeframe, overrideMaPreset, serializeMovingAverages, type MaPreset } from '../../../src/core/movingAverages';
 import { createMaChartRuntime, type MaChartRuntime } from './stock-detail/movingAverageRuntime';
+import { PanoramicBandsPrimitive } from './stock-detail/PanoramicBandsPrimitive';
+import {
+  advanceMultiHorizonVpLiveOnClosed1m,
+  createMultiHorizonVpLiveState,
+  serializeHorizonVolumeProfile,
+  type MultiHorizonVpLiveSeed,
+  type MultiHorizonVpLiveState,
+} from '../../../src/core/microstructure/multiHorizonVolumeProfile';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createCanonicalMonthLiveState, updateCanonicalMonthLive, projectCanonicalMonthLive, quoteCanonicalMonthLive,
   canonicalMonthLiveBucket,
@@ -42,9 +50,12 @@ import type {
   AutoAnchorRole,
   AutoAnchorSource,
   AutoAvwapAnchorDto,
+  HorizonVolumeProfileDto,
   OrderBook5LevelsDto,
   TerminalTimeframe,
   UsTerminalBarsResponseDto,
+  VolumeProfileHorizon,
+  VolumeProfilesByHorizonPayloadDto,
 } from '../data/liveTypes';
 import {
   AR_GENERAL_PANEL_STOCKS,
@@ -498,6 +509,8 @@ export const StockDetailView: React.FC<{
   });
   const [lowerMode, setLowerMode] = useState<LowerPaneMode>('CVD');
   const [highlightedLevel, setHighlightedLevel] = useState<HighlightLevelId>(null);
+  const [vpHorizon, setVpHorizon] = useState<VolumeProfileHorizon>('252R');
+  const [showVpNodes, setShowVpNodes] = useState<boolean>(true);
   const [overlays, setOverlays] = useState<OverlayVisibilityState>({
     emas: true,
     sessionVwap: true,
@@ -1037,6 +1050,33 @@ export const StockDetailView: React.FC<{
     return()=>controller.abort();
   },[cleanTicker,currentStockKey,timeframe,isArMarket,maPreset.mtfEma20,usBarsResp]);
 
+  // Adquisición opt-in de horizontes VP 1D/5D/20D cuando no están cubiertos aún; jamás en ticks.
+  useEffect(() => {
+    if (isArMarket || (vpHorizon !== '1D' && vpHorizon !== '5D' && vpHorizon !== '20D')) return;
+    if (usBarsResp === undefined) return;
+    const payload = usBarsResp.volumeProfilesByHorizon;
+    if (payload?.acquisitionAttempted === true) return;
+    const status = payload?.horizons[vpHorizon]?.coverageStatus ?? 'UNAVAILABLE';
+    if (status !== 'UNAVAILABLE') return;
+    const apiTf: TerminalTimeframe = timeframe === '1W' ? '1D' : timeframe;
+    const controller = new AbortController();
+    void requestTerminalBars(cleanTicker, apiTf, {
+      adaptiveWindow: true,
+      includeOverlays: false,
+      includeVpHorizons: true,
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (response !== null && !controller.signal.aborted) {
+          setUsBarsByKey((prev) => ({ ...prev, [`${currentStockKey}:${apiTf}`]: response }));
+        }
+      })
+      .catch(() => {
+        /* Degradación honesta UNAVAILABLE cuando no hay cobertura intradiaria. */
+      });
+    return () => controller.abort();
+  }, [cleanTicker, currentStockKey, isArMarket, timeframe, usBarsResp, vpHorizon]);
+
   const arFallbackInfoText = isArIntradayFallbackActive
     ? `BYMA sin histórico ${timeframe.toUpperCase()} · mostrando 1D real`
     : null;
@@ -1297,20 +1337,66 @@ export const StockDetailView: React.FC<{
     [chartBundle, lowerPaneVolAndBench],
   );
 
+  const pickActiveVpProfile = (
+    barsVp: VolumeProfilesByHorizonPayloadDto | undefined | null,
+    snapVp: VolumeProfilesByHorizonPayloadDto | undefined | null,
+    horizon: VolumeProfileHorizon,
+  ): HorizonVolumeProfileDto | null => {
+    const a = barsVp?.horizons[horizon] ?? null;
+    const b = snapVp?.horizons[horizon] ?? null;
+    const rank = (p: HorizonVolumeProfileDto | null): number =>
+      p === null ? 0 : p.coverageStatus === 'COMPLETE' ? 3 : p.coverageStatus === 'PARTIAL' ? 2 : 1;
+    return rank(a) >= rank(b) ? a : b;
+  };
+
   const keyLevels: ChartKeyLevels = useMemo(() => {
     const atrSeries = chartBundle.bars.length > 14 ? computeWilderAtrPure(chartBundle.bars, 14) : [];
     const fallbackAtr = normalizeFiniteOrNull(atrSeries.at(-1));
     if (isArMarket) {
       const engines = stockDetail?.institutionalEngines;
       const exposure = arOptions?.exposureSummary;
+      const activeVp = pickActiveVpProfile(
+        arBarsResp?.volumeProfilesByHorizon,
+        engines?.volumeProfilesByHorizon,
+        vpHorizon,
+      );
+      const useLegacy252 =
+        vpHorizon === '252R' && (activeVp === null || activeVp.coverageStatus === 'UNAVAILABLE');
+      const vpOk = activeVp !== null && activeVp.coverageStatus !== 'UNAVAILABLE';
       return {
-        poc: normalizeFiniteOrNull(engines?.volumeProfile?.poc),
-        vah: normalizeFiniteOrNull(engines?.volumeProfile?.vah),
-        val: normalizeFiniteOrNull(engines?.volumeProfile?.val),
+        poc: useLegacy252
+          ? normalizeFiniteOrNull(engines?.volumeProfile?.poc)
+          : vpOk
+            ? normalizeFiniteOrNull(activeVp.poc)
+            : null,
+        vah: useLegacy252
+          ? normalizeFiniteOrNull(engines?.volumeProfile?.vah)
+          : vpOk
+            ? normalizeFiniteOrNull(activeVp.vah)
+            : null,
+        val: useLegacy252
+          ? normalizeFiniteOrNull(engines?.volumeProfile?.val)
+          : vpOk
+            ? normalizeFiniteOrNull(activeVp.val)
+            : null,
         // Pieza 50.4: ventana efectiva del perfil (252 ruedas operativas).
-        volumeProfileWindowBars: normalizeFiniteOrNull(
-          engines?.volumeProfile?.windowBars ?? engines?.volumeProfile?.closedBarCount,
-        ),
+        volumeProfileWindowBars: useLegacy252
+          ? normalizeFiniteOrNull(
+              engines?.volumeProfile?.windowBars ?? engines?.volumeProfile?.closedBarCount,
+            )
+          : vpOk
+            ? normalizeFiniteOrNull(activeVp.sessionsCovered)
+            : null,
+        vpHorizon,
+        vpCoverageStatus: useLegacy252
+          ? (engines?.volumeProfile?.status === 'OK'
+              ? ((engines.volumeProfile.windowBars ?? 0) >= 252 ? 'COMPLETE' : 'PARTIAL')
+              : 'UNAVAILABLE')
+          : (activeVp?.coverageStatus ?? 'UNAVAILABLE'),
+        vpTickSize: vpOk ? normalizeFiniteOrNull(activeVp.tickSize) : null,
+        vpMethodology: 'OHLCV_UNIFORM_BIN',
+        hvnZones: vpOk ? activeVp.hvnZones : [],
+        lvnZones: vpOk ? activeVp.lvnZones : [],
         callWall: normalizeFiniteOrNull(exposure?.callWallStrike),
         putWall: normalizeFiniteOrNull(exposure?.putWallStrike),
         // Pieza 50.9: solo un cruce único y finito se dibuja como línea.
@@ -1330,14 +1416,48 @@ export const StockDetailView: React.FC<{
     }
     const engines = usSnap?.terminalEngines;
     const exposure = usSnap?.exposureSummary;
+    const activeVp = pickActiveVpProfile(
+      usBarsResp?.volumeProfilesByHorizon,
+      engines?.volumeProfilesByHorizon,
+      vpHorizon,
+    );
+    const useLegacy252 =
+      vpHorizon === '252R' && (activeVp === null || activeVp.coverageStatus === 'UNAVAILABLE');
+    const vpOk = activeVp !== null && activeVp.coverageStatus !== 'UNAVAILABLE';
     return {
-      poc: normalizeFiniteOrNull(engines?.volumeProfile?.poc),
-      vah: normalizeFiniteOrNull(engines?.volumeProfile?.vah),
-      val: normalizeFiniteOrNull(engines?.volumeProfile?.val),
+      poc: useLegacy252
+        ? normalizeFiniteOrNull(engines?.volumeProfile?.poc)
+        : vpOk
+          ? normalizeFiniteOrNull(activeVp.poc)
+          : null,
+      vah: useLegacy252
+        ? normalizeFiniteOrNull(engines?.volumeProfile?.vah)
+        : vpOk
+          ? normalizeFiniteOrNull(activeVp.vah)
+          : null,
+      val: useLegacy252
+        ? normalizeFiniteOrNull(engines?.volumeProfile?.val)
+        : vpOk
+          ? normalizeFiniteOrNull(activeVp.val)
+          : null,
       // Pieza 50.4: ventana efectiva del perfil (252 ruedas operativas).
-      volumeProfileWindowBars: normalizeFiniteOrNull(
-        engines?.volumeProfile?.windowBars ?? engines?.volumeProfile?.closedBarCount,
-      ),
+      volumeProfileWindowBars: useLegacy252
+        ? normalizeFiniteOrNull(
+            engines?.volumeProfile?.windowBars ?? engines?.volumeProfile?.closedBarCount,
+          )
+        : vpOk
+          ? normalizeFiniteOrNull(activeVp.sessionsCovered)
+          : null,
+      vpHorizon,
+      vpCoverageStatus: useLegacy252
+        ? (engines?.volumeProfile?.status === 'OK'
+            ? ((engines.volumeProfile.windowBars ?? 0) >= 252 ? 'COMPLETE' : 'PARTIAL')
+            : 'UNAVAILABLE')
+        : (activeVp?.coverageStatus ?? 'UNAVAILABLE'),
+      vpTickSize: vpOk ? normalizeFiniteOrNull(activeVp.tickSize) : null,
+      vpMethodology: 'OHLCV_UNIFORM_BIN',
+      hvnZones: vpOk ? activeVp.hvnZones : [],
+      lvnZones: vpOk ? activeVp.lvnZones : [],
       callWall: normalizeFiniteOrNull(exposure?.callWallStrike),
       putWall: normalizeFiniteOrNull(exposure?.putWallStrike),
       // Pieza 50.9: solo un cruce único y finito se dibuja como línea.
@@ -1353,7 +1473,7 @@ export const StockDetailView: React.FC<{
       fvgs: engines?.fvgs?.activeFvgs ?? [],
       orderBlocks: engines?.orderBlocks?.freshOrderBlocks ?? [],
     };
-  }, [arOptions, arBarsResp, cleanTicker, chartBundle.bars, isArMarket, stockDetail, usSnap]);
+  }, [arOptions, arBarsResp, cleanTicker, chartBundle.bars, isArMarket, stockDetail, usBarsResp, usSnap, vpHorizon]);
 
   // Pieza 50.9: trazabilidad del insumo de exposición. Hora de evaluación ≠ hora de
   // cotización ≠ precio live; un tick del subyacente no mueve niveles ni spot.
@@ -1453,8 +1573,16 @@ export const StockDetailView: React.FC<{
   // Pieza 50.4: etiqueta determinista de la ventana del Volume Profile (ancho reservado,
   // sin CLS). Si el backend no informa la ventana, explicita el contrato 1Y · 252R.
   const vpWindowBars = keyLevels.volumeProfileWindowBars ?? null;
-  const vpWindowTag = resolveVpWindowTag(vpWindowBars);
-  const vpTooltip = resolveVpWindowTooltip(vpWindowBars);
+  const vpWindowTag =
+    vpHorizon === '252R'
+      ? resolveVpWindowTag(vpWindowBars)
+      : keyLevels.vpCoverageStatus === 'UNAVAILABLE'
+        ? `${vpHorizon} · n/d`
+        : vpHorizon;
+  const vpTooltip =
+    vpHorizon === '252R'
+      ? `${resolveVpWindowTooltip(vpWindowBars)} · VP (OHLCV uniforme)`
+      : `VP (OHLCV uniforme) · horizonte ${vpHorizon} (${keyLevels.vpCoverageStatus === 'UNAVAILABLE' ? 'sin cobertura intradiaria suficiente' : `${String(vpWindowBars ?? 0)} ruedas`})`;
 
   // Pieza 50.4: fecha visible del ancla AVWAP (`DD/MM/YY` en 1D/1W; `DD/MM HH:mm` intradiario).
   const avwapAnchorIncludeTime =
@@ -2041,6 +2169,26 @@ export const StockDetailView: React.FC<{
               className="font-mono-num tabular-nums"
               onClick={() => handleToggleOverlay('volumeProfile')}
             />
+            <select
+              aria-label="Horizonte VP"
+              value={vpHorizon}
+              onChange={(event) => setVpHorizon(event.target.value as VolumeProfileHorizon)}
+              title="Horizonte de Volume Profile · VP (OHLCV uniforme)"
+              className="h-6 rounded border border-[#252536] bg-[#11111A] px-1.5 font-mono-num tabular-nums text-[11px] text-[#CBD0E4] outline-none"
+            >
+              <option value="1D">1D</option>
+              <option value="5D">5D</option>
+              <option value="20D">20D</option>
+              <option value="252R">1Y · 252R</option>
+            </select>
+            <ToolbarChip
+              active={overlays.volumeProfile && showVpNodes}
+              label="HVN/LVN"
+              title="Bandas HVN/LVN · VP (OHLCV uniforme suavizado por prominencia)"
+              className="h-6 font-mono-num tabular-nums"
+              onClick={() => setShowVpNodes((v) => !v)}
+            />
+            <span className="font-mono-num tabular-nums text-[10px] text-[#7C8398]">VP (OHLCV uniforme)</span>
             <ToolbarChip active={sessionLevelsEnabled} label="Sesión" onClick={() => setSessionLevelsEnabled(v=>!v)} />
             <select aria-label="Opening Range" value={openingRange} onChange={e=>setOpeningRange(Number(e.target.value) as OpeningRangeMinutes)} className="h-6 bg-[#111118] text-[11px] tabular-nums">
               {[5,15,30].map(m=><option key={m} value={m}>OR {m}m</option>)}
@@ -2069,6 +2217,9 @@ export const StockDetailView: React.FC<{
           autoAnchorEnabled={autoAnchorEnabled}
           currencySymbol={contextInfo.currencySymbol}
           keyLevels={keyLevels}
+          vpHorizon={vpHorizon}
+          showVpNodes={showVpNodes}
+          vpLiveSeed={!isArMarket ? (usBarsResp?.vpLiveSeed ?? null) : null}
           highlightedLevel={highlightedLevel}
           onAnchorCandleClick={handleAnchorCandleClick}
           onLogicalRangeSync={handleMainRangeSync}
@@ -2209,6 +2360,9 @@ const PanoramicPriceChart: React.FC<{
   readonly autoAnchorEnabled: Readonly<Record<AutoAnchorRole, boolean>>;
   readonly currencySymbol: 'ARS' | 'USD';
   readonly keyLevels: ChartKeyLevels;
+  readonly vpHorizon: VolumeProfileHorizon;
+  readonly showVpNodes: boolean;
+  readonly vpLiveSeed: MultiHorizonVpLiveSeed | null;
   readonly highlightedLevel: HighlightLevelId;
   readonly onAnchorCandleClick: (timeSec: number) => void;
   readonly onLogicalRangeSync: (range: LogicalRangeAlias | null) => void;
@@ -2229,6 +2383,9 @@ const PanoramicPriceChart: React.FC<{
   sessionLevelsEnabled, openingRange, proximityMode, dailyAtr14, dailyAtrAsOf,
   currencySymbol,
   keyLevels,
+  vpHorizon,
+  showVpNodes,
+  vpLiveSeed,
   highlightedLevel,
   onAnchorCandleClick,
   onLogicalRangeSync,
@@ -2241,6 +2398,10 @@ const PanoramicPriceChart: React.FC<{
   const crosshairLegendRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const bandsPrimitiveRef = useRef<PanoramicBandsPrimitive | null>(null);
+  const vpLiveStateRef = useRef<MultiHorizonVpLiveState | null>(null);
+  const vpLiveOverrideRef = useRef<HorizonVolumeProfileDto | null>(null);
+  const vpApplyInPlaceRef = useRef<((override: HorizonVolumeProfileDto | null) => void) | null>(null);
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const emaRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
   const lastMaConfigurationRef=useRef<{bundle:PanoramicChartBundle;fastType:MaPreset['fastType'];preset:MaPreset;master:boolean}|null>(null);
@@ -2469,6 +2630,14 @@ const PanoramicPriceChart: React.FC<{
 
     chartRef.current = chart;
     candleRef.current = candles;
+    const bandsPrimitive = new PanoramicBandsPrimitive({
+      enabled: false,
+      tickSize: null,
+      hvnZones: [],
+      lvnZones: [],
+    });
+    candles.attachPrimitive(bandsPrimitive);
+    bandsPrimitiveRef.current = bandsPrimitive;
     candleMarkersRef.current = createSeriesMarkers(candles, []);
     emaRefs.current = [...emaSeries,mtfEmaSeries];
     vwapRef.current = vwap;
@@ -2582,6 +2751,8 @@ const PanoramicPriceChart: React.FC<{
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
+      bandsPrimitiveRef.current = null;
+      vpApplyInPlaceRef.current = null;
       emaRefs.current = [];
       vwapRef.current = null;
       avwapRefs.current = {};
@@ -2864,15 +3035,76 @@ const PanoramicPriceChart: React.FC<{
     updatePriceLineSlotRef.current = (key,enabled,price,title,provisional=false) => updateSlot(key,slots[key],enabled,price,title,false,provisional?LineStyle.Dotted:LineStyle.Dashed);
     const prefix = currencySymbol === 'USD' ? 'US$' : '$';
     const hasBars = bundle.barsAvailable;
-    const vpTag = resolveVpWindowTag(keyLevels.volumeProfileWindowBars ?? null);
-    updateSlot('poc', slots.poc, hasBars && overlays.volumeProfile, keyLevels.poc, `POC ${prefix}${fmtNum(keyLevels.poc, 2)} (${vpTag})`, highlightedLevel === 'POC');
-    updateSlot('vah', slots.vah, hasBars && overlays.volumeProfile, keyLevels.vah, 'VAH', highlightedLevel === 'VAH');
-    updateSlot('val', slots.val, hasBars && overlays.volumeProfile, keyLevels.val, 'VAL', highlightedLevel === 'VAL');
+    const applyVpOverlay = (override: HorizonVolumeProfileDto | null): void => {
+      const useOverride =
+        override !== null &&
+        override.horizon === vpHorizon &&
+        (vpHorizon === '1D' || vpHorizon === '5D' || vpHorizon === '20D') &&
+        override.coverageStatus !== 'UNAVAILABLE';
+      const activePoc = useOverride ? override.poc : keyLevels.poc;
+      const activeVah = useOverride ? override.vah : keyLevels.vah;
+      const activeVal = useOverride ? override.val : keyLevels.val;
+      const activeHvn = useOverride ? override.hvnZones : (keyLevels.hvnZones ?? []);
+      const activeLvn = useOverride ? override.lvnZones : (keyLevels.lvnZones ?? []);
+      const activeTick = useOverride ? override.tickSize : (keyLevels.vpTickSize ?? null);
+      const vpTag =
+        vpHorizon === '252R'
+          ? resolveVpWindowTag(keyLevels.volumeProfileWindowBars ?? null)
+          : (useOverride ? vpHorizon : (keyLevels.vpCoverageStatus === 'UNAVAILABLE' ? `${vpHorizon} · n/d` : vpHorizon));
+      updateSlot('poc', slots.poc, hasBars && overlays.volumeProfile, activePoc, `POC ${prefix}${fmtNum(activePoc, 2)} (${vpTag})`, highlightedLevel === 'POC');
+      updateSlot('vah', slots.vah, hasBars && overlays.volumeProfile, activeVah, 'VAH', highlightedLevel === 'VAH');
+      updateSlot('val', slots.val, hasBars && overlays.volumeProfile, activeVal, 'VAL', highlightedLevel === 'VAL');
+      bandsPrimitiveRef.current?.setState({
+        enabled: hasBars && overlays.volumeProfile && showVpNodes,
+        tickSize: activeTick,
+        hvnZones: activeHvn,
+        lvnZones: activeLvn,
+      });
+    };
+    vpApplyInPlaceRef.current = applyVpOverlay;
+    applyVpOverlay(vpLiveOverrideRef.current);
     updateSlot('callWall', slots.callWall, hasBars && overlays.optionWalls, keyLevels.callWall, `CALL WALL ${prefix}${fmtNum(keyLevels.callWall, 2)}`, highlightedLevel === 'CALL_WALL');
     updateSlot('putWall', slots.putWall, hasBars && overlays.optionWalls, keyLevels.putWall, `PUT WALL ${prefix}${fmtNum(keyLevels.putWall, 2)}`, highlightedLevel === 'PUT_WALL');
     updateSlot('maxPain', slots.maxPain, hasBars && overlays.optionWalls, keyLevels.maxPain ?? null, `MAX PAIN ${prefix}${fmtNum(keyLevels.maxPain, 2)}`, false);
     updateSlot('zeroGamma', slots.zeroGamma, hasBars && overlays.optionWalls, keyLevels.zeroGamma, `ZERO-GAMMA ${prefix}${fmtNum(keyLevels.zeroGamma, 2)}`, highlightedLevel === 'ZERO_GAMMA');
-  }, [bundle.barsAvailable, currencySymbol, highlightedLevel, keyLevels, overlays.optionWalls, overlays.volumeProfile]);
+  }, [bundle.barsAvailable, currencySymbol, highlightedLevel, keyLevels, overlays.optionWalls, overlays.volumeProfile, showVpNodes, vpHorizon]);
+
+  // S2-1/S2-2: actualización incremental O(B_bar) del VP multihorizonte solo al cierre de barra 1m/5m (cero en ticks intravela).
+  useEffect(() => {
+    vpLiveOverrideRef.current = null;
+    vpLiveStateRef.current = market === 'US' && vpLiveSeed !== null ? createMultiHorizonVpLiveState(vpLiveSeed) : null;
+    if (market !== 'US' || vpLiveSeed === null) return undefined;
+    const offBar = subscribeLiveBarUpdate(providerSymbol, (ev) => {
+      const closed = ev.lastClosedBar;
+      const currentState = vpLiveStateRef.current;
+      if (closed == null || currentState === null) return;
+      if (closed.time <= currentState.seed.watermark1mSec) return;
+      const nextState = advanceMultiHorizonVpLiveOnClosed1m(
+        currentState,
+        closed,
+        ev.time,
+        ev.formingBar?.close,
+      );
+      if (nextState === currentState) return;
+      vpLiveStateRef.current = nextState;
+      const activeUpdated =
+        vpHorizon === '1D'
+          ? nextState.profile1d
+          : vpHorizon === '5D'
+            ? nextState.profile5d
+            : vpHorizon === '20D'
+              ? nextState.profile20d
+              : null;
+      if (activeUpdated !== null) {
+        const dto = serializeHorizonVolumeProfile(activeUpdated) as HorizonVolumeProfileDto;
+        vpLiveOverrideRef.current = dto;
+        vpApplyInPlaceRef.current?.(dto);
+      }
+    });
+    return () => {
+      offBar();
+    };
+  }, [market, providerSymbol, vpHorizon, vpLiveSeed]);
 
   // S1-5/6: fixed-size imperative overlay controller. Historical construction stays in /api/bars.
   useEffect(() => {

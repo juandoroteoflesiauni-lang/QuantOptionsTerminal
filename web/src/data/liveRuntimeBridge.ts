@@ -663,6 +663,7 @@ export async function requestTerminalBars(
     readonly market?: 'US' | 'AR';
     readonly includeOverlays?: boolean;
     readonly includeMtfEma?: boolean;
+    readonly includeVpHorizons?: boolean;
   },
 ): Promise<UsTerminalBarsResponseDto | null> {
   const clean = symbol.trim().toUpperCase();
@@ -674,7 +675,7 @@ export async function requestTerminalBars(
   // del subyacente US en USD (SPEC punto 10). La clave de caché incluye el
   // mercado para no pisar `NVDA:1D:US` con `NVDA:1D:AR`.
   const market = options?.market ?? 'US';
-  const overlaysParam = (options?.includeOverlays === false ? '&overlays=0' : '') + (options?.includeMtfEma===true?'&ema20_5m=1':'');
+  const overlaysParam = (options?.includeOverlays === false ? '&overlays=0' : '') + (options?.includeMtfEma===true?'&ema20_5m=1':'') + (options?.includeVpHorizons === true ? '&vpHorizons=1' : '');
   return fetchJsonGuarded<UsTerminalBarsResponseDto>(
     `bars:${clean}:${timeframe}:${market}:${adaptiveWindow ? 'adaptive' : String(vis)}${overlaysParam}`,
     `/api/bars?symbol=${encodeURIComponent(clean)}&timeframe=${encodeURIComponent(timeframe)}&market=${market}${visibleParam}${options?.force ? '&refresh=1' : ''}${overlaysParam}`,

@@ -10,6 +10,9 @@ import type {
   RelativeStrengthAndCatalystsDto,
   SpatialConfluenceDto,
   TerminalTimeframe,
+  VolumeProfileCoverageStatus,
+  VolumeProfileHorizon,
+  VolumeProfileNodeZoneDto,
 } from '../../data/liveTypes';
 import type { AvwapAnchorMode, MinimalOhlcvBar } from './stockDetailMath';
 
@@ -41,6 +44,13 @@ export interface ChartKeyLevels {
   readonly val: number | null;
   /** Pieza 50.4: ventana efectiva del Volume Profile (`windowBars` o `closedBarCount`), o `null`. */
   readonly volumeProfileWindowBars?: number | null;
+  /** S2-1/S2-2: horizonte activo, cobertura, procedencia y zonas HVN/LVN. */
+  readonly vpHorizon?: VolumeProfileHorizon;
+  readonly vpCoverageStatus?: VolumeProfileCoverageStatus;
+  readonly vpTickSize?: number | null;
+  readonly vpMethodology?: 'OHLCV_UNIFORM_BIN';
+  readonly hvnZones?: readonly VolumeProfileNodeZoneDto[];
+  readonly lvnZones?: readonly VolumeProfileNodeZoneDto[];
   readonly callWall: number | null;
   readonly putWall: number | null;
   readonly zeroGamma: number | null;

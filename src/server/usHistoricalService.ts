@@ -1,4 +1,5 @@
 import { resolveMtfWarmupFrom, projectMtfEmaToLowerBarsPure, normalizeMaBars, type MtfEmaDto } from '../core/movingAverages.js';
+import { enumerateRecentUsSessions } from '../core/microstructure/multiHorizonVolumeProfile.js';
 import type { Bar } from '../core/types.js';
 import { historicalMomentsSince, historicalObservation, mergeHistoricalSegments, planUsHistorical, planUsFmpHistorical, rollupUsHistorical, usHistoricalSession, type HistoricalObservation, type HistoricalPlan, type UsHistoricalTimeframe } from '../core/usHistorical.js';
 import { normalizeMassiveAggs } from '../data/normalizeMassive.js';
@@ -190,6 +191,116 @@ export class UsHistoricalService {
     const result=await this.fmpRange({symbol:request.symbol,timeframe:'5m',fromUtcSec:from,toUtcSec:request.now,includeExtended:!request.rthOnly,signal,onHttp:()=>{counters.requests+=1;},onPage:()=>{counters.pages+=1;}});
     if(result.discarded>0||(result.httpStatus!==null&&result.httpStatus>=400))throw new Error('MTF_NATIVE_SOURCE_INVALID');
     return {bars:normalizeMaBars(rollupUsHistorical(result.bars.map(bar=>historicalObservation(bar,'FMP',5)),5,request.rthOnly,request.now).map(row=>row.bar)),source:'ACQUIRED_5M',acquisitionAttempted:true,requests:counters.requests,pages:counters.pages};
+  }
+
+  /**
+   * S2-1: Reutiliza las barras `1m` y `5m` ya cacheadas en `UsHistoricalService` sin disparar
+   * requests redundantes. Si `allowAcquisition === true` y falta cobertura `1m`/`5m` para `5D`/`20D`,
+   * adquiere mediante `this.load` (single-flight deduplicado).
+   */
+  public async resolveVpIntradaySources(request: {
+    readonly symbol: string;
+    readonly now: number;
+    readonly rthOnly: boolean;
+    readonly provider: 'MASSIVE_REST' | 'FMP';
+    readonly allowAcquisition: boolean;
+    readonly signal?: AbortSignal;
+  }): Promise<{
+    readonly bars1m: readonly Bar[];
+    readonly coveredFrom1m: number | null;
+    readonly bars5m: readonly Bar[];
+    readonly coveredFrom5m: number | null;
+    readonly acquisitionAttempted: boolean;
+  }> {
+    const session = request.rthOnly ? 'RTH' : 'EXT';
+    const massiveKey = (minutes: 1 | 5) =>
+      `MASSIVE_REST|${request.symbol}|${session}|SPLIT_ADJUSTED|BAR_MOMENTS|${String(minutes)}`;
+    const fmpKey = (tf: '1m' | '5m') =>
+      `FMP|${request.symbol}|${session}|FMP_NATIVE_UNVERIFIED|HLC3|${tf}`;
+
+    const isFreshPrefix = (entry: CacheEntry | undefined): entry is CacheEntry =>
+      entry !== undefined && this.deps.nowMs() - entry.prefixAt < 900_000;
+
+    const readCached1m = (): CacheEntry | undefined => {
+      const m = this.cache.get(massiveKey(1));
+      if (isFreshPrefix(m)) return m;
+      const f = this.cache.get(fmpKey('1m'));
+      return isFreshPrefix(f) ? f : undefined;
+    };
+
+    const readCached5m = (): CacheEntry | undefined => {
+      const m = this.cache.get(massiveKey(5));
+      if (isFreshPrefix(m)) return m;
+      const f = this.cache.get(fmpKey('5m'));
+      return isFreshPrefix(f) ? f : undefined;
+    };
+
+    let acquisitionAttempted = false;
+    if (request.allowAcquisition) {
+      const sessions5d = enumerateRecentUsSessions(request.now, 5, request.rthOnly, 60);
+      const sessions20d = enumerateRecentUsSessions(request.now, 20, request.rthOnly, 300);
+      const first5d = sessions5d[0];
+      const first20d = sessions20d[0];
+      const need5dFrom = first5d === undefined ? Number.POSITIVE_INFINITY : request.rthOnly ? first5d.open : first5d.extendedOpen;
+      const need20dFrom = first20d === undefined ? Number.POSITIVE_INFINITY : request.rthOnly ? first20d.open : first20d.extendedOpen;
+
+      const c1mBefore = readCached1m();
+      const c5mBefore = readCached5m();
+      const has5d1m = c1mBefore !== undefined && c1mBefore.from <= need5dFrom && c1mBefore.to >= request.now - 120;
+      const has20d5m =
+        (c5mBefore !== undefined && c5mBefore.from <= need20dFrom && c5mBefore.to >= request.now - 600) ||
+        (c1mBefore !== undefined && c1mBefore.from <= need20dFrom && c1mBefore.to >= request.now - 600);
+
+      if (!has20d5m) {
+        acquisitionAttempted = true;
+        await this.load({
+          symbol: request.symbol,
+          timeframe: '5m',
+          now: request.now,
+          rthOnly: request.rthOnly,
+          adaptiveWindow: true,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        });
+      }
+      const c1mMid = readCached1m();
+      const has5dAfter5m = c1mMid !== undefined && c1mMid.from <= need5dFrom && c1mMid.to >= request.now - 120;
+      if (!has5d1m && !has5dAfter5m) {
+        acquisitionAttempted = true;
+        await this.load({
+          symbol: request.symbol,
+          timeframe: '1m',
+          now: request.now,
+          rthOnly: request.rthOnly,
+          adaptiveWindow: true,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        });
+      }
+    }
+
+    const entry1m = readCached1m();
+    const entry5m = readCached5m();
+
+    const rows1m = entry1m === undefined ? [] : rollupUsHistorical(entry1m.rows, 1, request.rthOnly, request.now);
+    const bars1m = rows1m.map((row) => row.bar);
+    const coveredFrom1m = entry1m?.from ?? null;
+
+    let bars5m: readonly Bar[] = [];
+    let coveredFrom5m: number | null = null;
+    if (entry5m !== undefined && (entry1m === undefined || entry5m.from <= entry1m.from)) {
+      bars5m = rollupUsHistorical(entry5m.rows, 5, request.rthOnly, request.now).map((row) => row.bar);
+      coveredFrom5m = entry5m.from;
+    } else if (entry1m !== undefined) {
+      bars5m = rollupUsHistorical(entry1m.rows, 5, request.rthOnly, request.now).map((row) => row.bar);
+      coveredFrom5m = entry1m.from;
+    }
+
+    return {
+      bars1m,
+      coveredFrom1m,
+      bars5m,
+      coveredFrom5m,
+      acquisitionAttempted,
+    };
   }
 
   public invalidate(symbol: string): void {

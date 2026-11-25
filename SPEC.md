@@ -66,3 +66,22 @@ EMA20 5m usa la EMA existente con semilla SMA sobre barras 5m completas. Objetiv
 Proyección causal: cierre 5m <= cierre 1m y <= evaluación efectiva. Línea `WithSteps` sólo confirmada; la leyenda `5m EMA20 (prov)` usa la última base confirmada sin encadenar snapshots. Huecos elegibles no se rellenan; noches, feriados y cierres anticipados usan el calendario aprobado. Confirmación tardía puede completar el punto 1m que acaba de cerrar mediante historicalUpdate; nunca incorpora un provisional a la línea. No hay requests por tick.
 
 Se conservan los cuatro slots MA, ocho AVWAP, VWAP, dieciséis IPriceLine y sus contratos; sólo se agrega una LineSeries EMA20 5m. Las catorce secundarias tienen autoscaleInfoProvider nulo; las velas siguen siendo el único contribuyente del eje de precios. Única ampliación legacy autorizada: test de autoscale, conservando los trece casos originales y extremos USD/ARS.
+
+
+## Sub-fase 2 — Pieza 5 (`S2-1` + `S2-2`): Volume Profile Multihorizonte y Nodos HVN/LVN
+
+El motor legacy `computeVolumeProfileAmt` (`volumeProfileAmt.ts`) y sus campos `hvnBins`/`lvnBins` permanecen intactos. `computeMultiHorizonVolumeProfile` agrega histogramas por rueda efectiva (`sessions.ts` y calendario NYSE 2020–2028 de `usHistorical.ts`, con feriados, cierres anticipados 13:00 ET y DST) sobre rejilla compartida `k * tickSize` (`binIndex = priceToBinIndex(price, tickSize)`), con distribución uniforme `bar.volume / countBins` en `[bar.low, bar.high]`, `selectPocIndex` determinista, Value Area al `70%` y escalado entero bajo `MAX_PROFILE_BINS = 4_000`.
+
+| Horizonte | Ventana efectiva | Fuente | Actualización |
+|---|---|---|---|
+| `1D` | 1 rueda efectiva actual (o última cerrada) | Barras `1m` | Incremental $O(B_{\text{bar}})$ al cerrar barra `1m` |
+| `5D` | Últimas 5 ruedas efectivas | Barras `1m` (4 cerradas cacheadas + viva `1D`) | Incremental al cerrar barra `1m` |
+| `20D` | Últimas 20 ruedas efectivas | Barras `5m` (19 cerradas cacheadas + actual) | Solo al cerrar barra `5m` |
+| `252R` | Últimas 252 ruedas efectivas cerradas | Barras `1D` (`1Y · 252R`) | Al hidratar histórico/snapshot |
+
+Invariantes `S2-1`: conservación exacta de volumen `|Σ binVol - totalVolume| <= 1e-9 * max(1, totalVolume)`, procedencia explícita `methodology: 'OHLCV_UNIFORM_BIN'` (etiqueta UI `VP (OHLCV uniforme)`), y degradación honesta `UNAVAILABLE` (`NaN`/`null`) cuando no se acreditan ruedas suficientes (p. ej. AR/BYMA sin intradiario completo). Histogramas diarios cerrados se cachean en `DailySessionHistogramCache` (LRU acotada) e invalidan ante cambio de `adjustmentRevision` o revisión OHLCV observada.
+
+`detectVolumeProfileNodes` (`S2-2`, `nodesMethodology: 'OHLCV_UNIFORM_SMOOTHED_PROMINENCE'`): recorta primero al soporte activo `[i_min, i_max]` con `V_i > 0` (ningún bin exterior vacío es `HVN` o `LVN`); suaviza topología con kernel `[1,2,3,2,1]/9` y bordes reflejados reportando siempre volumen crudo $V_i$; detecta `HVN` en vecindad `w = clamp(floor(0.015 * N_bins), 2, 12)` con $S_i / S_{\text{poc}} \ge 0.35$, prominencia $P_i \ge 0.15 \cdot S_{\text{poc}}$, expansión $\ge 0.75 \cdot S_{i^*}$ y fusión a $\le 1$ bin; detecta `LVN` interiores flanqueados por dos clusters $\ge 0.30 \cdot S_{\text{poc}}$ con $S_i / \min(S_{\text{peakL}}, S_{\text{peakR}}) \le 0.35$ y consolida gaps internos (`V = 0`) en una sola banda `LVN` con `isPriceGap: true`; aplica separación mínima `>= w` bins, ranking por prominencia + cercanía al precio de referencia y tope configurable `3 HVN + 3 LVN`.
+
+En UI (`PanoramicBandsPrimitive.ts` + `StockDetailView.tsx`): bandas `HVN` (`rgba(56, 189, 248, 0.09)`) y `LVN` (`rgba(245, 158, 11, 0.08)`) con `autoscaleInfo(): null` obligatorio; selector de horizonte `1D | 5D | 20D | 1Y · 252R` y toggle `HVN/LVN` exclusivamente en memoria de sesión (sin `localStorage`), actualizando in-place los slots `POC/VAH/VAL` existentes sin `setData()` ni recálculo por tick intravela.
+
