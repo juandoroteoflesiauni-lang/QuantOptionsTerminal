@@ -1,3 +1,5 @@
+import { resolveMaPresetForTimeframe, overrideMaPreset, serializeMovingAverages, type MaPreset } from '../../../src/core/movingAverages';
+import { createMaChartRuntime, type MaChartRuntime } from './stock-detail/movingAverageRuntime';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createCanonicalMonthLiveState, updateCanonicalMonthLive, projectCanonicalMonthLive, quoteCanonicalMonthLive,
   canonicalMonthLiveBucket,
@@ -13,6 +15,7 @@ import {
   CrosshairMode,
   LineSeries,
   LineStyle,
+  LineType,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
@@ -1018,6 +1021,22 @@ export const StockDetailView: React.FC<{
       ((arBarsResp?.bars.length ?? 0) === 0 &&
         ((arBars1dResp?.bars.length ?? 0) > 0 || (stockDetail?.historicalBars.length ?? 0) > 0)));
   const effectiveChartTimeframe: TerminalTimeframe = isArIntradayFallbackActive ? '1D' : timeframe;
+  const [maPresetsByTimeframe,setMaPresetsByTimeframe]=useState<Readonly<Record<string,MaPreset>>>({});
+  const maPreset=useMemo(()=>maPresetsByTimeframe[effectiveChartTimeframe]??resolveMaPresetForTimeframe(effectiveChartTimeframe),[maPresetsByTimeframe,effectiveChartTimeframe]);
+  const updateMaPreset=(patch:Partial<Pick<MaPreset,'fastType'|'visible'|'sessionVwap'|'mtfEma20'>>):void=>{
+    setMaPresetsByTimeframe(previous=>({...previous,[effectiveChartTimeframe]:overrideMaPreset(previous[effectiveChartTimeframe]??resolveMaPresetForTimeframe(effectiveChartTimeframe),patch)}));
+  };
+  // Opt-in acquisition is isolated from the ordinary REST effect and never runs in a tick.
+  useEffect(()=>{
+    if(isArMarket||timeframe!=='1m'||!maPreset.mtfEma20||usBarsResp===undefined||usBarsResp.ema20_5m?.acquisitionAttempted===true||
+      usBarsResp.ema20_5m?.status==='CONFIRMED')return;
+    const controller=new AbortController();
+    void requestTerminalBars(cleanTicker,'1m',{adaptiveWindow:true,includeOverlays:false,includeMtfEma:true,signal:controller.signal}).then(response=>{
+      if(response!==null&&!controller.signal.aborted)setUsBarsByKey(previous=>({...previous,[`${currentStockKey}:1m`]:response}));
+    }).catch(()=>{/* The ordinary response remains explicit UNAVAILABLE. */});
+    return()=>controller.abort();
+  },[cleanTicker,currentStockKey,timeframe,isArMarket,maPreset.mtfEma20,usBarsResp]);
+
   const arFallbackInfoText = isArIntradayFallbackActive
     ? `BYMA sin histórico ${timeframe.toUpperCase()} · mostrando 1D real`
     : null;
@@ -1061,7 +1080,9 @@ export const StockDetailView: React.FC<{
     const dedupDaily = dedupAndSortBars(rawBars);
     // Pieza 50.4: en `1W` las velas diarias se resamplean a semanales nativas (lunes–viernes)
     // en la zona horaria del mercado; el resto de timeframes usa las barras tal cual.
-    const bars: readonly MinimalOhlcvBar[] =
+    const maResponse=isArMarket?(timeframe==='1W'?arBars1dResp:arBarsResp):(timeframe==='1W'?usBars1dResp:usBarsResp);
+    const weeklyMa=effectiveChartTimeframe==='1W'?maResponse?.weeklyMovingAverages:undefined;
+    const bars: readonly MinimalOhlcvBar[] = weeklyMa!==undefined?weeklyMa.bars :
       effectiveChartTimeframe === '1W'
         ? resampleDailyToWeekly(
             toWeeklyResampleBars(dedupDaily),
@@ -1069,11 +1090,14 @@ export const StockDetailView: React.FC<{
           )
         : dedupDaily;
     const closes = bars.map((bar) => bar.close);
+    const movingAverages=weeklyMa?.movingAverages??maResponse?.movingAverages;
+    const maAligned=movingAverages!==undefined&&movingAverages.times.length===bars.length&&movingAverages.times.every((time,i)=>time===bars[i]?.time)?movingAverages:undefined;
+    const maData=maAligned??serializeMovingAverages(toWeeklyResampleBars(bars));
     const isIntraday = effectiveChartTimeframe !== '1D' && effectiveChartTimeframe !== '1W';
-    const ema9 = computeEmaSeriesPure(closes, 9).map(normalizeFiniteOrNull);
-    const ema21 = computeEmaSeriesPure(closes, 21).map(normalizeFiniteOrNull);
-    const ema50 = computeEmaSeriesPure(closes, 50).map(normalizeFiniteOrNull);
-    const ema200 = computeEmaSeriesPure(closes, 200).map(normalizeFiniteOrNull);
+    const ema9 = maAligned?.values.ema9 ?? computeEmaSeriesPure(closes, 9).map(normalizeFiniteOrNull);
+    const ema21 = maAligned?.values.ema21 ?? computeEmaSeriesPure(closes, 21).map(normalizeFiniteOrNull);
+    const ema50 = maAligned?.values.ema50 ?? computeEmaSeriesPure(closes, 50).map(normalizeFiniteOrNull);
+    const ema200 = maAligned?.values.ema200 ?? computeEmaSeriesPure(closes, 200).map(normalizeFiniteOrNull);
     // Pieza 50.6: en US el VWAP de sesión proviene del backend (`overlays.sessionVwap`,
     // alineado por `time` desde las parejas originales); jamás se recalcula en local.
     // `sessionVwapSupported` desactiva el overlay en marcos no soportados (1h/4h/1D/1W)
@@ -1205,6 +1229,8 @@ export const StockDetailView: React.FC<{
     }
 
     return {
+      movingAverages:maData,
+      ...(effectiveChartTimeframe==='1m'&&maResponse?.ema20_5m!==undefined?{ema20_5m:maResponse.ema20_5m}:{}),
       bars,
       ema9,
       ema21,
@@ -1940,9 +1966,16 @@ export const StockDetailView: React.FC<{
                 <option key={mode.id} value={mode.id}>{mode.label}</option>
               ))}
             </select>
-            <ToolbarChip active={overlays.emas} label="EMA 9/21/50/200" onClick={() => handleToggleOverlay('emas')} />
+            <ToolbarChip active={overlays.emas} label="Medias" onClick={() => handleToggleOverlay('emas')} />
+            {maPreset.fastSelectable&&<select aria-label="Tipo de medias rápidas" value={maPreset.fastType} onChange={e=>updateMaPreset({fastType:e.target.value as 'EMA'|'VWMA'})} className="h-6 rounded bg-[#11111A] px-2 text-[11px] tabular-nums">
+              <option value="EMA">EMA 9/21</option><option value="VWMA">VWMA 9/21</option>
+            </select>}
+            {([9,21,50,200] as const).map((period,i)=><ToolbarChip key={period} active={overlays.emas&&maPreset.visible[i]===true}
+              label={`${i<2?maPreset.fastType:maPreset.slowType} ${period}`} className="h-6 tabular-nums"
+              onClick={()=>updateMaPreset({visible:maPreset.visible.map((value,j)=>j===i?!value:value) as unknown as MaPreset['visible']})}/>)}
+            {maPreset.mtfAvailable&&!isArMarket&&<ToolbarChip active={maPreset.mtfEma20} label="5m EMA20" className="h-6 tabular-nums" onClick={()=>updateMaPreset({mtfEma20:!maPreset.mtfEma20})}/>}
             <ToolbarChip
-              active={overlays.sessionVwap && chartBundle.sessionVwapAvailable}
+              active={maPreset.sessionVwap && chartBundle.sessionVwapAvailable}
               disabled={!chartBundle.sessionVwapAvailable}
               label={
                 chartBundle.sessionVwapAvailable
@@ -1951,7 +1984,7 @@ export const StockDetailView: React.FC<{
                     ? 'VWAP (solo intradiario)'
                     : 'VWAP (1m/5m/15m)'
               }
-              onClick={() => handleToggleOverlay('sessionVwap')}
+              onClick={() => updateMaPreset({sessionVwap:!maPreset.sessionVwap})}
             />
             <ToolbarChip
               active={overlays.avwap}
@@ -2024,6 +2057,7 @@ export const StockDetailView: React.FC<{
           market={contextInfo.market}
           providerSymbol={cleanTicker}
           bundle={chartBundle}
+          maPreset={maPreset}
           timeframe={effectiveChartTimeframe}
           overlays={overlays}
           showAvwapBands={showAvwapBands}
@@ -2163,6 +2197,7 @@ const PanoramicPriceChart: React.FC<{
   readonly market: 'AR' | 'US';
   readonly providerSymbol: string;
   readonly bundle: PanoramicChartBundle;
+  readonly maPreset: MaPreset;
   readonly timeframe: TerminalTimeframe;
   readonly overlays: OverlayVisibilityState;
   readonly showAvwapBands: boolean;
@@ -2186,6 +2221,7 @@ const PanoramicPriceChart: React.FC<{
   market,
   providerSymbol,
   bundle,
+  maPreset,
   timeframe,
   overlays,
   showAvwapBands,
@@ -2207,6 +2243,9 @@ const PanoramicPriceChart: React.FC<{
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const emaRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
+  const lastMaConfigurationRef=useRef<{bundle:PanoramicChartBundle;fastType:MaPreset['fastType'];preset:MaPreset;master:boolean}|null>(null);
+  const mtfLegendRef=useRef<HTMLSpanElement|null>(null);
+  const maLegendRef=useRef<HTMLSpanElement|null>(null);
   const vwapRef = useRef<ISeriesApi<'Line'> | null>(null);
   /** Pieza 50.5: slots fijos de AVWAP (ancla única + Auto por rol), sin re-crear series. */
   const avwapRefs = useRef<Partial<Record<AvwapSlotKey, ISeriesApi<'Line'>>>>({});
@@ -2263,12 +2302,14 @@ const PanoramicPriceChart: React.FC<{
     volume: number;
   } | null>(null);
   const emaBaseBeforeFormingRef = useRef<{
+    maRuntime?: MaChartRuntime;
     9: number | null;
     21: number | null;
     50: number | null;
     200: number | null;
   }>({ 9: null, 21: null, 50: null, 200: null });
   const emaEndOfFormingRef = useRef<{
+    maRuntime?: MaChartRuntime;
     9: number | null;
     21: number | null;
     50: number | null;
@@ -2358,6 +2399,7 @@ const PanoramicPriceChart: React.FC<{
       auto_EVENT: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#F59E0B', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
     };
 
+    const mtfEmaSeries=chart.addSeries(LineSeries,{autoscaleInfoProvider:()=>null,color:'#E879F9',lineWidth:2,lineType:LineType.WithSteps,visible:false,priceLineVisible:false,lastValueVisible:false});
     priceLineSlotsRef.current = {
       poc: candles.createPriceLine({
         price: 0,
@@ -2428,7 +2470,7 @@ const PanoramicPriceChart: React.FC<{
     chartRef.current = chart;
     candleRef.current = candles;
     candleMarkersRef.current = createSeriesMarkers(candles, []);
-    emaRefs.current = emaSeries;
+    emaRefs.current = [...emaSeries,mtfEmaSeries];
     vwapRef.current = vwap;
     avwapRefs.current = avwapSeriesSlots;
 
@@ -2617,10 +2659,11 @@ const PanoramicPriceChart: React.FC<{
         })
         .filter((point): point is { time: UTCTimestamp; value: number } => point !== null);
 
-    emaRefs.current[0]?.setData(toLineData(bundle.ema9));
-    emaRefs.current[1]?.setData(toLineData(bundle.ema21));
-    emaRefs.current[2]?.setData(toLineData(bundle.ema50));
-    emaRefs.current[3]?.setData(toLineData(bundle.ema200));
+    const maValues=bundle.movingAverages?.values;
+    emaRefs.current[0]?.setData(toLineData(maValues!==undefined&&maPreset.fastType==='VWMA'?maValues.vwma9:bundle.ema9));
+    emaRefs.current[1]?.setData(toLineData(maValues!==undefined&&maPreset.fastType==='VWMA'?maValues.vwma21:bundle.ema21));
+    emaRefs.current[2]?.setData(toLineData(maValues!==undefined&&maPreset.slowType==='SMA'?maValues.sma50:bundle.ema50));
+    emaRefs.current[3]?.setData(toLineData(maValues!==undefined&&maPreset.slowType==='SMA'?maValues.sma200:bundle.ema200));
     vwapRef.current?.setData(toLineData(bundle.sessionVwap));
 
     // Pieza 50.5: limpiar TODOS los slots AVWAP y poblar solo la familia activa
@@ -2671,6 +2714,17 @@ const PanoramicPriceChart: React.FC<{
       200: lastIdx >= 0 ? (bundle.ema200[lastIdx] ?? null) : null,
     };
 
+    if(bundle.movingAverages!==undefined) {
+      const runtime=createMaChartRuntime(bundle.movingAverages,maPreset,bundle.ema20_5m,toWeeklyResampleBars(bundle.bars));
+      runtime.bindLegend(mtfLegendRef.current);
+      runtime.bindMaLegend(maLegendRef.current);
+      emaBaseBeforeFormingRef.current.maRuntime=runtime;
+      emaEndOfFormingRef.current.maRuntime=runtime;
+      emaRefs.current[4]?.setData(bundle.bars.map((bar,i)=>{
+        const value=bundle.ema20_5m?.values[i];return value!==undefined&&value!==null&&Number.isFinite(value)?{time:bar.time as UTCTimestamp,value}:{time:bar.time as UTCTimestamp};
+      }));
+      if(lastBar!==undefined)runtime.paintLegend(runtime.project({timeSec:lastBar.time,close:lastBar.close,volume:lastBar.volume}));
+    }
     if (transition.shouldFitContent) {
       const viewportKey = `${ticker}|${timeframe}`;
       const initialRange = computeInitialVisibleLogicalRange(bundle.bars.length);
@@ -2891,6 +2945,33 @@ const PanoramicPriceChart: React.FC<{
     return () => {offMinute();offQuote();if(frame!==null)window.cancelAnimationFrame(frame);};
   }, [bundle, ticker, timeframe, market, providerSymbol, sessionLevelsEnabled, openingRange, proximityMode, dailyAtr14, dailyAtrAsOf, overlays.avwap, autoAnchorEnabled, currencySymbol]);
 
+  // Controls touch only the two fast histories when their algorithm changes.
+  useEffect(()=>{
+    const runtime=emaBaseBeforeFormingRef.current.maRuntime;
+    runtime?.configure(maPreset);
+    runtime?.bindLegend(mtfLegendRef.current);
+    runtime?.bindMaLegend(maLegendRef.current);
+    const previous=lastMaConfigurationRef.current;
+    if(previous?.bundle===bundle&&previous.fastType!==maPreset.fastType&&bundle.movingAverages!==undefined) {
+      runtime?.fastHistory(maPreset.fastType).forEach((history,i)=>emaRefs.current[i]?.setData([...history]));
+      const forming=formingBarRef.current;
+      if(forming!==null&&runtime!==undefined) {
+        const projected=runtime.project(forming,true);
+        for(let i=0;i<2;i+=1) {const value=projected[i];emaRefs.current[i]?.update(value!==undefined&&Number.isFinite(value)?{time:forming.timeSec as UTCTimestamp,value}:{time:forming.timeSec as UTCTimestamp});}
+        runtime.paintLegend(projected);
+      }
+    }
+    const refreshed=previous?.bundle!==bundle;
+    for(let i=0;i<4;i+=1)if(refreshed||previous?.master!==overlays.emas||previous.preset.visible[i]!==maPreset.visible[i])
+      emaRefs.current[i]?.applyOptions({visible:overlays.emas&&maPreset.visible[i]===true});
+    if(refreshed||previous?.master!==overlays.emas||previous.preset.mtfEma20!==maPreset.mtfEma20)
+      emaRefs.current[4]?.applyOptions({visible:overlays.emas&&maPreset.mtfEma20&&timeframe==='1m'});
+    if(refreshed||previous?.preset.sessionVwap!==maPreset.sessionVwap)
+      vwapRef.current?.applyOptions({visible:maPreset.sessionVwap&&bundle.sessionVwapAvailable});
+    lastMaConfigurationRef.current={bundle,fastType:maPreset.fastType,preset:maPreset,master:overlays.emas};
+  },[bundle,maPreset,overlays.emas,overlays.sessionVwap,timeframe]);
+
+
   // Bus imperativo 60 FPS en rAF: TODOS los eventos aceptados se encolan y un
   // reductor determinista los procesa en orden; el rAF solo pinta.
   useEffect(() => {
@@ -2944,6 +3025,7 @@ const PanoramicPriceChart: React.FC<{
       const candles = candleRef.current;
       if (candles === null) return;
       if (nextBar.timeSec > currentForming.timeSec) {
+        emaBaseBeforeFormingRef.current.maRuntime?.confirm(currentForming);
         emaBaseBeforeFormingRef.current = { ...emaEndOfFormingRef.current };
       }
       formingBarRef.current = nextBar;
@@ -2958,7 +3040,16 @@ const PanoramicPriceChart: React.FC<{
       const base = emaBaseBeforeFormingRef.current;
       const periods = [9, 21, 50, 200] as const;
       const nextEnd = { ...emaEndOfFormingRef.current };
-      for (let i = 0; i < periods.length; i += 1) {
+      if(base.maRuntime!==undefined) {
+        const projected=base.maRuntime.project(nextBar);
+        for(let i=0;i<4;i+=1) {
+          const value=projected[i];const period=periods[i];
+          if(period!==undefined)nextEnd[period]=value!==undefined&&Number.isFinite(value)?value:null;
+          emaRefs.current[i]?.update(value!==undefined&&Number.isFinite(value)?{time:nextBar.timeSec as UTCTimestamp,value}:{time:nextBar.timeSec as UTCTimestamp});
+        }
+        base.maRuntime.paintLegend(projected);
+        base.maRuntime.paintMtf(emaRefs.current[4],nextBar.timeSec,nextBar.close);
+      } else for (let i = 0; i < periods.length; i += 1) {
         const p = periods[i]!;
         const prevClosed = base[p];
         if (prevClosed === null || !Number.isFinite(prevClosed)) continue;
@@ -3040,7 +3131,14 @@ const PanoramicPriceChart: React.FC<{
       let minuteApplied = false;
       for (const event of queue) {
         if (event.kind === 'minute') {
+          emaBaseBeforeFormingRef.current.maRuntime?.observeMinute(event.canonicalForming,event.canonicalClosed,event.canonicalAsOf);
           if (timeframe === '1m' && event.snapshot.timeSec >= nextBar.timeSec) {
+            if(event.snapshot.timeSec>nextBar.timeSec&&emaBaseBeforeFormingRef.current.maRuntime!==undefined) {
+              const previous=nextBar;
+              const actual=event.canonicalClosed;
+              if(actual!==undefined&&actual!==null&&actual.time===previous.timeSec)nextBar={...previous,close:actual.close,volume:actual.volume};
+              paintFormingBar(nextBar,formingBarRef.current??currentForming);
+            }
             nextBar = {
               timeSec: event.snapshot.timeSec,
               open: event.snapshot.open,
@@ -3049,6 +3147,7 @@ const PanoramicPriceChart: React.FC<{
               close: event.snapshot.close,
               volume: event.snapshot.volume,
             };
+            if(emaBaseBeforeFormingRef.current.maRuntime!==undefined)paintFormingBar(nextBar,formingBarRef.current??currentForming);
             minuteApplied = true;
           }
           continue;
@@ -3063,7 +3162,7 @@ const PanoramicPriceChart: React.FC<{
         nextBar = projected;
       }
       if (nextBar.timeSec < currentForming.timeSec) return;
-      paintFormingBar(nextBar, currentForming);
+      paintFormingBar(nextBar, formingBarRef.current ?? currentForming);
     };
 
     const scheduleFlush = (): void => {
@@ -3093,6 +3192,13 @@ const PanoramicPriceChart: React.FC<{
       if (market !== 'US') return;
       const fb = ev.formingBar;
       if (fb === null || !Number.isFinite(fb.close) || fb.close <= 0) return;
+      if(timeframe==='1m'&&ev.lastClosedBar!=null) {
+        const repaired=emaBaseBeforeFormingRef.current.maRuntime?.repairClosedRevision(ev.lastClosedBar);
+        if(repaired!==undefined&&repaired!==null)for(let i=0;i<4;i+=1){const value=repaired[i],time=ev.lastClosedBar.time as UTCTimestamp;
+          emaRefs.current[i]?.update(value!==undefined&&Number.isFinite(value)?{time,value}:{time},true);
+        }
+      }
+
       pendingLiveEventsRef.current = [
         ...pendingLiveEventsRef.current,
         {
@@ -3123,9 +3229,13 @@ const PanoramicPriceChart: React.FC<{
     };
   }, [bundle.barsAvailable, bundle.monthStartCanonicalAvwap, market, providerSymbol, timeframe]);
 
+
   return (
     <div className="relative h-[72vh] min-h-[560px] w-full">
       <div ref={containerRef} className="h-full w-full" />
+      <span ref={maLegendRef} hidden={!overlays.emas} className="pointer-events-none absolute left-3 top-8 text-[11px] tabular-nums text-[#CBD5E1]" />
+      {maPreset.mtfEma20&&timeframe==='1m'&&<span ref={mtfLegendRef} className="pointer-events-none absolute left-3 top-14 text-[11px] tabular-nums text-[#E879F9]">5m EMA20 (prov) {bundle.ema20_5m?.provisional===null||bundle.ema20_5m?.provisional===undefined?'—':fmtNum(bundle.ema20_5m.provisional,6)} · {bundle.ema20_5m?.status??'UNAVAILABLE'}</span>}
+
       <span ref={proximityBadgeRef} hidden className="absolute right-3 top-7 text-[11px] text-[#E5B567]">ATR n/d</span>
       <span ref={canonicalCoverageRef} hidden className="pointer-events-none absolute right-3 top-2 text-[11px] text-[#E5B567]">AVWAP parcial</span>
       <div

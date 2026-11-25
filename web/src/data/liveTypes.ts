@@ -1116,6 +1116,9 @@ export interface UsStrikeExposureDto {
 }
 
 export interface UsTerminalBarsResponseDto {
+  readonly movingAverages?: import('../../../src/core/movingAverages.js').MovingAveragesDto;
+  readonly weeklyMovingAverages?: {readonly bars:readonly import('../../../src/core/types.js').Bar[];readonly movingAverages:import('../../../src/core/movingAverages.js').MovingAveragesDto};
+  readonly ema20_5m?: import('../../../src/core/movingAverages.js').MtfEmaDto;
   readonly sessionKeyLevels?: import('../../../src/core/sessionKeyLevels.js').SessionLevelsDto;
   readonly monthStartCanonicalAvwap?: import('../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto;
   readonly status: 'OK' | 'PARTIAL';

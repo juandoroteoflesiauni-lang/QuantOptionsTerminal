@@ -1,3 +1,4 @@
+import { resolveMtfWarmupFrom, projectMtfEmaToLowerBarsPure, normalizeMaBars, type MtfEmaDto } from '../core/movingAverages.js';
 import type { Bar } from '../core/types.js';
 import { historicalMomentsSince, historicalObservation, mergeHistoricalSegments, planUsHistorical, planUsFmpHistorical, rollupUsHistorical, usHistoricalSession, type HistoricalObservation, type HistoricalPlan, type UsHistoricalTimeframe } from '../core/usHistorical.js';
 import { normalizeMassiveAggs } from '../data/normalizeMassive.js';
@@ -140,6 +141,55 @@ export class UsHistoricalService {
       request.signal?.addEventListener('abort', abort, { once: true });
       active.promise.then((value) => { if (finish()) resolve(value); }, (error: unknown) => { if (finish()) reject(error instanceof Error ? error : new Error(String(error))); });
     });
+  }
+
+  /** S1-8: reuse this owner's source cache/single-flight, never a parallel MA cache. */
+  public async resolveMtfFiveMinuteSource(request: {
+    readonly symbol:string;readonly firstVisible:number;readonly now:number;readonly rthOnly:boolean;
+    readonly provider:'MASSIVE_REST'|'FMP';readonly allowAcquisition:boolean;readonly signal?:AbortSignal;
+  }):Promise<{readonly bars:readonly Bar[];readonly source:MtfEmaDto['source'];readonly acquisitionAttempted:boolean;readonly requests:number;readonly pages:number}> {
+    const from=resolveMtfWarmupFrom(request.firstVisible,request.rthOnly);
+    const session=request.rthOnly?'RTH':'EXT';
+    const massive=request.provider==='MASSIVE_REST';
+    const key=massive?`MASSIVE_REST|${request.symbol}|${session}|SPLIT_ADJUSTED|BAR_MOMENTS|5`
+      :`FMP|${request.symbol}|${session}|FMP_NATIVE_UNVERIFIED|HLC3|5m`;
+    const hot=(entry:CacheEntry|undefined):entry is CacheEntry=>entry!==undefined&&this.deps.nowMs()-entry.prefixAt<900000&&
+      this.deps.nowMs()-entry.at<8000&&entry.from<=from&&entry.to>=request.now;
+    const sufficient=(bars:readonly Bar[]):boolean=>{
+      // Evaluation coordinates only; no synthetic OHLCV observations.
+      const lower=[{time:request.firstVisible},{time:Math.max(request.firstVisible,request.now-60)}];
+      const result=projectMtfEmaToLowerBarsPure(lower,bars,20,{evaluationTimeSec:request.now,rthOnly:request.rthOnly});
+      return result.warmupBeforeFirst>=250&&result.status==='CONFIRMED';
+    };
+    const cached=this.cache.get(key);
+    if(hot(cached)) {
+      const bars=rollupUsHistorical(cached.rows.filter(row=>row.bar.time>=from&&row.endExclusive<=request.now),5,request.rthOnly,request.now).map(row=>row.bar);
+      if(sufficient(bars))return {bars,source:'CACHE_5M',acquisitionAttempted:false,requests:0,pages:0};
+    }
+    const minuteKey=massive?`MASSIVE_REST|${request.symbol}|${session}|SPLIT_ADJUSTED|BAR_MOMENTS|1`
+      :`FMP|${request.symbol}|${session}|FMP_NATIVE_UNVERIFIED|HLC3|1m`;
+    const minutes=this.cache.get(minuteKey);
+    if(hot(minutes)) {
+      const rows=minutes.rows.filter(row=>row.bar.time>=from&&row.endExclusive<=request.now);
+      // Provider coverage does not certify omitted no-trade minutes. Only fully observed
+      // intervals can prove an exact rollup; sparse windows use the native 5m path.
+      const observed=new Set(rows.map(row=>row.bar.time));
+      const bars=rollupUsHistorical(rows,5,request.rthOnly,request.now).filter(row=>{
+        for(let t=row.bar.time;t<row.endExclusive;t+=60)if(!observed.has(t))return false;
+        return true;
+      }).map(row=>row.bar);
+      if(sufficient(bars))return {bars,source:'EXACT_1M_ROLLUP',acquisitionAttempted:false,requests:0,pages:0};
+    }
+    if(!request.allowAcquisition)return {bars:[],source:'UNAVAILABLE',acquisitionAttempted:false,requests:0,pages:0};
+    const signal=request.signal??new AbortController().signal;
+    const counters:Counters={requests:0,pages:0,downloadedBars:0,baseAggregates:0,bytes:0};
+    const rows=massive?await this.segment({symbol:request.symbol,timeframe:'5m',now:request.now,rthOnly:request.rthOnly},
+      {from,to:request.now,sourceMinutes:5},signal,counters)
+      :null;
+    if(rows!==null)return {bars:normalizeMaBars(rollupUsHistorical(rows,5,request.rthOnly,request.now).map(row=>row.bar)),source:'ACQUIRED_5M',acquisitionAttempted:true,requests:counters.requests,pages:counters.pages};
+    const result=await this.fmpRange({symbol:request.symbol,timeframe:'5m',fromUtcSec:from,toUtcSec:request.now,includeExtended:!request.rthOnly,signal,onHttp:()=>{counters.requests+=1;},onPage:()=>{counters.pages+=1;}});
+    if(result.discarded>0||(result.httpStatus!==null&&result.httpStatus>=400))throw new Error('MTF_NATIVE_SOURCE_INVALID');
+    return {bars:normalizeMaBars(rollupUsHistorical(result.bars.map(bar=>historicalObservation(bar,'FMP',5)),5,request.rthOnly,request.now).map(row=>row.bar)),source:'ACQUIRED_5M',acquisitionAttempted:true,requests:counters.requests,pages:counters.pages};
   }
 
   public invalidate(symbol: string): void {

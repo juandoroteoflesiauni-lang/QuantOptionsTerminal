@@ -119,6 +119,8 @@ export interface StockContextBannerInfo {
 }
 
 export interface StockChartSeriesBundle {
+  readonly movingAverages?: import('../../../../src/core/movingAverages.js').MovingAveragesDto;
+  readonly ema20_5m?: import('../../../../src/core/movingAverages.js').MtfEmaDto;
   readonly sessionKeyLevels?: import('../../../../src/core/sessionKeyLevels.js').SessionLevelsDto | null;
   readonly monthStartCanonicalAvwap?: import('../../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto | null;
   readonly bars: readonly MinimalOhlcvBar[];

@@ -52,6 +52,7 @@ const options = calls.map((c) => ({
   type: c.type,
   options: runInNewContext(transpile(`(${c.options})`), {
     LineStyle: { Solid: 0, Dotted: 1, Dashed: 2 },
+    LineType: { Simple:0,WithSteps:1,Curved:2 },
   }) as EffectiveOptions,
 }));
 // Execute the installed 5.3.0 Series implementation, not a mock autoscale function.
@@ -142,9 +143,13 @@ afterAll(() => {
   );
 });
 describe("S1-7 effective configuration and installed LWC autoscale behavior", () => {
-  it("passes autoscaleInfoProvider null to exactly 13 secondary series and leaves candles alone", () => {
-    expect(options).toHaveLength(14);
-    expect(options.filter((o) => o.type === "LineSeries")).toHaveLength(13);
+  it("passes autoscaleInfoProvider null to exactly 14 secondary series and leaves candles alone", () => {
+    expect(options).toHaveLength(15);
+    // Preserve the original thirteen slots and their original order/options.
+    expect(options.slice(0,14).filter(o=>o.type==='LineSeries')).toHaveLength(13);
+    expect(options[14]?.type).toBe('LineSeries');
+    expect((options[14]?.options as EffectiveOptions & {lineType?:number}).lineType).toBe(1);
+    expect(options.filter((o) => o.type === "LineSeries")).toHaveLength(14);
     for (const entry of options)
       if (entry.type === "LineSeries")
         expect(
@@ -155,7 +160,7 @@ describe("S1-7 effective configuration and installed LWC autoscale behavior", ()
     const candles = options.find((o) => o.type === "CandlestickSeries");
     expect(candles?.options.autoscaleInfoProvider).toBeUndefined();
     const providers = src.match(/autoscaleInfoProvider:/g);
-    expect(providers).toHaveLength(13);
+    expect(providers).toHaveLength(14);
   });
   it.each([
     { min: 499, max: 501, far: 530 },

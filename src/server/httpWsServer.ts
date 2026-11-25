@@ -953,6 +953,7 @@ export function createHttpWsServer(options: HttpWsServerOptions = {}): HttpWsSer
           ...(visibleBars === undefined ? {} : { visibleBars }),
           rthOnly,
           forceRefresh,
+          ...(parseBooleanFlag(params.get('ema20_5m')) ? {includeMtfEma:true} : {}),
           ...(!includeOverlays ? { includeOverlays: false } : {}),
           ...(fullHistory ? { fullHistory: true } : {}),
         });

@@ -1,3 +1,5 @@
+import { computeMaSeriesPure, serializeMovingAverages, serializeWeeklyMovingAverages, projectMtfEmaToLowerBarsPure, serializeMtfEma } from '../core/movingAverages.js';
+import { US_MARKET_TIMEZONE } from '../core/resampleWeekly.js';
 import type { OratsMetadata } from '../core/oratsIntegrity.js';
 import { applyOpraEvent, type OpraContractLiveState } from '../core/opraOptionIntegrity.js';
 /**
@@ -45,7 +47,6 @@ import {
 } from '../core/microstructure/divergences.js';
 import {
   computeHmaSeries,
-  computeSmaSeries,
   computeWilderAtrSeries,
   evaluateMtfStructure,
   type MtfEffectiveRegime,
@@ -1162,6 +1163,9 @@ export interface SerializedKeyLevel {
 }
 
 export interface TerminalBarsResponse {
+  readonly movingAverages?: import('../core/movingAverages.js').MovingAveragesDto;
+  readonly weeklyMovingAverages?: {readonly bars:readonly import('../core/types.js').Bar[];readonly movingAverages:import('../core/movingAverages.js').MovingAveragesDto};
+  readonly ema20_5m?: import('../core/movingAverages.js').MtfEmaDto;
   readonly sessionKeyLevels?: SessionLevelsDto;
   readonly monthStartCanonicalAvwap?: CanonicalMonthDto;
   readonly historicalIntegrity?: ReturnType<typeof serializeHistoricalIntegrity>;
@@ -11589,6 +11593,7 @@ export class MarketRuntime {
       readonly rthOnly?: boolean;
       readonly forceRefresh?: boolean;
       readonly includeOverlays?: boolean;
+      readonly includeMtfEma?: boolean;
       readonly fullHistory?: boolean;
     } = {},
   ): Promise<TerminalBarsResponse> {
@@ -11605,13 +11610,15 @@ export class MarketRuntime {
     const includeOverlays = options.includeOverlays ?? true;
     const fullHistory = options.fullHistory ?? true;
     const canonicalRevision = this.usHistoricalService?.adjustmentRevision(parsed.canonicalSymbol) ?? 0;
-    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}${canonicalRevision === 0 ? '' : `:canonicalRevision=${String(canonicalRevision)}`}`;
+    const mtfCacheSuffix = options.includeMtfEma === true && timeframe === '1m' ? ':mtf5m' : '';
+    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}${canonicalRevision === 0 ? '' : `:canonicalRevision=${String(canonicalRevision)}`}${mtfCacheSuffix}`;
 
     const result = await this.barsCache.getOrCompute(
       cacheKey,
       () =>
         this.computeBars(parsed, timeframe, visibleBars, effectiveRthOnly, cacheKey, {
           includeOverlays,
+          includeMtfEma: options.includeMtfEma === true,
           fullHistory,
           adaptiveWindow,
         }),
@@ -11628,6 +11635,7 @@ export class MarketRuntime {
     barsCacheKey: string,
     opts: {
       readonly includeOverlays: boolean;
+      readonly includeMtfEma?: boolean;
       readonly fullHistory: boolean;
       readonly adaptiveWindow?: boolean;
     } = { includeOverlays: true, fullHistory: true },
@@ -11857,7 +11865,7 @@ export class MarketRuntime {
         symbol: parsed.canonicalSymbol,
         timeframe,
         visibleBars,
-        warmupBars: 0,
+        warmupBars: timeframe === '1D' ? REST_EMA_WARMUP_BARS : 0,
         rthOnly,
         maxPages: timeframe === '1D' ? 12 : 8,
         now: nowSec,
@@ -11893,6 +11901,27 @@ export class MarketRuntime {
 
     const startSlice = Math.max(0, visibleStart);
     const slicedBars = bars.slice(startSlice);
+    const maFull = computeMaSeriesPure(bars);
+    const movingAverages = serializeMovingAverages(bars,startSlice,maFull);
+    const weeklyMovingAverages = timeframe === '1D' ? serializeWeeklyMovingAverages(bars,slicedBars[0]?.time ?? nowSec,US_MARKET_TIMEZONE) : undefined;
+    let ema20_5m: import('../core/movingAverages.js').MtfEmaDto | undefined;
+    if(timeframe==='1m') {
+      const revision=this.usHistoricalService?.adjustmentRevision(parsed.canonicalSymbol) ?? 0;
+      let source:{bars:readonly Bar[];source:import('../core/movingAverages.js').MtfEmaDto['source'];acquisitionAttempted:boolean}={bars:[],source:'UNAVAILABLE',acquisitionAttempted:false};
+      if(this.usHistoricalService!==null&&(barsProvider==='MASSIVE_REST'||barsProvider==='FMP_ENTERPRISE_REST')) {
+        try {
+          source=await this.usHistoricalService.resolveMtfFiveMinuteSource({symbol:parsed.canonicalSymbol,firstVisible:slicedBars[0]?.time ?? nowSec,
+            now:nowSec,rthOnly,provider:barsProvider==='MASSIVE_REST'?'MASSIVE_REST':'FMP',allowAcquisition:opts.includeMtfEma===true});
+          if(revision!==this.usHistoricalService.adjustmentRevision(parsed.canonicalSymbol))source={...source,bars:[],source:'UNAVAILABLE'};
+        } catch { source={bars:[],source:'UNAVAILABLE',acquisitionAttempted:opts.includeMtfEma===true}; }
+      }
+      const forming=slicedBars[slicedBars.length-1];
+      const projection=projectMtfEmaToLowerBarsPure(slicedBars,source.bars,20,{evaluationTimeSec:nowSec,rthOnly,
+        ...(forming===undefined||forming.time+60<=nowSec?{}:{forming5mClose:forming.close})});
+      ema20_5m=serializeMtfEma(projection,slicedBars,{source:source.source,acquisitionAttempted:source.acquisitionAttempted,
+        adjustmentSignature:`${barsProvider}:${String(revision)}`,sessionMode:rthOnly?'RTH':'EXTENDED'});
+    }
+
     const canonicalSource = historicalIntegrity !== undefined && historicalIntegrity.canonicalMonth.length > 0
       ? historicalIntegrity.canonicalMonth.map((row) => row.bar) : bars;
     const canonicalResolution = historicalIntegrity !== undefined && historicalIntegrity.canonicalMonth.length > 0 ? '1m' : timeframe;
@@ -11934,6 +11963,9 @@ export class MarketRuntime {
       const emptyOverlay = slicedBars.map(() => null);
       const cachedSnapshot = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
       const payload: TerminalBarsResponse = {
+        movingAverages,
+        ...(weeklyMovingAverages===undefined?{}:{weeklyMovingAverages}),
+        ...(ema20_5m===undefined?{}:{ema20_5m}),
         sessionKeyLevels,
         monthStartCanonicalAvwap,
         ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
@@ -11987,12 +12019,12 @@ export class MarketRuntime {
     }
 
     const closes = bars.map((b) => b.close);
-    const ema9 = calculateEma(closes, 9);
-    const ema21 = calculateEma(closes, 21);
-    const ema50 = calculateEma(closes, 50);
-    const ema200 = calculateEma(closes, 200);
-    const sma50 = computeSmaSeries(closes, 50);
-    const sma200 = computeSmaSeries(closes, 200);
+    const ema9 = maFull.ema9;
+    const ema21 = maFull.ema21;
+    const ema50 = maFull.ema50;
+    const ema200 = maFull.ema200;
+    const sma50 = maFull.sma50;
+    const sma200 = maFull.sma200;
     const hma55 = computeHmaSeries(closes, 55);
 
     const sessionVwap = sessionVwapSupported
@@ -12070,6 +12102,9 @@ export class MarketRuntime {
       });
 
     const payload: TerminalBarsResponse = {
+      movingAverages,
+      ...(weeklyMovingAverages===undefined?{}:{weeklyMovingAverages}),
+      ...(ema20_5m===undefined?{}:{ema20_5m}),
       sessionKeyLevels,
       monthStartCanonicalAvwap,
       ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),

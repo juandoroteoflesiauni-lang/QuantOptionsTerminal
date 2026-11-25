@@ -44,3 +44,25 @@
 9. AVWAP: la función no filtra horario; acumula todas las barras recibidas desde el ancla (si se quiere solo RTH, la capa de datos filtra antes). Los anclas SESSION, WEEK, MONTH y YTD se resuelven respecto de la ÚLTIMA barra del array: el ancla es la primera barra del periodo que contiene a esa barra. SESSION en EQUITY es la primera barra RTH (09:30 ET) de esa fecha; si aún no hay barra RTH en esa fecha, el ancla es inválida (-1). SESSION en CRYPTO es la primera barra de la fecha UTC. HIGH_VOLUME_BAR (primera barra de mayor volumen finito) y FULL_HISTORY se evalúan solo sobre bars[visibleStart..]. Si el buffer empieza a mitad de un periodo, el ancla es la primera barra del buffer (AVWAP parcial, límite documentado).
 10. Pieza 36 (Opciones US): strikes y primas US son siempre nominales en USD por acción, sin multiplicar ni dividir la escala. El multiplicador OCC estándar (100 acciones/contrato) se aplica solo a nocionales/P&L. GGAL tiene dos claves explícitas: `GGAL` = BYMA/ARS y `US:GGAL` = ADR OPRA/USD. El vencimiento por defecto es líquido y completo en 14–45 DTE (o el primer vencimiento completo alrededor de ATM), nunca un 0–4 DTE incompleto. `/api/snapshot` no consulta ORATS; ORATS (`/cores`, `/strikes`, `/ivrank`) se consulta solo al abrir Volatilidad US, con SWR de 10 minutos. La fusión Massive/Tradier nunca pisa volumen u OI válidos con 0/NaN.
 11. Pieza 41: FMP convierte fecha civil ET a segundos UTC de apertura (DST incluido) y no inventa `vw`. La serie profunda de GGAL valida cobertura anterior al gap electoral antes de aceptar/persistir la caché. Los frames `Md` de Eco Primary son incrementales y se fusionan por identidad `(marketId, symbol, settlement)`; un frame solo de puntas no borra LA/OP/CL/HI/LO/NV. Los errores y URLs con `FMP_API_KEY`, tokens Tradier/Massive y credenciales Primary/Eco/BMB/IOL se redactan siempre.
+
+
+## Sub-fase 1 — Pieza 4 (S1-8): medias por marco
+
+El preset es independiente de los datos y sus overrides viven sólo en memoria de sesión por timeframe. Slots fijos: fast9, fast21, slow50, slow200; el tipo no se deduce de una etiqueta.
+
+| Marco | Medias iniciales | VWAP sesión | EMA20 5m |
+|---|---|---|---|
+| 1m | EMA9/21; EMA50/200 disponibles OFF | ON | opcional OFF |
+| 5m | EMA9/21/50; EMA200 disponible OFF | ON | no |
+| 15m | EMA9/21/50/200 | opcional OFF | no |
+| 1H, 1D, 1W | EMA9/21 y SMA50/200 | OFF | no |
+
+Fast9/21 permiten EMA/VWMA en 1m y 5m. El marco 4h preexistente conserva sus cuatro EMA y VWAP no soportado; no se le inventa otro preset. SMA reutiliza `computeSmaSeries`; cálculo completo antes del recorte, incluso al resamplear diarias a semanas reales. Profundidad insuficiente conserva null/NaN.
+
+VWMA usa close y volumen, ventana circular persistente fija 9/21, sumas compensadas y reconstrucción cada 512 confirmaciones. Invalidaciones ocupan su posición; cero volumen es válido pero una ventana de volumen total cero no es calculable. Snapshots intravela acumulativos reemplazan la proyección desde el prefijo confirmado; no avanzan el anillo. Correcciones de histórico reconstruyen al hidratar el bundle fuera del flujo live.
+
+EMA20 5m usa la EMA existente con semilla SMA sobre barras 5m completas. Objetivo 300 y mínimo 250 previas a la primera 1m visible. Se reutiliza el caché 5m del dueño histórico, después rollup 1m de completitud comprobable, después una adquisición nativa 5m opcional mediante su single-flight; las páginas HTTP se cuentan separadamente. No se certifican minutos omitidos sin operaciones si no hay evidencia de cobertura. La adquisición preserva sesión, proveedor y generación de ajustes; una generación incompatible degrada a indisponible.
+
+Proyección causal: cierre 5m <= cierre 1m y <= evaluación efectiva. Línea `WithSteps` sólo confirmada; la leyenda `5m EMA20 (prov)` usa la última base confirmada sin encadenar snapshots. Huecos elegibles no se rellenan; noches, feriados y cierres anticipados usan el calendario aprobado. Confirmación tardía puede completar el punto 1m que acaba de cerrar mediante historicalUpdate; nunca incorpora un provisional a la línea. No hay requests por tick.
+
+Se conservan los cuatro slots MA, ocho AVWAP, VWAP, dieciséis IPriceLine y sus contratos; sólo se agrega una LineSeries EMA20 5m. Las catorce secundarias tienen autoscaleInfoProvider nulo; las velas siguen siendo el único contribuyente del eje de precios. Única ampliación legacy autorizada: test de autoscale, conservando los trece casos originales y extremos USD/ARS.

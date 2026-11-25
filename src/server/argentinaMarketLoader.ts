@@ -1,3 +1,5 @@
+import { serializeMovingAverages, serializeWeeklyMovingAverages } from '../core/movingAverages.js';
+import { AR_MARKET_TIMEZONE } from '../core/resampleWeekly.js';
 import { buildCanonicalMonthAccumulator, serializeCanonicalMonth } from '../core/avwapCanonicalMonth.js';
 import { computeSessionKeyLevels, serializeSessionKeyLevels } from '../core/sessionKeyLevels.js';
 import {
@@ -7291,6 +7293,8 @@ export class ArgentinaMarketRuntime {
     // Pieza 50.5: anclas institucionales Auto-AVWAP en ARS (Data912 diario, sin
     // earnings/macro FMP): degradación limpia a PIVOT + RVOL, cacheada por día.
     const anchoredFull: ArTerminalBarsResponse = {
+      movingAverages:serializeMovingAverages(bars,Math.max(0,bars.length-visibleBars)),
+      weeklyMovingAverages:serializeWeeklyMovingAverages(bars,bars[Math.max(0,bars.length-visibleBars)]?.time ?? nowSec,AR_MARKET_TIMEZONE),
       ...full,
       sessionKeyLevels: serializeSessionKeyLevels(computeSessionKeyLevels({symbol,market:'AR',evalTimeSec:nowSec,observations:bars.map(bar=>({bar,endExclusive:bar.time+86400}))})),
       monthStartCanonicalAvwap: serializeCanonicalMonth(buildCanonicalMonthAccumulator({bars,now:nowSec,sessionMode:'RTH',
