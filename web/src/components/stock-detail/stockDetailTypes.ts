@@ -44,6 +44,7 @@ export interface ChartKeyLevels {
   readonly callWall: number | null;
   readonly putWall: number | null;
   readonly zeroGamma: number | null;
+  readonly maxPain?: number | null;
   readonly atr14: number | null;
   readonly nakedPocs: readonly { readonly sessionDate: string; readonly price: number }[];
   readonly fvgs: readonly QuantitativeFvgRecordDto[];
@@ -118,6 +119,7 @@ export interface StockContextBannerInfo {
 }
 
 export interface StockChartSeriesBundle {
+  readonly sessionKeyLevels?: import('../../../../src/core/sessionKeyLevels.js').SessionLevelsDto | null;
   readonly monthStartCanonicalAvwap?: import('../../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto | null;
   readonly bars: readonly MinimalOhlcvBar[];
   readonly ema9: readonly (number | null)[];

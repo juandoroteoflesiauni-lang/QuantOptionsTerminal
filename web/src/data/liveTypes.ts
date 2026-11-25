@@ -841,6 +841,7 @@ export interface ArOptionContractDto {
 }
 
 export interface ArOptionExpiryDto {
+  readonly maxPainStrike?: number | null;
   readonly expiryCode: string;
   readonly expiryLabel: string;
   readonly expirationDate: string;
@@ -1115,6 +1116,7 @@ export interface UsStrikeExposureDto {
 }
 
 export interface UsTerminalBarsResponseDto {
+  readonly sessionKeyLevels?: import('../../../src/core/sessionKeyLevels.js').SessionLevelsDto;
   readonly monthStartCanonicalAvwap?: import('../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto;
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;

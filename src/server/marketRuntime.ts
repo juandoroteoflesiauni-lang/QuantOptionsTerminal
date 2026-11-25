@@ -333,6 +333,7 @@ import { UsHistoricalService, serializeHistoricalIntegrity, type UsHistoricalRes
 import { usHistoricalMtdSessions } from '../core/usHistorical.js';
 import { resolveAdaptiveVisibleBars } from '../data/restHistoricalWindow.js';
 import { buildCanonicalMonthAccumulator, serializeCanonicalMonth, type CanonicalMonthDto } from '../core/avwapCanonicalMonth.js';
+import { computeSessionKeyLevels, serializeSessionKeyLevels, type SessionLevelsDto } from '../core/sessionKeyLevels.js';
 import {
   OratsHybridClient,
   type OratsIvRankPayload,
@@ -1161,6 +1162,7 @@ export interface SerializedKeyLevel {
 }
 
 export interface TerminalBarsResponse {
+  readonly sessionKeyLevels?: SessionLevelsDto;
   readonly monthStartCanonicalAvwap?: CanonicalMonthDto;
   readonly historicalIntegrity?: ReturnType<typeof serializeHistoricalIntegrity>;
   readonly status: 'OK' | 'PARTIAL';
@@ -11902,6 +11904,9 @@ export class MarketRuntime {
     const monthStartCanonicalAvwap = serializeCanonicalMonth(canonicalAccumulator,
       slicedBars.map((bar) => ({time:bar.time,endExclusive:canonicalEnds.get(bar.time) ?? bar.time+barSeconds})),
       Math.max(canonicalAccumulator.anchorTimestamp,slicedBars[0]?.time ?? canonicalAccumulator.anchorTimestamp));
+    const sessionKeyLevels = serializeSessionKeyLevels(computeSessionKeyLevels({symbol:parsed.canonicalSymbol,market:'US',evalTimeSec:nowSec,
+      observations:historicalIntegrity === undefined ? bars.map(bar=>({bar,endExclusive:bar.time+barSeconds}))
+        : (historicalIntegrity.sessionSources ?? historicalIntegrity.canonicalMonth).map(row=>({bar:row.bar,endExclusive:row.endExclusive}))}));
     const sessionVwapSupported = 1_800 % barSeconds === 0;
     const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
 
@@ -11929,6 +11934,7 @@ export class MarketRuntime {
       const emptyOverlay = slicedBars.map(() => null);
       const cachedSnapshot = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
       const payload: TerminalBarsResponse = {
+        sessionKeyLevels,
         monthStartCanonicalAvwap,
         ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
         status: barsStatusOk ? 'OK' : 'PARTIAL',
@@ -12064,6 +12070,7 @@ export class MarketRuntime {
       });
 
     const payload: TerminalBarsResponse = {
+      sessionKeyLevels,
       monthStartCanonicalAvwap,
       ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
       status: barsStatusOk ? 'OK' : 'PARTIAL',

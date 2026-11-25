@@ -3,6 +3,8 @@ import { createCanonicalMonthLiveState, updateCanonicalMonthLive, projectCanonic
   canonicalMonthLiveBucket,
   type CanonicalMonthLiveState } from '../../../src/core/avwapCanonicalMonth';
 import type { Bar } from '../../../src/core/types';
+import { hydrateSessionKeyLevels, projectSessionKeyLevels, updateSessionKeyLevels, quoteSessionKeyLevels, filterAutoAvwapByProximity, institutionalRepresentation,
+  type OpeningRangeMinutes, type AutoAvwapProximityMode, type ProximityMemory } from '../../../src/core/sessionKeyLevels';
 import { calendarDteEt } from '../../../src/core/options/zeroDteFixes';
 import type { LogicalRange } from 'lightweight-charts';
 import {
@@ -215,6 +217,7 @@ interface PanoramicChartBundle extends StockChartSeriesBundle {
 
 /** Pieza 50.5: ancla Auto-AVWAP proyectada sobre las barras del timeframe activo. */
 interface ComputedAutoAvwapLine {
+  readonly currentAvwap: number;
   readonly role: AutoAnchorRole;
   readonly anchorTimeSec: number;
   readonly effectiveAnchorTimeSec: number | null;
@@ -447,6 +450,9 @@ export const StockDetailView: React.FC<{
 }) => {
   const tickerRaw = ticker.trim().toUpperCase() || 'GGAL';
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [sessionLevelsEnabled, setSessionLevelsEnabled] = useState(false);
+  const [openingRange, setOpeningRange] = useState<OpeningRangeMinutes>(15);
+  const [proximityMode, setProximityMode] = useState<AutoAvwapProximityMode>('PCT_1_5');
 
   const stockRoute = useMemo(() => {
     return resolveStockDetailRoute({
@@ -1185,6 +1191,7 @@ export const StockDetailView: React.FC<{
         const projectedIndex = resolveAutoAvwapBarIndex(bars, anchor.anchorTimeSec, effectiveChartTimeframe);
         const lineCalc = computeAnchoredVwapWithAnchor(bars, projectedIndex);
         autoAvwapLines.push({
+          currentAvwap: anchor.currentAvwap,
           role: anchor.role,
           anchorTimeSec: anchor.anchorTimeSec,
           effectiveAnchorTimeSec: lineCalc.effectiveAnchorTime,
@@ -1217,6 +1224,7 @@ export const StockDetailView: React.FC<{
       avwapEffectiveAnchorTimeSec: bundleAvwapEffectiveAnchorTimeSec,
       avwapAnchorDateSec: bundleAvwapAnchorDateSec,
       avwapCoverage: bundleAvwapCoverage,
+      sessionKeyLevels: (isArMarket ? arBarsResp?.sessionKeyLevels : usBarsResp?.sessionKeyLevels) ?? null,
       monthStartCanonicalAvwap: monthCanonical ?? null,
       dailyBarsForWeekly:
         effectiveChartTimeframe === '1W' ? dedupDaily : [],
@@ -1284,6 +1292,8 @@ export const StockDetailView: React.FC<{
           exposure?.gammaFlipStatus === 'unique'
             ? normalizeFiniteOrNull(exposure?.gammaFlipSpot)
             : null,
+        maxPain: arOptions?.underlying===cleanTicker&&arOptions.feedStatus!=='NO_DATA'
+          ? normalizeFiniteOrNull(arOptions.expiries.find(e=>e.expiryCode===arOptions.primaryLiquidExpiryCode&&e.loaded!==false&&e.expiryUtcSec>=(arBarsResp?.asOfUtcSec??arOptions.asOfUtcSec))?.maxPainStrike) : null,
         atr14: normalizeFiniteOrNull(engines?.atr14) ?? fallbackAtr,
         nakedPocs: (engines?.nakedPocs?.activeNakedPocs ?? [])
           .filter((poc): poc is { readonly sessionDate: string; readonly sessionPoc: number } => poc.sessionPoc !== null)
@@ -1309,6 +1319,7 @@ export const StockDetailView: React.FC<{
         exposure?.gammaFlipStatus === 'unique'
           ? normalizeFiniteOrNull(exposure?.gammaFlipSpot)
           : null,
+      maxPain: null, // US contract does not currently expose a selected-expiry Max Pain value.
       atr14: normalizeFiniteOrNull(engines?.atr14d) ?? fallbackAtr,
       nakedPocs: (engines?.nakedPocs?.activeNakedPocs ?? [])
         .filter((poc): poc is { readonly sessionDate: string; readonly sessionPoc: number } => poc.sessionPoc !== null)
@@ -1316,7 +1327,7 @@ export const StockDetailView: React.FC<{
       fvgs: engines?.fvgs?.activeFvgs ?? [],
       orderBlocks: engines?.orderBlocks?.freshOrderBlocks ?? [],
     };
-  }, [arOptions, chartBundle.bars, isArMarket, stockDetail, usSnap]);
+  }, [arOptions, arBarsResp, cleanTicker, chartBundle.bars, isArMarket, stockDetail, usSnap]);
 
   // Pieza 50.9: trazabilidad del insumo de exposición. Hora de evaluación ≠ hora de
   // cotización ≠ precio live; un tick del subyacente no mueve niveles ni spot.
@@ -1997,6 +2008,13 @@ export const StockDetailView: React.FC<{
               className="font-mono-num tabular-nums"
               onClick={() => handleToggleOverlay('volumeProfile')}
             />
+            <ToolbarChip active={sessionLevelsEnabled} label="Sesión" onClick={() => setSessionLevelsEnabled(v=>!v)} />
+            <select aria-label="Opening Range" value={openingRange} onChange={e=>setOpeningRange(Number(e.target.value) as OpeningRangeMinutes)} className="h-6 bg-[#111118] text-[11px] tabular-nums">
+              {[5,15,30].map(m=><option key={m} value={m}>OR {m}m</option>)}
+            </select>
+            {isAutoAvwapMode && (effectiveChartTimeframe==='1m'||effectiveChartTimeframe==='5m') && <select aria-label="Proximidad Auto-AVWAP" value={proximityMode} onChange={e=>setProximityMode(e.target.value as AutoAvwapProximityMode)} className="h-6 bg-[#111118] text-[11px] tabular-nums">
+              <option value="PCT_1_5">±1,5%</option><option value="ATR_1_5">±1,5 ATR diario</option><option value="SHOW_ALL">Mostrar todos</option>
+            </select>}
             <ToolbarChip active={overlays.optionWalls} label="Walls" onClick={() => handleToggleOverlay('optionWalls')} />
           </div>
         </div>
@@ -2009,6 +2027,11 @@ export const StockDetailView: React.FC<{
           timeframe={effectiveChartTimeframe}
           overlays={overlays}
           showAvwapBands={showAvwapBands}
+          sessionLevelsEnabled={sessionLevelsEnabled}
+          openingRange={openingRange}
+          proximityMode={proximityMode}
+          dailyAtr14={isArMarket ? stockDetail?.institutionalEngines?.atr14 : usSnap?.terminalEngines?.atr14d}
+          dailyAtrAsOf={isArMarket ? stockDetail?.asOfUtcSec : usSnap?.asOfUtcSec}
           autoAnchorEnabled={autoAnchorEnabled}
           currencySymbol={contextInfo.currencySymbol}
           keyLevels={keyLevels}
@@ -2143,6 +2166,11 @@ const PanoramicPriceChart: React.FC<{
   readonly timeframe: TerminalTimeframe;
   readonly overlays: OverlayVisibilityState;
   readonly showAvwapBands: boolean;
+  readonly sessionLevelsEnabled: boolean;
+  readonly openingRange: OpeningRangeMinutes;
+  readonly proximityMode: AutoAvwapProximityMode;
+  readonly dailyAtr14: number | null | undefined;
+  readonly dailyAtrAsOf: number | undefined;
   readonly autoAnchorEnabled: Readonly<Record<AutoAnchorRole, boolean>>;
   readonly currencySymbol: 'ARS' | 'USD';
   readonly keyLevels: ChartKeyLevels;
@@ -2162,6 +2190,7 @@ const PanoramicPriceChart: React.FC<{
   overlays,
   showAvwapBands,
   autoAnchorEnabled,
+  sessionLevelsEnabled, openingRange, proximityMode, dailyAtr14, dailyAtrAsOf,
   currencySymbol,
   keyLevels,
   highlightedLevel,
@@ -2188,15 +2217,29 @@ const PanoramicPriceChart: React.FC<{
     readonly callWall: IPriceLine;
     readonly putWall: IPriceLine;
     readonly zeroGamma: IPriceLine;
+    readonly maxPain: IPriceLine;
+    readonly autoSupProj: IPriceLine;
+    readonly autoResProj: IPriceLine;
+    readonly autoEvtProj: IPriceLine;
+    readonly pdh: IPriceLine;
+    readonly pdl: IPriceLine;
+    readonly pmh: IPriceLine;
+    readonly pml: IPriceLine;
+    readonly orh: IPriceLine;
+    readonly orl: IPriceLine;
+
   } | null>(null);
   const lastPriceLineOptsRef = useRef<
     Partial<
       Record<
-        'poc' | 'vah' | 'val' | 'callWall' | 'putWall' | 'zeroGamma',
-        { readonly enabled: boolean; readonly price: number; readonly highlighted: boolean; readonly title: string }
+        'poc' | 'vah' | 'val' | 'callWall' | 'putWall' | 'zeroGamma' | 'maxPain' | 'autoSupProj' | 'autoResProj' | 'autoEvtProj' | 'pdh' | 'pdl' | 'pmh' | 'pml' | 'orh' | 'orl',
+        { readonly enabled: boolean; readonly price: number; readonly highlighted: boolean; readonly title: string; readonly lineStyle: LineStyle | undefined }
       >
     >
   >({});
+  const proximityMemoryRef = useRef<readonly ProximityMemory[]>([]);
+  const proximityBadgeRef = useRef<HTMLSpanElement | null>(null);
+  const updatePriceLineSlotRef = useRef<((key: keyof NonNullable<typeof priceLineSlotsRef.current>, enabled: boolean, price: number | null, title: string, provisional?: boolean) => void) | null>(null);
   const suppressingRangeEventRef = useRef(false);
   const pendingExternalRangeRef = useRef<LogicalRangeAlias | null>(null);
   const latestBarsRef = useRef(bundle.bars);
@@ -2297,22 +2340,22 @@ const PanoramicPriceChart: React.FC<{
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     });
     const emaSeries = [
-      chart.addSeries(LineSeries, { color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: '#8B7CF6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: '#F5B544', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      chart.addSeries(LineSeries, { color: '#FF5468', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#8B7CF6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#F5B544', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#FF5468', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
     ];
-    const vwap = chart.addSeries(LineSeries, { color: '#FACC15', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const vwap = chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#FACC15', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     // Pieza 50.5: 8 slots fijos — 5 de ancla única (estilos originales) + 3 Auto-AVWAP por rol.
     const avwapSeriesSlots: Record<AvwapSlotKey, ISeriesApi<'Line'>> = {
-      single_main: chart.addSeries(LineSeries, { color: '#C084FC', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
-      single_u1: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      single_l1: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      single_u2: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      single_l2: chart.addSeries(LineSeries, { color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-      auto_SUPPORT: chart.addSeries(LineSeries, { color: '#2DD4BF', lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false }),
-      auto_RESISTANCE: chart.addSeries(LineSeries, { color: '#FB7185', lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false }),
-      auto_EVENT: chart.addSeries(LineSeries, { color: '#F59E0B', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
+      single_main: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#C084FC', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
+      single_u1: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      single_l1: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: 'rgba(192,132,252,0.45)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      single_u2: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      single_l2: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: 'rgba(192,132,252,0.22)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      auto_SUPPORT: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#2DD4BF', lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false }),
+      auto_RESISTANCE: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#FB7185', lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false }),
+      auto_EVENT: chart.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: '#F59E0B', lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
     };
 
     priceLineSlotsRef.current = {
@@ -2370,6 +2413,16 @@ const PanoramicPriceChart: React.FC<{
         axisLabelVisible: false,
         title: 'ZERO-GAMMA',
       }),
+      maxPain: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      autoSupProj: candles.createPriceLine({price:0,color:'#F59E0B',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      autoResProj: candles.createPriceLine({price:0,color:'#F59E0B',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      autoEvtProj: candles.createPriceLine({price:0,color:'#F59E0B',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      pdh: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      pdl: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      pmh: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      pml: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      orh: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
+      orl: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
     };
 
     chartRef.current = chart;
@@ -2720,6 +2773,7 @@ const PanoramicPriceChart: React.FC<{
       price: number | null,
       title: string,
       highlighted: boolean,
+      lineStyle?: LineStyle,
     ): void => {
       const nextEnabled = enabled && price !== null && Number.isFinite(price) && price > 0;
       const nextPrice = nextEnabled && price !== null ? price : 0;
@@ -2731,7 +2785,7 @@ const PanoramicPriceChart: React.FC<{
         prevOpts.enabled === nextEnabled &&
         prevOpts.price === nextPrice &&
         prevOpts.highlighted === nextHighlighted &&
-        prevOpts.title === nextTitle
+        prevOpts.title === nextTitle && prevOpts.lineStyle === lineStyle
       ) {
         return;
       }
@@ -2739,20 +2793,21 @@ const PanoramicPriceChart: React.FC<{
         enabled: nextEnabled,
         price: nextPrice,
         highlighted: nextHighlighted,
-        title: nextTitle,
+        title: nextTitle, lineStyle,
       };
       if (!nextEnabled) {
         pl.applyOptions({ price: 0, lineVisible: false, axisLabelVisible: false, title: '' });
         return;
       }
       pl.applyOptions({
-        price: nextPrice,
+        price: nextPrice, ...(lineStyle===undefined?{}:{lineStyle}),
         lineWidth: nextHighlighted ? 3 : 2,
         lineVisible: true,
         axisLabelVisible: true,
         title: nextTitle,
       });
     };
+    updatePriceLineSlotRef.current = (key,enabled,price,title,provisional=false) => updateSlot(key,slots[key],enabled,price,title,false,provisional?LineStyle.Dotted:LineStyle.Dashed);
     const prefix = currencySymbol === 'USD' ? 'US$' : '$';
     const hasBars = bundle.barsAvailable;
     const vpTag = resolveVpWindowTag(keyLevels.volumeProfileWindowBars ?? null);
@@ -2761,8 +2816,80 @@ const PanoramicPriceChart: React.FC<{
     updateSlot('val', slots.val, hasBars && overlays.volumeProfile, keyLevels.val, 'VAL', highlightedLevel === 'VAL');
     updateSlot('callWall', slots.callWall, hasBars && overlays.optionWalls, keyLevels.callWall, `CALL WALL ${prefix}${fmtNum(keyLevels.callWall, 2)}`, highlightedLevel === 'CALL_WALL');
     updateSlot('putWall', slots.putWall, hasBars && overlays.optionWalls, keyLevels.putWall, `PUT WALL ${prefix}${fmtNum(keyLevels.putWall, 2)}`, highlightedLevel === 'PUT_WALL');
+    updateSlot('maxPain', slots.maxPain, hasBars && overlays.optionWalls, keyLevels.maxPain ?? null, `MAX PAIN ${prefix}${fmtNum(keyLevels.maxPain, 2)}`, false);
     updateSlot('zeroGamma', slots.zeroGamma, hasBars && overlays.optionWalls, keyLevels.zeroGamma, `ZERO-GAMMA ${prefix}${fmtNum(keyLevels.zeroGamma, 2)}`, highlightedLevel === 'ZERO_GAMMA');
   }, [bundle.barsAvailable, currencySymbol, highlightedLevel, keyLevels, overlays.optionWalls, overlays.volumeProfile]);
+
+  // S1-5/6: fixed-size imperative overlay controller. Historical construction stays in /api/bars.
+  useEffect(() => {
+    let session = bundle.sessionKeyLevels ? hydrateSessionKeyLevels(bundle.sessionKeyLevels) : null;
+    let price = bundle.bars.at(-1)?.close ?? Number.NaN;
+    let evalTime = bundle.sessionKeyLevels?.evalTimeSec ?? bundle.monthStartCanonicalAvwap?.confirmedThrough ?? 0;
+    let frame: number | null = null;
+    const trajectoryVisibility = new Map<AutoAnchorRole,boolean>();
+    let markerKey: string | null = null;
+    const flushSessionOverlays = (): void => {
+      frame = null;
+      const apply = updatePriceLineSlotRef.current;
+      if (apply === null) return;
+      const sessionLevels = session === null ? [] : projectSessionKeyLevels(session,openingRange);
+      for (const id of ['pdh','pdl','pmh','pml','orh','orl'] as const) {
+        const level = sessionLevels.find(l=>l.id.toLowerCase()===id);
+        apply(id, sessionLevelsEnabled && bundle.barsAvailable && level?.status !== 'UNAVAILABLE',
+          level?.value ?? null, `${id.toUpperCase()}${level?.status==='PROVISIONAL'?' (prov)':''}`,level?.status==='PROVISIONAL');
+      }
+      const intraday = timeframe==='1m'||timeframe==='5m';
+      const markers: SeriesMarker<Time>[] = [];
+      const timezone=market==='US'?'America/New_York':'America/Argentina/Buenos_Aires';
+      const filtered = filterAutoAvwapByProximity({levels:bundle.autoAvwapLines,symbol:ticker,context:`${timeframe}:${String(session?.sessionDate)}:${String(bundle.monthStartCanonicalAvwap?.adjSig)}`,
+        mode:proximityMode,referencePrice:price,atr14D:dailyAtrAsOf!==undefined&&dailyAtrAsOf<=evalTime&&formatAvwapAnchorLabel(dailyAtrAsOf,timezone,false)===formatAvwapAnchorLabel(evalTime,timezone,false)?dailyAtr14:null,
+        evalTimeSec:evalTime,previous:proximityMemoryRef.current});
+      proximityMemoryRef.current=filtered.memory;
+      if (proximityBadgeRef.current!==null) proximityBadgeRef.current.hidden=!(intraday&&bundle.isAutoAvwapMode&&filtered.badge!==null);
+      const projectionSlots = {SUPPORT:'autoSupProj',RESISTANCE:'autoResProj',EVENT:'autoEvtProj'} as const;
+      for (const role of AUTO_ANCHOR_ROLES) {
+        const level=filtered.levels.find(l=>l.role===role);
+        const enabled=bundle.barsAvailable&&overlays.avwap&&bundle.isAutoAvwapMode&&autoAnchorEnabled[role]&&(!intraday||session?.needsRefresh!==true);
+        const representation=level===undefined?'HIDDEN':institutionalRepresentation({timeframe,firstBarTime:bundle.bars[0]?.time,
+          evalTimeSec:evalTime,anchorTimeSec:level.anchorTimeSec,currentAvwap:level.currentAvwap,visible:enabled&&level.visible,legacyInRange:enabled&&level.inRange});
+        const visible=representation==='TRAJECTORY';
+        if(trajectoryVisibility.get(role)!==visible) {
+          avwapRefs.current[AUTO_ANCHOR_SLOT_BY_ROLE[role]]?.applyOptions({visible});trajectoryVisibility.set(role,visible);
+        }
+        if(intraday&&visible&&level!==undefined&&level.effectiveAnchorTimeSec!==null&&Number.isFinite(level.effectiveAnchorTimeSec)) {
+          markers.push({time:level.effectiveAnchorTimeSec as UTCTimestamp,position:role==='RESISTANCE'?'aboveBar':'belowBar',
+            shape:role==='RESISTANCE'?'arrowDown':'arrowUp',color:AUTO_ANCHOR_COLORS[role],text:autoAnchorShortLabel(role),size:1});
+        }
+        const date=level===undefined?null:formatAvwapAnchorLabel(level.anchorTimeSec,market==='US'?'America/New_York':'America/Argentina/Buenos_Aires',false);
+        apply(projectionSlots[role],intraday&&representation==='PROJECTION',level?.currentAvwap??null,
+          `${autoAnchorShortLabel(role)} ${currencySymbol==='USD'?'US$':'$'}${fmtNum(level?.currentAvwap,2)} · ${date??'—'}`);
+      }
+      if(intraday&&bundle.isAutoAvwapMode) {
+        markers.sort((a,b)=>(a.time as number)-(b.time as number));
+        const nextKey=markers.map(m=>`${String(m.time)}:${m.text??''}`).join('|');
+        if(nextKey!==markerKey){candleMarkersRef.current?.setMarkers(markers);markerKey=nextKey;}
+      }
+    };
+    const schedule = (): void => { if(frame===null) frame=window.requestAnimationFrame(flushSessionOverlays); };
+    flushSessionOverlays();
+    const minute = (ev: LiveBarUpdateEvent): void => {
+      if(market!=='US'||ev.formingBar===null) return;
+      if(ev.time>=evalTime) {evalTime=ev.time;price=ev.formingBar.close;}
+      if(session!==null) {
+        if(ev.lastClosedBar!==null&&ev.lastClosedBar!==undefined) session=updateSessionKeyLevels(session,{bar:ev.lastClosedBar,endExclusive:ev.lastClosedBar.time+60,observedAt:ev.time},true);
+        session=updateSessionKeyLevels(session,{bar:ev.formingBar,endExclusive:ev.formingBar.time+60,observedAt:ev.time},false);
+      }
+      schedule();
+    };
+    const offMinute=subscribeLiveBarUpdate(providerSymbol,minute);
+    const offQuote=subscribeAtomicQuoteValue(market,providerSymbol,quote=>{
+      if(!Number.isFinite(quote.price)||quote.price<=0||quote.asOfUtcSec===null||quote.asOfUtcSec<evalTime) return;
+      evalTime=quote.asOfUtcSec;price=quote.price;
+      if(session!==null) session=quoteSessionKeyLevels(session,price,evalTime);
+      schedule();
+    });
+    return () => {offMinute();offQuote();if(frame!==null)window.cancelAnimationFrame(frame);};
+  }, [bundle, ticker, timeframe, market, providerSymbol, sessionLevelsEnabled, openingRange, proximityMode, dailyAtr14, dailyAtrAsOf, overlays.avwap, autoAnchorEnabled, currencySymbol]);
 
   // Bus imperativo 60 FPS en rAF: TODOS los eventos aceptados se encolan y un
   // reductor determinista los procesa en orden; el rAF solo pinta.
@@ -2999,6 +3126,7 @@ const PanoramicPriceChart: React.FC<{
   return (
     <div className="relative h-[72vh] min-h-[560px] w-full">
       <div ref={containerRef} className="h-full w-full" />
+      <span ref={proximityBadgeRef} hidden className="absolute right-3 top-7 text-[11px] text-[#E5B567]">ATR n/d</span>
       <span ref={canonicalCoverageRef} hidden className="pointer-events-none absolute right-3 top-2 text-[11px] text-[#E5B567]">AVWAP parcial</span>
       <div
         ref={crosshairLegendRef}

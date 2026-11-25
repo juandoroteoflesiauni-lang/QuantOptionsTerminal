@@ -1,4 +1,5 @@
 import { buildCanonicalMonthAccumulator, serializeCanonicalMonth } from '../core/avwapCanonicalMonth.js';
+import { computeSessionKeyLevels, serializeSessionKeyLevels } from '../core/sessionKeyLevels.js';
 import {
   classifyRawOiValue,
   explicitVolumeOi,
@@ -7291,6 +7292,7 @@ export class ArgentinaMarketRuntime {
     // earnings/macro FMP): degradación limpia a PIVOT + RVOL, cacheada por día.
     const anchoredFull: ArTerminalBarsResponse = {
       ...full,
+      sessionKeyLevels: serializeSessionKeyLevels(computeSessionKeyLevels({symbol,market:'AR',evalTimeSec:nowSec,observations:bars.map(bar=>({bar,endExclusive:bar.time+86400}))})),
       monthStartCanonicalAvwap: serializeCanonicalMonth(buildCanonicalMonthAccumulator({bars,now:nowSec,sessionMode:'RTH',
         symbol,adjSig:'DATA912_NATIVE_UNVERIFIED',sourceResolution:'1D',market:'AR'}),
         bars.slice(-visibleBars).map((bar)=>({time:bar.time,endExclusive:bar.time+86400})),bars.slice(-visibleBars)[0]?.time??nowSec),

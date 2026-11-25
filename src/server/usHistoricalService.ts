@@ -23,6 +23,8 @@ export interface HistoricalMetrics {
 export interface UsHistoricalResult {
   readonly rows: readonly HistoricalObservation[];
   readonly canonicalMonth: readonly HistoricalObservation[];
+  /** Original source intervals for causal session extrema; no extra requests or retained cache. */
+  readonly sessionSources?: readonly HistoricalObservation[];
   readonly plan: HistoricalPlan;
   readonly warmupSatisfied: boolean;
   readonly metrics: HistoricalMetrics;
@@ -170,6 +172,7 @@ export class UsHistoricalService {
     let fallbackCause: string | null = null;
     let fmpRows: readonly HistoricalObservation[] | null = null;
     let fmpRequests = 0;
+    let fmpSessionRows: readonly HistoricalObservation[] = [];
     let fmpCanonical: readonly HistoricalObservation[] = [];
     try {
       if (!activePool) throw new Error('HISTORICAL_MASSIVE_POOL_UNAVAILABLE');
@@ -203,6 +206,7 @@ export class UsHistoricalService {
         const endExclusive = Math.min(row.endExclusive, request.rthOnly ? session.close : session.extendedClose);
         return endExclusive <= request.now ? [{ ...row, endExclusive }] : [];
       });
+      fmpSessionRows = fmpRows;
       // Native history retains FMP's lookback and conventions. The monthly seed is
       // requested independently at 1m, never reconstructed from native TF prices.
       if (request.timeframe === '1m') {
@@ -230,7 +234,9 @@ export class UsHistoricalService {
       ? rows.filter((row) => row.bar.time >= plan.monthAnchor)
       : rollupUsHistorical(source.filter((row) => row.sourceMinutes === 1 && row.bar.time >= plan.monthAnchor), 1, request.rthOnly, request.now);
     const cacheRows = [...this.cache.values()].reduce((sum, entry) => sum + entry.rows.length, 0);
-    return { rows, canonicalMonth, plan, warmupSatisfied: plan.visibleFrom === undefined
+    const sessionSources = fmpRows === null ? source : fmpCanonical.length===0 ? fmpSessionRows
+      : [...fmpSessionRows.filter(row=>row.endExclusive<=plan.monthAnchor),...fmpCanonical];
+    return { rows, canonicalMonth, sessionSources, plan, warmupSatisfied: plan.visibleFrom === undefined
       ? rows.filter((row) => row.bar.time >= plan.historyFrom).length >= plan.requiredBars
       : rows.filter((row) => row.bar.time >= plan.historyFrom && row.endExclusive <= (plan.visibleFrom as number)).length >= plan.warmupBars,
       coverage: { requestedFrom: plan.historyFrom, firstTime: rows[0]?.bar.time ?? null, lastEndExclusive: rows[rows.length - 1]?.endExclusive ?? null, receivedBars: rows.length,
