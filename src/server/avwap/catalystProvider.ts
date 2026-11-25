@@ -85,6 +85,8 @@ export type EarningsTimingSource = 'ORATS_ANNC_TOD' | 'MASSIVE_ETH_INFERRED' | '
 
 export interface ReconciledEarningsEvent {
   readonly reportDate: string;
+  readonly preDate?: string | null;
+  readonly reactDate?: string | null;
   readonly timing: EarningsTimingLabel;
   readonly timingSource: EarningsTimingSource;
   readonly realizedReturn: number | null;
@@ -177,6 +179,60 @@ export const WHAM_SUPPORTED_ETFS: ReadonlySet<string> = new Set(['SPY', 'QQQ', '
 export const DEFAULT_EOD_TTL_MS = 6 * 3_600 * 1_000;
 export const DEFAULT_GLOBAL_TTL_MS = 12 * 3_600 * 1_000;
 export const DEFAULT_LIVE_ORATS_TTL_MS = 90_000;
+export const DEFAULT_HIST_SUMMARY_TTL_MS = 24 * 3_600 * 1_000;
+const OPRA_OI_FLOOR_DATE = '2022-09-01';
+
+function shiftIsoDateDays(isoDate: string, deltaDays: number): string {
+  const parsed = new Date(`${isoDate.slice(0, 10)}T12:00:00Z`);
+  if (!Number.isFinite(parsed.getTime())) {
+    return isoDate.slice(0, 10);
+  }
+  parsed.setUTCDate(parsed.getUTCDate() + deltaDays);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function resolveCausalEarningsDates(
+  reportDate: string,
+  timing: EarningsTimingLabel,
+  tradingDates: readonly string[],
+): { readonly preDate: string | null; readonly reactDate: string | null } {
+  if (tradingDates.length < 2 || (timing !== 'AMC' && timing !== 'BMO')) {
+    return { preDate: null, reactDate: null };
+  }
+  if (timing === 'AMC') {
+    let preIdx = -1;
+    for (let i = tradingDates.length - 1; i >= 0; i -= 1) {
+      const td = tradingDates[i];
+      if (td !== undefined && td <= reportDate) {
+        preIdx = i;
+        break;
+      }
+    }
+    if (preIdx < 0 || preIdx + 1 >= tradingDates.length) {
+      return { preDate: null, reactDate: null };
+    }
+    return {
+      preDate: tradingDates[preIdx] ?? null,
+      reactDate: tradingDates[preIdx + 1] ?? null,
+    };
+  }
+  // BMO: reaction happens on first trading date >= reportDate; preDate is the strictly prior session
+  let reactIdx = -1;
+  for (let i = 0; i < tradingDates.length; i += 1) {
+    const td = tradingDates[i];
+    if (td !== undefined && td >= reportDate) {
+      reactIdx = i;
+      break;
+    }
+  }
+  if (reactIdx <= 0) {
+    return { preDate: null, reactDate: null };
+  }
+  return {
+    preDate: tradingDates[reactIdx - 1] ?? null,
+    reactDate: tradingDates[reactIdx] ?? null,
+  };
+}
 
 const ALLOWED_ORATS_ENV_NAMES = [
   'ORATS_API_KEY',
@@ -892,32 +948,49 @@ export class InstitutionalCatalystProvider {
     }
 
     try {
+      const toDate = this.currentEtDate();
+      const rawFrom = shiftIsoDateDays(toDate, -10);
+      const fromDate = rawFrom < OPRA_OI_FLOOR_DATE ? OPRA_OI_FLOOR_DATE : rawFrom;
+      const oiPath =
+        `/options/v1/open-interest/underlying` +
+        `?underlying_ticker=${encodeURIComponent(ticker)}` +
+        `&date.gte=${encodeURIComponent(fromDate)}` +
+        `&date.lte=${encodeURIComponent(toDate)}` +
+        `&limit=50`;
       const raw = await this.getOrLoad(
-        `massive:options_oi:${ticker}`,
+        `massive:options_oi:${ticker}:${toDate}`,
         this.liveOratsTtlMs,
         false,
-        () =>
-          this.fetchMassiveJson(
-            'OPTIONS_REST',
-            `/options/v1/open-interest/underlying/${encodeURIComponent(ticker)}`,
-          ),
+        () => this.fetchMassiveJson('OPTIONS_REST', oiPath),
       );
       let massiveTotalOi = 0;
       if (isRecord(raw)) {
         const direct = readNum(raw, 'total_oi');
         if (Number.isFinite(direct) && direct > 0) {
           massiveTotalOi = direct;
+        } else if (Array.isArray(raw['results'])) {
+          const rows = extractRowsArray(raw['results'])
+            .filter((row) => {
+              const sym = readStr(row, 'underlying_ticker')?.toUpperCase();
+              return sym === undefined || sym === ticker.toUpperCase();
+            })
+            .slice()
+            .sort((a, b) => {
+              const da = readStr(a, 'date') ?? '';
+              const db = readStr(b, 'date') ?? '';
+              return da < db ? 1 : da > db ? -1 : 0;
+            });
+          for (const row of rows) {
+            const oi = readNum(row, 'open_interest');
+            if (Number.isFinite(oi) && oi > 0) {
+              massiveTotalOi = oi;
+              break;
+            }
+          }
         } else if (isRecord(raw['results'])) {
           const nested = readNum(raw['results'], 'total_open_interest');
           if (Number.isFinite(nested) && nested > 0) {
             massiveTotalOi = nested;
-          }
-        } else {
-          for (const row of extractRowsArray(raw['results'] ?? raw)) {
-            const oi = readNum(row, 'open_interest');
-            if (Number.isFinite(oi) && oi > 0) {
-              massiveTotalOi += oi;
-            }
           }
         }
       }
@@ -943,12 +1016,41 @@ export class InstitutionalCatalystProvider {
     };
   }
 
+  public async fetchHistoricalSummaryForDate(
+    rawSymbol: string,
+    tradeDate: string,
+  ): Promise<NormalizedOratsSummaryRow | null> {
+    const symbol = rawSymbol.trim().toUpperCase();
+    const cleanDate = tradeDate.slice(0, 10);
+    if (!symbol || !/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      return null;
+    }
+    try {
+      const raw = await this.getOrLoad(
+        `orats:hist_summary:${symbol}:${cleanDate}`,
+        DEFAULT_HIST_SUMMARY_TTL_MS,
+        false,
+        () =>
+          this.fetchOratsJson(
+            `/hist/summaries?ticker=${encodeURIComponent(symbol)}&tradeDate=${encodeURIComponent(cleanDate)}`,
+          ),
+      );
+      const rows = extractRowsArray(raw);
+      return rows[0] !== undefined ? normalizeOratsSummaryRow(rows[0]) : null;
+    } catch {
+      return null;
+    }
+  }
+
   public async fetchSymbolCatalystBundle(
     rawSymbol: string,
     options?: {
       readonly ethBars1m?: readonly Bar[];
       readonly realizedReturnByDate?: ReadonlyMap<string, number>;
       readonly prevCloseByDate?: ReadonlyMap<string, number>;
+      readonly closeByDate?: ReadonlyMap<string, number>;
+      readonly tradingDates?: readonly string[];
+      readonly latestTradingDate?: string;
       readonly isEtf?: boolean;
       readonly usesNoNbboFlow?: boolean;
     },
@@ -1008,9 +1110,20 @@ export class InstitutionalCatalystProvider {
         this.fetchMassiveJson('STOCKS_REST', `/stocks/vX/float?ticker=${encodeURIComponent(symbol)}`),
       ),
       WHAM_SUPPORTED_ETFS.has(symbol)
-        ? this.getOrLoad(`orats:wham:${symbol}`, this.liveOratsTtlMs, false, () =>
-            this.fetchOratsJson(`/hist/wham?ticker=${encodeURIComponent(symbol)}`),
-          )
+        ? this.getOrLoad(`orats:wham:${symbol}`, this.liveOratsTtlMs, false, async () => {
+            try {
+              const liveRaw = await this.fetchOratsJson(`/wham?ticker=${encodeURIComponent(symbol)}`);
+              if (extractRowsArray(liveRaw).length > 0) {
+                return liveRaw;
+              }
+            } catch {
+              // Fall back to /hist/wham with explicit tradeDate
+            }
+            const whamDate = options?.latestTradingDate ?? tradeDateEt;
+            return this.fetchOratsJson(
+              `/hist/wham?ticker=${encodeURIComponent(symbol)}&tradeDate=${encodeURIComponent(whamDate)}`,
+            );
+          })
         : Promise.resolve(null),
       this.fetchGlobalCalendars(),
     ]);
@@ -1053,12 +1166,16 @@ export class InstitutionalCatalystProvider {
       if (!Number.isFinite(strike) || strike <= 0 || expirDate === null || !Number.isFinite(dte)) {
         continue;
       }
+      const rawCallOi = readNum(row, 'callOpenInterest');
+      const rawPutOi = readNum(row, 'putOpenInterest');
+      const callOi = Number.isFinite(rawCallOi) ? rawCallOi : readNum(row, 'cOi');
+      const putOi = Number.isFinite(rawPutOi) ? rawPutOi : readNum(row, 'pOi');
       strikes.push({
         strike,
         expirDate,
         dte,
-        callOpenInterest: Math.max(0, readNum(row, 'cOi') || 0),
-        putOpenInterest: Math.max(0, readNum(row, 'pOi') || 0),
+        callOpenInterest: Number.isFinite(callOi) && callOi > 0 ? callOi : 0,
+        putOpenInterest: Number.isFinite(putOi) && putOi > 0 ? putOi : 0,
         delta: readNum(row, 'delta'),
         gamma: readNum(row, 'gamma'),
         smvVolDec: normalizeOratsVolToDecimal(readNum(row, 'smvVol')),
@@ -1130,27 +1247,94 @@ export class InstitutionalCatalystProvider {
         }
       }
     }
+    const sortedTradingDates = options?.tradingDates
+      ? [...new Set(options.tradingDates)].sort()
+      : [];
+    const closeLookup = options?.closeByDate;
     const allEarnDates = [...new Set([...oratsEarnDates, ...fmpEarnDates])].sort();
-    const isolatedImpliedMove = resolveEarningsImpliedMoveDec(summary);
-    const earnings: ReconciledEarningsEvent[] = allEarnDates.map((reportDate) => {
+    const isolatedLiveImpliedMove = resolveEarningsImpliedMoveDec(summary);
+
+    const draftEarnings = allEarnDates.map((reportDate) => {
       const { timing, source } = resolveEarningsTimingCascade({
         oratsAnncTod: oratsAnncByDate.get(reportDate) ?? null,
         ...(options?.ethBars1m !== undefined ? { ethBars1m: options.ethBars1m } : {}),
         eventDateEt: reportDate,
       });
-      const realizedReturn = options?.realizedReturnByDate?.get(reportDate) ?? null;
-      const ratioToImplied =
-        realizedReturn !== null && isolatedImpliedMove !== null
-          ? Math.abs(realizedReturn) / isolatedImpliedMove
-          : null;
+      const { preDate, reactDate } = resolveCausalEarningsDates(
+        reportDate,
+        timing,
+        sortedTradingDates,
+      );
+      let realizedReturn: number | null = options?.realizedReturnByDate?.get(reportDate) ?? null;
+      if (preDate !== null && reactDate !== null && closeLookup !== undefined) {
+        const cPre = closeLookup.get(preDate);
+        const cReact = closeLookup.get(reactDate);
+        if (
+          cPre !== undefined &&
+          cReact !== undefined &&
+          Number.isFinite(cPre) &&
+          Number.isFinite(cReact) &&
+          cPre > 0
+        ) {
+          realizedReturn = (cReact - cPre) / cPre;
+        }
+      }
       return {
         reportDate,
+        preDate,
+        reactDate,
         timing,
         timingSource: source,
         realizedReturn,
-        impliedEarningsMoveDec: isolatedImpliedMove,
+      };
+    });
+
+    // Fetch pre-event historical /hist/summaries ONLY for the most recent <= 4 causal historical reports
+    const recentHistTargets = draftEarnings
+      .filter(
+        (ev): ev is typeof ev & { readonly preDate: string; readonly reactDate: string } =>
+          ev.preDate !== null &&
+          ev.reactDate !== null &&
+          ev.reactDate <= tradeDateEt &&
+          ev.realizedReturn !== null,
+      )
+      .slice(-4);
+    const histImpliedByPreDate = new Map<string, number | null>();
+    if (recentHistTargets.length > 0) {
+      const histSummaries = await Promise.all(
+        recentHistTargets.map(async (ev) => ({
+          preDate: ev.preDate,
+          row: await this.fetchHistoricalSummaryForDate(symbol, ev.preDate),
+        })),
+      );
+      for (const item of histSummaries) {
+        histImpliedByPreDate.set(item.preDate, resolveEarningsImpliedMoveDec(item.row));
+      }
+    }
+
+    const earnings: ReconciledEarningsEvent[] = draftEarnings.map((ev) => {
+      const impliedEarningsMoveDec =
+        ev.preDate !== null && histImpliedByPreDate.has(ev.preDate)
+          ? (histImpliedByPreDate.get(ev.preDate) ?? null)
+          : ev.preDate === null && closeLookup === undefined
+            ? isolatedLiveImpliedMove
+            : null;
+      const ratioToImplied =
+        ev.realizedReturn !== null &&
+        impliedEarningsMoveDec !== null &&
+        impliedEarningsMoveDec > 0
+          ? Math.abs(ev.realizedReturn) / impliedEarningsMoveDec
+          : null;
+      return {
+        reportDate: ev.reportDate,
+        preDate: ev.preDate,
+        reactDate: ev.reactDate,
+        timing: ev.timing,
+        timingSource: ev.timingSource,
+        realizedReturn: ev.realizedReturn,
+        impliedEarningsMoveDec,
         ratioToImplied,
-        classification: classifyEarningsReaction(realizedReturn, isolatedImpliedMove),
+        classification: classifyEarningsReaction(ev.realizedReturn, impliedEarningsMoveDec),
       };
     });
 

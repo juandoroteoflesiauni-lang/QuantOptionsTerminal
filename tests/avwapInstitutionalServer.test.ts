@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { computeCohortSurvivalSeries } from '../src/core/avwap/index.js';
 import { getWelfordOutput } from '../src/core/welford.js';
 import type { Bar } from '../src/core/types.js';
 import {
@@ -8,6 +9,7 @@ import {
   InstitutionalCatalystProvider,
   assertOratsUrlAllowed,
   classifyEarningsReaction,
+  computeOratsStrikesGexSummary,
   normalizeOratsCoresRow,
   normalizeOratsSummaryRow,
   reconcileCorporateActions,
@@ -81,7 +83,7 @@ describe('Phase 2B Server AVWAP Layer (100% Offline)', () => {
       const parsed = new URL(url);
       const apiKey = parsed.searchParams.get('apikey') ?? parsed.searchParams.get('apiKey');
       seenMassiveCalls.push({ url: parsed.pathname, apiKey });
-      if (parsed.pathname.includes('/options/v1/open-interest/underlying/')) {
+      if (parsed.pathname === '/options/v1/open-interest/underlying') {
         return Promise.resolve({ ok: true, status: 200, text: JSON.stringify({ total_oi: 16_786_351 }), headers: {} });
       }
       if (parsed.pathname.includes('/stocks/v1/splits')) {
@@ -528,5 +530,231 @@ describe('Phase 2B Server AVWAP Layer (100% Offline)', () => {
     expect(renderInstitutionalAvwapContextMarkdown(exportPayload ?? undefined)).toContain(
       '### Institutional AVWAP Context',
     );
+  });
+
+  it('hardens Massive OI query params, ORATS WHAM live/hist routing, pre-event /hist/summaries EARNINGS_BLOWOUT, YTD 1D retention & strikes GEX fallback (Phase 2B.1)', async () => {
+    const seenOptionsUrls: string[] = [];
+    const seenOratsUrls: string[] = [];
+
+    const provider = new InstitutionalCatalystProvider({
+      oratsApiKeys: ['orats-key-1'],
+      excludedOratsKeys: ['orats-key-3'],
+      fmpApiKey: 'fmp-key-1',
+      nowMsFn: () => Date.UTC(2026, 10, 25, 16, 0, 0),
+      optionsMassiveFetchFn: (url) => {
+        seenOptionsUrls.push(url);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            results: [
+              { underlying_ticker: 'QQQ', date: '2026-11-24', open_interest: 14_474_848 },
+              { underlying_ticker: 'QQQ', date: '2026-11-25', open_interest: 14_623_724 },
+            ],
+          }),
+          headers: {},
+        });
+      },
+      stocksMassiveFetchFn: () =>
+        Promise.resolve({ ok: true, status: 200, text: JSON.stringify({ results: [] }), headers: {} }),
+      fmpFetchFn: () => Promise.resolve(jsonResp([])),
+      oratsFetchFn: (url) => {
+        seenOratsUrls.push(url);
+        const u = new URL(url);
+        if (u.pathname.endsWith('/wham') && !u.pathname.endsWith('/hist/wham')) {
+          return Promise.resolve(jsonResp({ data: [{ ticker: 'QQQ', tradeDate: '2026-11-25', wham: 1.0 }] }));
+        }
+        if (u.pathname.endsWith('/hist/wham')) {
+          if (!u.searchParams.get('tradeDate')) {
+            return Promise.resolve(jsonResp({ error: 'tradeDate required' }, 400));
+          }
+          return Promise.resolve(jsonResp({ data: [{ ticker: 'QQQ', tradeDate: '2026-11-24', wham: 1.0 }] }));
+        }
+        if (u.pathname.endsWith('/live/summaries')) {
+          return Promise.resolve(
+            jsonResp({
+              data: [
+                { ticker: 'MELI', tradeDate: '2026-11-25', impliedEarningsMove: 0.0, iv30d: 0.42, contango: 0.2 },
+              ],
+            }),
+          );
+        }
+        if (u.pathname.endsWith('/hist/summaries')) {
+          const td = u.searchParams.get('tradeDate');
+          const ticker = u.searchParams.get('ticker');
+          if (ticker === 'MELI' && td === '2026-11-04') {
+            return Promise.resolve(
+              jsonResp({
+                data: [{ ticker: 'MELI', tradeDate: '2026-11-04', impliedEarningsMove: 0.0683, iv30d: 0.47 }],
+              }),
+            );
+          }
+          if (ticker === 'NVDA' && td === '2026-11-17') {
+            return Promise.resolve(
+              jsonResp({
+                data: [{ ticker: 'NVDA', tradeDate: '2026-11-17', impliedEarningsMove: 0.0802, iv30d: 0.66 }],
+              }),
+            );
+          }
+          return Promise.resolve(jsonResp({ data: [] }));
+        }
+        if (u.pathname.endsWith('/hist/earnings')) {
+          const ticker = u.searchParams.get('ticker');
+          if (ticker === 'MELI') {
+            return Promise.resolve(
+              jsonResp({ data: [{ ticker: 'MELI', earnDate: '2026-11-04', anncTod: '1630' }] }),
+            );
+          }
+          if (ticker === 'NVDA') {
+            return Promise.resolve(
+              jsonResp({ data: [{ ticker: 'NVDA', earnDate: '2026-11-17', anncTod: '1630' }] }),
+            );
+          }
+        }
+        if (u.pathname.endsWith('/live/strikes')) {
+          return Promise.resolve(
+            jsonResp({
+              data: [
+                {
+                  strike: 1500,
+                  expirDate: '2026-11-27',
+                  dte: 3,
+                  callOpenInterest: 800,
+                  putOpenInterest: 200,
+                  delta: 0.4,
+                  gamma: 0.008,
+                  smvVol: 0.42,
+                  stockPrice: 9999.0,
+                },
+                {
+                  strike: 1400,
+                  expirDate: '2026-11-27',
+                  dte: 3,
+                  callOpenInterest: 100,
+                  putOpenInterest: 1200,
+                  delta: -0.35,
+                  gamma: 0.009,
+                  smvVol: 0.44,
+                  stockPrice: 9999.0,
+                },
+              ],
+            }),
+          );
+        }
+        return Promise.resolve(jsonResp({ data: [] }));
+      },
+    });
+
+    // 1. Massive OPTIONS_REST OI uses query params and takes ONLY latest trade date (never sums)
+    const oiRes = await provider.reconcileOpenInterest('QQQ', []);
+    expect(oiRes.source).toBe('MASSIVE_FALLBACK');
+    expect(oiRes.effectiveTotalOi).toBe(14_623_724);
+    expect(seenOptionsUrls.length).toBe(1);
+    const oiUrl = new URL(seenOptionsUrls[0] ?? 'https://example.com');
+    expect(oiUrl.pathname).toBe('/options/v1/open-interest/underlying');
+    expect(oiUrl.searchParams.get('underlying_ticker')).toBe('QQQ');
+    expect(oiUrl.searchParams.get('date.gte')).toBe('2026-11-15');
+    expect(oiUrl.searchParams.get('date.lte')).toBe('2026-11-25');
+
+    // 2. ORATS WHAM on QQQ uses /wham?ticker=QQQ (0 /hist/wham HTTP 400 errors, zero MISSING_WHAM_COVERAGE)
+    const qqqBundle = await provider.fetchSymbolCatalystBundle('QQQ', { latestTradingDate: '2026-11-24' });
+    expect(qqqBundle.wham.supported).toBe(true);
+    expect(qqqBundle.wham.status).toBe('OK');
+    expect(qqqBundle.degradationFlags).not.toContain('MISSING_WHAM_COVERAGE');
+    expect(qqqBundle.providerWarnings).toEqual([]);
+    expect(qqqBundle.strikes.every((s) => s.callOpenInterest > 0 || s.putOpenInterest > 0)).toBe(true);
+
+    // 3. Pre-event /hist/summaries EARNINGS_BLOWOUT for MELI (2026-11-04 AMC -> reactDate 2026-11-05)
+    // while NVDA (2026-11-17 AMC -> -2.89% vs 8.02%) resolves to EARNINGS_INLINE and is blocked from runtime
+    const meliBars: Bar[] = [
+      { time: Date.UTC(2026, 0, 2, 14, 30, 0) / 1000, open: 1700, high: 1720, low: 1690, close: 1710, volume: 300_000 },
+      { time: Date.UTC(2026, 10, 4, 14, 30, 0) / 1000, open: 1735, high: 1750, low: 1720, close: 1739.88, volume: 400_000 },
+      { time: Date.UTC(2026, 10, 5, 14, 30, 0) / 1000, open: 1550, high: 1560, low: 1510, close: 1530.28, volume: 900_000 },
+      { time: Date.UTC(2026, 10, 24, 14, 30, 0) / 1000, open: 1495, high: 1510, low: 1480, close: 1500.0, volume: 450_000 },
+    ];
+    const nvdaBars: Bar[] = [
+      { time: Date.UTC(2026, 0, 2, 14, 30, 0) / 1000, open: 150, high: 152, low: 149, close: 151, volume: 10_000_000 },
+      { time: Date.UTC(2026, 10, 17, 14, 30, 0) / 1000, open: 155, high: 157, low: 154, close: 155.46, volume: 20_000_000 },
+      { time: Date.UTC(2026, 10, 18, 14, 30, 0) / 1000, open: 151, high: 152, low: 149, close: 150.96, volume: 25_000_000 },
+      { time: Date.UTC(2026, 10, 24, 14, 30, 0) / 1000, open: 150, high: 152, low: 149, close: 151.0, volume: 15_000_000 },
+    ];
+
+    const rt = new InstitutionalAvwapRuntime({
+      historicalService: null,
+      catalystProvider: provider,
+      nowMsFn: () => Date.UTC(2026, 10, 25, 16, 0, 0),
+    });
+
+    const meliDiag = await rt.hydrateSymbol('MELI', { bars1d: meliBars, forceRefresh: true });
+    const blowoutAnchor = meliDiag.committedAnchors.find((a) => a.family === 'EARNINGS_BLOWOUT');
+    expect(blowoutAnchor).toBeDefined();
+    expect(blowoutAnchor?.anchorTimeSec).toBe(Date.UTC(2026, 10, 5, 14, 30, 0) / 1000);
+    expect(blowoutAnchor?.polarity).toBe('SHORT');
+
+    const nvdaDiag = await rt.hydrateSymbol('NVDA', { bars1d: nvdaBars, forceRefresh: true });
+    expect(nvdaDiag.committedAnchors.some((a) => a.family === 'EARNINGS_BLOWOUT')).toBe(false);
+    expect(nvdaDiag.committedAnchors.some((a) => a.family === 'EARNINGS_INLINE')).toBe(false);
+    expect(nvdaDiag.committedAnchors.some((a) => a.family === 'CALENDAR_YTD')).toBe(true);
+
+    // 4. Strikes GEX fallback uses real spot (ignores ORATS stockPrice=9999) and yields non-null regime/confluence
+    const realSpot = 1480.0;
+    rt.updateMarketContext('MELI', {
+      asOfUtcSec: Date.UTC(2026, 10, 24, 21, 0, 0) / 1000,
+      spot: realSpot,
+      atr14: 60.0,
+      dollarVol20d: 750_000_000,
+      netGex: null,
+      callWallStrike: null,
+      putWallStrike: null,
+      zeroGamma: null,
+      vpPoc: 1510.0,
+      vpVah: 1540.0,
+      vpVal: 1460.0,
+      vpHvns: [1510.0],
+      vpLvns: [1485.0],
+      cvdAbsorptionScore: 0.7,
+      cvdDirectionalAlignment: 0.65,
+      bucketRvolZ: 1.5,
+      contango: 0.2,
+      spyIv30dDec: 0.22,
+      bars1d: meliBars,
+    });
+    const meliSnap = rt.getSnapshotContext('MELI', '1D');
+    expect(meliSnap).not.toBeNull();
+    expect(meliSnap?.gammaRegime).toBe('NEGATIVE_GAMMA');
+    expect(meliSnap?.volRegime).toBe('MID_VOL');
+    expect((meliSnap?.bounceConfluenceScore ?? 0) > 0 || (meliSnap?.breakoutConfluenceScore ?? 0) > 0).toBe(true);
+
+    const gexFallback = computeOratsStrikesGexSummary(qqqBundle.strikes, realSpot);
+    expect(gexFallback.netGex).not.toBeNull();
+    expect(gexFallback.callWallStrike).toBe(1500);
+    expect(gexFallback.putWallStrike).toBe(1400);
+    expect(gexFallback.zeroGamma).not.toBeNull();
+    expect((gexFallback.zeroGamma ?? 0) >= 1400 && (gexFallback.zeroGamma ?? 0) <= 1500).toBe(true);
+    expect(seenOratsUrls.every((u) => !u.includes('/live/cores'))).toBe(true);
+
+    // 5. CALENDAR_YTD is exempt from COHORT_DECAY in 1D even under 3x float turnover (while VOLUME_CLIMAX triggers)
+    const heavyVols = new Array<number>(12).fill(300_000);
+    const ytdCohort = computeCohortSurvivalSeries({
+      volumes: heavyVols,
+      anchorIdx: 0,
+      freeFloat: 1_000_000,
+      family: 'CALENDAR_YTD',
+      timeframe: '1D',
+      floatIsPit: true,
+    });
+    expect(ytdCohort.exemptApplied).toBe(true);
+    expect(ytdCohort.triggered).toBe(false);
+
+    const climaxCohort = computeCohortSurvivalSeries({
+      volumes: heavyVols,
+      anchorIdx: 0,
+      freeFloat: 1_000_000,
+      family: 'VOLUME_CLIMAX',
+      timeframe: '1D',
+      floatIsPit: true,
+    });
+    expect(climaxCohort.exemptApplied).toBe(false);
+    expect(climaxCohort.triggered).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import {
   applySpecialDividendO1,
   applySplitO1,
   combineMomentStates,
+  computeCohortSurvivalSeries,
   computeConfluenceContext,
   computeHybridBands,
   computeIass,
@@ -36,6 +37,7 @@ import type { TradierStreamTick } from '../tradierAdapter.js';
 import type { UsHistoricalService } from '../usHistoricalService.js';
 import type {
   InstitutionalCatalystProvider,
+  NormalizedOratsStrikeOiRow,
   SymbolCatalystBundle,
 } from './catalystProvider.js';
 
@@ -109,9 +111,176 @@ interface MutableSymbolAvwapRuntimeState {
 export interface InstitutionalAvwapRuntimeDeps {
   readonly historicalService: Pick<UsHistoricalService, 'load' | 'adjustmentRevision'> | null;
   readonly catalystProvider: InstitutionalCatalystProvider | null;
+  readonly loadDailyBarsFn?: ((symbol: string, nowUtcSec: number) => Promise<readonly Bar[]>) | null;
   readonly nowMsFn?: () => number;
   readonly projectionThrottleMs?: number;
   readonly enableEthEarningsShadow?: boolean;
+}
+
+export interface OratsStrikesGexFallbackSummary {
+  readonly netGex: number | null;
+  readonly callWallStrike: number | null;
+  readonly putWallStrike: number | null;
+  readonly zeroGamma: number | null;
+}
+
+const GEX_CONTRACT_MULTIPLIER = 100;
+const INV_SQRT_2PI = 1 / Math.sqrt(2 * Math.PI);
+
+/**
+ * Pure ORATS `/live/strikes` GEX/wall/zero-gamma summary strictly anchored on canonical Massive/Tradier spot.
+ * Never uses ORATS `stockPrice`/`spotPrice`.
+ */
+export function computeOratsStrikesGexSummary(
+  strikes: readonly NormalizedOratsStrikeOiRow[],
+  realSpot: number,
+): OratsStrikesGexFallbackSummary {
+  if (strikes.length === 0 || !Number.isFinite(realSpot) || realSpot <= 0) {
+    return {
+      netGex: null,
+      callWallStrike: null,
+      putWallStrike: null,
+      zeroGamma: null,
+    };
+  }
+
+  let netGexRaw = 0;
+  let validRows = 0;
+  const callWallByStrike = new Map<number, number>();
+  const putWallByStrike = new Map<number, number>();
+  const repriceInputs: {
+    readonly strike: number;
+    readonly tYears: number;
+    readonly ivDec: number;
+    readonly oiDiff: number;
+  }[] = [];
+
+  for (const row of strikes) {
+    if (
+      !Number.isFinite(row.strike) ||
+      row.strike <= 0 ||
+      !Number.isFinite(row.gamma) ||
+      row.gamma < 0
+    ) {
+      continue;
+    }
+    const cOi = Number.isFinite(row.callOpenInterest) && row.callOpenInterest > 0 ? row.callOpenInterest : 0;
+    const pOi = Number.isFinite(row.putOpenInterest) && row.putOpenInterest > 0 ? row.putOpenInterest : 0;
+    if (cOi === 0 && pOi === 0) {
+      continue;
+    }
+
+    validRows += 1;
+    const gCall = Math.abs(row.gamma) * cOi * GEX_CONTRACT_MULTIPLIER;
+    const gPut = Math.abs(row.gamma) * pOi * GEX_CONTRACT_MULTIPLIER;
+    netGexRaw += row.gamma * (cOi - pOi) * GEX_CONTRACT_MULTIPLIER;
+
+    if (cOi > 0) {
+      callWallByStrike.set(row.strike, (callWallByStrike.get(row.strike) ?? 0) + gCall);
+    }
+    if (pOi > 0) {
+      putWallByStrike.set(row.strike, (putWallByStrike.get(row.strike) ?? 0) + gPut);
+    }
+
+    if (
+      Number.isFinite(row.dte) &&
+      row.dte > 0 &&
+      Number.isFinite(row.smvVolDec) &&
+      row.smvVolDec > 0 &&
+      cOi !== pOi
+    ) {
+      const tYears = row.dte / 365;
+      if (row.smvVolDec * Math.sqrt(tYears) > 1e-8) {
+        repriceInputs.push({
+          strike: row.strike,
+          tYears,
+          ivDec: row.smvVolDec,
+          oiDiff: (cOi - pOi) * GEX_CONTRACT_MULTIPLIER,
+        });
+      }
+    }
+  }
+
+  if (validRows === 0) {
+    return {
+      netGex: null,
+      callWallStrike: null,
+      putWallStrike: null,
+      zeroGamma: null,
+    };
+  }
+
+  let callWallStrike: number | null = null;
+  let bestCallWall = 0;
+  for (const [k, val] of callWallByStrike.entries()) {
+    if (val > bestCallWall || (val === bestCallWall && callWallStrike !== null && k < callWallStrike)) {
+      bestCallWall = val;
+      callWallStrike = k;
+    }
+  }
+
+  let putWallStrike: number | null = null;
+  let bestPutWall = 0;
+  for (const [k, val] of putWallByStrike.entries()) {
+    if (val > bestPutWall || (val === bestPutWall && putWallStrike !== null && k > putWallStrike)) {
+      bestPutWall = val;
+      putWallStrike = k;
+    }
+  }
+
+  const netGex = netGexRaw * (realSpot * realSpot) * 0.01;
+  let zeroGamma: number | null = null;
+  if (repriceInputs.length > 0) {
+    const netGexAtSpot = (s: number): number => {
+      let acc = 0;
+      for (const item of repriceInputs) {
+        const volSqrtT = item.ivDec * Math.sqrt(item.tYears);
+        const drift = (0.04 + 0.5 * item.ivDec * item.ivDec) * item.tYears;
+        const d1 = (Math.log(s / item.strike) + drift) / volSqrtT;
+        const gammaBs = (INV_SQRT_2PI * Math.exp(-0.5 * d1 * d1)) / (s * volSqrtT);
+        acc += gammaBs * item.oiDiff;
+      }
+      return acc;
+    };
+
+    const gridSteps = 60;
+    const minS = 0.7 * realSpot;
+    const maxS = 1.3 * realSpot;
+    const step = (maxS - minS) / gridSteps;
+    let prevS = minS;
+    let prevVal = netGexAtSpot(prevS);
+    let bestDist = Number.POSITIVE_INFINITY;
+
+    for (let i = 1; i <= gridSteps; i += 1) {
+      const curS = minS + i * step;
+      const curVal = netGexAtSpot(curS);
+      let candidate: number | null = null;
+      if (prevVal === 0) {
+        candidate = prevS;
+      } else if ((prevVal < 0 && curVal > 0) || (prevVal > 0 && curVal < 0)) {
+        const frac = Math.abs(prevVal) / (Math.abs(prevVal) + Math.abs(curVal));
+        candidate = prevS + frac * (curS - prevS);
+      } else if (curVal === 0) {
+        candidate = curS;
+      }
+      if (candidate !== null && Number.isFinite(candidate)) {
+        const dist = Math.abs(candidate - realSpot);
+        if (dist < bestDist) {
+          bestDist = dist;
+          zeroGamma = candidate;
+        }
+      }
+      prevS = curS;
+      prevVal = curVal;
+    }
+  }
+
+  return {
+    netGex: Number.isFinite(netGex) ? netGex : null,
+    callWallStrike,
+    putWallStrike,
+    zeroGamma,
+  };
 }
 
 function isTopDownWithinBound(
@@ -190,6 +359,7 @@ function aggregateSubdailyBarsToDaily(bars: readonly Bar[]): Bar[] {
 export class InstitutionalAvwapRuntime {
   private readonly historicalService: Pick<UsHistoricalService, 'load' | 'adjustmentRevision'> | null;
   private readonly catalystProvider: InstitutionalCatalystProvider | null;
+  private readonly loadDailyBarsFn: ((symbol: string, nowUtcSec: number) => Promise<readonly Bar[]>) | null;
   private readonly nowMsFn: () => number;
   private readonly projectionThrottleMs: number;
   private readonly enableEthEarningsShadow: boolean;
@@ -198,6 +368,7 @@ export class InstitutionalAvwapRuntime {
   public constructor(deps: InstitutionalAvwapRuntimeDeps) {
     this.historicalService = deps.historicalService;
     this.catalystProvider = deps.catalystProvider;
+    this.loadDailyBarsFn = deps.loadDailyBarsFn ?? null;
     this.nowMsFn = deps.nowMsFn ?? ((): number => Date.now());
     this.projectionThrottleMs = deps.projectionThrottleMs ?? DEFAULT_MULTI_TIMEFRAME_AVWAP_CONFIG.liveMergeThrottleMs;
     this.enableEthEarningsShadow = deps.enableEthEarningsShadow ?? false;
@@ -361,6 +532,23 @@ export class InstitutionalAvwapRuntime {
 
       const committed = accumulateAdjustedFromIdx(anchorIdx);
       const anchorDate = sessionKey(startBar.time, 'EQUITY');
+      if (
+        family !== 'CALENDAR_YTD' &&
+        bundle?.nonPitFloatShares !== undefined &&
+        bundle.nonPitFloatShares !== null &&
+        Number.isFinite(bundle.nonPitFloatShares) &&
+        bundle.nonPitFloatShares > 0
+      ) {
+        computeCohortSurvivalSeries({
+          volumes: validBars.map((b) => b.volume),
+          anchorIdx,
+          freeFloat: bundle.nonPitFloatShares,
+          family,
+          timeframe: '1D',
+          floatIsPit: false,
+          allowNonPitSensitivity: false,
+        });
+      }
       out.push({
         anchorId: `${symbol}:${family}:${anchorDate}:${String(anchorIdx)}`,
         family,
@@ -395,10 +583,15 @@ export class InstitutionalAvwapRuntime {
       }
       const blowouts = bundle.earnings
         .filter((e) => e.classification === 'EARNINGS_BLOWOUT')
-        .sort((a, b) => (a.reportDate < b.reportDate ? 1 : a.reportDate > b.reportDate ? -1 : 0));
+        .sort((a, b) => {
+          const da = a.reactDate ?? a.reportDate;
+          const db = b.reactDate ?? b.reportDate;
+          return da < db ? 1 : da > db ? -1 : 0;
+        });
       const latestBlowout = blowouts[0];
       if (latestBlowout !== undefined) {
-        const idx = dateToIdx.get(latestBlowout.reportDate);
+        const anchorDateKey = latestBlowout.reactDate ?? latestBlowout.reportDate;
+        const idx = dateToIdx.get(anchorDateKey);
         if (idx !== undefined) {
           const ret = latestBlowout.realizedReturn ?? 0;
           tryAddAnchor(
@@ -437,13 +630,22 @@ export class InstitutionalAvwapRuntime {
   ): Promise<SymbolAvwapDiagnostics> {
     const st = this.getOrCreateState(rawSymbol);
     let bars1d: readonly Bar[] = options?.bars1d ?? st.marketContext?.bars1d ?? [];
+    const nowSec = Math.floor(this.nowMsFn() / 1_000);
+
+    if (bars1d.length === 0 && this.loadDailyBarsFn !== null) {
+      try {
+        bars1d = await this.loadDailyBarsFn(st.symbol, nowSec);
+      } catch {
+        // Fall through to historicalService
+      }
+    }
 
     if (bars1d.length === 0 && this.historicalService !== null) {
       try {
         const res = await this.historicalService.load({
           symbol: st.symbol,
           timeframe: '1h',
-          now: Math.floor(this.nowMsFn() / 1_000),
+          now: nowSec,
           rthOnly: true,
         });
         bars1d = aggregateSubdailyBarsToDaily(res.rows.map((r) => r.bar));
@@ -452,17 +654,32 @@ export class InstitutionalAvwapRuntime {
       }
     }
 
+    const sortedBars1d = bars1d
+      .filter((b) => Number.isFinite(b.time) && Number.isFinite(b.close) && b.close > 0)
+      .slice()
+      .sort((a, b) => a.time - b.time);
+
+    const tradingDates: string[] = [];
+    const closeByDate = new Map<string, number>();
     const realizedReturnByDate = new Map<string, number>();
     const prevCloseByDate = new Map<string, number>();
-    for (let i = 1; i < bars1d.length; i += 1) {
-      const prev = bars1d[i - 1];
-      const cur = bars1d[i];
-      if (prev !== undefined && cur !== undefined && prev.close > 0) {
-        const dKey = sessionKey(cur.time, 'EQUITY');
-        prevCloseByDate.set(dKey, prev.close);
-        realizedReturnByDate.set(dKey, (cur.close - prev.close) / prev.close);
+    for (let i = 0; i < sortedBars1d.length; i += 1) {
+      const cur = sortedBars1d[i];
+      if (cur === undefined) continue;
+      const dKey = sessionKey(cur.time, 'EQUITY');
+      if (!closeByDate.has(dKey)) {
+        tradingDates.push(dKey);
+      }
+      closeByDate.set(dKey, cur.close);
+      if (i > 0) {
+        const prev = sortedBars1d[i - 1];
+        if (prev !== undefined && prev.close > 0) {
+          prevCloseByDate.set(dKey, prev.close);
+          realizedReturnByDate.set(dKey, (cur.close - prev.close) / prev.close);
+        }
       }
     }
+    const latestTradingDate = tradingDates[tradingDates.length - 1];
 
     let bundle: SymbolCatalystBundle | null = st.catalystBundle;
     if (this.catalystProvider !== null && (bundle === null || options?.forceRefresh === true || st.dirty)) {
@@ -471,6 +688,9 @@ export class InstitutionalAvwapRuntime {
           ...(options?.ethBars1m !== undefined ? { ethBars1m: options.ethBars1m } : {}),
           realizedReturnByDate,
           prevCloseByDate,
+          closeByDate,
+          tradingDates,
+          ...(latestTradingDate !== undefined ? { latestTradingDate } : {}),
         });
       } catch {
         // Fail-open: keep null/previous bundle
@@ -668,6 +888,36 @@ export class InstitutionalAvwapRuntime {
     return { anchor: null, avwapPrice: Number.isFinite(spot) && spot > 0 ? spot : Number.NaN };
   }
 
+  private resolveEffectiveGexFields(
+    st: MutableSymbolAvwapRuntimeState,
+    ctx: SymbolMarketContextSnapshot,
+  ): OratsStrikesGexFallbackSummary {
+    const needsFallback =
+      ctx.netGex === null ||
+      !Number.isFinite(ctx.netGex) ||
+      ctx.callWallStrike === null ||
+      ctx.putWallStrike === null ||
+      ctx.zeroGamma === null;
+    if (!needsFallback || st.catalystBundle === null || st.catalystBundle.strikes.length === 0) {
+      return {
+        netGex: ctx.netGex,
+        callWallStrike: ctx.callWallStrike,
+        putWallStrike: ctx.putWallStrike,
+        zeroGamma: ctx.zeroGamma,
+      };
+    }
+    const strikesGex = computeOratsStrikesGexSummary(st.catalystBundle.strikes, ctx.spot);
+    return {
+      netGex:
+        ctx.netGex !== null && Number.isFinite(ctx.netGex)
+          ? ctx.netGex
+          : strikesGex.netGex,
+      callWallStrike: ctx.callWallStrike ?? strikesGex.callWallStrike,
+      putWallStrike: ctx.putWallStrike ?? strikesGex.putWallStrike,
+      zeroGamma: ctx.zeroGamma ?? strikesGex.zeroGamma,
+    };
+  }
+
   /**
    * Returns synchronous confluence context ready for `UsSnapshotResponseDto` (never throws or awaits I/O).
    */
@@ -688,17 +938,18 @@ export class InstitutionalAvwapRuntime {
     if (!Number.isFinite(avwapPrice) || avwapPrice <= 0) {
       return null;
     }
+    const gexFields = this.resolveEffectiveGexFields(st, ctx);
 
     return computeConfluenceContext({
       avwapPrice,
       spotPrice: ctx.spot,
       atr14: ctx.atr14,
       polarity: anchor?.polarity ?? 'NEUTRAL',
-      netGex: ctx.netGex,
+      netGex: gexFields.netGex,
       dollarVol20d: ctx.dollarVol20d,
-      callWall: ctx.callWallStrike,
-      putWall: ctx.putWallStrike,
-      zeroGamma: ctx.zeroGamma,
+      callWall: gexFields.callWallStrike,
+      putWall: gexFields.putWallStrike,
+      zeroGamma: gexFields.zeroGamma,
       vpPoc: ctx.vpPoc,
       vpVah: ctx.vpVah,
       vpVal: ctx.vpVal,
@@ -737,6 +988,7 @@ export class InstitutionalAvwapRuntime {
 
     const anchors: InstitutionalAvwapAnchor[] = [];
     const mergedFlags = new Set<AvwapDegradationFlag>(st.degradationFlags);
+    const gexFields = this.resolveEffectiveGexFields(st, ctx);
 
     for (let idx = 0; idx < sorted.length; idx += 1) {
       const a = sorted[idx];
@@ -767,11 +1019,11 @@ export class InstitutionalAvwapRuntime {
         spotPrice: ctx.spot,
         atr14: ctx.atr14,
         polarity: a.polarity,
-        netGex: ctx.netGex,
+        netGex: gexFields.netGex,
         dollarVol20d: ctx.dollarVol20d,
-        callWall: ctx.callWallStrike,
-        putWall: ctx.putWallStrike,
-        zeroGamma: ctx.zeroGamma,
+        callWall: gexFields.callWallStrike,
+        putWall: gexFields.putWallStrike,
+        zeroGamma: gexFields.zeroGamma,
         vpPoc: ctx.vpPoc,
         vpVah: ctx.vpVah,
         vpVal: ctx.vpVal,

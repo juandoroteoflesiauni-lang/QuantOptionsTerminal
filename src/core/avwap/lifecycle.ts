@@ -285,7 +285,9 @@ export function computeCohortSurvivalSeries(
   const allowNonPit = input.allowNonPitSensitivity ?? false;
   const n = input.volumes.length;
   const famUpper = input.family.trim().toUpperCase();
-  const isExempt = cfg.cohortExemptFamilies1w.includes(famUpper) && input.timeframe === '1W';
+  const isExempt =
+    (cfg.cohortExemptFamilies1w.includes(famUpper) && input.timeframe === '1W') ||
+    (famUpper === 'CALENDAR_YTD' && input.timeframe === '1D');
 
   if (input.freeFloat === null || !Number.isFinite(input.freeFloat) || input.freeFloat <= 0) {
     return {
