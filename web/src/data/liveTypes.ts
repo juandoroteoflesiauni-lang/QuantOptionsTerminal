@@ -1115,6 +1115,7 @@ export interface UsStrikeExposureDto {
 }
 
 export interface UsTerminalBarsResponseDto {
+  readonly monthStartCanonicalAvwap?: import('../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto;
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;
   readonly timeframe: TerminalTimeframe;

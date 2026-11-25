@@ -48,6 +48,7 @@ interface CacheEntry {
   readonly from: number;
   readonly to: number;
   readonly at: number;
+  readonly prefixAt: number;
   readonly rows: readonly HistoricalObservation[];
   readonly nativeMetadata?: FmpHistoricalResult;
 }
@@ -83,6 +84,24 @@ export class UsHistoricalService {
   private readonly segmentFlights = new Map<string, Promise<readonly HistoricalObservation[]>>();
   private readonly fmpFlights = new Map<string, Promise<FmpHistoricalResult>>();
   private peakCacheRows = 0;
+  private canonicalRevision = 0;
+  private readonly canonicalRevisions = new Map<string,number>();
+  /** Metadata generation owned by the existing historical cache, not another cache. */
+  public adjustmentRevision(symbol:string): number {
+    const current=this.canonicalRevisions.get(symbol);
+    if(current!==undefined) return current;
+    return this.nextCanonicalRevision(symbol);
+  }
+
+  private nextCanonicalRevision(symbol:string):number {
+    this.canonicalRevision += 1;
+    this.canonicalRevisions.delete(symbol);this.canonicalRevisions.set(symbol,this.canonicalRevision);
+    while(this.canonicalRevisions.size>16) {
+      const oldest=this.canonicalRevisions.keys().next().value;if(oldest===undefined) break;
+      this.canonicalRevisions.delete(oldest);
+    }
+    return this.canonicalRevision;
+  }
   public constructor(private readonly deps: {
     readonly router: MassiveKeyRouter;
     readonly fetchFn: (url: string, signal: AbortSignal) => Promise<FetchResponse>;
@@ -122,10 +141,20 @@ export class UsHistoricalService {
   }
 
   public invalidate(symbol: string): void {
+    this.nextCanonicalRevision(symbol);
     for (const key of this.cache.keys()) if (key.split('|')[1] === symbol) this.cache.delete(key);
     for (const [key, flight] of this.flights) {
       const identity = JSON.parse(key) as unknown[];
       if (identity[0] === symbol) { flight.controller.abort(); this.flights.delete(key); }
+    }
+  }
+
+  private reviseCanonicalHistory(symbol:string,currentKey:string,signal:AbortSignal|undefined):void {
+    this.nextCanonicalRevision(symbol);
+    for(const key of this.cache.keys()) if(key!==currentKey&&key.split('|')[1]===symbol) this.cache.delete(key);
+    for(const [key,flight] of this.flights) {
+      const identity=JSON.parse(key) as unknown[];
+      if(identity[0]===symbol&&signal!==undefined&&flight.controller.signal!==signal) flight.controller.abort();
     }
   }
 
@@ -224,7 +253,7 @@ export class UsHistoricalService {
 
   private async loadFmpRange(key: string, request: FmpHistoricalRequest & { readonly fromUtcSec: number; readonly toUtcSec: number }): Promise<FmpHistoricalResult> {
     const cached = this.cache.get(key); const now = this.deps.nowMs();
-    const valid = cached !== undefined && cached.nativeMetadata !== undefined && now - cached.at < 900000 && cached.to >= request.fromUtcSec && cached.from <= request.toUtcSec;
+    const valid = cached !== undefined && cached.nativeMetadata !== undefined && now - cached.prefixAt < 900000 && cached.to >= request.fromUtcSec && cached.from <= request.toUtcSec;
     if (valid && now - cached.at < 8000 && cached.from <= request.fromUtcSec && cached.to >= request.toUtcSec) {
       const bars = cached.rows.map((row) => row.bar).filter((bar) => bar.time >= request.fromUtcSec && bar.time <= request.toUtcSec);
       return { ...cached.nativeMetadata, bars, rows: bars.length, fromUtcSec: request.fromUtcSec, toUtcSec: request.toUtcSec };
@@ -233,17 +262,21 @@ export class UsHistoricalService {
     let result = await this.deps.fmp.fetchHistoricalPaginated({ ...request, fromUtcSec: from });
     request.signal?.throwIfAborted();
     const previous = new Map(cached?.rows.map((row) => [row.bar.time, row.bar]));
-    const revised = valid && from > request.fromUtcSec && result.bars.some((bar) => {
+    const observedRevision = result.bars.some((bar) => {
       const old = previous.get(bar.time);
-      return old !== undefined && (old.open !== bar.open || old.high !== bar.high || old.low !== bar.low || old.close !== bar.close);
+      return old !== undefined && (old.open !== bar.open || old.high !== bar.high || old.low !== bar.low || old.close !== bar.close || old.volume !== bar.volume);
     });
-    if (revised) result = await this.deps.fmp.fetchHistoricalPaginated(request);
+    const revised = valid && from > request.fromUtcSec && observedRevision;
+    if (observedRevision) this.reviseCanonicalHistory(request.symbol,key,request.signal);
+    if (revised) {
+      result = await this.deps.fmp.fetchHistoricalPaginated(request);
+    }
     request.signal?.throwIfAborted();
     const retained = valid && !revised ? cached.rows.map((row) => row.bar).filter((bar) => bar.time < from || bar.time > request.toUtcSec) : [];
     const bars = mergeFmpPaginatedBars([retained, result.bars], { fromUtcSec: request.fromUtcSec, toUtcSec: request.toUtcSec });
     const minutes = { '1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1D': 1440 }[request.timeframe];
     if (bars.length <= 100000 && result.discarded === 0) {
-      this.cache.set(key, { from: request.fromUtcSec, to: request.toUtcSec, at: now, nativeMetadata: { ...result, bars: [] }, rows: Object.freeze(bars.map((bar) => {
+      this.cache.set(key, { from: request.fromUtcSec, to: request.toUtcSec, at: now, prefixAt: valid && !observedRevision ? cached.prefixAt : now, nativeMetadata: { ...result, bars: [] }, rows: Object.freeze(bars.map((bar) => {
         const row = historicalObservation(bar, 'FMP', minutes);
         return Object.freeze({ ...row, bar: Object.freeze({ ...bar }), moments: Object.freeze({ ...row.moments }) });
       })) });
@@ -273,25 +306,29 @@ export class UsHistoricalService {
   private async loadSegment(key: string, request: Request, segment: HistoricalPlan['segments'][number], signal: AbortSignal, counters: Counters): Promise<readonly HistoricalObservation[]> {
     const cached = this.cache.get(key);
     const at = this.deps.nowMs();
-    if (cached !== undefined && at - cached.at < 8000 && cached.from <= segment.from && cached.to >= segment.to) {
+    if (cached !== undefined && at - cached.at < 8000 && at - cached.prefixAt < 900000 && cached.from <= segment.from && cached.to >= segment.to) {
       return cached.rows.filter((row) => row.bar.time >= segment.from && row.endExclusive <= segment.to);
     }
     // Reuse closed prefix for 15 minutes, refresh only the last two calendar days.
-    const valid = cached !== undefined && at - cached.at < 900000 && cached.to >= segment.from && cached.from <= segment.to;
+    const valid = cached !== undefined && at - cached.prefixAt < 900000 && cached.to >= segment.from && cached.from <= segment.to;
     const leftOnly = valid && at - cached.at < 8000 && cached.from > segment.from && cached.to >= segment.to;
     const from = valid && cached.from <= segment.from ? Math.max(segment.from, Math.min(cached.to, segment.to - 2 * 86400)) : segment.from;
     let loaded = await this.massiveRange(request.symbol, from, leftOnly ? cached.from : segment.to, segment.sourceMinutes, signal, counters);
     signal.throwIfAborted();
     const oldRowsByTime = new Map(cached?.rows.map((row) => [row.bar.time, row]));
-    const seam = loaded.find((row) => oldRowsByTime.has(row.bar.time));
-    const oldSeam = seam === undefined ? undefined : oldRowsByTime.get(seam.bar.time);
-    const revised = valid && from > segment.from && seam !== undefined && oldSeam !== undefined &&
-      ['open', 'high', 'low', 'close'].some((name) => Reflect.get(seam.bar, name) !== Reflect.get(oldSeam.bar, name));
-    if (revised) loaded = await this.massiveRange(request.symbol, segment.from, segment.to, segment.sourceMinutes, signal, counters);
+    const observedRevision = loaded.some((row)=>{
+      const old=oldRowsByTime.get(row.bar.time);
+      return old!==undefined&&['open','high','low','close','volume','vw'].some((name)=>!Object.is(Reflect.get(row.bar,name),Reflect.get(old.bar,name)));
+    });
+    const revised = valid && from > segment.from && observedRevision;
+    if (observedRevision) this.reviseCanonicalHistory(request.symbol,key,signal);
+    if (revised) {
+      loaded = await this.massiveRange(request.symbol, segment.from, segment.to, segment.sourceMinutes, signal, counters);
+    }
     const retained = valid && !revised ? leftOnly ? cached.rows : cached.rows.filter((row) => row.bar.time < from || row.bar.time >= segment.to) : [];
     const rows = mergeHistoricalSegments([retained, loaded]);
     // Never retain more than 100k observations or 16 identities; no cache mutation of arguments.
-    if (rows.length <= 100000 && !signal.aborted) this.cache.set(key, { from: valid && !revised ? Math.min(cached.from, segment.from) : segment.from, to: valid && !revised ? Math.max(cached.to, segment.to) : segment.to, at, rows: Object.freeze(rows.map((row) => Object.freeze({ ...row, bar: Object.freeze({ ...row.bar }), moments: Object.freeze({ ...row.moments }) }))) });
+    if (rows.length <= 100000 && !signal.aborted) this.cache.set(key, { from: valid && !revised ? Math.min(cached.from, segment.from) : segment.from, to: valid && !revised ? Math.max(cached.to, segment.to) : segment.to, at, prefixAt: valid && !observedRevision ? cached.prefixAt : at, rows: Object.freeze(rows.map((row) => Object.freeze({ ...row, bar: Object.freeze({ ...row.bar }), moments: Object.freeze({ ...row.moments }) }))) });
     while (this.cache.size > 16 || [...this.cache.values()].reduce((sum, entry) => sum + entry.rows.length, 0) > 100000) {
       const oldest = this.cache.keys().next().value;
       if (oldest === undefined) break;

@@ -164,3 +164,24 @@ export function computeWelfordSeries(
 
   return series;
 }
+
+/** Parallel weighted Chan combination; no raw-moment variance subtraction. */
+export function combineWelfordStates(a: WelfordState, b: WelfordState): WelfordState {
+  if (a.cumWeight <= 0 || !Number.isFinite(a.cumWeight)) return { ...b };
+  if (b.cumWeight <= 0 || !Number.isFinite(b.cumWeight)) return { ...a };
+  const cumWeight = a.cumWeight + b.cumWeight;
+  const delta = b.mean - a.mean;
+  return { count: a.count + b.count, cumWeight,
+    mean: a.mean + delta * (b.cumWeight / cumWeight),
+    m2: a.m2 + b.m2 + delta * delta * a.cumWeight * (b.cumWeight / cumWeight) };
+}
+
+/** Stable statistical fields are authoritative; seedP2V is audit data only. */
+export function welfordFromSeed(seed: {
+  readonly seedCount: number; readonly seedV: number; readonly seedMean: number; readonly seedM2: number;
+}): WelfordState {
+  if (seed.seedV <= 0 || !Number.isFinite(seed.seedV)) return createInitialWelfordState();
+  if (!Number.isSafeInteger(seed.seedCount) || seed.seedCount <= 0 ||
+      !Number.isFinite(seed.seedMean) || !Number.isFinite(seed.seedM2) || seed.seedM2 < 0) throw new Error('Invalid stable Welford seed');
+  return { count: seed.seedCount, cumWeight: seed.seedV, mean: seed.seedMean, m2: seed.seedM2 };
+}

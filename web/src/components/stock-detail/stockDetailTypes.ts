@@ -118,6 +118,7 @@ export interface StockContextBannerInfo {
 }
 
 export interface StockChartSeriesBundle {
+  readonly monthStartCanonicalAvwap?: import('../../../../src/core/avwapCanonicalMonth.js').CanonicalMonthDto | null;
   readonly bars: readonly MinimalOhlcvBar[];
   readonly ema9: readonly (number | null)[];
   readonly ema21: readonly (number | null)[];

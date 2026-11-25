@@ -332,6 +332,7 @@ import {
 import { UsHistoricalService, serializeHistoricalIntegrity, type UsHistoricalResult } from './usHistoricalService.js';
 import { usHistoricalMtdSessions } from '../core/usHistorical.js';
 import { resolveAdaptiveVisibleBars } from '../data/restHistoricalWindow.js';
+import { buildCanonicalMonthAccumulator, serializeCanonicalMonth, type CanonicalMonthDto } from '../core/avwapCanonicalMonth.js';
 import {
   OratsHybridClient,
   type OratsIvRankPayload,
@@ -1160,6 +1161,7 @@ export interface SerializedKeyLevel {
 }
 
 export interface TerminalBarsResponse {
+  readonly monthStartCanonicalAvwap?: CanonicalMonthDto;
   readonly historicalIntegrity?: ReturnType<typeof serializeHistoricalIntegrity>;
   readonly status: 'OK' | 'PARTIAL';
   readonly symbol: string;
@@ -11600,7 +11602,8 @@ export class MarketRuntime {
     const adaptiveWindow = !explicitVisible && Number.isFinite(adaptiveVisible);
     const includeOverlays = options.includeOverlays ?? true;
     const fullHistory = options.fullHistory ?? true;
-    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}`;
+    const canonicalRevision = this.usHistoricalService?.adjustmentRevision(parsed.canonicalSymbol) ?? 0;
+    const cacheKey = `bars:${parsed.canonicalSymbol}:${timeframe}:${effectiveRthOnly ? 'rth' : 'ext'}:${String(visibleBars)}${adaptiveWindow ? ':sessions' : ''}${includeOverlays ? '' : ':noov'}${fullHistory ? '' : ':win'}${canonicalRevision === 0 ? '' : `:canonicalRevision=${String(canonicalRevision)}`}`;
 
     const result = await this.barsCache.getOrCompute(
       cacheKey,
@@ -11888,6 +11891,17 @@ export class MarketRuntime {
 
     const startSlice = Math.max(0, visibleStart);
     const slicedBars = bars.slice(startSlice);
+    const canonicalSource = historicalIntegrity !== undefined && historicalIntegrity.canonicalMonth.length > 0
+      ? historicalIntegrity.canonicalMonth.map((row) => row.bar) : bars;
+    const canonicalResolution = historicalIntegrity !== undefined && historicalIntegrity.canonicalMonth.length > 0 ? '1m' : timeframe;
+    const canonicalAccumulator = buildCanonicalMonthAccumulator({ bars: canonicalSource, now: nowSec,
+      sessionMode: rthOnly ? 'RTH' : 'EXTENDED', symbol: parsed.canonicalSymbol,
+      adjSig: `${barsProvider}:${historicalIntegrity?.coverage.adjustment ?? 'NATIVE_UNVERIFIED'}:r${String(this.usHistoricalService?.adjustmentRevision(parsed.canonicalSymbol) ?? 0)}`,
+      sourceResolution: canonicalResolution });
+    const canonicalEnds = new Map(historicalIntegrity?.rows.map((row) => [row.bar.time,row.endExclusive]));
+    const monthStartCanonicalAvwap = serializeCanonicalMonth(canonicalAccumulator,
+      slicedBars.map((bar) => ({time:bar.time,endExclusive:canonicalEnds.get(bar.time) ?? bar.time+barSeconds})),
+      Math.max(canonicalAccumulator.anchorTimestamp,slicedBars[0]?.time ?? canonicalAccumulator.anchorTimestamp));
     const sessionVwapSupported = 1_800 % barSeconds === 0;
     const formingState = timeframe === '1m' ? this.liveStates1m.get(parsed.canonicalSymbol) : undefined;
 
@@ -11915,6 +11929,7 @@ export class MarketRuntime {
       const emptyOverlay = slicedBars.map(() => null);
       const cachedSnapshot = this.snapshotCache.peek(`snapshot:${parsed.canonicalSymbol}`)?.value;
       const payload: TerminalBarsResponse = {
+        monthStartCanonicalAvwap,
         ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
         status: barsStatusOk ? 'OK' : 'PARTIAL',
         symbol: parsed.canonicalSymbol,
@@ -12049,6 +12064,7 @@ export class MarketRuntime {
       });
 
     const payload: TerminalBarsResponse = {
+      monthStartCanonicalAvwap,
       ...(historicalIntegrity === undefined ? {} : { historicalIntegrity: serializeHistoricalIntegrity(historicalIntegrity, slicedBars[0]?.time ?? nowSec) }),
       status: barsStatusOk ? 'OK' : 'PARTIAL',
       symbol: parsed.canonicalSymbol,

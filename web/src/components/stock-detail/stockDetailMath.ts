@@ -23,6 +23,19 @@ import {
   resolveEffectiveAvwapAnchorIndex,
 } from '../../../../src/core/stockDetailChartNavigation.js';
 import type { Bar } from '../../../../src/core/types.js';
+import type { CanonicalMonthDto } from '../../../../src/core/avwapCanonicalMonth.js';
+
+/** Align the authoritative DTO to the calculation buffer, never to chart zoom. */
+export function canonicalMonthOverlayPure(dto:CanonicalMonthDto,bars:readonly {readonly time:number}[]) {
+  const points=new Map(dto.points.map((p)=>[p.time,p]));
+  const values=(key:'vwap'|'upper1'|'lower1'|'upper2'|'lower2')=>bars.map((b)=>{
+    const value=points.get(b.time)?.[key];return typeof value==='number'&&Number.isFinite(value)?value:Number.NaN;
+  });
+  const vwap=values('vwap');const first=vwap.findIndex(Number.isFinite);
+  return {vwap,upper1:values('upper1'),lower1:values('lower1'),upper2:values('upper2'),lower2:values('lower2'),
+    anchorIndex:first,anchorTimeSec:first>=0?bars[first]?.time??null:null,
+    coverage:dto.seed.coverageQuality==='COMPLETE_CANONICAL_1M'?'complete' as const:'partial' as const};
+}
 
 export type AvwapAnchorMode =
   | 'MONTH_START'

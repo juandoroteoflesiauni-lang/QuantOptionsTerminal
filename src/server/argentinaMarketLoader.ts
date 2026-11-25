@@ -1,3 +1,4 @@
+import { buildCanonicalMonthAccumulator, serializeCanonicalMonth } from '../core/avwapCanonicalMonth.js';
 import {
   classifyRawOiValue,
   explicitVolumeOi,
@@ -7290,6 +7291,9 @@ export class ArgentinaMarketRuntime {
     // earnings/macro FMP): degradación limpia a PIVOT + RVOL, cacheada por día.
     const anchoredFull: ArTerminalBarsResponse = {
       ...full,
+      monthStartCanonicalAvwap: serializeCanonicalMonth(buildCanonicalMonthAccumulator({bars,now:nowSec,sessionMode:'RTH',
+        symbol,adjSig:'DATA912_NATIVE_UNVERIFIED',sourceResolution:'1D',market:'AR'}),
+        bars.slice(-visibleBars).map((bar)=>({time:bar.time,endExclusive:bar.time+86400})),bars.slice(-visibleBars)[0]?.time??nowSec),
       autoAvwapAnchors: this.resolveArAutoAvwapAnchors(symbol, bars, nowSec),
     };
     const fallbackFields =

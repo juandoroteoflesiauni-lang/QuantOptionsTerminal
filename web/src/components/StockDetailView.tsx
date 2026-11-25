@@ -1,4 +1,8 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createCanonicalMonthLiveState, updateCanonicalMonthLive, projectCanonicalMonthLive, quoteCanonicalMonthLive,
+  canonicalMonthLiveBucket,
+  type CanonicalMonthLiveState } from '../../../src/core/avwapCanonicalMonth';
+import type { Bar } from '../../../src/core/types';
 import { calendarDteEt } from '../../../src/core/options/zeroDteFixes';
 import type { LogicalRange } from 'lightweight-charts';
 import {
@@ -89,6 +93,7 @@ import {
   computeExpectedMoveBounds,
   computeSessionVwapPure,
   computeSingleAnchorAvwapOverlayPure,
+  canonicalMonthOverlayPure,
   computeWilderAtrPure,
   projectDailyAvwapToWeeklyPure,
   resolveAvwapAnchorIndex,
@@ -1101,6 +1106,8 @@ export const StockDetailView: React.FC<{
     let bundleAvwapEffectiveAnchorTimeSec: number | null = null;
     let bundleAvwapAnchorDateSec: number | null = null;
     let bundleAvwapCoverage: AvwapAnchorCoverage = 'unavailable';
+    const monthCanonical = avwapMode === 'MONTH_START' && effectiveChartTimeframe !== '1W'
+      ? (isArMarket ? arBarsResp?.monthStartCanonicalAvwap : usBarsResp?.monthStartCanonicalAvwap) : undefined;
 
     if (
       effectiveChartTimeframe === '1W' &&
@@ -1123,6 +1130,17 @@ export const StockDetailView: React.FC<{
       bundleAvwapAnchorAvailable = projected.anchorWeeklyTimeSec !== null;
       bundleAvwapEffectiveAnchorTimeSec = projected.anchorWeeklyTimeSec;
       bundleAvwapAnchorDateSec = projected.anchorDailyTimeSec;
+    } else if (monthCanonical !== undefined && monthCanonical.seed.coverageQuality !== 'UNAVAILABLE') {
+      const canonical = canonicalMonthOverlayPure(monthCanonical,bars);
+      bundleAvwapSeries = canonical.vwap.map(normalizeFiniteOrNull);
+      bundleAvwapUpper1 = canonical.upper1.map(normalizeFiniteOrNull);
+      bundleAvwapLower1 = canonical.lower1.map(normalizeFiniteOrNull);
+      bundleAvwapUpper2 = canonical.upper2.map(normalizeFiniteOrNull);
+      bundleAvwapLower2 = canonical.lower2.map(normalizeFiniteOrNull);
+      bundleAvwapCoverage = canonical.coverage;
+      bundleAvwapAnchorAvailable = canonical.anchorIndex >= 0;
+      bundleAvwapEffectiveAnchorTimeSec = canonical.anchorTimeSec;
+      bundleAvwapAnchorDateSec = monthCanonical.seed.anchorTimestamp;
     } else if (!isAutoAvwapMode) {
       // Pieza 50.7 (Bloque A+B): ancla única con fechas civiles del mercado,
       // cobertura acreditada y centro/bandas desde `calculateAnchoredVwap`
@@ -1148,6 +1166,9 @@ export const StockDetailView: React.FC<{
       bundleAvwapAnchorAvailable = avwapAnchorAvailable;
       bundleAvwapEffectiveAnchorTimeSec = avwapEffectiveAnchorTimeSec;
       bundleAvwapAnchorDateSec = avwapEffectiveAnchorTimeSec;
+    }
+    if (avwapMode === 'MONTH_START' && monthCanonical?.seed.coverageQuality !== 'COMPLETE_CANONICAL_1M') {
+      bundleAvwapCoverage = 'partial';
     }
 
     const modeLabel = PANORAMIC_AVWAP_MODES.find((mode) => mode.id === avwapMode)?.label ?? '—';
@@ -1196,6 +1217,7 @@ export const StockDetailView: React.FC<{
       avwapEffectiveAnchorTimeSec: bundleAvwapEffectiveAnchorTimeSec,
       avwapAnchorDateSec: bundleAvwapAnchorDateSec,
       avwapCoverage: bundleAvwapCoverage,
+      monthStartCanonicalAvwap: monthCanonical ?? null,
       dailyBarsForWeekly:
         effectiveChartTimeframe === '1W' ? dedupDaily : [],
       autoAvwapLines,
@@ -2218,9 +2240,14 @@ const PanoramicPriceChart: React.FC<{
     } | {
       readonly kind: 'minute';
       readonly snapshot: LiveMinuteSnapshot;
+      readonly canonicalForming?: Bar;
+      readonly canonicalClosed?: Bar | null;
+      readonly canonicalAsOf?: number;
     })[]
   >([]);
   const liveFrameStateRef = useRef<LiveFrameState | null>(null);
+  const canonicalMonthLiveRef = useRef<CanonicalMonthLiveState | null>(null);
+  const canonicalCoverageRef = useRef<HTMLSpanElement | null>(null);
   /** Pieza 50.8 B2: diarias reconciliadas de la semana activa (1W). */
   const liveWeeklyDailyBarsRef = useRef<readonly LiveChartBar[]>([]);
   const tickRafIdRef = useRef<number | null>(null);
@@ -2742,6 +2769,11 @@ const PanoramicPriceChart: React.FC<{
   useEffect(() => {
     pendingLiveEventsRef.current = [];
     lastLiveQuoteVolumeRef.current = null;
+    const canonicalDto = bundle.monthStartCanonicalAvwap;
+    canonicalMonthLiveRef.current = market === 'US' && canonicalDto !== undefined && canonicalDto !== null &&
+      canonicalDto.seed.sourceResolution === '1m' && canonicalDto.seed.coverageQuality !== 'UNAVAILABLE'
+      ? createCanonicalMonthLiveState(canonicalDto) : null;
+    if (canonicalCoverageRef.current !== null) canonicalCoverageRef.current.hidden = true;
     if (!bundle.barsAvailable) return;
 
     const lastBar = bundle.bars[bundle.bars.length - 1];
@@ -2810,6 +2842,18 @@ const PanoramicPriceChart: React.FC<{
         }
       }
       emaEndOfFormingRef.current = nextEnd;
+      const canonical = canonicalMonthLiveRef.current;
+      if (canonical !== null) {
+        const time = canonicalMonthLiveBucket(canonical, tfSec);
+        if (time !== null) {
+          const point = projectCanonicalMonthLive(canonical,time);
+          const values = [['single_main',point.vwap],['single_u1',point.upper1],['single_l1',point.lower1],
+            ['single_u2',point.upper2],['single_l2',point.lower2]] as const;
+          for (const [slot,value] of values) avwapRefs.current[slot]?.update(Number.isFinite(value)
+            ? {time:time as UTCTimestamp,value} : {time:time as UTCTimestamp});
+        }
+        if (canonicalCoverageRef.current !== null) canonicalCoverageRef.current.hidden = canonical.coverageQuality === 'COMPLETE_CANONICAL_1M';
+      }
     };
 
     const flushLiveTick = (): void => {
@@ -2818,6 +2862,19 @@ const PanoramicPriceChart: React.FC<{
       pendingLiveEventsRef.current = [];
       const currentForming = formingBarRef.current;
       if (queue.length === 0 || currentForming === null || candleRef.current === null) return;
+      let canonical = canonicalMonthLiveRef.current;
+      if (canonical !== null) {
+        for (const event of queue) {
+          if (event.kind === 'minute' && event.canonicalForming !== undefined) {
+            // REST owns the confirmed prefix. A WS overlap must not replace its
+            // provider/adjustment methodology; only new minutes can be committed.
+            if (event.canonicalClosed !== undefined && event.canonicalClosed !== null &&
+              event.canonicalClosed.time >= canonical.confirmedThrough) canonical = updateCanonicalMonthLive(canonical,event.canonicalClosed,true);
+            canonical = updateCanonicalMonthLive(canonical,event.canonicalForming,false,event.canonicalAsOf);
+          } else if (event.kind === 'quote') canonical = quoteCanonicalMonthLive(canonical,event.price,event.timeSec);
+        }
+        canonicalMonthLiveRef.current = canonical;
+      }
 
       if (timeframe === '1D' || timeframe === '1W') {
         // Ruta calendario (Bloque A + B1): snapshots autoritativos por minuto
@@ -2913,6 +2970,9 @@ const PanoramicPriceChart: React.FC<{
         ...pendingLiveEventsRef.current,
         {
           kind: 'minute',
+          canonicalForming: fb,
+          canonicalClosed: ev.lastClosedBar,
+          canonicalAsOf: ev.time,
           snapshot: {
             timeSec: fb.time,
             open: fb.open,
@@ -2934,11 +2994,12 @@ const PanoramicPriceChart: React.FC<{
         tickRafIdRef.current = null;
       }
     };
-  }, [bundle.barsAvailable, market, providerSymbol, timeframe]);
+  }, [bundle.barsAvailable, bundle.monthStartCanonicalAvwap, market, providerSymbol, timeframe]);
 
   return (
     <div className="relative h-[72vh] min-h-[560px] w-full">
       <div ref={containerRef} className="h-full w-full" />
+      <span ref={canonicalCoverageRef} hidden className="pointer-events-none absolute right-3 top-2 text-[11px] text-[#E5B567]">AVWAP parcial</span>
       <div
         ref={crosshairLegendRef}
         className="pointer-events-none absolute left-3 top-2 z-20 rounded bg-[#08080D]/85 px-2 py-0.5 font-mono-num tabular-nums text-[11px] text-[#CBD5E1]"
