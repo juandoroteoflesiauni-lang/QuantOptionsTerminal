@@ -471,4 +471,93 @@ describe("S1-7 effective configuration and installed LWC autoscale behavior", ()
       expect(baseline?.priceRange).toEqual({ minValue: min, maxValue: max });
     },
   );
+  it.each([
+    { min: 499, max: 501, farLow: 50, farHigh: 3200 },
+    { min: 79000, max: 81000, farLow: 5000, farHigh: 450000 },
+  ])(
+    "PanoramicBandsPrimitive with S2-3 triggers/sweeps returns autoscaleInfo() null and leaves candlestick Y-axis range unchanged at [$farLow, $farHigh]",
+    ({ min, max, farLow, farHigh }) => {
+      const primitive = new PanoramicBandsPrimitive({
+        enabled: false,
+        tickSize: null,
+        hvnZones: [],
+        lvnZones: [],
+        triggersEnabled: true,
+        triggerZones: [
+          {
+            id: "fvg:1m:1781098320:BULLISH",
+            timeframe: "1m",
+            methodology: "OHLCV",
+            state: "ACTIVE_UNMITIGATED",
+            initialDirection: "BULLISH",
+            activeDirection: "BULLISH",
+            isInverted: false,
+            anchorStartTime: 1781098200,
+            formedAtTime: 1781098320,
+            formedAtBarIndex: 2,
+            gapLow: farLow,
+            gapHigh: farLow + 10,
+            gapWidth: 10,
+            midpoint: farLow + 5,
+            mitigationRatio: 0,
+            ifvgMitigationRatio: 0,
+            mitigatedAtTime: null,
+            invertedAtTime: null,
+            invertedAtBarIndex: null,
+            ifvgMitigatedAtTime: null,
+            expiredAtTime: null,
+            distanceToPrice: 100,
+          },
+          {
+            id: "fvg:1m:1781098500:BEARISH",
+            timeframe: "1m",
+            methodology: "OHLCV",
+            state: "INVERTED_IFVG_ACTIVE",
+            initialDirection: "BEARISH",
+            activeDirection: "BULLISH",
+            isInverted: true,
+            anchorStartTime: 1781098380,
+            formedAtTime: 1781098500,
+            formedAtBarIndex: 5,
+            gapLow: farHigh - 10,
+            gapHigh: farHigh,
+            gapWidth: 10,
+            midpoint: farHigh - 5,
+            mitigationRatio: 1,
+            ifvgMitigationRatio: 0.25,
+            mitigatedAtTime: 1781098560,
+            invertedAtTime: 1781098560,
+            invertedAtBarIndex: 6,
+            ifvgMitigatedAtTime: null,
+            expiredAtTime: null,
+            distanceToPrice: 200,
+          },
+        ],
+        sweepMarkers: [
+          {
+            id: "sweep:1m:1781098620:PDH",
+            timeframe: "1m",
+            methodology: "OHLCV",
+            provenanceLabel: "OHLCV_WICK_CLOSE_RECOVERY",
+            levelId: "PDH",
+            levelSide: "HIGH",
+            direction: "BEARISH",
+            levelPrice: farHigh - 2,
+            barTime: 1781098620,
+            barIndex: 7,
+            wickExtreme: farHigh,
+            closePrice: farHigh - 5,
+            wickExcursion: 2,
+            closeRecovery: 3,
+          },
+        ],
+      });
+      expect(primitive.autoscaleInfo()).toBeNull();
+      const candleOptions = options.find((o) => o.type === "CandlestickSeries")?.options;
+      if (candleOptions === undefined) throw new Error("Missing real candlestick options");
+      const baseline = installed(candleOptions, "Candlestick", min, max, []);
+      expect(installed(candleOptions, "Candlestick", min, max, [], [primitive])).toEqual(baseline);
+      expect(baseline?.priceRange).toEqual({ minValue: min, maxValue: max });
+    },
+  );
 });

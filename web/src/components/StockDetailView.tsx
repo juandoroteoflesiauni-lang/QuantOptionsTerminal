@@ -2,6 +2,13 @@ import { resolveMaPresetForTimeframe, overrideMaPreset, serializeMovingAverages,
 import { createMaChartRuntime, type MaChartRuntime } from './stock-detail/movingAverageRuntime';
 import { PanoramicBandsPrimitive } from './stock-detail/PanoramicBandsPrimitive';
 import {
+  advanceIntradayTriggersLiveOnClosed1m,
+  buildSweepReferenceLevelsFromSession,
+  createIntradayTriggersLiveState,
+  serializeIntradayTriggersResult,
+  type IntradayTriggersLiveState,
+} from '../../../src/core/microstructure/intradayTriggers';
+import {
   advanceMultiHorizonVpLiveOnClosed1m,
   createMultiHorizonVpLiveState,
   serializeHorizonVolumeProfile,
@@ -511,6 +518,7 @@ export const StockDetailView: React.FC<{
   const [highlightedLevel, setHighlightedLevel] = useState<HighlightLevelId>(null);
   const [vpHorizon, setVpHorizon] = useState<VolumeProfileHorizon>('252R');
   const [showVpNodes, setShowVpNodes] = useState<boolean>(true);
+  const [intradayTriggersEnabled, setIntradayTriggersEnabled] = useState<boolean>(false);
   const [overlays, setOverlays] = useState<OverlayVisibilityState>({
     emas: true,
     sessionVwap: true,
@@ -2197,6 +2205,15 @@ export const StockDetailView: React.FC<{
               <option value="PCT_1_5">±1,5%</option><option value="ATR_1_5">±1,5 ATR diario</option><option value="SHOW_ALL">Mostrar todos</option>
             </select>}
             <ToolbarChip active={overlays.optionWalls} label="Walls" onClick={() => handleToggleOverlay('optionWalls')} />
+            {(effectiveChartTimeframe === '1m' || effectiveChartTimeframe === '5m') && (
+              <ToolbarChip
+                active={intradayTriggersEnabled}
+                label="Sweeps/FVG"
+                title="Gatillos causales OHLCV sobre velas cerradas (Liquidity Sweeps + FVG/IFVG)"
+                className="h-6 font-mono-num tabular-nums"
+                onClick={() => setIntradayTriggersEnabled((v) => !v)}
+              />
+            )}
           </div>
         </div>
 
@@ -2219,6 +2236,7 @@ export const StockDetailView: React.FC<{
           keyLevels={keyLevels}
           vpHorizon={vpHorizon}
           showVpNodes={showVpNodes}
+          intradayTriggersEnabled={intradayTriggersEnabled}
           vpLiveSeed={!isArMarket ? (usBarsResp?.vpLiveSeed ?? null) : null}
           highlightedLevel={highlightedLevel}
           onAnchorCandleClick={handleAnchorCandleClick}
@@ -2362,6 +2380,7 @@ const PanoramicPriceChart: React.FC<{
   readonly keyLevels: ChartKeyLevels;
   readonly vpHorizon: VolumeProfileHorizon;
   readonly showVpNodes: boolean;
+  readonly intradayTriggersEnabled: boolean;
   readonly vpLiveSeed: MultiHorizonVpLiveSeed | null;
   readonly highlightedLevel: HighlightLevelId;
   readonly onAnchorCandleClick: (timeSec: number) => void;
@@ -2385,6 +2404,7 @@ const PanoramicPriceChart: React.FC<{
   keyLevels,
   vpHorizon,
   showVpNodes,
+  intradayTriggersEnabled,
   vpLiveSeed,
   highlightedLevel,
   onAnchorCandleClick,
@@ -2402,6 +2422,7 @@ const PanoramicPriceChart: React.FC<{
   const vpLiveStateRef = useRef<MultiHorizonVpLiveState | null>(null);
   const vpLiveOverrideRef = useRef<HorizonVolumeProfileDto | null>(null);
   const vpApplyInPlaceRef = useRef<((override: HorizonVolumeProfileDto | null) => void) | null>(null);
+  const intradayTriggersStateRef = useRef<IntradayTriggersLiveState | null>(null);
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const emaRefs = useRef<readonly ISeriesApi<'Line'>[]>([]);
   const lastMaConfigurationRef=useRef<{bundle:PanoramicChartBundle;fastType:MaPreset['fastType'];preset:MaPreset;master:boolean}|null>(null);
@@ -3054,7 +3075,7 @@ const PanoramicPriceChart: React.FC<{
       updateSlot('poc', slots.poc, hasBars && overlays.volumeProfile, activePoc, `POC ${prefix}${fmtNum(activePoc, 2)} (${vpTag})`, highlightedLevel === 'POC');
       updateSlot('vah', slots.vah, hasBars && overlays.volumeProfile, activeVah, 'VAH', highlightedLevel === 'VAH');
       updateSlot('val', slots.val, hasBars && overlays.volumeProfile, activeVal, 'VAL', highlightedLevel === 'VAL');
-      bandsPrimitiveRef.current?.setState({
+      bandsPrimitiveRef.current?.patchState({
         enabled: hasBars && overlays.volumeProfile && showVpNodes,
         tickSize: activeTick,
         hvnZones: activeHvn,
@@ -3105,6 +3126,112 @@ const PanoramicPriceChart: React.FC<{
       offBar();
     };
   }, [market, providerSymbol, vpHorizon, vpLiveSeed]);
+
+  // S2-3: gatillos opcionales OHLCV (Sweeps + FVG/IFVG) en velas cerradas solo para 1m/5m (OFF por defecto; cero en ticks).
+  useEffect(() => {
+    const tfSupported = timeframe === '1m' || timeframe === '5m';
+    if (!intradayTriggersEnabled || !tfSupported || !bundle.barsAvailable || bundle.bars.length === 0) {
+      intradayTriggersStateRef.current = null;
+      bandsPrimitiveRef.current?.patchState({
+        triggersEnabled: false,
+        triggerZones: [],
+        sweepMarkers: [],
+      });
+      return undefined;
+    }
+
+    let session = bundle.sessionKeyLevels ? hydrateSessionKeyLevels(bundle.sessionKeyLevels) : null;
+    const sessionLvls = session === null ? [] : projectSessionKeyLevels(session, openingRange);
+    const wallsStartSec = bundle.bars[0]?.time ?? 0;
+    const refLevels = buildSweepReferenceLevelsFromSession({
+      sessionLevels: sessionLvls,
+      callWall: keyLevels.callWall,
+      putWall: keyLevels.putWall,
+      wallsActiveFromUtcSec: wallsStartSec,
+    });
+    const lastBarTime = bundle.bars[bundle.bars.length - 1]?.time ?? 0;
+    const tfSec = resolvePanoramicTimeframeSec(timeframe);
+    const asOfUtcSec =
+      bundle.sessionKeyLevels?.evalTimeSec ??
+      bundle.monthStartCanonicalAvwap?.confirmedThrough ??
+      lastBarTime + tfSec;
+
+    const initialState = createIntradayTriggersLiveState(bundle.bars, {
+      timeframe,
+      asOfUtcSec,
+      referenceLevels: refLevels,
+    });
+    intradayTriggersStateRef.current = initialState;
+    if (initialState !== null) {
+      const dto = serializeIntradayTriggersResult(initialState.result);
+      bandsPrimitiveRef.current?.patchState({
+        triggersEnabled: true,
+        triggerZones: dto.activeZones,
+        sweepMarkers: dto.visibleSweeps,
+      });
+    } else {
+      bandsPrimitiveRef.current?.patchState({
+        triggersEnabled: false,
+        triggerZones: [],
+        sweepMarkers: [],
+      });
+      return undefined;
+    }
+
+    if (market !== 'US') return undefined;
+    const offTriggersBar = subscribeLiveBarUpdate(providerSymbol, (ev) => {
+      const closed = ev.lastClosedBar;
+      if (closed == null) return;
+      if (session !== null) {
+        session = updateSessionKeyLevels(
+          session,
+          { bar: closed, endExclusive: closed.time + 60, observedAt: ev.time },
+          true,
+        );
+      }
+      const current = intradayTriggersStateRef.current;
+      if (current === null || closed.time <= current.watermark1mSec) return;
+      const updatedSessionLvls =
+        session === null ? [] : projectSessionKeyLevels(session, openingRange);
+      const nextRefLevels = buildSweepReferenceLevelsFromSession({
+        sessionLevels: updatedSessionLvls,
+        callWall: keyLevels.callWall,
+        putWall: keyLevels.putWall,
+        wallsActiveFromUtcSec: wallsStartSec,
+      });
+      const next = advanceIntradayTriggersLiveOnClosed1m(
+        current,
+        closed,
+        ev.time,
+        nextRefLevels,
+        closed.close,
+      );
+      if (next === current) return;
+      intradayTriggersStateRef.current = next;
+      const dto = serializeIntradayTriggersResult(next.result);
+      bandsPrimitiveRef.current?.patchState({
+        triggersEnabled: true,
+        triggerZones: dto.activeZones,
+        sweepMarkers: dto.visibleSweeps,
+      });
+    });
+
+    return () => {
+      offTriggersBar();
+    };
+  }, [
+    bundle.bars,
+    bundle.barsAvailable,
+    bundle.monthStartCanonicalAvwap,
+    bundle.sessionKeyLevels,
+    intradayTriggersEnabled,
+    keyLevels.callWall,
+    keyLevels.putWall,
+    market,
+    openingRange,
+    providerSymbol,
+    timeframe,
+  ]);
 
   // S1-5/6: fixed-size imperative overlay controller. Historical construction stays in /api/bars.
   useEffect(() => {

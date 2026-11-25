@@ -443,6 +443,66 @@ export interface VolumeProfilesByHorizonPayloadDto {
   readonly acquisitionAttempted?: boolean;
 }
 
+export type FvgLifecycleStateDto =
+  | 'ACTIVE_UNMITIGATED'
+  | 'ACTIVE_PARTIALLY_MITIGATED'
+  | 'MITIGATED_FILLED'
+  | 'INVERTED_IFVG_ACTIVE'
+  | 'IFVG_MITIGATED'
+  | 'EXPIRED';
+
+export type SweepTargetLevelIdDto =
+  | 'PDH'
+  | 'PDL'
+  | 'PMH'
+  | 'PML'
+  | 'ORH'
+  | 'ORL'
+  | 'CALL_WALL'
+  | 'PUT_WALL';
+
+export interface IntradayTriggerZoneDto {
+  readonly id: string;
+  readonly timeframe: '1m' | '5m';
+  readonly methodology: 'OHLCV';
+  readonly state: FvgLifecycleStateDto;
+  readonly initialDirection: 'BULLISH' | 'BEARISH';
+  readonly activeDirection: 'BULLISH' | 'BEARISH';
+  readonly isInverted: boolean;
+  readonly anchorStartTime: number;
+  readonly formedAtTime: number;
+  readonly formedAtBarIndex: number;
+  readonly gapLow: number;
+  readonly gapHigh: number;
+  readonly gapWidth: number;
+  readonly midpoint: number;
+  readonly mitigationRatio: number;
+  readonly ifvgMitigationRatio: number;
+  readonly mitigatedAtTime: number | null;
+  readonly invertedAtTime: number | null;
+  readonly invertedAtBarIndex: number | null;
+  readonly ifvgMitigatedAtTime: number | null;
+  readonly expiredAtTime: number | null;
+  readonly distanceToPrice: number | null;
+}
+
+export interface LiquiditySweepEventDto {
+  readonly id: string;
+  readonly timeframe: '1m' | '5m';
+  readonly methodology: 'OHLCV';
+  readonly provenanceLabel: 'OHLCV_WICK_CLOSE_RECOVERY';
+  readonly levelId: SweepTargetLevelIdDto;
+  readonly levelSide: 'HIGH' | 'LOW';
+  readonly direction: 'BULLISH' | 'BEARISH';
+  readonly levelPrice: number;
+  readonly barTime: number;
+  readonly barIndex: number;
+  readonly wickExtreme: number;
+  readonly closePrice: number;
+  readonly wickExcursion: number;
+  readonly closeRecovery: number;
+}
+
 export interface NakedPocRecordDto {
   readonly sessionDate: string;
   readonly sessionPoc: number | null;

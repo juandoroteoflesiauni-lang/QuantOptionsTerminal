@@ -85,3 +85,20 @@ Invariantes `S2-1`: conservación exacta de volumen `|Σ binVol - totalVolume| <
 
 En UI (`PanoramicBandsPrimitive.ts` + `StockDetailView.tsx`): bandas `HVN` (`rgba(56, 189, 248, 0.09)`) y `LVN` (`rgba(245, 158, 11, 0.08)`) con `autoscaleInfo(): null` obligatorio; selector de horizonte `1D | 5D | 20D | 1Y · 252R` y toggle `HVN/LVN` exclusivamente en memoria de sesión (sin `localStorage`), actualizando in-place los slots `POC/VAH/VAL` existentes sin `setData()` ni recálculo por tick intravela.
 
+## Sub-fase 2 — Pieza 6 (`S2-3`): Capa opcional de gatillos OHLCV (Liquidity Sweeps causales y FVG/IFVG)
+
+El motor legacy `fvgFobEngine.ts` y los tests de Pieza 15 (`amtFvgLeeReady.test.ts`) permanecen intactos. `computeIntradayTriggers` (`src/core/microstructure/intradayTriggers.ts`) opera exclusivamente en `1m` y `5m` (`timeframe` distinto devuelve `status: 'UNSUPPORTED_TIMEFRAME'` sin cómputo) con evaluación 100% causal sobre velas cerradas (`bar.time + barSeconds <= asOfUtcSec`, cero *look-ahead* y exclusión estricta de velas abiertas). Exclusión cerrada explícita: **sin Order Blocks (`OB`) ni Optimal Trade Entry (`OTE`)**.
+
+Máquina de estados `FVG / IFVG` de **6 estados exactos**:
+1. `ACTIVE_UNMITIGATED`: creado al cierre de la 3.ª vela `(c0, c1, c2)` dentro de `maxTripletSpanSec` con desplazamiento (`|c1.close - c1.open| >= 0.45 * (c1.high - c1.low)`) y ancho mínimo (`max(minAbsGap, minGapRatio * c1.close)`).
+2. `ACTIVE_PARTIALLY_MITIGATED`: mecha posterior ingresa al gap sin recorrerlo por completo ni cerrarse más allá del borde opuesto.
+3. `MITIGATED_FILLED`: mecha atraviesa el gap completo sin cierre inversor más allá del límite opuesto.
+4. `INVERTED_IFVG_ACTIVE`: cierre confirmado más allá del límite opuesto (`close < gapLow` en alcista -> bajista `IFVG`; `close > gapHigh` en bajista -> alcista `IFVG`).
+5. `IFVG_MITIGATED`: consumo/invalidación completa del `IFVG` invertido.
+6. `EXPIRED`: antigüedad en barras cerradas superior a `maxZoneAgeBars` (`120` en `1m`, `78` en `5m`).
+
+Selección determinista de `activeZones`: máximo `3` zonas visibles priorizadas por distancia al precio de referencia, fracción remanente no mitigada y recencia. Detector causal de `Liquidity Sweeps` (`OHLCV`, `provenanceLabel: 'OHLCV_WICK_CLOSE_RECOVERY'`): barrida de mecha con recuperación de cierre contra niveles existentes definitivos `PDH/PDL`, `PMH/PML`, `ORH/ORL` (activos solo cuando `bar.time >= level.endExclusive`) y `CALL_WALL / PUT_WALL`, con cooldown por nivel y degradación honesta (omisión limpia ante `NaN` / `null` / `UNAVAILABLE` / `PROVISIONAL`). Actualización incremental vía `advanceIntradayTriggersLiveOnClosed1m` exclusivamente al cerrar vela `1m` o bucket `5m`.
+
+En UI (`PanoramicBandsPrimitive.ts` + `StockDetailView.tsx`): apagado por defecto (`OFF`) en memoria de sesión (sin `localStorage`), chip `Sweeps/FVG` visible únicamente en `1m`/`5m`, renderizado dentro de `PanoramicBandsPrimitive` con `autoscaleInfo(): null` obligatorio y cero recálculo en `flushLiveTick` / `rAF`.
+
+
