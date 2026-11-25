@@ -9,6 +9,13 @@ import type {
   BymaStrikeResolutionStatus,
   BymaStrikeSource,
 } from '../../../src/core/ggal/bymaContractResolver.js';
+import type {
+  AvwapAlignedLevelType,
+  AvwapDegradationFlag,
+  AvwapEmpiricalRole,
+  AvwapGammaRegime,
+  AvwapVolRegime,
+} from '../../../src/core/avwap/types.js';
 
 export type FeedStatus = 'LIVE' | 'EOD_CIERRE' | 'DIFERIDO_20M' | 'PARTIAL' | 'NO_DATA';
 
@@ -1377,6 +1384,37 @@ export interface UsVolSliceSummaryDto {
   readonly quotePolicy?: 'RTH_STRICT_BBO' | 'EOD_CLOSE_REF';
 }
 
+export interface InstitutionalAvwapConfluenceContextDto {
+  readonly role: AvwapEmpiricalRole;
+  readonly bounceConfluenceScore: number | null;
+  readonly breakoutConfluenceScore: number | null;
+  readonly netGexNormalizedG: number | null;
+  readonly g0DollarVolScale: number | null;
+  readonly gammaRegime: AvwapGammaRegime;
+  readonly volRegime: AvwapVolRegime;
+  readonly meanReversionContextActive: boolean;
+  readonly alignedLevels: readonly {
+    readonly levelType: AvwapAlignedLevelType;
+    readonly price: number | null;
+    readonly distanceAtr: number | null;
+    readonly kernelWeight: number | null;
+  }[];
+  readonly spatialKernels: Readonly<{
+    readonly callWall: number | null;
+    readonly putWall: number | null;
+    readonly zeroGamma: number | null;
+    readonly vpPoc: number | null;
+    readonly vpVah: number | null;
+    readonly vpVal: number | null;
+    readonly vpHvnMax: number | null;
+    readonly vpLvnMax: number | null;
+  }>;
+  readonly hazardFlags: readonly AvwapDegradationFlag[];
+  readonly flags: readonly AvwapDegradationFlag[];
+  readonly bounceMultiplier: number | null;
+  readonly breakoutMultiplier: number | null;
+}
+
 export interface UsSnapshotResponseDto {
   readonly status: 'OK' | 'PARTIAL';
   readonly feedMode?: 'LIVE' | 'EOD_CIERRE' | 'PARTIAL' | 'NO_DATA';
@@ -1528,6 +1566,7 @@ export interface UsSnapshotResponseDto {
   } | null;
   readonly benchmarkBars1d?: readonly SerializedBarDto[];
   readonly usEquityPanel?: EquityPanelAnalyticsDto | null;
+  readonly institutionalAvwapContext?: InstitutionalAvwapConfluenceContextDto | null;
   readonly optionsChain?: {
     readonly selectedExpirationDate?: string | null;
     readonly selectionReason?: string | null;

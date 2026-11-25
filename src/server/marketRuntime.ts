@@ -381,6 +381,15 @@ import {
 } from './fmpClient.js';
 import { TradierHistoricalClient, TradierStocksStream, TRADIER_CORE_US_SYMBOLS } from './tradierStream.js';
 import { resolveMassiveStocksMode } from './massiveStocksStream.js';
+import {
+  InstitutionalAvwapRuntime,
+  InstitutionalCatalystProvider,
+} from './avwap/index.js';
+import type {
+  AvwapConfluenceContext,
+  AvwapTimeframe,
+  UsOptionsAvwapContextExportPayload,
+} from '../core/avwap/index.js';
 
 /** Pieza 41: primer instante del gap electoral. */
 export const ELECTORAL_GAP_START_UTC_SEC = Date.UTC(2025, 9, 1, 4, 0, 0) / 1_000;
@@ -1151,6 +1160,7 @@ export interface TerminalSnapshotResponse {
   readonly usOptionsFeed?: UsOptionsFeedProvenance | undefined;
   readonly optionsChain?: UsOptionsChainMeta | null;
   readonly catalysts?: SerializedSymbolCatalystsDto | null;
+  readonly institutionalAvwapContext?: JsonSafeValue<AvwapConfluenceContext> | null;
   readonly dataQuality: SnapshotDataQuality;
 }
 
@@ -1349,6 +1359,9 @@ export interface MarketRuntimeDeps {
   /** Pieza 42: inyección de socket/http Tradier para pruebas de flujo WS offline. */
   readonly tradierCreateSocketFn?: TradierSocketFactory;
   readonly tradierHttpFn?: TradierHttpFn;
+  /** Fase 2B: inyección opcional de runtime AVWAP institucional + habilitación explícita de refresh en harness. */
+  readonly institutionalAvwapRuntime?: InstitutionalAvwapRuntime | null;
+  readonly enableInstitutionalAvwapRefresh?: boolean;
 }
 
 interface ParsedSymbol {
@@ -4979,6 +4992,8 @@ export class MarketRuntime {
   private tradierStocksStream: TradierStocksStream | null = null;
   private readonly massiveStocksModeOverride: ReturnType<typeof resolveMassiveStocksMode> | null;
   private readonly injectedMarketHarness: boolean;
+  private readonly institutionalAvwapRuntime: InstitutionalAvwapRuntime;
+  private readonly enableInstitutionalAvwapRefresh: boolean;
 
   private get fmpConfig(): FmpConfig {
     if (this.fmpConfigOverride !== null) return this.fmpConfigOverride;
@@ -5787,6 +5802,26 @@ export class MarketRuntime {
     this.loadUnifiedSnapshotFn = deps.loadUnifiedSnapshotFn ?? loadUnifiedSnapshot;
     this.loadDividendsFn = deps.loadDividendsFn ?? loadDividends;
     this.loadUnusualTradesFn = deps.loadUnusualTradesFn ?? loadUnusualTrades;
+    const catalystProvider = new InstitutionalCatalystProvider({
+      env: deps.massiveEnv ?? process.env,
+      stocksMassiveFetchFn: this.stocksMassiveFetchFn,
+      optionsMassiveFetchFn: this.optionsMassiveFetchFn,
+      ...(this.baseUrl !== undefined ? { massiveBaseUrl: this.baseUrl } : {}),
+      nowMsFn: this.nowMsFn,
+      secrets: this.secrets,
+    });
+    this.institutionalAvwapRuntime =
+      deps.institutionalAvwapRuntime ??
+      new InstitutionalAvwapRuntime({
+        historicalService: this.usHistoricalService,
+        catalystProvider:
+          this.injectedMarketHarness && deps.enableInstitutionalAvwapRefresh !== true
+            ? null
+            : catalystProvider,
+        nowMsFn: this.nowMsFn,
+      });
+    this.enableInstitutionalAvwapRefresh =
+      !this.injectedMarketHarness || deps.enableInstitutionalAvwapRefresh === true;
     this.createWsClientFn =
       deps.createWsClientFn ??
       ((options: MassiveWsClientOptions): MassiveWsClientLike => new MassiveWsClient(options));
@@ -5968,6 +6003,20 @@ export class MarketRuntime {
   public getOratsClient() { return this.oratsClient; }
 
   public getOratsFeedHealth() { return this.oratsClient?.getHealthSnapshot(this.nowMsFn()) ?? null; }
+
+  public getInstitutionalAvwapContext(
+    symbol: string,
+    timeframe: AvwapTimeframe = '1D',
+  ): AvwapConfluenceContext | null {
+    return this.institutionalAvwapRuntime.getSnapshotContext(symbol, timeframe);
+  }
+
+  public getInstitutionalAvwapExportPayload(
+    symbol: string,
+    timeframe: AvwapTimeframe = '1D',
+  ): UsOptionsAvwapContextExportPayload | null {
+    return this.institutionalAvwapRuntime.getOptionsExportPayload(symbol, timeframe);
+  }
 
   public getHealth(): {
     readonly orats: ReturnType<MarketRuntime['getOratsFeedHealth']>;
@@ -6605,6 +6654,7 @@ export class MarketRuntime {
     this.tradierQuoteTicks.set(symbol, quote);
     if (isTradeLike) {
       this.ingestLiveTradeInto1m(symbol, price, size, tickTimeSec);
+      this.institutionalAvwapRuntime.ingestTradierTick(tick);
       this.emitBroadcast({
         type: 'trade',
         cluster: 'stocks',
@@ -10906,6 +10956,66 @@ export class MarketRuntime {
           }
         : null;
 
+    const recent20dBars = closedDailyUs.slice(-20);
+    let dollarVolSum = 0;
+    let dollarVolCount = 0;
+    for (const b of recent20dBars) {
+      if (Number.isFinite(b.close) && b.close > 0 && Number.isFinite(b.volume) && b.volume >= 0) {
+        dollarVolSum += b.close * b.volume;
+        dollarVolCount += 1;
+      }
+    }
+    const dollarVol20dUs =
+      dollarVolCount > 0 ? dollarVolSum / dollarVolCount : Number.NaN;
+    const vp252 = volumeProfilesByHorizonUs.horizons['252R'];
+    const vpHvnPrices = vp252.hvnZones
+      .map((z) => z.centerPrice)
+      .filter((p): p is number => typeof p === 'number' && Number.isFinite(p) && p > 0);
+    const vpLvnPrices = vp252.lvnZones
+      .map((z) => z.centerPrice)
+      .filter((p): p is number => typeof p === 'number' && Number.isFinite(p) && p > 0);
+    const lastCvdEval = cvdAbsorption.bars[cvdAbsorption.bars.length - 1];
+    const cvdAbsScore =
+      lastCvdEval !== undefined && lastCvdEval.absorptionTriggered && Number.isFinite(lastCvdEval.deltaPercentile)
+        ? lastCvdEval.deltaPercentile / 100
+        : null;
+    const spyIvRef =
+      cachedIvMap.get('SPY') ??
+      (canonicalSymbol === 'SPY' && volSurfaceSummary?.iv30d !== undefined && volSurfaceSummary.iv30d !== null
+        ? volSurfaceSummary.iv30d
+        : Number.isFinite(vixLevel) && vixLevel > 0
+          ? vixLevel / 100
+          : null);
+
+    this.institutionalAvwapRuntime.updateMarketContext(canonicalSymbol, {
+      asOfUtcSec: evalSecUs,
+      spot,
+      atr14: atrDaily14 ?? Number.NaN,
+      dollarVol20d: dollarVol20dUs,
+      netGex: exposureResult?.netGex ?? null,
+      callWallStrike: exposureResult?.callWallStrike ?? null,
+      putWallStrike: exposureResult?.putWallStrike ?? null,
+      zeroGamma: exposureResult?.gammaFlipSpot ?? null,
+      vpPoc: vp252.poc ?? volumeProfileUs?.poc ?? null,
+      vpVah: vp252.vah ?? volumeProfileUs?.vah ?? null,
+      vpVal: vp252.val ?? volumeProfileUs?.val ?? null,
+      vpHvns: vpHvnPrices,
+      vpLvns: vpLvnPrices,
+      cvdAbsorptionScore: cvdAbsScore,
+      cvdDirectionalAlignment: cvdSlopeSign > 0 ? 0.75 : cvdSlopeSign < 0 ? 0.25 : 0.5,
+      bucketRvolZ: null,
+      contango: null,
+      spyIv30dDec: spyIvRef,
+      bars1d: closedDailyUs,
+    });
+    if (this.enableInstitutionalAvwapRefresh) {
+      this.institutionalAvwapRuntime.scheduleBackgroundRefresh(canonicalSymbol);
+    }
+    const institutionalAvwapCtx = this.institutionalAvwapRuntime.getSnapshotContext(
+      canonicalSymbol,
+      '1D',
+    );
+
     const response: TerminalSnapshotResponse = {
       status: envelope.envelopeStatus === 'OK' && warnings.length === 0 ? 'OK' : 'PARTIAL',
       feedMode,
@@ -10971,6 +11081,9 @@ export class MarketRuntime {
         prefetchExpirationDates: usExpirySelection.prefetchExpirationDates,
         availableExpirations: mergedAvailableExpirations,
       },
+      ...(institutionalAvwapCtx !== null
+        ? { institutionalAvwapContext: sanitizeJsonValue(institutionalAvwapCtx) }
+        : {}),
       dataQuality: {
         ownSolvedIvContracts,
         providerFallbackIvContracts,
