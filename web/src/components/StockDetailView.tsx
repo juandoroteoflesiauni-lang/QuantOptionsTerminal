@@ -74,6 +74,11 @@ import {
 import { ExecutionBottomDeck } from './stock-detail/ExecutionBottomDeck';
 import { GexStrikeProfileChart } from './stock-detail/GexStrikeProfileChart';
 import { SyncedLowerPaneChart } from './stock-detail/SyncedLowerPaneChart';
+import {
+  buildInstitutionalAvwapContextViewModel,
+  type InstitutionalAvwapChartPriceLine,
+} from './stock-detail/avwapContextViewModel';
+import { InstitutionalAvwapContextPanel } from './stock-detail/InstitutionalAvwapContextPanel';
 import { CompanyLogo } from './common/CompanyLogo';
 import { LiveClockBadge } from './common/LiveClockBadge';
 import { projectLiveEma } from '../../../src/core/ema';
@@ -149,6 +154,8 @@ import {
 } from '../api/useMarketLiveStream';
 
 const EMPTY_MINIMAL_BARS: readonly MinimalOhlcvBar[] = [];
+const EMPTY_INSTITUTIONAL_AVWAP_PRICE_LINES: readonly InstitutionalAvwapChartPriceLine[] = [];
+const INSTITUTIONAL_AVWAP_PRICE_LINE_SLOTS = 9;
 import {
   StockDetailSymbolSelector,
   type StockDetailCategory,
@@ -520,6 +527,9 @@ export const StockDetailView: React.FC<{
   const [vpHorizon, setVpHorizon] = useState<VolumeProfileHorizon>('252R');
   const [showVpNodes, setShowVpNodes] = useState<boolean>(true);
   const [intradayTriggersEnabled, setIntradayTriggersEnabled] = useState<boolean>(false);
+  const [instAvwapFocusedAnchorId, setInstAvwapFocusedAnchorId] = useState<string | null>(null);
+  const [instAvwapShowFocusedBands, setInstAvwapShowFocusedBands] = useState<boolean>(false);
+  const [instAvwapShowOpexMarker, setInstAvwapShowOpexMarker] = useState<boolean>(false);
   const [overlays, setOverlays] = useState<OverlayVisibilityState>({
     emas: true,
     sessionVwap: true,
@@ -1043,6 +1053,26 @@ export const StockDetailView: React.FC<{
       ((arBarsResp?.bars.length ?? 0) === 0 &&
         ((arBars1dResp?.bars.length ?? 0) > 0 || (stockDetail?.historicalBars.length ?? 0) > 0)));
   const effectiveChartTimeframe: TerminalTimeframe = isArIntradayFallbackActive ? '1D' : timeframe;
+  const institutionalAvwapVm = useMemo(
+    () =>
+      buildInstitutionalAvwapContextViewModel({
+        context: !isArMarket ? (usSnap?.institutionalAvwapContext ?? null) : null,
+        activeTimeframe: effectiveChartTimeframe,
+        preferences: {
+          focusedAnchorId: instAvwapFocusedAnchorId,
+          showFocusedBands: instAvwapShowFocusedBands,
+          showOpexResetMarker: instAvwapShowOpexMarker,
+        },
+      }),
+    [
+      isArMarket,
+      usSnap?.institutionalAvwapContext,
+      effectiveChartTimeframe,
+      instAvwapFocusedAnchorId,
+      instAvwapShowFocusedBands,
+      instAvwapShowOpexMarker,
+    ],
+  );
   const [maPresetsByTimeframe,setMaPresetsByTimeframe]=useState<Readonly<Record<string,MaPreset>>>({});
   const maPreset=useMemo(()=>maPresetsByTimeframe[effectiveChartTimeframe]??resolveMaPresetForTimeframe(effectiveChartTimeframe),[maPresetsByTimeframe,effectiveChartTimeframe]);
   const updateMaPreset=(patch:Partial<Pick<MaPreset,'fastType'|'visible'|'sessionVwap'|'mtfEma20'>>):void=>{
@@ -2240,6 +2270,9 @@ export const StockDetailView: React.FC<{
           intradayTriggersEnabled={intradayTriggersEnabled}
           vpLiveSeed={!isArMarket ? (usBarsResp?.vpLiveSeed ?? null) : null}
           highlightedLevel={highlightedLevel}
+          institutionalAvwapPriceLines={
+            !isArMarket ? institutionalAvwapVm.chartPriceLines : EMPTY_INSTITUTIONAL_AVWAP_PRICE_LINES
+          }
           onAnchorCandleClick={handleAnchorCandleClick}
           onLogicalRangeSync={handleMainRangeSync}
           onCrosshairTimeSync={handleMainCrosshairSync}
@@ -2262,6 +2295,21 @@ export const StockDetailView: React.FC<{
         externalCrosshairTimeRef={lowerCrosshairRef}
         getMainVisibleLogicalRange={handleGetMainLogicalRange}
       />
+
+      {!isArMarket && (
+        <InstitutionalAvwapContextPanel
+          context={usSnap?.institutionalAvwapContext ?? null}
+          activeTimeframe={effectiveChartTimeframe}
+          currencySymbol={contextInfo.currencySymbol}
+          focusedAnchorId={instAvwapFocusedAnchorId}
+          onSelectFocusAnchor={setInstAvwapFocusedAnchorId}
+          showFocusedBands={instAvwapShowFocusedBands}
+          onToggleFocusedBands={setInstAvwapShowFocusedBands}
+          showOpexResetMarker={instAvwapShowOpexMarker}
+          onToggleOpexResetMarker={setInstAvwapShowOpexMarker}
+          viewModelOverride={institutionalAvwapVm}
+        />
+      )}
 
       <section className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
         <StockDetailExecutionSection
@@ -2384,6 +2432,7 @@ const PanoramicPriceChart: React.FC<{
   readonly intradayTriggersEnabled: boolean;
   readonly vpLiveSeed: MultiHorizonVpLiveSeed | null;
   readonly highlightedLevel: HighlightLevelId;
+  readonly institutionalAvwapPriceLines?: readonly InstitutionalAvwapChartPriceLine[];
   readonly onAnchorCandleClick: (timeSec: number) => void;
   readonly onLogicalRangeSync: (range: LogicalRangeAlias | null) => void;
   readonly onCrosshairTimeSync: (timeSec: number | null) => void;
@@ -2408,6 +2457,7 @@ const PanoramicPriceChart: React.FC<{
   intradayTriggersEnabled,
   vpLiveSeed,
   highlightedLevel,
+  institutionalAvwapPriceLines = EMPTY_INSTITUTIONAL_AVWAP_PRICE_LINES,
   onAnchorCandleClick,
   onLogicalRangeSync,
   onCrosshairTimeSync,
@@ -2459,6 +2509,8 @@ const PanoramicPriceChart: React.FC<{
       >
     >
   >({});
+  const instAvwapPriceLinesRef = useRef<readonly IPriceLine[]>([]);
+  const lastInstAvwapSigRef = useRef<string>('');
   const proximityMemoryRef = useRef<readonly ProximityMemory[]>([]);
   const proximityBadgeRef = useRef<HTMLSpanElement | null>(null);
   const updatePriceLineSlotRef = useRef<((key: keyof NonNullable<typeof priceLineSlotsRef.current>, enabled: boolean, price: number | null, title: string, provisional?: boolean) => void) | null>(null);
@@ -2649,6 +2701,22 @@ const PanoramicPriceChart: React.FC<{
       orh: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
       orl: candles.createPriceLine({price:0,color:'#94A3B8',lineWidth:1,lineStyle:LineStyle.Dashed,lineVisible:false,axisLabelVisible:false,title:''}),
     };
+    const instSlots: IPriceLine[] = [];
+    for (let i = 0; i < INSTITUTIONAL_AVWAP_PRICE_LINE_SLOTS; i += 1) {
+      instSlots.push(
+        candles.createPriceLine({
+          price: 0,
+          color: '#38BDF8',
+          lineWidth: 1,
+          lineStyle: LineStyle.Solid,
+          lineVisible: false,
+          axisLabelVisible: false,
+          title: '',
+        }),
+      );
+    }
+    instAvwapPriceLinesRef.current = instSlots;
+    lastInstAvwapSigRef.current = '';
 
     chartRef.current = chart;
     candleRef.current = candles;
@@ -3098,6 +3166,44 @@ const PanoramicPriceChart: React.FC<{
     updateSlot('maxPain', slots.maxPain, hasBars && overlays.optionWalls, keyLevels.maxPain ?? null, `MAX PAIN ${prefix}${fmtNum(keyLevels.maxPain, 2)}`, false);
     updateSlot('zeroGamma', slots.zeroGamma, hasBars && overlays.optionWalls, keyLevels.zeroGamma, `ZERO-GAMMA ${prefix}${fmtNum(keyLevels.zeroGamma, 2)}`, highlightedLevel === 'ZERO_GAMMA');
   }, [bundle.barsAvailable, currencySymbol, highlightedLevel, keyLevels, overlays.optionWalls, overlays.volumeProfile, showVpNodes, vpHorizon]);
+
+  // Fase 2C: proyección liviana de referencias horizontales AVWAP institucionales (contexto y bandas en foco).
+  useEffect(() => {
+    const instSlots = instAvwapPriceLinesRef.current;
+    if (instSlots.length === 0) return;
+    const active = bundle.barsAvailable ? institutionalAvwapPriceLines : EMPTY_INSTITUTIONAL_AVWAP_PRICE_LINES;
+    const nextSig = active
+      .slice(0, INSTITUTIONAL_AVWAP_PRICE_LINE_SLOTS)
+      .map((l) => `${l.id}:${l.price.toFixed(4)}:${l.title}:${l.color}:${String(l.lineWidth)}:${l.lineStyle}:${String(l.lineVisible)}:${String(l.axisLabelVisible)}`)
+      .join('|');
+    if (nextSig === lastInstAvwapSigRef.current) return;
+    lastInstAvwapSigRef.current = nextSig;
+
+    for (let i = 0; i < instSlots.length; i += 1) {
+      const slot = instSlots[i];
+      if (!slot) continue;
+      const spec = active[i];
+      if (spec === undefined || !Number.isFinite(spec.price) || spec.price <= 0) {
+        slot.applyOptions({ price: 0, lineVisible: false, axisLabelVisible: false, title: '' });
+        continue;
+      }
+      const mappedStyle =
+        spec.lineStyle === 'DOTTED'
+          ? LineStyle.Dotted
+          : spec.lineStyle === 'DASHED'
+            ? LineStyle.Dashed
+            : LineStyle.Solid;
+      slot.applyOptions({
+        price: spec.price,
+        color: spec.color,
+        lineWidth: spec.lineWidth,
+        lineStyle: mappedStyle,
+        lineVisible: spec.lineVisible,
+        axisLabelVisible: spec.axisLabelVisible,
+        title: spec.title,
+      });
+    }
+  }, [bundle.barsAvailable, institutionalAvwapPriceLines]);
 
   // S2-1/S2-2: actualización incremental O(B_bar) del VP multihorizonte solo al cierre de barra 1m/5m (cero en ticks intravela).
   useEffect(() => {
